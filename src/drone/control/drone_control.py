@@ -1,4 +1,4 @@
-from common_types import *
+from ...common_types import *
 
 import time
 import math
@@ -85,6 +85,14 @@ def arm_and_takeoff(vehicle, target_alt_m):
     print("[*] Setting GUIDED mode…")
     vehicle.mode = VehicleMode("GUIDED")
     time.sleep(1)
+    
+    # If dronekit mode change failed, try MAVLink 
+    if vehicle.mode.name != "GUIDED":
+        print("[*] DroneKit mode change failed, trying MAVLink...")
+        vehicle._master.mav.set_mode_send(
+            vehicle._master.target_system,
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 4)
+        time.sleep(1)
 
     print("[*] Arming…")
     vehicle.armed = True
