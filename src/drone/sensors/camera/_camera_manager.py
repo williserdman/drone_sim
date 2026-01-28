@@ -1,9 +1,9 @@
 import numpy as np
-import cv2 # type: ignore
-import cv2.aruco as aruco # type: ignore
+import cv2  # type: ignore
+import cv2.aruco as aruco  # type: ignore
 import math
 
-from picamera2 import Picamera2 # type: ignore
+from picamera2 import Picamera2  # type: ignore
 import time
 from datetime import datetime
 
@@ -183,12 +183,14 @@ class CameraManager:
         """Capture a BGR frame from the camera and downsample by sample_ratio."""
         frame: np.ndarray = self.picam2.capture_array()  # capture frame in BGR
 
-        # Downsample rows and columns by sample_ratio
-        frame = frame[:: self.sample_ratio, :: self.sample_ratio].copy()
+        # Downsample using cv2.resize for better quality (less aliasing) than slicing
+        width = frame.shape[1] // self.sample_ratio
+        height = frame.shape[0] // self.sample_ratio
+        frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
         return frame
 
-    def find_centers(self, frame) -> tuple[list | None, Any, Any] | tuple[list, list]: # type: ignore
+    def find_centers(self, frame) -> tuple[list | None, Any, Any] | tuple[list, list]:  # type: ignore
         corners, ids, rejected = self.get_coords(frame)
         # ids: [[1], [2], [3], ...]
         # corners: [[[1, 2, 3, 4]], [[5, 6, 7, 8]], [[9, 10, 11, 12]]] im assuming so that this is now flexible enough to have duplicate IDd markers
@@ -197,9 +199,11 @@ class CameraManager:
             # update target_id
             return self.get_centers(corners), ids, corners
 
-        return [], []
-    
-    def find_target_center(self, target_id, centers: list, corners: list, ids: list, marker_size_mm: int) -> list[float] | None:
+        return [], [], []
+
+    def find_target_center(
+        self, target_id, centers: list, corners: list, ids: list, marker_size_mm: int
+    ) -> list[float] | None:
         if target_id not in ids:
             return
         target_idx = list(ids).index(target_id)
@@ -249,8 +253,8 @@ class CameraManager:
     def step(self):
         s = time.time()
         frame = self.capture_frame()
-        centers, ids, corners = self.find_centers(frame) # type: ignore
-        vc_cm = self.find_target_center(centers, ids, corners) # type: ignore
+        centers, ids, corners = self.find_centers(frame)  # type: ignore
+        vc_cm = self.find_target_center(centers, ids, corners)  # type: ignore
         delta = time.time() - s
         return vc_cm, delta
 
