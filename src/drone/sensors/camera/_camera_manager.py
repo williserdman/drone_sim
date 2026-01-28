@@ -121,10 +121,10 @@ class CameraManager:
             rvec = rvec_list_all[0][0]
             tvec = tvec_list_all[0][0]
 
-            # Draw axis
+            """ # Draw axis
             cv2.drawFrameAxes(
                 frame, self.camera_matrix, self.camera_distortion, rvec, tvec, 100
-            )
+            ) """
 
             # Compute Euler angles
             rvec_flipped = rvec * -1
@@ -188,9 +188,11 @@ class CameraManager:
         height = frame.shape[0] // self.sample_ratio
         frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
+        self.CAMERA_CENTER = [width / 2, height / 2]
+
         return frame
 
-    def find_centers(self, frame) -> tuple[list | None, Any, Any] | tuple[list, list]:  # type: ignore
+    def find_centers(self, frame) -> tuple[list | None, any, any] | tuple[list, list]:  # type: ignore
         corners, ids, rejected = self.get_coords(frame)
         # ids: [[1], [2], [3], ...]
         # corners: [[[1, 2, 3, 4]], [[5, 6, 7, 8]], [[9, 10, 11, 12]]] im assuming so that this is now flexible enough to have duplicate IDd markers
@@ -210,10 +212,14 @@ class CameraManager:
 
         target_center = centers[target_idx]
 
-        vc_p = self.vector_to_center(target_center).tolist()
-        vc_meters = vc_p * self.pixels_to_metric(corners[0], marker_size_mm) / 1000
+        vc_p = self.vector_to_center(target_center)
+        # Using corners[target_idx] ensures we use the scale of the target marker
+        # Divide by pixels/mm to get mm.
+        vc_meters = (
+            vc_p / self.pixels_to_metric(corners[target_idx], marker_size_mm) / 1000
+        )
 
-        return vc_meters
+        return vc_meters  # type: ignore
 
     """ def find_target_center(self, centers: list, ids: list, corners: list):
         if self.target_id is not None:
