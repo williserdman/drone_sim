@@ -60,7 +60,15 @@ def wait_pos(
     while time.time() - t0 < timeout:
         loc = vehicle.location.global_relative_frame
         if loc is not None:
-            d = horiz_distance_m((loc.lat, loc.lon), (target_lat, target_lon))  # type: ignore
+            current_pos = GPSCoord(loc.lat, loc.lon, loc.alt if loc.alt else 0)
+            target_pos = GPSCoord(target_lat, target_lon, 0)
+            d = horiz_distance_m(current_pos, target_pos)
+            # Print distance to target for debugging/tracking
+            if alt_m is not None and loc.alt is not None:
+                alt_diff = alt_m - loc.alt
+                print(f"[wait_pos] Horiz distance: {d:.2f}m | Alt diff: {alt_diff:.2f}m (current: {loc.alt:.2f}m, target: {alt_m:.2f}m)")
+            else:
+                print(f"[wait_pos] Horiz distance: {d:.2f}m | Alt: {loc.alt:.2f}")
             alt_ok = True
             if alt_m is not None and loc.alt is not None:
                 alt_ok = abs(loc.alt - alt_m) <= alt_tol
@@ -81,18 +89,12 @@ def arm_and_takeoff(vehicle, target_alt_m):
             getattr(vehicle.gps_0, "fix_type", None),
         )
         time.sleep(1)
-
-    print("[*] Setting GUIDED mode…")
-    vehicle.mode = VehicleMode("GUIDED")
-    time.sleep(1)
     
-    # If dronekit mode change failed, try MAVLink 
-    if vehicle.mode.name != "GUIDED":
-        print("[*] DroneKit mode change failed, trying MAVLink...")
-        vehicle._master.mav.set_mode_send(
-            vehicle._master.target_system,
-            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 4)
-        time.sleep(1)
+    print("[*] Setting Guided Mode via Mavlink")
+    vehicle._master.mav.set_mode_send(
+        vehicle._master.target_system,
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 4)
+    time.sleep(1)
 
     print("[*] Arming…")
     vehicle.armed = True
@@ -122,9 +124,9 @@ class DroneControl:
     def __init__(self, connection_port="/dev/cu.usbmodem1103"):
         print(f"Connecting to {connection_port} …")
         vehicle = connect(
-            connection_port, wait_ready=False, heartbeat_timeout=60, timeout=120
+            connection_port, wait_ready=True, heartbeat_timeout=60, timeout=120
         )
-        vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
+        # vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
         self.vehicle = vehicle
         self.cruise_alt = 33  # meters
         pass
@@ -175,7 +177,13 @@ class DroneControl:
         reported as a non-zero return value.
         """
         print("[*] Landing…")
-        self.vehicle.mode = VehicleMode("LAND")
+        # Set LAND mode using MAVLink (mode 9 for ArduCopter)
+        self.vehicle._master.mav.set_mode_send(
+            self.vehicle._master.target_system,
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            9  # LAND mode
+        )
+        time.sleep(1)
 
         t0 = time.time()
         timeout = 180
