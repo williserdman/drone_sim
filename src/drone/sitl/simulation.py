@@ -43,24 +43,33 @@ def start_sitl():
     return sitl, connection_string
 
 # Connect to vehicle
-def connect_vehicle(connection_string):
-    print(f"[CONNECT] Connecting to vehicle on {connection_string}...")
-    vehicle = connect(connection_string, wait_ready=True)
-    print("[CONNECT] Connected successfully!")
-    print(f"[CONNECT] Vehicle mode: {vehicle.mode.name}")
-    print(f"[CONNECT] GPS: {vehicle.gps_0}")
-    print(f"[CONNECT] Battery: {vehicle.battery}")
-    return vehicle
+def connect_vehicle(connection_string, retries=3, timeout=30):
+    """Connect to vehicle and retry/handle errors."""
+    for attempt in range(retries):
+        try:
+            print(f"[CONNECT] Connecting to vehicle on {connection_string}... (attempt {attempt + 1}/{retries})")
+            vehicle = connect(connection_string, wait_ready=True, timeout=timeout)
+            print("[CONNECT] Connected successfully!")
+            print(f"[CONNECT] Vehicle mode: {vehicle.mode.name}")
+            print(f"[CONNECT] GPS: {vehicle.gps_0}")
+            print(f"[CONNECT] Battery: {vehicle.battery}")
+            return vehicle
+        except Exception as e:
+            print(f"[CONNECT] Connection attempt {attempt + 1} failed: {e}")
+            if attempt < retries - 1:
+                wait_time = 2 * (attempt + 1)
+                print(f"[CONNECT] Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+            else:
+                print("[CONNECT] All connection attempts failed")
+                raise ConnectionError(f"Failed to connect to vehicle after {retries} attempts: {e}")
 
 # Relax pre-arm checks for SITL
 def relax_prearm_checks(vehicle):
     print("[SETUP] Relaxing pre-arm checks for SITL...")
     for param, value in [('ARMING_CHECK', 0), ('FS_THR_ENABLE', 0), ('BRD_SAFETYENABLE', 0)]:
-        try:
-            vehicle.parameters[param] = value
-            time.sleep(0.05)
-        except Exception:
-            pass 
+        vehicle.parameters[param] = value
+        time.sleep(0.05)
     print("[SETUP] Pre-arm checks relaxed")
 
 
