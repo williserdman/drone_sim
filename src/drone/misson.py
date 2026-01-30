@@ -55,9 +55,13 @@ def do_bomb_run(controller: DroneControl, camera: Camera, lidar: Lidar, target_i
 ids = [1, 2, 3, 4, 5, 6]
 
 mt = MissonTracker()
-controller = DroneControl()
+print("mission tracker initialized")
+controller = DroneControl(connection_port="/dev/ttyACM1")
+print("controller init")
 camera = Camera(100)
+print("camera init")
 lidar = Lidar()
+print("lidar init")
 
 mt.begin_mission()
 

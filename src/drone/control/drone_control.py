@@ -60,7 +60,7 @@ def wait_pos(
     while time.time() - t0 < timeout:
         loc = vehicle.location.global_relative_frame
         if loc is not None:
-            d = horiz_distance_m((loc.lat, loc.lon), (target_lat, target_lon))  # type: ignore
+            d = horiz_distance_m(GPSCoord(loc.lat, loc.lon, 0), GPSCoord(target_lat, target_lon, 0))  # type: ignore
             alt_ok = True
             if alt_m is not None and loc.alt is not None:
                 alt_ok = abs(loc.alt - alt_m) <= alt_tol

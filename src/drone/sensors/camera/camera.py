@@ -18,7 +18,7 @@ class Camera:
             vc_meters = self.cm.find_target_center(
                 id, centers, corners, ids, self.marker_size_mm
             )
-            if vc_meters:
+            if vc_meters is not None:
                 return RelativePosition(vc_meters[0], vc_meters[1])
 
         return

@@ -179,6 +179,7 @@ class CameraManager:
             z = 0
         return np.array([x, y, z])
 
+
     def capture_frame(self) -> np.ndarray:
         """Capture a BGR frame from the camera and downsample by sample_ratio."""
         frame: np.ndarray = self.picam2.capture_array()  # capture frame in BGR
