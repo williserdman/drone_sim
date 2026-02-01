@@ -63,13 +63,8 @@ def wait_pos(
             current_pos = GPSCoord(loc.lat, loc.lon, loc.alt if loc.alt else 0)
             target_pos = GPSCoord(target_lat, target_lon, 0)
             d = horiz_distance_m(current_pos, target_pos)
-            # Print distance to target for debugging/tracking
-            if alt_m is not None and loc.alt is not None:
-                alt_diff = alt_m - loc.alt
-                print(f"[wait_pos] Horiz distance: {d:.2f}m | Alt diff: {alt_diff:.2f}m (current: {loc.alt:.2f}m, target: {alt_m:.2f}m)")
-            else:
-                print(f"[wait_pos] Horiz distance: {d:.2f}m | Alt: {loc.alt:.2f}")
             alt_ok = True
+            print("Horizontal Distance ", d, "pos_tol ", pos_tol,  "Altitude ", loc.alt, "alt_tol ", alt_tol)
             if alt_m is not None and loc.alt is not None:
                 alt_ok = abs(loc.alt - alt_m) <= alt_tol
             if d <= pos_tol and alt_ok:
@@ -133,7 +128,7 @@ class DroneControl:
 
     def goto_waypoint(self, coord: GPSCoord) -> int:
         goto(self.vehicle, coord.lat, coord.long, self.cruise_alt)
-        if not wait_pos(self.vehicle, coord.lat, coord.long, self.cruise_alt):
+        if not wait_pos(self.vehicle, coord.lat, coord.long, POS_TOL, self.cruise_alt, ALT_TOL, TIMEOUT_MOVE):
             return -1
         return 0
 

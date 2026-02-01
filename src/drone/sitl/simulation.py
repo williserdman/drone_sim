@@ -18,9 +18,9 @@ import dronekit_sitl
 HOME_LAT = 41.501900
 HOME_LON = -81.604900
 HOME_AMSL = 300
-TARGET_ALT = 10
+TARGET_ALT = 30
 
-wp = [41.501000, -81.604900, 30]
+wp = [41.501400, -81.604400, 30]
 
 # start sitl with arducopter
 def start_sitl():
@@ -44,25 +44,14 @@ def start_sitl():
 
 # Connect to vehicle
 def connect_vehicle(connection_string, retries=3, timeout=30):
-    """Connect to vehicle and retry/handle errors."""
-    for attempt in range(retries):
-        try:
-            print(f"[CONNECT] Connecting to vehicle on {connection_string}... (attempt {attempt + 1}/{retries})")
-            vehicle = connect(connection_string, wait_ready=True, timeout=timeout)
-            print("[CONNECT] Connected successfully!")
-            print(f"[CONNECT] Vehicle mode: {vehicle.mode.name}")
-            print(f"[CONNECT] GPS: {vehicle.gps_0}")
-            print(f"[CONNECT] Battery: {vehicle.battery}")
-            return vehicle
-        except Exception as e:
-            print(f"[CONNECT] Connection attempt {attempt + 1} failed: {e}")
-            if attempt < retries - 1:
-                wait_time = 2 * (attempt + 1)
-                print(f"[CONNECT] Waiting {wait_time}s before retry...")
-                time.sleep(wait_time)
-            else:
-                print("[CONNECT] All connection attempts failed")
-                raise ConnectionError(f"Failed to connect to vehicle after {retries} attempts: {e}")
+    print(f"[CONNECT] Connecting to vehicle on {connection_string}")
+    vehicle = connect(connection_string, wait_ready=True, timeout=timeout)
+    print("[CONNECT] Connected successfully!")
+    print(f"[CONNECT] Vehicle mode: {vehicle.mode.name}")
+    print(f"[CONNECT] GPS: {vehicle.gps_0}")
+    print(f"[CONNECT] Battery: {vehicle.battery}")
+    return vehicle
+        
 
 # Relax pre-arm checks for SITL
 def relax_prearm_checks(vehicle):
