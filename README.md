@@ -14,4 +14,5 @@ Top-level (under `src/`):
     - `sensors/camera/_camera_manager.py` — internal camera manager implementation.
     - `sensors/camera/camera.py` — camera interface abstractions.
     - `sensors/lidar/lidar.py` — lidar sensor wrapper and helpers.
+    - `sitl/simulation.py` — SITL test script for simulating missions without hardware.
     - `utils/position_smoother.py` — helper for smoothing position estimates.
