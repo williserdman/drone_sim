@@ -9,7 +9,7 @@ if not hasattr(collections, 'MutableMapping'):
     collections.MutableMapping = collections.abc.MutableMapping
 
 from dronekit import connect
-from ..control.drone_control import DroneControl, arm_and_takeoff, horiz_distance_m
+from ..control.drone_control import DroneControl, arm_and_takeoff
 from ...common_types import GPSCoord
 import dronekit_sitl
 
