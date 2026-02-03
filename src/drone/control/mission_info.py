@@ -20,16 +20,16 @@ class MissonTracker:
     def end_aux_timer(self) -> float:
         if self.timer_start:
             return time.time() - self.timer_start
-        return -1
+        return -1.0
 
     def time_left(self) -> float:
         if self.mission_begin:
             elapsed = time.time() - self.mission_begin
             return self.mission_time_seconds - elapsed
-        return -1
+        return -1.0
 
     def end_mission(self) -> float:
-        return 0
+        return 0.0
     
     # records and ends the timer
     def record_aux_timer(self, record) -> list:
@@ -55,35 +55,35 @@ class MissonTracker:
         if record in self.timed_passes:
             return self.timed_passes[record][-1]
         
-        return -1
+        return -1.0
     
     # returns the length of the average pass for the given record
     def get_avg(self, record: str) -> float:
         if record in self.timed_passes:
             return sum(self.timed_passes[record])/len(self.timed_passes[record])
         
-        return -1
+        return -1.0
     
     # returns the length of the worst pass for the given record
     def get_worst(self, record: str) -> float:
         if record in self.timed_passes:
             return max(self.timed_passes[record])
         
-        return -1
+        return -1.0
     
     # returns the length of the best pass for the given record
     def get_best(self, record: str) -> float:
         if record in self.timed_passes:
             return min(self.timed_passes[record])
         
-        return -1
+        return -1.0
 
 
 if __name__ == "__main__":
     mt = MissonTracker()
     mt.begin_mission()
     mt.begin_aux_timer()
-    time.sleep(5)
+    time.sleep(5.0)
     print("timer went for:", mt.record_aux_timer("LF1"))
     print("we have", mt.time_left(), "seconds left in mission")
     mt.begin_mission()
