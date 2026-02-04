@@ -1,4 +1,4 @@
-from common_types import *
+from ...common_types import *
 
 import time
 import math
@@ -60,8 +60,11 @@ def wait_pos(
     while time.time() - t0 < timeout:
         loc = vehicle.location.global_relative_frame
         if loc is not None:
-            d = horiz_distance_m(GPSCoord(loc.lat, loc.lon, 0), GPSCoord(target_lat, target_lon, 0))  # type: ignore
+            current_pos = GPSCoord(loc.lat, loc.lon, loc.alt if loc.alt else 0)
+            target_pos = GPSCoord(target_lat, target_lon, 0)
+            d = horiz_distance_m(current_pos, target_pos)
             alt_ok = True
+            print("Horizontal Distance ", d, "pos_tol ", pos_tol,  "Altitude ", loc.alt, "alt_tol ", alt_tol)
             if alt_m is not None and loc.alt is not None:
                 alt_ok = abs(loc.alt - alt_m) <= alt_tol
             if d <= pos_tol and alt_ok:
@@ -81,9 +84,11 @@ def arm_and_takeoff(vehicle, target_alt_m):
             getattr(vehicle.gps_0, "fix_type", None),
         )
         time.sleep(1)
-
-    print("[*] Setting GUIDED mode…")
-    vehicle.mode = VehicleMode("GUIDED")
+    
+    print("[*] Setting Guided Mode via Mavlink")
+    vehicle._master.mav.set_mode_send(
+        vehicle._master.target_system,
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 4)
     time.sleep(1)
 
     print("[*] Arming…")
@@ -114,16 +119,16 @@ class DroneControl:
     def __init__(self, connection_port="/dev/cu.usbmodem1103"):
         print(f"Connecting to {connection_port} …")
         vehicle = connect(
-            connection_port, wait_ready=False, heartbeat_timeout=60, timeout=120
+            connection_port, wait_ready=True, heartbeat_timeout=60, timeout=120
         )
-        vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
+        # vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
         self.vehicle = vehicle
         self.cruise_alt = 33  # meters
         pass
 
     def goto_waypoint(self, coord: GPSCoord) -> int:
         goto(self.vehicle, coord.lat, coord.long, self.cruise_alt)
-        if not wait_pos(self.vehicle, coord.lat, coord.long, self.cruise_alt):
+        if not wait_pos(self.vehicle, coord.lat, coord.long, POS_TOL, self.cruise_alt, ALT_TOL, TIMEOUT_MOVE):
             return -1
         return 0
 
@@ -167,7 +172,13 @@ class DroneControl:
         reported as a non-zero return value.
         """
         print("[*] Landing…")
-        self.vehicle.mode = VehicleMode("LAND")
+        # Set LAND mode using MAVLink (mode 9 for ArduCopter)
+        self.vehicle._master.mav.set_mode_send(
+            self.vehicle._master.target_system,
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            9  # LAND mode
+        )
+        time.sleep(1)
 
         t0 = time.time()
         timeout = 180
