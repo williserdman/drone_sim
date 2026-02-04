@@ -19,7 +19,9 @@ class Camera:
                 id, centers, corners, ids, self.marker_size_mm
             )
             if vc_meters is not None:
-                return RelativePosition(vc_meters[0], vc_meters[1])
+                return RelativePosition(
+                    -vc_meters[0], vc_meters[1]
+                )  # from testing x dir needs to be flipped so that from drone POV right is positive
 
         return
 
