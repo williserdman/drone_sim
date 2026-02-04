@@ -1,7 +1,9 @@
-#ifndef COORDINATESMOOTHING_H
-#define COORDINATESMOOTHING_H
+/* written by Tim Ng for VTOL CWRU */
 
-class CoordinateSmoothing {
+#ifndef VALUESMOOTHING_H
+#define VALUESMOOTHING_H
+
+class ValueSmoothing {
 private:
     int window; // number of last positions we're using in calculations
     int index = 0; // next index to put in
@@ -11,10 +13,11 @@ private:
     float ema = 0.0f; // the last ema;
     bool ema_ready = false; // check if ema can actually be calculated based on sma
 public:
-    explicit CoordinateSmoothing(int window); // constructor
+    explicit ValueSmoothing(int window); // constructor
     void coord_add(float value); // add a coordinate to values array
     bool coord_get_sma(float& out); // gets the sma and sets it to the out variable (return true if it can be calculated, false if not)
     bool coord_get_ema(float& out); // gets the ema and sets it to the out variable  (return true if it can be calculated, false if not)
+    ~ValueSmoothing();
 };
 
 #endif
