@@ -2,10 +2,12 @@
 
 #include <iostream>
 #include "ValueSmoothing.h"
+#include <cassert>
 
-ValueSmoothing::ValueSmoothing(int window) {
+
+ValueSmoothing::ValueSmoothing(int window) : values(window) {
+    assert(window > 0);
     this->window = window;
-    std::fill(values, values + 128, 0.0f);
 }
 
 void ValueSmoothing::coord_add(float value) {
@@ -22,14 +24,12 @@ void ValueSmoothing::coord_add(float value) {
     index++;
     if (index == window) index = 0; // circular buffer
 
-    if (activePos == window) {
-        if (ema_ready == false) { // ema can only be calculated if all positions are active
-            ema = (sum / activePos); // use sma if not available
-            ema_ready = true;
-        } else {
-            float smoothing_factor = 2.0f / (window + 1.0f); // calculations for ema
-            ema = value * smoothing_factor + (ema * (1.0f - smoothing_factor));
-        }
+    if (ema_ready == false) { // ema can only be calculated if all positions are active
+        ema = (sum / activePos); // use sma if not available
+        ema_ready = true;
+    } else {
+        float smoothing_factor = 2.0f / (activePos + 1.0f); // calculations for ema
+        ema = value * smoothing_factor + (ema * (1.0f - smoothing_factor));
     }
 }
 

@@ -3,7 +3,8 @@
 #include <iostream>
 #include "PositionSmoothing.h"
 
-PositionSmoothing::PositionSmoothing(int window) : x(window), y(window), z(window) { // constructor that defines window size
+
+PositionSmoothing::PositionSmoothing(int window) : x(window), y(window), z(window) {
 
 }
 // class RelativePosition has float x, float y, float z
