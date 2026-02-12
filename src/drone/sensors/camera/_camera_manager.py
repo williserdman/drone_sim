@@ -71,10 +71,13 @@ class CameraManager:
 
     def vector_to_center(self, center_of_aruco):
         v = np.subtract(self.CAMERA_CENTER, center_of_aruco)
+
+        # to adjust for the front being in the corner of the camera
+        """
         neg_45_deg_rotation = np.array(
             [[one_over_root_2, one_over_root_2], [-one_over_root_2, one_over_root_2]]
-        )
-        return v @ neg_45_deg_rotation
+        ) """
+        return v
 
     def get_coords(self, frame):
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -178,7 +181,6 @@ class CameraManager:
             y = math.atan2(-R[2, 0], sy)
             z = 0
         return np.array([x, y, z])
-
 
     def capture_frame(self) -> np.ndarray:
         """Capture a BGR frame from the camera and downsample by sample_ratio."""
