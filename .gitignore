@@ -1,5 +1,6 @@
 # flight videos
 *.mp4
+src/drone/control/c_library_v2/
 
 # Virtual Environment
 venv/
