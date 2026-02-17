@@ -55,20 +55,24 @@ print("camera init")
 lidar = Lidar()
 print("lidar init")
 
-mt.begin_mission()
+try:
+    mt.begin_mission()
 
-### LAND AT WAYPOINT L
-mt.begin_aux_timer()
-controller.takeoff(30)
-controller.goto_waypoint(A)
-time.sleep(1)
-### END WAYPOINT L PORTION
+    ### LAND AT WAYPOINT L
+    mt.begin_aux_timer()
+    controller.takeoff(30)
+    controller.goto_waypoint(A)
+    time.sleep(1)
+    ### END WAYPOINT L PORTION
 
-aruco_land(controller, camera, lidar, ID, controller.get_current_gps())
-time.sleep(5)
+    aruco_land(controller, camera, lidar, ID, controller.get_current_gps())
+    time.sleep(5)
 
-controller.takeoff(30)
-controller.goto_waypoint(H)
-controller.simple_land()
-controller.disarm()
-mt.end_mission()
+    controller.takeoff(30)
+    controller.goto_waypoint(H)
+    controller.simple_land()
+    controller.disarm()
+    mt.end_mission()
+except Exception as e:
+    print("[ERR]", e)
+    controller.rtl()

@@ -1,4 +1,4 @@
-from ...common_types import *
+from ..common_types import *
 
 import time
 import math
@@ -64,7 +64,16 @@ def wait_pos(
             target_pos = GPSCoord(target_lat, target_lon, 0)
             d = horiz_distance_m(current_pos, target_pos)
             alt_ok = True
-            print("Horizontal Distance ", d, "pos_tol ", pos_tol,  "Altitude ", loc.alt, "alt_tol ", alt_tol)
+            print(
+                "Horizontal Distance ",
+                d,
+                "pos_tol ",
+                pos_tol,
+                "Altitude ",
+                loc.alt,
+                "alt_tol ",
+                alt_tol,
+            )
             if alt_m is not None and loc.alt is not None:
                 alt_ok = abs(loc.alt - alt_m) <= alt_tol
             if d <= pos_tol and alt_ok:
@@ -84,11 +93,13 @@ def arm_and_takeoff(vehicle, target_alt_m):
             getattr(vehicle.gps_0, "fix_type", None),
         )
         time.sleep(1)
-    
+
     print("[*] Setting Guided Mode via Mavlink")
     vehicle._master.mav.set_mode_send(
         vehicle._master.target_system,
-        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 4)
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+        4,
+    )
     time.sleep(1)
 
     print("[*] Arming…")
@@ -126,9 +137,20 @@ class DroneControl:
         self.cruise_alt = 33  # meters
         pass
 
+    def rtl(self):
+        self.vehicle.mode = VehicleMode("RTL")
+
     def goto_waypoint(self, coord: GPSCoord) -> int:
         goto(self.vehicle, coord.lat, coord.long, self.cruise_alt)
-        if not wait_pos(self.vehicle, coord.lat, coord.long, POS_TOL, self.cruise_alt, ALT_TOL, TIMEOUT_MOVE):
+        if not wait_pos(
+            self.vehicle,
+            coord.lat,
+            coord.long,
+            POS_TOL,
+            self.cruise_alt,
+            ALT_TOL,
+            TIMEOUT_MOVE,
+        ):
             return -1
         return 0
 
@@ -176,7 +198,7 @@ class DroneControl:
         self.vehicle._master.mav.set_mode_send(
             self.vehicle._master.target_system,
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-            9  # LAND mode
+            9,  # LAND mode
         )
         time.sleep(1)
 

@@ -77,6 +77,9 @@ class CameraManager:
         neg_45_deg_rotation = np.array(
             [[one_over_root_2, one_over_root_2], [-one_over_root_2, one_over_root_2]]
         ) """
+
+        # rotate by -90 degrees (or 270 degrees) to align with drone frame if needed
+        v = np.array([-v[1], v[0]])
         return v
 
     def get_coords(self, frame):

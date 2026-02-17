@@ -1,5 +1,5 @@
 """
-begins at point H, ascends to 30 ft and proceeds to waypoint A, proceeds to waypoint B, proceeds to waypoint C: descends
+begins at point H, ascends to 10m and proceeds to waypoint A, proceeds to waypoint B, proceeds to waypoint C: descends
 """
 
 from common_types import *
@@ -34,8 +34,6 @@ mt.begin_aux_timer()
 controller.goto_waypoint(H)
 controller.goto_waypoint(A)
 controller.goto_waypoint(B)
-controller.goto_waypoint(C)
 controller.simple_land()
-
-controller.disarm()
-mt.end_mission()
+controller.takeoff(10)
+controller.rtl()
