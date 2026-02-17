@@ -232,4 +232,4 @@ class DroneControl:
 
     def get_current_gps(self) -> GPSCoord:
         f = self.vehicle.location.global_relative_frame
-        return GPSCoord(f.lat, f.long, f.alt)
+        return GPSCoord(f.lat, f.long, f.alt)  # type: ignore
