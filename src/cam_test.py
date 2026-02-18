@@ -1,4 +1,4 @@
-from common_types import RelativePosition
+from drone.common_types import RelativePosition
 from drone.sensors.camera.camera import Camera
 import time
 
