@@ -7,31 +7,23 @@ Feb 17, 2026
 #include "Lidar.h"
 #include <iostream>
 
-Lidar::Lidar(const char* i2c_bus, uint8_t addr) : address(addr), connected(false) {
+Lidar::Lidar(const char* device) {
     /*
-    Constructor: Opens I2C bus path and sets address
-    @param: string of I2C bus path
-    @param: 7 bit Lidar address
+    Constructor: opens I2C bus path and sets address
+    @param{device} string of I2C bus path
     */
-    if ((i2c_fd = open(i2c_bus, O_RDWR)) < 0) {
-        perror("Failed to open the i2c bus");
-        return;
+    if ((file_i2c = open(device, O_RDWR)) < 0) {
+        printf("Failed to open the i2c bus: %s\n", device);
+        connected = false;
+    } else{
+        connected = true;
     }
-
-    // Slave management
-    if (ioctl(i2c_fd, I2C_SLAVE, address) < 0) {
-        perror("Failed to acquire bus access");
-        close(i2c_fd);
-        return;
-    }
-    
-    connected = true;
 }
 
 Lidar::~Lidar() {
-    // Deconstructor: Closes bus
-    if (i2c_fd >= 0) {
-        close(i2c_fd);
+    // Deconstructor: closes bus
+    if (connected && file_i2c >= 0) {
+        close(file_i2c);
     }
 }
 
@@ -43,120 +35,236 @@ bool Lidar::isConnected() const {
     return connected;
 }
 
-void Lidar::writeReg(uint8_t reg, uint8_t value) {
+int Lidar::getDistance(__u8 address) {
     /*
-    Write a byte to a register
-    @param: register address
-    @param: byte of data to write
+    Trigger laser, wait, and read distance measurement
+    @param{address} Lidar I2C address
+    @return: distance in centimeters; -1 if not connected
     */
-    uint8_t buffer[2] = {reg, value};
+    if(!connected) return -1;
+
+    takeRange(address);
+    waitForBusy(address);
+    return readDistance(address);
 }
 
-void Lidar::readRegs(uint8_t reg, uint8_t *dest, uint8_t bytes) {
+__s32 Lidar::i2c_connect(__u8 address) {
     /*
-    Read a byte to a register
-    @param: register address
-    @param: pointer to the array where the byte data will be read
-    @param: number of bytes to read
+    Connects I2C slave address
+    @param{address} I2C address of Lidar sensor
+    @returns: 0 with successful connection, -1 if ioctl call fails
     */
-    if (write(i2c_fd, &reg, 1) != 1) return;
-    read(i2c_fd, dest, bytes);
-}
-
-uint8_t Lidar::getBusyBit() {
-    /*
-    Read register to see if the sensor is busy
-    @return: 1 if busy bit, 0 if ready to accept new data
-    */
-    uint8_t status = 0;
-    readRegs(LL_STATUS, &status, 1);
-    return status & 0x01; 
-}
-
-void Lidar::wait() {
-    /*
-    Disables distance reading until Lidar is finished with current measurement 
-    */
-    int timeout = 1000; 
-    while (getBusyBit() && timeout > 0) {
-        timeout--;
-        usleep(100); // Add small delay to relieve CPU
+    if (ioctl(file_i2c, I2C_SLAVE, address) < 0)
+    {
+        printf("Failed to acquire bus access and/or talk to slave.\n");
+        return -1;
     }
+    return 0;
 }
 
-void Lidar::configure(uint8_t configMode) {
+void Lidar::configure(__u8 configuration, __u8 address) {
     /*
     Predefined configuration settings for the Lidar v3 Lite
-    @param: configuration mode from 0 (or default) to 5
+    @param{configuration} configuration mode from 0 (default) to 5
+    @param{address} Lidar I2C address
     */
+    __u8 sigCountMax;
+    __u8 acqConfigReg;
+    __u8 refCountMax;
+    __u8 thresholdBypass;
 
-    uint8_t sigCount, acqConfig, refCount, thresh;
-
-    switch (configMode) {
+    switch (configuration)
+    {
         case 1: // Short range, high speed
-            sigCount = 0x1d; 
-            acqConfig = 0x08; 
-            refCount = 0x03; 
-            thresh = 0x00; 
+            sigCountMax = 0x1d;
+            acqConfigReg = 0x08;
+            refCountMax = 0x03;
+            thresholdBypass = 0x00;
             break;
-        case 2: // Default range, higher speed
-            sigCount = 0x80; 
-            acqConfig = 0x00; 
-            refCount = 0x03; 
-            thresh = 0x00; 
+        case 2: // Default range, higher speed short range
+            sigCountMax = 0x80;
+            acqConfigReg = 0x00;
+            refCountMax = 0x03;
+            thresholdBypass = 0x00;
             break;
-        case 3: // Max range
-            sigCount = 0xff; 
-            acqConfig = 0x08; 
-            refCount = 0x05; 
-            thresh = 0x00; 
+        case 3: // Maximum range
+            sigCountMax = 0xff;
+            acqConfigReg = 0x08;
+            refCountMax = 0x05;
+            thresholdBypass = 0x00;
             break;
-        case 4: // High sensitivity, high error
-            sigCount = 0x80; 
-            acqConfig = 0x08; 
-            refCount = 0x05; 
-            thresh = 0x80; 
+        case 4: // High sensitivity detection, high erroneous measurements
+            sigCountMax = 0x80;
+            acqConfigReg = 0x08;
+            refCountMax = 0x05;
+            thresholdBypass = 0x80;
             break;
-        case 5: // Low sensitivity, low error
-            sigCount = 0x80; 
-            acqConfig = 0x08; 
-            refCount = 0x05; 
-            thresh = 0xb0; 
+        case 5: // Low sensitivity detection, low erroneous measurements
+            sigCountMax = 0x80;
+            acqConfigReg = 0x08;
+            refCountMax = 0x05;
+            thresholdBypass = 0xb0;
+            break;
+        case 6: // Short range, high speed, higher error
+            sigCountMax = 0x04;
+            acqConfigReg = 0x01; // turn off short_sig, mode pin = status output mode
+            refCountMax = 0x03;
+            thresholdBypass = 0x00;
             break;
         default: // Default mode, balanced performance
-            sigCount = 0x80; 
-            acqConfig = 0x08; 
-            refCount = 0x05; 
-            thresh = 0x00; 
+            sigCountMax = 0x80;
+            acqConfigReg = 0x08;
+            refCountMax = 0x05;
+            thresholdBypass = 0x00;
             break;
     }
 
-    writeReg(LL_SIG_CNT_VAL, sigCount);
-    writeReg(LL_ACQ_CONFIG, acqConfig);
-    writeReg(LL_REF_CNT_VAL, refCount);
-    writeReg(LL_THRESH_BYPASS, thresh);
+    i2cWrite(LLv3_SIG_CNT_VAL, &sigCountMax, 1, address);
+    i2cWrite(LLv3_ACQ_CONFIG, &acqConfigReg, 1, address);
+    i2cWrite(LLv3_REF_CNT_VAL, &refCountMax, 1, address);
+    i2cWrite(LLv3_THRESH_BYPASS, &thresholdBypass, 1, address);
 }
 
-int Lidar::readDistance() {
+void Lidar::setI2Caddr(__u8 newAddress, __u8 disableDefault, __u8 address) {
     /*
-    Emits laser, delays, and calculates distance
-    @param: distance value in meters 
+    Changes I2C address of Lidar
+    @param{newAddress} new I2C address to assign
+    @param{disableDefault} set to >0 to disable default 0x62 address, or 0 for active
+    @param{address} current I2C address
     */
+    __u8 dataBytes[2];
 
-    if (!connected) return -1;
+    i2cRead((LLv3_UNIT_ID_HIGH | 0x80), dataBytes, 2, address);
+    i2cWrite(LLv3_I2C_ID_HIGH, dataBytes, 2, address);
 
-    // Trigger acquisition (write 0x04 to register 0x00)
-    writeReg(LL_ACQ_CMD, 0x04);
+    dataBytes[0] = newAddress;
+    i2cWrite(LLv3_I2C_SEC_ADR, dataBytes, 1, address);
 
-    // Wait for device to finish
-    wait();
+    dataBytes[0] = 0;
+    i2cWrite(LLv3_I2C_CONFIG, dataBytes, 1, address);
 
-    // Read 2 bytes from 0x8f (0x0f + 0x80 for auto-increment)
-    uint8_t distBytes[2] = {0};
-    readRegs(LL_DISTANCE | 0x80, distBytes, 2);
+    if (disableDefault)
+    {
+        dataBytes[0] = (1 << 3);
+        i2cWrite(LLv3_I2C_CONFIG, dataBytes, 1, newAddress);
+    }
+}
 
-    int distCm = (distBytes[0] << 8) | distBytes[1];
-    float distM = distCm / 100.0f;
+void Lidar::takeRange(__u8 address) {
+    /*
+    Trigger laser from sensor
+    @param{address} Lidar I2C address
+    */
+    __u8 commandByte = 0x04;
+    i2cWrite(LLv3_ACQ_CMD, &commandByte, 1, address);
+}
 
-    return distM;
+void Lidar::waitForBusy(__u8 address) {
+    /*
+    Disables distance reading until Lidar is finished with current measurement 
+    @param{address} Lidar I2C address
+    */
+    __u8 busyFlag;
+    do{
+        busyFlag = getBusyFlag(address);
+    } 
+    while (busyFlag);
+}
+
+__u8 Lidar::getBusyFlag(__u8 address) {
+    /*
+    Read register to see if the sensor is busy
+    @param{address} Lidar I2C address
+    @return: 1 if busy, 0 if idle
+    */
+    __u8 statusByte = 0;
+    i2cRead(LLv3_STATUS, &statusByte, 1, address);
+    return (statusByte & 0x01);
+}
+
+__u16 Lidar::readDistance(__u8 address) {
+    /*
+    Reads 2-byte distance register from sensor
+    @param{address} Lidar I2C address
+    @return: Unsigned 16-bit integer of distance in meters
+    */
+    __u8 distBytes[2] = {0};
+    i2cRead((LLv3_DISTANCE | 0x80), distBytes, 2, address);
+    int distCm = ((distBytes[0] << 8) | distBytes[1]);
+    float distance = distCm / 100.0f;
+    return distance;
+}
+
+__s32 Lidar::i2cWrite(__u8 regAddr, __u8 *dataBytes, __u8 numBytes, __u8 address) {
+    /*
+    Write array of bytes to I2C device
+    @param{regAddr} starting register address to write to
+    @param{dataBytes} pointer to array of bytes to write
+    @param{numBytes} number of bytes to write
+    @param{address} Lidar I2C address
+    @return: >= 0 for successful write operation; negative on error
+    */
+    __u8 buffer[2];
+    __s32 result = 0;
+
+    i2c_connect(address);
+
+    for (__u8 i = 0 ; i < numBytes ; i++)
+    {
+        buffer[0] = regAddr + i;
+        buffer[1] = dataBytes[i];
+        result |= write(file_i2c, buffer, 2);
+    }
+
+    return result;
+}
+
+__s32 Lidar::i2cRead(__u8 regAddr, __u8 *dataBytes, __u8 numBytes, __u8 address) {
+    /*
+    Reads array of bytes from I2C device
+    @param{regAddr} starting register address to read to
+    @param{dataBytes} pointer to array of where to store read bytes
+    @param{numBytes} number of bytes to read
+    @param{address} Lidar I2C address
+    @return: >= 0 for successful read operation; negative on error
+    */
+    __u8 buffer;
+    i2c_connect(address);
+    buffer = regAddr;
+    write(file_i2c, &buffer, 1);
+    return read(file_i2c, dataBytes, numBytes);
+}
+
+void Lidar::correlationRecordRead(__s16 *correlationArray, __u16 numberOfReadings, __u8 address) {
+    /*
+    Read correlation record (useful?)
+    @param{correlationArray} pointer to signed 16-bit array to store correlation values
+    @param{numberOfReadings} number of readings to take (default 256)
+    @param{address} Lidar I2C address
+    */
+    __u8 dataBytes[2];
+    __s16 correlationValue;
+    __u8 * correlationValuePtr = (__u8 *) &correlationValue;
+
+    dataBytes[0] = 0xc0;
+    i2cWrite(LLv3_ACQ_SETTINGS, dataBytes, 1, address);
+
+    dataBytes[0] = 0x07;
+    i2cWrite(LLv3_COMMAND, dataBytes, 1, address);
+
+    for (__u16 i = 0 ; i < numberOfReadings ; i++)
+    {
+        i2cRead((LLv3_CORR_DATA | 0x80), dataBytes, 2, address);
+        correlationValuePtr[0] = dataBytes[0];
+
+        if (dataBytes[1])
+            correlationValuePtr[1] = 0xff; 
+        else
+            correlationValuePtr[1] = 0x00;
+
+        correlationArray[i] = correlationValue;
+    }
+
+    dataBytes[0] = 0;
+    i2cWrite(LLv3_COMMAND, dataBytes, 1, address);
 }
