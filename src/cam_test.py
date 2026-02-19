@@ -12,4 +12,3 @@ if __name__ == "__main__":
         else:
             print(f"no markers of id:{ARUCO_ID} detected")
         time.sleep(1)
-

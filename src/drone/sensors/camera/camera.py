@@ -1,5 +1,5 @@
 from ._camera_manager import CameraManager
-from common_types import RelativePosition
+from ...common_types import RelativePosition
 from typing import Optional
 import time
 
