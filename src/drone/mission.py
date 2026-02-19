@@ -1,10 +1,10 @@
-from common_types import *
-from control.mission_info import MissonTracker
-from control.drone_control import DroneControl
+from .common_types import *
+from .control.mission_info import MissonTracker
+from .control.drone_control import DroneControl
 import time
-from sensors.camera.camera import Camera
-from sensors.lidar.lidar import Lidar
-from utils.position_smoother import RelPosSmoother
+from .sensors.camera.camera import Camera
+from .sensors.lidar.lidar import Lidar
+from .utils.position_smoother import RelPosSmoother
 
 PICKUP_WA = GPSCoord(101010, 101001, 100)
 DROP_POINT = GPSCoord(10101, 101010, 100)

@@ -1,4 +1,4 @@
-from common_types import RelativePosition
+from ..common_types import RelativePosition
 
 
 class PositionSmoother:
