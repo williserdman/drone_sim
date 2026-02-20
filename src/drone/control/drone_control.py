@@ -134,7 +134,7 @@ class DroneControl:
         )
         # vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
         self.vehicle = vehicle
-        self.cruise_alt = 33  # meters
+        self.cruise_alt = 10  # meters
         pass
 
     def rtl(self):
