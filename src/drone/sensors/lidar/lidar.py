@@ -13,7 +13,8 @@ class Lidar:
         self.sensor = adafruit_lidarlite.LIDARLite(i2c)
 
     def get_distance(self) -> float:
-        return self.sensor.distance / 100  # distance in meters
+        # from mounting 27 cm offset
+        return (self.sensor.distance -27) / 100  # distance in meters
 
 
 if __name__ == "__main__":
