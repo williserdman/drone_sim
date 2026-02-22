@@ -31,10 +31,15 @@ mt.begin_mission()
 
 ### LAND AT WAYPOINT L
 mt.begin_aux_timer()
-controller.force_arm_takeoff(10)
-controller.goto_waypoint(H)
-controller.goto_waypoint(A)
-controller.goto_waypoint(B)
-controller.simple_land()
-controller.takeoff(10)
-controller.rtl()
+
+try:
+    controller.force_arm_takeoff(10)
+    controller.goto_waypoint(H)
+    controller.goto_waypoint(A)
+    controller.goto_waypoint(B)
+    controller.simple_land()
+    controller.takeoff(10)
+    controller.rtl()
+except Exception as e:
+    print(e)
+    controller.rtl()
