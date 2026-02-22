@@ -85,14 +85,14 @@ def wait_pos(
 def arm_and_takeoff(vehicle, target_alt_m):
     # Basic pre-arm wait
     print("[*] Waiting for vehicle to initialize & become armable…")
-    while not vehicle.is_armable:
+    """ while not vehicle.is_armable:
         print(
             "    is_armable:",
             vehicle.is_armable,
             " GPS fix:",
             getattr(vehicle.gps_0, "fix_type", None),
         )
-        time.sleep(1)
+        time.sleep(1) """
 
     print("[*] Setting Guided Mode via Mavlink")
     vehicle._master.mav.set_mode_send(
