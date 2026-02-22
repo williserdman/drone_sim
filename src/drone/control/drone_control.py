@@ -137,6 +137,9 @@ class DroneControl:
         self.cruise_alt = 10  # meters
         pass
 
+    def force_arm_takeoff(self, alt):
+        arm_and_takeoff(self.vehicle, alt)
+
     def rtl(self):
         self.vehicle.mode = VehicleMode("RTL")
 
