@@ -94,6 +94,30 @@ def arm_and_takeoff(vehicle, target_alt_m):
         )
         time.sleep(1) """
 
+    print("Disabling pre-arm checks...")
+    vehicle.parameters["ARMING_CHECK"] = 0
+
+    # 3. Switch to a non-GPS flight mode
+    # You cannot arm in GUIDED or AUTO without a GPS fix.
+    print("Switching to STABILIZE mode...")
+    vehicle.mode = VehicleMode("STABILIZE")
+
+    # Wait for the mode to change
+    while not vehicle.mode.name == "STABILIZE":
+        print(" Waiting for mode change...")
+        time.sleep(1)
+
+    # 4. Force Arm the vehicle
+    print("Arming motors...")
+    vehicle.armed = True
+
+    # Wait until the vehicle is actually armed
+    while not vehicle.armed:
+        print(" Waiting for arming to complete...")
+        time.sleep(1)
+
+    print("Vehicle is ARMED!")
+
     print("[*] Setting Guided Mode via Mavlink")
     vehicle._master.mav.set_mode_send(
         vehicle._master.target_system,
@@ -101,24 +125,6 @@ def arm_and_takeoff(vehicle, target_alt_m):
         4,
     )
     time.sleep(1)
-
-    print("[*] Force Arming…")
-    # https://mavlink.io/en/messages/common.html#MAV_CMD_COMPONENT_ARM_DISARM
-    # param1: 1 to arm, 0 to disarm
-    # param2: 21196 to force arm (magic number)
-    vehicle._master.mav.command_long_send(
-        vehicle._master.target_system,
-        vehicle._master.target_component,
-        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-        0,  # confirmation
-        1,  # param1 (1=arm)
-        21196,  # param2 (force arm magic number)
-        0,
-        0,
-        0,
-        0,
-        0,
-    )
 
     print("[*] Arming…")
     vehicle.armed = True
