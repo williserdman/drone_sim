@@ -102,6 +102,24 @@ def arm_and_takeoff(vehicle, target_alt_m):
     )
     time.sleep(1)
 
+    print("[*] Force Arming…")
+    # https://mavlink.io/en/messages/common.html#MAV_CMD_COMPONENT_ARM_DISARM
+    # param1: 1 to arm, 0 to disarm
+    # param2: 21196 to force arm (magic number)
+    vehicle._master.mav.command_long_send(
+        vehicle._master.target_system,
+        vehicle._master.target_component,
+        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+        0,  # confirmation
+        1,  # param1 (1=arm)
+        21196,  # param2 (force arm magic number)
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+
     print("[*] Arming…")
     vehicle.armed = True
     t0 = time.time()
