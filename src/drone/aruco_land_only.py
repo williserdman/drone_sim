@@ -38,7 +38,7 @@ def aruco_land(
         rp = smoother.get_ema()
         if isinstance(rp, RelativePosition):
             controller.move_relative_self(RelPosComplete(rp.x, rp.y, alt - 0.5))
-            time.sleep(0.1)
+            time.sleep(1)
         alt = lidar.get_distance()
 
     controller.goto_waypoint(current_pos)
