@@ -19,6 +19,7 @@ class Dropper:
         time.sleep(delay_hold)
         for s in self.servos:
             s.mid()
+        time.sleep(delay_hold)
 
 
 """ 
