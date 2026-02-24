@@ -8,6 +8,7 @@ from control.drone_control import DroneControl
 import time
 from sensors.camera.camera import Camera
 from sensors.lidar.lidar import Lidar
+from sensors.servo.servo import Dropper
 from utils.position_smoother import RelPosSmoother
 
 H = GPSCoord(101010, 101001, 100)
@@ -16,8 +17,8 @@ ALT_TOL = 0.4
 WINDOW = 5
 
 
-def drop():
-    pass
+def drop(dropper):
+    dropper.drop()
 
 
 def aruco_land(
@@ -54,6 +55,8 @@ camera = Camera(100)
 print("camera init")
 lidar = Lidar()
 print("lidar init")
+dropper = Dropper()
+print("dropper init")
 
 try:
     mt.begin_mission()
