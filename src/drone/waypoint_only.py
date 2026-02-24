@@ -33,7 +33,8 @@ mt.begin_mission()
 mt.begin_aux_timer()
 
 try:
-    controller.force_arm_takeoff(10)
+    # controller.force_arm_takeoff(10)
+    controller.takeoff(10)
     controller.goto_waypoint(H)
     controller.goto_waypoint(A)
     controller.goto_waypoint(B)
@@ -43,3 +44,4 @@ try:
 except Exception as e:
     print(e)
     controller.rtl()
+    time.sleep(5)
