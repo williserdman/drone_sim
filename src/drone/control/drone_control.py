@@ -94,8 +94,8 @@ def arm_and_takeoff(vehicle, target_alt_m):
         )
         time.sleep(1) """
 
-    print("Disabling pre-arm checks...")
-    vehicle.parameters["ARMING_CHECK"] = 0
+    # print("Disabling pre-arm checks...")
+    # vehicle.parameters["ARMING_CHECK"] = 0
 
     # 3. Switch to a non-GPS flight mode
     # You cannot arm in GUIDED or AUTO without a GPS fix.
@@ -248,8 +248,26 @@ class DroneControl:
         print("[!] Landing timed out.")
         return -1
 
-    def takeoff(self, alt: int) -> int:
-        return 0
+    def takeoff(self, alt: int) -> None:
+        # Wait for the mode to change
+
+        # Wait until the vehicle is actually armed
+        while not self.vehicle.armed:
+            print(" Waiting for arming to complete...")
+            time.sleep(1)
+        print("Vehicle is ARMED!")
+
+        while not self.vehicle.mode.name == "GUIDED":  # type: ignore
+            print(" Waiting for mode change...")
+            time.sleep(1)
+
+        print(f"[*] Taking off to {alt:.2f} m AGL…")
+        self.vehicle.simple_takeoff(alt)
+        if not wait_alt(self.vehicle, alt, tol=max(ALT_TOL, 0.9), timeout=45):
+            print(
+                "[!] Takeoff altitude tolerance not reached in time; continuing anyway."
+            )
+        return
 
     def disarm(self) -> int:
         return 0
@@ -259,4 +277,4 @@ class DroneControl:
 
     def get_current_gps(self) -> GPSCoord:
         f = self.vehicle.location.global_relative_frame
-        return GPSCoord(f.lat, f.long, f.alt)  # type: ignore
+        return GPSCoord(f.lat, f.lon, f.alt)  # type: ignore
