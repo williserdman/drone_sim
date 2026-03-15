@@ -4,70 +4,55 @@ dxc825@case.edu
 Feb 17, 2026
 */
 
+#include <linux/types.h>
+#include <linux/i2c-dev.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
 #include "Lidar.h"
-#include <iostream>
 
-Lidar::Lidar(const char* device) {
-    /*
-    Constructor: opens I2C bus path and sets address
-    @param{device} string of I2C bus path
-    */
-    if ((file_i2c = open(device, O_RDWR)) < 0) {
-        printf("Failed to open the i2c bus: %s\n", device);
-        connected = false;
-    } else{
-        connected = true;
-    }
+Lidar::Lidar(char* device){
+    filename = device;
 }
 
 Lidar::~Lidar() {
     // Deconstructor: closes bus
-    if (connected && file_i2c >= 0) {
+    if (file_i2c >= 0) {
         close(file_i2c);
     }
 }
 
-bool Lidar::isConnected() const {
-    /*
-    Ensure Lidar was initialized on I2C bus
-    @return: True when connection established; False otherwise
-    */    
-    return connected;
-}
-
-int Lidar::getDistance(__u8 address) {
-    /*
-    Trigger laser, wait, and read distance measurement
-    @param{address} Lidar I2C address
-    @return: distance in centimeters; -1 if not connected
-    */
-    if(!connected) return -1;
-
-    takeRange(address);
-    waitForBusy(address);
-    return readDistance(address);
-}
-
-__s32 Lidar::i2c_connect(__u8 address) {
-    /*
-    Connects I2C slave address
-    @param{address} I2C address of Lidar sensor
-    @returns: 0 with successful connection, -1 if ioctl call fails
-    */
-    if (ioctl(file_i2c, I2C_SLAVE, address) < 0)
+__s32 Lidar::i2c_init (void)
+{
+    if ((file_i2c = open(filename, O_RDWR)) < 0)
     {
-        printf("Failed to acquire bus access and/or talk to slave.\n");
+        // ERROR HANDLING
+        printf("Failed to open the i2c bus");
         return -1;
     }
-    return 0;
+    else
+    {
+        return 0;
+    }
 }
 
-void Lidar::configure(__u8 configuration, __u8 address) {
-    /*
-    Predefined configuration settings for the Lidar v3 Lite
-    @param{configuration} configuration mode from 0 (default) to 5
-    @param{address} Lidar I2C address
-    */
+__s32 Lidar::i2c_connect (__u8 lidarliteAddress)
+{
+    if (ioctl(file_i2c, I2C_SLAVE, lidarliteAddress) < 0)
+    {
+        printf("Failed to acquire bus access and/or talk to slave.\n");
+        //ERROR HANDLING
+        return -1;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+void Lidar::configure(__u8 configuration, __u8 lidarliteAddress)
+{
     __u8 sigCountMax;
     __u8 acqConfigReg;
     __u8 refCountMax;
@@ -75,196 +60,201 @@ void Lidar::configure(__u8 configuration, __u8 address) {
 
     switch (configuration)
     {
+        case 0: // Default mode, balanced performance
+            sigCountMax = 0x80; // Default
+            acqConfigReg = 0x08; // Default
+            refCountMax = 0x05; // Default
+            thresholdBypass = 0x00; // Default
+            break;
+
         case 1: // Short range, high speed
             sigCountMax = 0x1d;
-            acqConfigReg = 0x08;
+            acqConfigReg = 0x08; // Default
             refCountMax = 0x03;
-            thresholdBypass = 0x00;
+            thresholdBypass = 0x00; // Default
             break;
+
         case 2: // Default range, higher speed short range
-            sigCountMax = 0x80;
+            sigCountMax = 0x80; // Default
             acqConfigReg = 0x00;
             refCountMax = 0x03;
-            thresholdBypass = 0x00;
+            thresholdBypass = 0x00; // Default
             break;
+
         case 3: // Maximum range
             sigCountMax = 0xff;
-            acqConfigReg = 0x08;
-            refCountMax = 0x05;
-            thresholdBypass = 0x00;
+            acqConfigReg = 0x08; // Default
+            refCountMax = 0x05; // Default
+            thresholdBypass = 0x00; // Default
             break;
+
         case 4: // High sensitivity detection, high erroneous measurements
-            sigCountMax = 0x80;
-            acqConfigReg = 0x08;
-            refCountMax = 0x05;
+            sigCountMax = 0x80; // Default
+            acqConfigReg = 0x08; // Default
+            refCountMax = 0x05; // Default
             thresholdBypass = 0x80;
             break;
+
         case 5: // Low sensitivity detection, low erroneous measurements
-            sigCountMax = 0x80;
-            acqConfigReg = 0x08;
-            refCountMax = 0x05;
+            sigCountMax = 0x80; // Default
+            acqConfigReg = 0x08; // Default
+            refCountMax = 0x05; // Default
             thresholdBypass = 0xb0;
             break;
+
         case 6: // Short range, high speed, higher error
             sigCountMax = 0x04;
             acqConfigReg = 0x01; // turn off short_sig, mode pin = status output mode
             refCountMax = 0x03;
             thresholdBypass = 0x00;
             break;
-        default: // Default mode, balanced performance
-            sigCountMax = 0x80;
-            acqConfigReg = 0x08;
-            refCountMax = 0x05;
-            thresholdBypass = 0x00;
+
+        default: // Default mode, balanced performance - same as configure(0)
+            sigCountMax = 0x80; // Default
+            acqConfigReg = 0x08; // Default
+            refCountMax = 0x05; // Default
+            thresholdBypass = 0x00; // Default
             break;
     }
 
-    i2cWrite(LLv3_SIG_CNT_VAL, &sigCountMax, 1, address);
-    i2cWrite(LLv3_ACQ_CONFIG, &acqConfigReg, 1, address);
-    i2cWrite(LLv3_REF_CNT_VAL, &refCountMax, 1, address);
-    i2cWrite(LLv3_THRESH_BYPASS, &thresholdBypass, 1, address);
+    i2cWrite(LLv3_SIG_CNT_VAL, &sigCountMax, 1, lidarliteAddress);
+    i2cWrite(LLv3_ACQ_CONFIG, &acqConfigReg, 1, lidarliteAddress);
+    i2cWrite(LLv3_REF_CNT_VAL, &refCountMax, 1, lidarliteAddress);
+    i2cWrite(LLv3_THRESH_BYPASS, &thresholdBypass, 1, lidarliteAddress);
 }
 
-void Lidar::setI2Caddr(__u8 newAddress, __u8 disableDefault, __u8 address) {
-    /*
-    Changes I2C address of Lidar
-    @param{newAddress} new I2C address to assign
-    @param{disableDefault} set to >0 to disable default 0x62 address, or 0 for active
-    @param{address} current I2C address
-    */
+void Lidar::setI2Caddr(__u8 newAddress, __u8 disableDefault, __u8 lidarliteAddress)
+{
     __u8 dataBytes[2];
 
-    i2cRead((LLv3_UNIT_ID_HIGH | 0x80), dataBytes, 2, address);
-    i2cWrite(LLv3_I2C_ID_HIGH, dataBytes, 2, address);
+    // Read UNIT_ID serial number bytes and write them into I2C_ID byte locations
+    i2cRead ((LLv3_UNIT_ID_HIGH | 0x80), dataBytes, 2, lidarliteAddress);
+    i2cWrite(LLv3_I2C_ID_HIGH, dataBytes, 2, lidarliteAddress);
 
+    // Write the new I2C device address to registers
     dataBytes[0] = newAddress;
-    i2cWrite(LLv3_I2C_SEC_ADR, dataBytes, 1, address);
+    i2cWrite(LLv3_I2C_SEC_ADR, dataBytes, 1, lidarliteAddress);
 
+    // Enable the new I2C device address using the default I2C device address
     dataBytes[0] = 0;
-    i2cWrite(LLv3_I2C_CONFIG, dataBytes, 1, address);
+    i2cWrite(LLv3_I2C_CONFIG, dataBytes, 1, lidarliteAddress);
 
+    // If desired, disable default I2C device address (using the new I2C device address)
     if (disableDefault)
     {
-        dataBytes[0] = (1 << 3);
+        dataBytes[0] = (1 << 3); // set bit to disable default address
         i2cWrite(LLv3_I2C_CONFIG, dataBytes, 1, newAddress);
     }
 }
 
-void Lidar::takeRange(__u8 address) {
-    /*
-    Trigger laser from sensor
-    @param{address} Lidar I2C address
-    */
+void Lidar::takeRange(__u8 lidarliteAddress)
+{
     __u8 commandByte = 0x04;
-    i2cWrite(LLv3_ACQ_CMD, &commandByte, 1, address);
+
+    i2cWrite(LLv3_ACQ_CMD, &commandByte, 1, lidarliteAddress);
 }
 
-void Lidar::waitForBusy(__u8 address) {
-    /*
-    Disables distance reading until Lidar is finished with current measurement 
-    @param{address} Lidar I2C address
-    */
-    __u8 busyFlag;
-    do{
-        busyFlag = getBusyFlag(address);
-    } 
-    while (busyFlag);
+void Lidar::waitForBusy(__u8 lidarliteAddress)
+{
+    __u8  busyFlag;
+
+    do  // Loop until device is not busy
+    {
+        busyFlag = getBusyFlag(lidarliteAddress);
+    } while (busyFlag);
 }
 
-__u8 Lidar::getBusyFlag(__u8 address) {
-    /*
-    Read register to see if the sensor is busy
-    @param{address} Lidar I2C address
-    @return: 1 if busy, 0 if idle
-    */
-    __u8 statusByte = 0;
-    i2cRead(LLv3_STATUS, &statusByte, 1, address);
-    return (statusByte & 0x01);
+__u8 Lidar::getBusyFlag(__u8 lidarliteAddress)
+{
+    __u8  statusByte = 0;
+    __u8  busyFlag; // busyFlag monitors when the device is done with a measurement
+
+    // Read status register to check busy flag
+    i2cRead(LLv3_STATUS, &statusByte, 1, lidarliteAddress);
+
+    // STATUS bit 0 is busyFlag
+    busyFlag = statusByte & 0x01;
+
+    return busyFlag;
 }
 
-__u16 Lidar::readDistance(__u8 address) {
-    /*
-    Reads 2-byte distance register from sensor
-    @param{address} Lidar I2C address
-    @return: Unsigned 16-bit integer of distance in meters
-    */
-    __u8 distBytes[2] = {0};
-    i2cRead((LLv3_DISTANCE | 0x80), distBytes, 2, address);
-    int distCm = ((distBytes[0] << 8) | distBytes[1]);
-    float distance = distCm / 100.0f;
-    return distance;
+__u16 Lidar::readDistance(__u8 lidarliteAddress)
+{
+    __u8  distBytes[2] = {0};
+
+    // Read two bytes from register 0x0f and 0x10 (autoincrement)
+    i2cRead((LLv3_DISTANCE | 0x80), distBytes, 2, lidarliteAddress);
+
+    // Shift high byte and OR in low byte
+    return ((distBytes[0] << 8) | distBytes[1]);
 }
 
-__s32 Lidar::i2cWrite(__u8 regAddr, __u8 *dataBytes, __u8 numBytes, __u8 address) {
-    /*
-    Write array of bytes to I2C device
-    @param{regAddr} starting register address to write to
-    @param{dataBytes} pointer to array of bytes to write
-    @param{numBytes} number of bytes to write
-    @param{address} Lidar I2C address
-    @return: >= 0 for successful write operation; negative on error
-    */
+__s32 Lidar::i2cWrite(__u8 regAddr,  __u8 * dataBytes,
+                             __u8 numBytes, __u8 lidarliteAddress)
+{
     __u8 buffer[2];
-    __s32 result = 0;
+    __u8 i;
+    __s32 result;
 
-    i2c_connect(address);
+    i2c_connect(lidarliteAddress);
 
-    for (__u8 i = 0 ; i < numBytes ; i++)
+    for (i=0 ; i<numBytes ; i++)
     {
         buffer[0] = regAddr + i;
         buffer[1] = dataBytes[i];
-        result |= write(file_i2c, buffer, 2);
+        result   |= write(file_i2c, buffer, 2);
     }
 
     return result;
 }
 
-__s32 Lidar::i2cRead(__u8 regAddr, __u8 *dataBytes, __u8 numBytes, __u8 address) {
-    /*
-    Reads array of bytes from I2C device
-    @param{regAddr} starting register address to read to
-    @param{dataBytes} pointer to array of where to store read bytes
-    @param{numBytes} number of bytes to read
-    @param{address} Lidar I2C address
-    @return: >= 0 for successful read operation; negative on error
-    */
+__s32 Lidar::i2cRead(__u8 regAddr,  __u8 * dataBytes,
+                            __u8 numBytes, __u8 lidarliteAddress)
+{
     __u8 buffer;
-    i2c_connect(address);
+
+    i2c_connect(lidarliteAddress);
+
     buffer = regAddr;
+
     write(file_i2c, &buffer, 1);
     return read(file_i2c, dataBytes, numBytes);
 }
 
-void Lidar::correlationRecordRead(__s16 *correlationArray, __u16 numberOfReadings, __u8 address) {
-    /*
-    Read correlation record (useful?)
-    @param{correlationArray} pointer to signed 16-bit array to store correlation values
-    @param{numberOfReadings} number of readings to take (default 256)
-    @param{address} Lidar I2C address
-    */
-    __u8 dataBytes[2];
-    __s16 correlationValue;
+void Lidar::correlationRecordRead(__s16 * correlationArray,
+                                         __u16 numberOfReadings,
+                                         __u8  lidarliteAddress)
+{
+    __u16  i = 0;
+    __u8   dataBytes[2];
+    __s16  correlationValue;
     __u8 * correlationValuePtr = (__u8 *) &correlationValue;
 
+    //  Select memory bank
     dataBytes[0] = 0xc0;
-    i2cWrite(LLv3_ACQ_SETTINGS, dataBytes, 1, address);
+    i2cWrite(LLv3_ACQ_SETTINGS, dataBytes, 1, lidarliteAddress);
 
+    // Test mode enable
     dataBytes[0] = 0x07;
-    i2cWrite(LLv3_COMMAND, dataBytes, 1, address);
+    i2cWrite(LLv3_COMMAND, dataBytes, 1, lidarliteAddress);
 
-    for (__u16 i = 0 ; i < numberOfReadings ; i++)
+    for (i=0 ; i<numberOfReadings ; i++)
     {
-        i2cRead((LLv3_CORR_DATA | 0x80), dataBytes, 2, address);
+        i2cRead((LLv3_CORR_DATA | 0x80), dataBytes, 2, lidarliteAddress);
+
+        // First byte read is the magnitude of the data point
         correlationValuePtr[0] = dataBytes[0];
 
+        // Second byte is the sign byte
         if (dataBytes[1])
-            correlationValuePtr[1] = 0xff; 
+            correlationValuePtr[1] = 0xff; // Artificially sign extend
         else
             correlationValuePtr[1] = 0x00;
 
         correlationArray[i] = correlationValue;
     }
 
+    // Test mode disable
     dataBytes[0] = 0;
-    i2cWrite(LLv3_COMMAND, dataBytes, 1, address);
+    i2cWrite(LLv3_COMMAND, dataBytes, 1, lidarliteAddress);
 }

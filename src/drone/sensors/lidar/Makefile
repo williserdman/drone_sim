@@ -1,2 +1,2 @@
 all:
-	g++ main.cpp Lidar.cpp -o lidar_dist
+	g++ main.cpp Lidar.cpp -I . -o lidar_dist
