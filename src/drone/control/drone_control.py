@@ -154,7 +154,12 @@ class DroneControl:
     def __init__(self, connection_port="/dev/cu.usbmodem1103"):
         print(f"Connecting to {connection_port} …")
         vehicle = connect(
-            connection_port, wait_ready=True, heartbeat_timeout=60, timeout=120
+            connection_port,
+            wait_ready=True,
+            heartbeat_timeout=60,
+            timeout=120,
+            source_system=1,  # 1 drone
+            source_component=191,  # standard for companion computer
         )
         # vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
         self.vehicle = vehicle
