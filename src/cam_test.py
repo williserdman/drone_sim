@@ -1,5 +1,5 @@
-from .drone.common_types import RelativePosition
-from .drone.sensors.camera.camera import Camera
+from drone.common_types import RelativePosition
+from drone.sensors.camera.camera import Camera
 import time
 
 if __name__ == "__main__":
@@ -12,4 +12,3 @@ if __name__ == "__main__":
         else:
             print(f"no markers of id:{ARUCO_ID} detected")
         time.sleep(1)
-
