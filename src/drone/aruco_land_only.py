@@ -11,10 +11,10 @@ from sensors.lidar.lidar import Lidar
 from sensors.servo.servo import Dropper
 from utils.position_smoother import RelPosSmoother
 
-H = GPSCoord(101010, 101001, 100)
-A = GPSCoord(101010, 101001, 100)
+H = GPSCoord(41.501318, -81.606382, 10)
+A = GPSCoord(41.5013812, -81.606423, 10)
 ALT_TOL = 0.4
-WINDOW = 5
+WINDOW = 10
 
 
 def drop(dropper):
@@ -63,7 +63,7 @@ try:
 
     ### LAND AT WAYPOINT L
     mt.begin_aux_timer()
-    controller.takeoff(30)
+    controller.takeoff(10)
     controller.goto_waypoint(A)
     time.sleep(1)
     ### END WAYPOINT L PORTION
@@ -71,7 +71,7 @@ try:
     aruco_land(controller, camera, lidar, ID, controller.get_current_gps())
     time.sleep(5)
 
-    controller.takeoff(30)
+    # controller.takeoff(10)
     controller.goto_waypoint(H)
     controller.simple_land()
     controller.disarm()
