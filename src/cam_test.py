@@ -1,5 +1,5 @@
-from drone.common_types import RelativePosition
-from drone.sensors.camera.camera import Camera
+from src.drone.common_types import RelativePosition
+from src.drone.sensors.camera.camera import Camera
 import time
 
 if __name__ == "__main__":

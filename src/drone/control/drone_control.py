@@ -1,4 +1,5 @@
 from ..common_types import *
+import os
 
 import time
 import math
@@ -153,6 +154,7 @@ def goto(vehicle, lat, lon, alt_m):
 class DroneControl:
     def __init__(self, connection_port="/dev/cu.usbmodem1103"):
         print(f"Connecting to {connection_port} …")
+        os.environ["MAVLINK20"] = "1"
         vehicle = connect(
             connection_port,
             wait_ready=True,
@@ -164,6 +166,7 @@ class DroneControl:
         # vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
         self.vehicle = vehicle
         self.cruise_alt = 10  # meters
+        
         pass
 
     def force_arm_takeoff(self, alt):
@@ -188,13 +191,16 @@ class DroneControl:
 
     def move_relative_ned(self, dir: NEDMeters) -> int:
         return 0
+    
+    def set_land_mode(self):
+        self.vehicle.mode = VehicleMode("LAND")
 
     def move_relative_self(self, dir: RelPosComplete) -> int:
         """Send a MAVLink LANDING_TARGET message in body FRD frame using
         the provided relative position (meters, vehicle body frame).
         This sets position_valid=1 and populates x/y/z.
         """
-        time_usec = int(time.time() * 1e6)
+        time_usec = 0 # int(time.time() * 1e6)
         msg = self.vehicle.message_factory.landing_target_encode(
             time_usec,
             0,  # target_num

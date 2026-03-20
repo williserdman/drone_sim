@@ -7,6 +7,7 @@ from .control.mission_info import MissonTracker
 from .control.drone_control import DroneControl
 import time
 from .sensors.camera.camera import Camera
+from .sensors.servo.servo import Dropper
 
 # from .sensors.lidar.lidar import Lidar
 # from .sensors.servo.servo import Dropper
@@ -25,8 +26,8 @@ controller = DroneControl(connection_port="/dev/ttyACM0")
 print("controller init")
 camera = Camera(100)
 print("camera init")
-lidar = Lidar()
-print("lidar init")
+#lidar = Lidar()
+#print("lidar init")
 dropper = Dropper()
 print("dropper init")
 
@@ -36,8 +37,8 @@ mt.begin_mission()
 mt.begin_aux_timer()
 
 try:
-    # controller.force_arm_takeoff(10)
-    controller.takeoff(10)
+    controller.force_arm_takeoff(10)
+    # controller.takeoff(10)
     controller.goto_waypoint(H)
     dropper.drop()
     controller.goto_waypoint(A)
