@@ -30,8 +30,8 @@ def aruco_land(
 ):
 
     alt = lidar.get_distance()
-    controller.set_land_mode()
-    controller.move_relative_self(RelPosComplete(5, 5, -5))
+    # controller.set_guided_mode()
+    controller.move_relative_self(RelPosComplete(0, 0, 5))
     while alt > ALT_TOL:
         smoother = RelPosSmoother()
         for _ in range(WINDOW):
@@ -41,9 +41,11 @@ def aruco_land(
                 smoother.append(update)
         rp = smoother.get_ema()
         if isinstance(rp, RelativePosition):
-            controller.move_relative_self(RelPosComplete(rp.x, rp.y, alt - 0.5))
+            controller.move_relative_self(RelPosComplete(rp.x, rp.y, 0.5))
             print("sending move command")
             time.sleep(2)
+        else:
+            controller.move_relative_self(RelPosComplete(0, 0, 0.25))
         alt = lidar.get_distance()
 
     controller.goto_waypoint(current_pos)
@@ -85,4 +87,3 @@ try:
 except Exception as e:
     print("[ERR]", e)
     controller.rtl()
-
