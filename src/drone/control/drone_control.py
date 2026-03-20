@@ -199,8 +199,33 @@ class DroneControl:
         print("Shifting to GUIDED mode...")
         self.vehicle.mode = VehicleMode("GUIDED")
 
+    # TODO:
+
+    """msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
+            0,  # time_boot_ms (not used)
+            0,
+            0,  # target_system, target_component (0 routes to the active vehicle)
+            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,  # coordinate frame
+            type_mask,  # type_mask
+            float(dir.y),  # X: Forward (meters)
+            float(dir.x),  # Y: Right (meters)
+            float(dir.z),  # Z: Down (meters) - remember, positive is DOWN!
+            0,
+            0,
+            0,  # vx, vy, vz (ignored)
+            0,
+            0,
+            0,  # afx, afy, afz (ignored)
+            0,
+            0,  # yaw, yaw_rate (ignored)
+        )"""
+
+    # there is a precision landing message in MAVLINK that you can specify as a fiducial marker and then somehow stream updates to the pixhawk
+    # however, this would require a little bit more planning on my end so I'm sticking with the GUIDED mode descent which is little bit more 'manual'
+    # additionally, if we switch to land mode then the RTL gets messed up, we could obviously fix by storing origin GPS coord then simple landing but wtv
+
     def move_relative_self(self, dir: RelPosComplete) -> int:
-        """Send a MAVLink SET_POSITION_TARGET_LOCAL_NED message in body offset NED frame
+        """Send a MAVLink SET_POSITION_TARGET_LOCAL_NED message in body FRD frame
         using the provided relative position (meters, vehicle body frame).
         """
         # Bitmask: 0b0000111111111000 (0x0DF8)
@@ -212,9 +237,11 @@ class DroneControl:
             0,  # time_boot_ms (not used)
             0,
             0,  # target_system, target_component (0 routes to the active vehicle)
-            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,  # coordinate frame
+            mavutil.mavlink.MAV_FRAME_BODY_FRD,  # coordinate frame (Forward/Right/Down)
             type_mask,  # type_mask
-            float(dir.y),  # X: Forward (meters)
+            float(
+                dir.y
+            ),  # X: Forward (meters) *** in mavlink docs x is forward, however, in my impl , x is right
             float(dir.x),  # Y: Right (meters)
             float(dir.z),  # Z: Down (meters) - remember, positive is DOWN!
             0,
