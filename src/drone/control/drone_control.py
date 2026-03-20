@@ -166,7 +166,7 @@ class DroneControl:
         # vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
         self.vehicle = vehicle
         self.cruise_alt = 10  # meters
-        
+
         pass
 
     def force_arm_takeoff(self, alt):
@@ -191,32 +191,42 @@ class DroneControl:
 
     def move_relative_ned(self, dir: NEDMeters) -> int:
         return 0
-    
+
     def set_land_mode(self):
         self.vehicle.mode = VehicleMode("LAND")
 
+    def set_guided_mode(self):
+        print("Shifting to GUIDED mode...")
+        self.vehicle.mode = VehicleMode("GUIDED")
+
     def move_relative_self(self, dir: RelPosComplete) -> int:
-        """Send a MAVLink LANDING_TARGET message in body FRD frame using
-        the provided relative position (meters, vehicle body frame).
-        This sets position_valid=1 and populates x/y/z.
+        """Send a MAVLink SET_POSITION_TARGET_LOCAL_NED message in body offset NED frame
+        using the provided relative position (meters, vehicle body frame).
         """
-        time_usec = 0 # int(time.time() * 1e6)
-        msg = self.vehicle.message_factory.landing_target_encode(
-            time_usec,
-            0,  # target_num
-            mavutil.mavlink.MAV_FRAME_BODY_FRD,
-            0.0,  # angle_x
-            0.0,  # angle_y
-            0.0,  # distance
-            0.0,  # size_x
-            0.0,  # size_y
-            float(dir.x),
-            float(dir.y),
-            float(dir.z),
-            [0.0, 0.0, 0.0, 0.0],  # q
-            0,  # type
-            1,  # position_valid
+        # Bitmask: 0b0000111111111000 (0x0DF8)
+        # This tells the flight controller to ONLY use the X, Y, Z positions
+        # and to ignore velocities, accelerations, and yaw commands.
+        type_mask = 0b0000111111111000
+
+        msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
+            0,  # time_boot_ms (not used)
+            0,
+            0,  # target_system, target_component (0 routes to the active vehicle)
+            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,  # coordinate frame
+            type_mask,  # type_mask
+            float(dir.y),  # X: Forward (meters)
+            float(dir.x),  # Y: Right (meters)
+            float(dir.z),  # Z: Down (meters) - remember, positive is DOWN!
+            0,
+            0,
+            0,  # vx, vy, vz (ignored)
+            0,
+            0,
+            0,  # afx, afy, afz (ignored)
+            0,
+            0,  # yaw, yaw_rate (ignored)
         )
+
         # send the MAVLink message to the vehicle
         self.vehicle.send_mavlink(msg)
 
