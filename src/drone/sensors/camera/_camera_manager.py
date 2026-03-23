@@ -46,7 +46,7 @@ class CameraManager:
             },
         )
         self.picam2.configure(video_config)
-        self.picam2.set_controls({"ExposureValue": -2.0})
+        self.picam2.set_controls({"ExposureValue": -1.0})
         self.picam2.start()
 
         self.DISTANCE_THRESHOLD = 50  # pixels
