@@ -237,7 +237,7 @@ class DroneControl:
             0,  # time_boot_ms (not used)
             0,
             0,  # target_system, target_component (0 routes to the active vehicle)
-            mavutil.mavlink.MAV_FRAME_BODY_FRD,  # coordinate frame (Forward/Right/Down)
+            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,# mavutil.mavlink.MAV_FRAME_BODY_FRD,  # coordinate frame (Forward/Right/Down)
             type_mask,  # type_mask
             float(
                 dir.y

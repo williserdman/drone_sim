@@ -13,8 +13,8 @@ from .utils.position_smoother import RelPosSmoother
 
 H = GPSCoord(41.501318, -81.606382, 10)
 A = GPSCoord(41.5013812, -81.606423, 10)
-ALT_TOL = 0.4
-WINDOW = 10
+ALT_TOL = 0.1
+WINDOW = 5
 
 
 def drop(dropper):
@@ -30,21 +30,25 @@ def aruco_land(
 ):
 
     alt = lidar.get_distance()
-    # controller.set_guided_mode()
+    controller.set_guided_mode()
     controller.move_relative_self(RelPosComplete(0, 0, 5))
+    print("sent move downward command")
+    # time.sleep(4)
+    time.sleep(1)
     while alt > ALT_TOL:
         smoother = RelPosSmoother()
-        for _ in range(WINDOW):
+        for _ in range(2 * WINDOW):
             update = camera.vec_to_marker(target_id)
             if update:
                 print("seen marker")
                 smoother.append(update)
         rp = smoother.get_ema()
         if isinstance(rp, RelativePosition):
-            controller.move_relative_self(RelPosComplete(rp.x, rp.y, 0.5))
+            controller.move_relative_self(RelPosComplete(rp.x, rp.y, 0.2))
             print("sending move command")
             time.sleep(2)
         else:
+            print("no aruco_slow descent")
             controller.move_relative_self(RelPosComplete(0, 0, 0.25))
         alt = lidar.get_distance()
 
