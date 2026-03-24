@@ -271,5 +271,28 @@ class CameraManager:
         delta = time.time() - s
         return vc_cm, delta
 
+    # https://ardupilot.org/dev/docs/copter-commands-in-guided-mode.html
 
-# https://ardupilot.org/dev/docs/copter-commands-in-guided-mode.html
+    def estimate_pose_3d(
+        self, target_id: int, corners: list, ids: list, marker_size_mm: int
+    ) -> list[float] | None:
+        """
+        Uses OpenCV's pose estimation to calculate the 3D translation vector (tvec)
+        from the camera lens to the ArUco marker.
+        """
+        if ids is None or target_id not in ids:
+            return None
+
+        target_idx = list(ids).index(target_id)
+        target_corners = corners[target_idx]
+
+        # estimatePoseSingleMarkers returns rotation (rvecs) and translation (tvecs)
+        # Because we pass marker_size_mm, the resulting tvec will be in millimeters.
+        rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
+            target_corners, marker_size_mm, self.camera_matrix, self.camera_distortion
+        )
+
+        # tvecs is returned as an array of shape (1, 1, 3) for a single marker
+        tvec = tvecs[0][0]
+
+        return tvec  # Returns [cam_x, cam_y, cam_z] in millimeters
