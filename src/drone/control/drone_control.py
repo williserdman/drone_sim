@@ -193,6 +193,7 @@ class DroneControl:
         return 0
 
     def set_land_mode(self):
+        print("Shifting to LAND mode...")
         self.vehicle.mode = VehicleMode("LAND")
 
     def set_guided_mode(self):
@@ -224,7 +225,32 @@ class DroneControl:
     # however, this would require a little bit more planning on my end so I'm sticking with the GUIDED mode descent which is little bit more 'manual'
     # additionally, if we switch to land mode then the RTL gets messed up, we could obviously fix by storing origin GPS coord then simple landing but wtv
 
-    def move_relative_self(self, dir: RelPosComplete) -> int:
+    def land_send_landing_target(self, dir: RelPosComplete) -> int:
+        """
+        Sends a LANDING_TARGET message to ArduPilot.
+        The drone MUST be in LAND mode for the flight controller to respond.
+        """
+        msg = self.vehicle.message_factory.landing_target_encode(
+            0,  # time_usec (0 = use system time)
+            0,  # target_num (0 = default target)
+            mavutil.mavlink.MAV_FRAME_BODY_FRD,  # Frame (X=Forward, Y=Right, Z=Down)
+            0.0,
+            0.0,  # angle_x, angle_y (ignored when position_valid=1)
+            0.0,  # distance (ignored when using Z)
+            0.0,
+            0.0,  # size_x, size_y (target size, not strictly needed)
+            float(dir.y),  # X-axis distance to target (meters, Forward)
+            float(dir.x),  # Y-axis distance to target (meters, Right)
+            float(dir.z),  # Z-axis distance to target (meters, Down)
+            [0.0, 0.0, 0.0, 0.0],  # quaternion (not used)
+            2,  # type (2 = MAV_LANDING_TARGET_TYPE_VISION_FIDUCIAL)
+            1,  # position_valid (1 = we are providing X,Y,Z instead of angles)
+        )
+
+        self.vehicle.send_mavlink(msg)
+        return 0
+
+    def guide_move_relative_frame(self, dir: RelPosComplete) -> int:
         """Send a MAVLink SET_POSITION_TARGET_LOCAL_NED message in body FRD frame
         using the provided relative position (meters, vehicle body frame).
         """
@@ -237,7 +263,7 @@ class DroneControl:
             0,  # time_boot_ms (not used)
             0,
             0,  # target_system, target_component (0 routes to the active vehicle)
-            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,# mavutil.mavlink.MAV_FRAME_BODY_FRD,  # coordinate frame (Forward/Right/Down)
+            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,  # mavutil.mavlink.MAV_FRAME_BODY_FRD,  # coordinate frame (Forward/Right/Down)
             type_mask,  # type_mask
             float(
                 dir.y

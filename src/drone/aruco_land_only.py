@@ -21,7 +21,52 @@ def drop(dropper):
     dropper.drop()
 
 
-def aruco_land(
+def aruco_land_precision(
+    controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
+):
+    controller.set_guided_mode()
+    controller.guide_move_relative_frame(RelPosComplete(0, 0, 6.5))
+    original_gps = controller.get_current_gps()
+
+    print("[*] Searching for ArUco to initiate Precision Landing...")
+    target_found = False
+
+    # 1. Hover in place and search until we get the first visual hit
+    while not target_found:
+        update = camera.vec_to_marker(target_id)
+        if update:
+            print("[*] Target Acquired! Switching to LAND mode.")
+            target_found = True
+        else:
+            # descend???
+            time.sleep(0.1)  # Brief sleep to avoid maxing out CPU while searching
+
+    controller.set_land_mode()
+    alt = lidar.get_distance()
+    i = 1
+    while alt > ALT_TOL:
+        update = camera.vec_to_marker(target_id)
+
+        if update:
+            controller.land_send_landing_target(RelPosComplete(update.x, update.y, alt))
+            # print("Sent precision landing update")
+        else:
+            # maybe switch PLND_ settings to pause descent if we lose aruco
+            pass
+
+        if i % 20 == 0:
+            alt = lidar.get_distance()
+            i = 0
+        i += 1
+        # time.sleep(0.05)
+    print("[*] Touchdown complete.")
+
+    controller.set_guided_mode()
+    controller.force_arm_takeoff(original_gps.alt)
+    return
+
+
+def aruco_land_guide(
     controller: DroneControl,
     camera: Camera,
     lidar: Lidar,
@@ -31,7 +76,7 @@ def aruco_land(
 
     alt = lidar.get_distance()
     controller.set_guided_mode()
-    controller.move_relative_self(RelPosComplete(0, 0, 5))
+    controller.guide_move_relative_frame(RelPosComplete(0, 0, 5))
     print("sent move downward command")
     # time.sleep(4)
     time.sleep(1)
@@ -44,12 +89,12 @@ def aruco_land(
                 smoother.append(update)
         rp = smoother.get_ema()
         if isinstance(rp, RelativePosition):
-            controller.move_relative_self(RelPosComplete(rp.x, rp.y, 0.2))
+            controller.guide_move_relative_frame(RelPosComplete(rp.x, rp.y, 0.2))
             print("sending move command")
             time.sleep(2)
         else:
             print("no aruco_slow descent")
-            controller.move_relative_self(RelPosComplete(0, 0, 0.25))
+            controller.guide_move_relative_frame(RelPosComplete(0, 0, 0.25))
         alt = lidar.get_distance()
 
     controller.goto_waypoint(current_pos)
@@ -80,12 +125,14 @@ try:
     time.sleep(1)
     ### END WAYPOINT L PORTION
 
-    aruco_land(controller, camera, lidar, ID, controller.get_current_gps())
-    time.sleep(5)
+    aruco_land_precision(controller, camera, lidar, ID)
+    time.sleep(1)
 
     # controller.takeoff(10)
     controller.goto_waypoint(A)
-    controller.simple_land()
+    dropper.drop()
+    controller.goto_waypoint(H)
+    controller.set_land_mode()
     controller.disarm()
     mt.end_mission()
 except Exception as e:
