@@ -80,7 +80,7 @@ class CameraManager:
         ) """
 
         # rotate by -90 degrees (or 270 degrees) to align with drone frame if needed
-        v = np.array([-v[1], v[0]])
+        v = np.array([v[1], v[0]])
         return v
 
     def get_coords(self, frame):

@@ -20,11 +20,8 @@ class Camera:
             )
             if vc_meters is not None:
                 return RelativePosition(
-                    vc_meters[0], -vc_meters[1]
+                    -vc_meters[0], -vc_meters[1]
                 )  # from testing x dir needs to be flipped so that from drone POV right is positive
-
-                ### if camera has top forward should be -vc_meters[0], vc_meters[1]
-                ### with camera top backwards should be vc_meters[0], -vc_meters[1]
 
         return
 
