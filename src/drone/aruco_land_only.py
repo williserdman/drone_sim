@@ -33,36 +33,46 @@ def aruco_land_precision(
 
     # 1. Hover in place and search until we get the first visual hit
     while not target_found:
-        update = camera.vec_to_marker(target_id)
+        # UPDATED: Using 3D Pose Estimation
+        update = camera.vec_to_marker_3d(target_id)
+
         if update:
             print("[*] Target Acquired! Switching to LAND mode.")
             target_found = True
         else:
-            # descend???
+            # descend??? -> Note: You could add a slow step-down here
+            # (e.g., guide_move_relative_frame(0, 0, 0.5)) if you are too high to see it!
             time.sleep(0.1)  # Brief sleep to avoid maxing out CPU while searching
 
     controller.set_land_mode()
     alt = lidar.get_distance()
     i = 1
+
     while alt > ALT_TOL:
-        update = camera.vec_to_marker(target_id)
+        # UPDATED: Using 3D Pose Estimation
+        update = camera.vec_to_marker_3d(target_id)
 
         if update:
+            # update.x is Forward, update.y is Right.
+            # We continue to use LiDAR 'alt' for Z since it is more accurate than camera depth.
             controller.land_send_landing_target(RelPosComplete(update.x, update.y, alt))
-            # print("Sent precision landing update")
+            # print(f"Sent precision landing update: Fwd: {update.x:.2f}, Right: {update.y:.2f}")
         else:
             # maybe switch PLND_ settings to pause descent if we lose aruco
+            # Tip: Set PLND_STRICT=1 or 2 in ArduPilot to enforce pausing if marker is lost
             pass
 
+        # Update LiDAR distance every 20 loops
         if i % 20 == 0:
             alt = lidar.get_distance()
             i = 0
         i += 1
-        # time.sleep(0.05)
+
     print("[*] Touchdown complete.")
 
     controller.set_guided_mode()
     controller.force_arm_takeoff(original_gps.alt)
+
     return
 
 
