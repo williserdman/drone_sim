@@ -2,21 +2,6 @@ import time
 from common_types import *
 import json
 
-"""
-as an addendum to the MissionInfo class, we need to be able to store coordinates and aruco ids in a persistent manner (to disk)
-
-please add getter/setter methods for all waypoints in the rfp doc (or hash access is ok too)
-
-there are a couple ways to do this: run a seperate persistent database, run an in process database, write to disk
-
-i think for simplicity we should just write to disk.
-
-you can assume that any mission run will be run as python -m src.drone.mission
-
-so when you write a file to CWD you'd actually be writing a file to comp2026 folder, please be sure to organize (make a subdir) accordingly
-
-also store payload ids: get payload (queue) numbers
-"""
 
 
 class MissonTracker:
