@@ -1,4 +1,22 @@
 import time
+from common_types import *
+import json
+
+"""
+as an addendum to the MissionInfo class, we need to be able to store coordinates and aruco ids in a persistent manner (to disk)
+
+please add getter/setter methods for all waypoints in the rfp doc (or hash access is ok too)
+
+there are a couple ways to do this: run a seperate persistent database, run an in process database, write to disk
+
+i think for simplicity we should just write to disk.
+
+you can assume that any mission run will be run as python -m src.drone.mission
+
+so when you write a file to CWD you'd actually be writing a file to comp2026 folder, please be sure to organize (make a subdir) accordingly
+
+also store payload ids: get payload (queue) numbers
+"""
 
 
 class MissonTracker:
@@ -8,6 +26,53 @@ class MissonTracker:
         self.mission_time_seconds = mission_time_seconds
         # record of past passes using keyword: list of timed passes
         self.timed_passes = {}
+
+    def setWaypoint(self, waypoint_ID:str, coords:GPSCoord):
+        with open("mission_data/waypoints.json", "r") as waypointsJSON:
+            waypointsData = json.load(waypointsJSON)
+            waypointsData[waypoint_ID] = coords
+
+        with open("mission_data/waypoints.json", "w") as waypointsWrite:
+            json.dump(waypointsData, waypointsWrite)
+
+    def getWaypoint(self, waypoint_ID:str) -> GPSCoord:
+        with open("mission_data/waypoints.json", "r") as waypointsJSON:
+            waypointsData = json.load(waypointsJSON)
+            if waypoint_ID in waypointsData:
+                return waypointsData[waypoint_ID]
+            
+        return None
+    
+    def getWaypointID(self) -> list[str]:
+        waypointIDs = []
+        with open("mission_data/waypoints.json", "r") as waypointsJSON:
+            waypointsData = json.load(waypointsJSON)
+            for elem in waypointsData:
+                waypointIDs.append(elem)
+            
+        return waypointIDs
+    
+    def createPayloads(self, start:int, end:int):
+        with open("mission_data/payloads.json", "w") as payloadsWrite:
+            payloads = []
+            for i in range(start, end):
+                payloads.append({"id": i})
+            
+            json.dump(payloads, payloadsWrite)
+
+    def getNextPayload(self) -> int:
+        with open("mission_data/payloads.json", "r") as payloadsRead:
+            jsonPayloads = json.load(payloadsRead)
+            
+        if not jsonPayloads:
+            return None
+            
+        next_payload = jsonPayloads.pop(0)
+
+        with open("mission_data/payloads.json", "w") as payloadsWrite:
+            json.dump(jsonPayloads, payloadsWrite)
+
+        return next_payload["id"]
 
     def begin_mission(self):
         self.mission_begin = time.time()
