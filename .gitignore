@@ -1,3 +1,6 @@
+<<<<<<< HEAD
+.venv/
+=======
 # flight videos
 *.mp4
 src/drone/control/c_library_v2/
@@ -46,3 +49,4 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+>>>>>>> py_dev
