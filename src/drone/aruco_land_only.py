@@ -11,11 +11,11 @@ from .sensors.lidar.lidar import Lidar
 from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 
-H = GPSCoord(41.501318, -81.606382, 10)
+H = GPSCoord(41.5013157, -81.6063829, 10)
 A = GPSCoord(41.5013812, -81.606423, 10)
-ALT_TOL = 0.1
+ALT_TOL = 0.05
 WINDOW = 5
-
+MULT = 0.3
 
 def drop(dropper):
     dropper.drop()
@@ -38,6 +38,8 @@ def aruco_land_precision(
 
         if update:
             update.z = 0
+            update.y *= update.y * MULT
+            update.x *= update.x * MULT
             controller.guide_move_relative_frame(update)
 
             target_found = True
@@ -46,8 +48,9 @@ def aruco_land_precision(
             # (e.g., guide_move_relative_frame(0, 0, 0.5)) if you are too high to see it!
             time.sleep(0.1)  # Brief sleep to avoid maxing out CPU while searching
 
+    """
     # 2. Maintain guided mode and move relative to center on marker
-    CENTER_TOL = 0.3  # Tolerance in meters
+    CENTER_TOL = 0.2 # Tolerance in meters
     centered = False
     while not centered:
         update = camera.vec_to_marker_3d(target_id)
@@ -57,10 +60,11 @@ def aruco_land_precision(
                 centered = True
             else:
                 controller.guide_move_relative_frame(
-                    RelPosComplete(update.x, update.y, 0)
+                    RelPosComplete(update.x*MULT, update.y*MULT, 0)
                 )
-        # time.sleep(0.05)  # Spam as fast as possible
+        time.sleep(0.05)  # Spam as fast as possible
 
+    """
     print("[*] Target Acquired! Switching to LAND mode.")
     controller.set_land_mode()
     alt = lidar.get_distance()
@@ -130,7 +134,6 @@ def aruco_land_guide(
 
 
 ID = 1
-
 mt = MissonTracker()
 print("mission tracker initialized")
 controller = DroneControl(connection_port="/dev/ttyACM0")
@@ -153,7 +156,8 @@ try:
     time.sleep(1)
     ### END WAYPOINT L PORTION
 
-    aruco_land_precision(controller, camera, lidar, ID)
+    # aruco_land_precision(controller, camera, lidar, ID)
+    aruco_land_guide(controller, camera, lidar, ID, controller.get_current_gps())
     time.sleep(1)
 
     # controller.takeoff(10)

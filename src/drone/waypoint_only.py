@@ -42,9 +42,8 @@ try:
     controller.goto_waypoint(H)
     dropper.drop()
     controller.goto_waypoint(A)
-    controller.goto_waypoint(B)
-    controller.simple_land()
-    controller.takeoff(10)
+    # controller.simple_land()
+    # controller.takeoff(10)
     controller.rtl()
 except Exception as e:
     print(e)

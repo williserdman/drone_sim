@@ -240,7 +240,7 @@ class DroneControl:
             0.0,
             0.0,  # size_x, size_y (target size, not strictly needed)
             float(dir.y),  # X-axis distance to target (meters, Forward)
-            float(dir.x),  # Y-axis distance to target (meters, Right)
+            -float(dir.x),  # Y-axis distance to target (meters, Right)
             float(dir.z),  # Z-axis distance to target (meters, Down)
             [0.0, 0.0, 0.0, 0.0],  # quaternion (not used)
             2,  # type (2 = MAV_LANDING_TARGET_TYPE_VISION_FIDUCIAL)
@@ -268,7 +268,7 @@ class DroneControl:
             float(
                 dir.y
             ),  # X: Forward (meters) *** in mavlink docs x is forward, however, in my impl , x is right
-            float(dir.x),  # Y: Right (meters)
+            -float(dir.x),  # Y: Right (meters)
             float(dir.z),  # Z: Down (meters) - remember, positive is DOWN!
             0,
             0,
