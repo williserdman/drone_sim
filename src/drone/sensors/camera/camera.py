@@ -25,29 +25,37 @@ class Camera:
 
         return
 
-    def vec_to_marker_3d(self, id: int) -> RelPosComplete | None:
-        f = self.cm.capture_frame()
-        corners, ids, rejected = self.cm.get_coords(f)
+    def vec_to_marker_3d(self, id: int, lidar_alt: float = None) -> RelPosComplete | None:
+            f = self.cm.capture_frame()
+            corners, ids, rejected = self.cm.get_coords(f)
 
-        if ids is not None and len(ids) > 0:
-            tvec_mm = self.cm.estimate_pose_3d(id, corners, ids, self.marker_size_mm)
+            if ids is not None and len(ids) > 0:
+                tvec_mm = self.cm.estimate_pose_3d(id, corners, ids, self.marker_size_mm)
 
-            if tvec_mm is not None:
-                # 1. Convert millimeters to meters
-                cam_x_m = tvec_mm[0] / 1000.0
-                cam_y_m = tvec_mm[1] / 1000.0
-                cam_z_m = tvec_mm[2] / 1000.0
+                if tvec_mm is not None:
+                    # 1. Convert camera translation from millimeters to meters
+                    cam_x_m = tvec_mm[0] / 1000.0
+                    cam_y_m = tvec_mm[1] / 1000.0
+                    cam_z_m = tvec_mm[2] / 1000.0
 
-                # 2. Map Camera Frame -> Drone Body FRD Frame
-                # ASSUMPTION: Camera is mounted flat on the drone belly, pointing straight down.
-                # - Top of image (negative cam_y) is the drone's nose (Forward)
-                # - Right of image (positive cam_x) is the drone's right wing (Right)
-                # - Distance from lens to marker (positive cam_z) is straight down (Down)
-                drone_forward = -cam_y_m
-                drone_right = cam_x_m
-                drone_down = cam_z_m
+                    # 2. Map Camera Frame -> Drone Body FRD Frame
+                    # MOUNTING ASSUMPTIONS:
+                    # - Top of image (-cam_y) is the drone's tail -> Bottom (+cam_y) is Nose
+                    # - Left of image (-cam_x) is the right wing -> Right (+cam_x) is Left Wing
+                    drone_forward = cam_y_m
+                    drone_right = -cam_x_m
+                    
+                    # 3. Integrate LiDAR
+                    # Use highly accurate LiDAR for Z (Down) if available, 
+                    # otherwise fallback to OpenCV's visual depth estimation.
+                    drone_down = lidar_alt if lidar_alt is not None else cam_z_m
 
-                return RelPosComplete(drone_forward, drone_right, drone_down)
+                    print(
+                        f"forward: {drone_forward:.2f}m, right: {drone_right:.2f}m, down: {drone_down:.2f}m"
+                    )
+                    return RelPosComplete(drone_forward, drone_right, drone_down)
+
+            return None
 
         return None
 
