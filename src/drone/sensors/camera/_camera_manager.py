@@ -52,12 +52,29 @@ class CameraManager:
         self.DISTANCE_THRESHOLD = 50  # pixels
         # dropper = ElectromagneticDropper()
         self.sample_ratio = 3
-        self.frame_width = self.camera_width / self.sample_ratio
-        self.frame_height = self.camera_width / self.sample_ratio
-        self.frame_size = (self.camera_width, self.camera_height)
-        self.CAMERA_CENTER = [self.camera_width / 2, self.camera_height / 2]
-        # print(CAMERA_CENTER)
-        # CAMERA_CENTER = {"x": camera_width / 2, "y": camera_height / 2}
+
+        # 1. FIX TYPO & CONVERT TO INTEGERS:
+        # OpenCV needs integers for frame dimensions.
+        # You previously had self.frame_height = camera_width / sample_ratio!
+        self.frame_width = int(self.camera_width / self.sample_ratio)
+        self.frame_height = int(self.camera_height / self.sample_ratio)
+
+        # 2. FIX VIDEO WRITER:
+        # Use the downsampled size, otherwise your MP4 will be corrupted.
+        self.frame_size = (self.frame_width, self.frame_height)
+
+        # 3. FIX OPTICAL CENTER:
+        self.CAMERA_CENTER = [self.frame_width / 2.0, self.frame_height / 2.0]
+
+        # 4. FIX CAMERA MATRIX:
+        # Scale the 640x480 calibration matrix to match your new downsampled resolution
+        scale_x = self.frame_width / 640.0
+        scale_y = self.frame_height / 480.0
+
+        self.camera_matrix[0, 0] *= scale_x  # Scale Focal Length X (fx)
+        self.camera_matrix[1, 1] *= scale_y  # Scale Focal Length Y (fy)
+        self.camera_matrix[0, 2] = self.CAMERA_CENTER[0]  # Set Optical Center X (cx)
+        self.camera_matrix[1, 2] = self.CAMERA_CENTER[1]  # Set Optical Center Y (cy)
 
         self.one_over_root_2 = 1 / np.sqrt(2)
 
