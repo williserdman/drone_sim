@@ -196,6 +196,31 @@ class DroneControl:
         print("Shifting to LAND mode...")
         self.vehicle.mode = VehicleMode("LAND")
 
+    def set_precision_land_mode(self):
+        """
+        Commands the drone to land at its current location and enforces
+        Precision Landing mode.
+        """
+        print("[*] Encoding MAV_CMD_NAV_LAND with Precision Landing (Mode 2)...")
+
+        msg = self.vehicle.message_factory.command_long_encode(
+            0,
+            0,  # target_system, target_component (0 routes to the active vehicle)
+            mavutil.mavlink.MAV_CMD_NAV_LAND,  # command ID
+            0,  # confirmation
+            0,  # param 1: Abort Alt (0 = undefined/use default)
+            2,  # param 2: Precision Land Mode (2 = Required, 1 = Opportunistic, 0 = Disabled)
+            0,  # param 3: Empty
+            0,  # param 4: Yaw Angle (0 = current system yaw)
+            0,  # param 5: Latitude (0 = current)
+            0,  # param 6: Longitude (0 = current)
+            0,  # param 7: Altitude (0 = ground level)
+        )
+
+        self.vehicle.send_mavlink(msg)
+
+        return
+
     def set_guided_mode(self):
         print("Shifting to GUIDED mode...")
         self.vehicle.mode = VehicleMode("GUIDED")
