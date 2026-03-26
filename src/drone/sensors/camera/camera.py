@@ -25,7 +25,9 @@ class Camera:
 
         return
 
-    def vec_to_marker_3d(self, id: int, lidar_alt: float = None) -> RelPosComplete | None:
+    def vec_to_marker_3d(
+        self, id: int, lidar_alt: float = None
+    ) -> RelPosComplete | None:
         f = self.cm.capture_frame()
         corners, ids, rejected = self.cm.get_coords(f)
 
@@ -44,16 +46,18 @@ class Camera:
                 # - Left of image (-cam_x) is the right wing -> Right (+cam_x) is Left Wing
                 drone_forward = cam_y_m
                 drone_right = -cam_x_m
-                
+
                 # 3. Integrate LiDAR
-                # Use highly accurate LiDAR for Z (Down) if available, 
+                # Use highly accurate LiDAR for Z (Down) if available,
                 # otherwise fallback to OpenCV's visual depth estimation.
                 drone_down = lidar_alt if lidar_alt is not None else cam_z_m
 
                 print(
                     f"forward: {drone_forward:.2f}m, right: {drone_right:.2f}m, down: {drone_down:.2f}m"
                 )
-                return RelPosComplete(drone_forward, drone_right, drone_down)
+
+                camera_offset = 0.1  # meters
+                return RelPosComplete(drone_forward, drone_right, drone_down + 0.1)
 
         return None
 
