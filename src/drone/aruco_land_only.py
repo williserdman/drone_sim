@@ -193,8 +193,8 @@ try:
     time.sleep(1)
     ### END WAYPOINT L PORTION
 
-    # aruco_land_precision(controller, camera, lidar, ID)
-    aruco_land_guide(controller, camera, lidar, ID, controller.get_current_gps())
+    aruco_land_precision(controller, camera, lidar, ID)
+    # aruco_land_guide(controller, camera, lidar, ID, controller.get_current_gps())
     time.sleep(1)
 
     # controller.takeoff(10)
