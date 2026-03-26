@@ -17,6 +17,7 @@ ALT_TOL = 0.05
 WINDOW = 5
 MULT = 0.3
 
+
 def drop(dropper):
     dropper.drop()
 
@@ -31,61 +32,49 @@ def aruco_land_precision(
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
 
-    # 1. Hover in place and search until we get the first visual hit
+    # 1. Hover and search
     while not target_found:
-        # UPDATED: Using 3D Pose Estimation
         update = camera.vec_to_marker_3d(target_id)
-
         if update:
-            update.z = 0
-            update.y *= update.y * MULT
-            update.x *= update.x * MULT
-            controller.guide_move_relative_frame(update)
-
+            print("[*] Target Acquired! Switching to LAND mode.")
             target_found = True
         else:
-            # descend??? -> Note: You could add a slow step-down here
-            # (e.g., guide_move_relative_frame(0, 0, 0.5)) if you are too high to see it!
-            time.sleep(0.1)  # Brief sleep to avoid maxing out CPU while searching
+            time.sleep(0.1)
 
-    """
-    # 2. Maintain guided mode and move relative to center on marker
-    CENTER_TOL = 0.2 # Tolerance in meters
-    centered = False
-    while not centered:
-        update = camera.vec_to_marker_3d(target_id)
-        if update:
-            distance = (update.x**2 + update.y**2) ** 0.5
-            if distance < CENTER_TOL:
-                centered = True
-            else:
-                controller.guide_move_relative_frame(
-                    RelPosComplete(update.x*MULT, update.y*MULT, 0)
-                )
-        time.sleep(0.05)  # Spam as fast as possible
-
-    """
-    print("[*] Target Acquired! Switching to LAND mode.")
     controller.set_land_mode()
     alt = lidar.get_distance()
+
+    # 2. Instantiate the smoother ONCE before the continuous loop
+    # You can tweak the window size. A smaller window is more responsive,
+    # a larger window is smoother but adds latency.
+    smoother = RelPosSmoother(window=5)
     i = 1
 
+    # 3. Continuous rapid-fire update loop
     while alt > ALT_TOL:
-        # UPDATED: Using 3D Pose Estimation
-        update = camera.vec_to_marker_3d(target_id)
+        # Get raw 3D update (returns RelPosComplete with x, y, z)
+        raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt)
 
-        if update:
-            # update.x is Forward, update.y is Right.
-            # We continue to use LiDAR 'alt' for Z since it is more accurate than camera depth.
-            controller.land_send_landing_target(RelPosComplete(update.x, update.y, alt))
-            # print(f"Sent precision landing update: Fwd: {update.x:.2f}, Right: {update.y:.2f}")
+        if raw_update:
+            # Feed raw X and Y into the rolling smoother
+            # (RelPosComplete has .x and .y, so it safely duck-types as RelativePosition)
+            smoother.append(RelativePosition(raw_update.x, raw_update.y))
+
+            # Extract the smoothed X and Y
+            smoothed_xy = smoother.get_ema()
+
+            if isinstance(smoothed_xy, RelativePosition):
+                # Recombine the smoothed X and Y with our highly accurate LiDAR altitude
+                smoothed_3d = RelPosComplete(smoothed_xy.x, smoothed_xy.y, alt)
+
+                # Fire it off to ArduPilot
+                controller.land_send_landing_target(smoothed_3d)
         else:
-            # maybe switch PLND_ settings to pause descent if we lose aruco
-            # Tip: Set PLND_STRICT=1 or 2 in ArduPilot to enforce pausing if marker is lost
+            # Target lost in this frame; ArduPilot will rely on PLND_STRICT settings
             pass
 
-        # Update LiDAR distance every 20 loops
-        if i % 20 == 0:
+        # Update LiDAR distance periodically to save serial bandwidth
+        if i % 5 == 0:
             alt = lidar.get_distance()
             i = 0
         i += 1
@@ -94,7 +83,6 @@ def aruco_land_precision(
 
     controller.set_guided_mode()
     controller.force_arm_takeoff(original_gps.alt)
-
     return
 
 

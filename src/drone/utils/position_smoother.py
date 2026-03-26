@@ -14,13 +14,20 @@ class PositionSmoother:
         self.ema_mult = 2 / (window + 1)
 
     def append(self, el: float):
+        # FIX 1: Actually store the element so we can pop it later!
+        self.elements.append(el)
+
         self.sum += el
         self.num_els += 1
-        if self.num_els > 10:
+
+        # FIX 2: Use self.window instead of hardcoding 10
+        if self.num_els > self.window:
             self.num_els -= 1
             self.sum -= self.elements.pop(0)
 
         self.sma = self.sum / self.num_els
+
+        # Calculate EMA based on the previous EMA
         self.ema = el * self.ema_mult + self.get_ema() * (1 - self.ema_mult)
 
         return
