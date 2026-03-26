@@ -22,7 +22,7 @@ def drop(dropper):
     dropper.drop()
 
 
-def aruco_land_precision(
+""" def aruco_land_precision(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
     controller.set_guided_mode()
@@ -83,6 +83,55 @@ def aruco_land_precision(
 
     controller.set_guided_mode()
     controller.force_arm_takeoff(original_gps.alt)
+    return """
+
+
+def aruco_land_precision(
+    controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
+):
+    controller.set_guided_mode()
+    controller.guide_move_relative_frame(RelPosComplete(0, 0, 6.5))
+    original_gps = controller.get_current_gps()
+
+    print("[*] Searching for ArUco to initiate Precision Landing...")
+    target_found = False
+
+    # 1. Hover and search
+    while not target_found:
+        update = camera.vec_to_marker_3d(target_id)
+        if update:
+            print("[*] Target Acquired! Switching to LAND mode.")
+            target_found = True
+        else:
+            time.sleep(0.1)
+
+    controller.set_land_mode()
+    alt = lidar.get_distance()
+    i = 1
+
+    # 2. Continuous rapid-fire update loop (Raw, un-filtered data)
+    while alt > ALT_TOL:
+        # Get raw 3D update (returns RelPosComplete with x, y, and lidar_alt combined)
+        raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt)
+
+        if raw_update:
+            # Fire the raw update directly to ArduPilot
+            controller.land_send_landing_target(raw_update)
+        else:
+            # Target lost in this frame; ArduPilot will rely on PLND_STRICT settings
+            pass
+
+        # Update LiDAR distance periodically to save serial bandwidth
+        if i % 5 == 0:
+            alt = lidar.get_distance()
+            i = 0
+        i += 1
+
+    print("[*] Touchdown complete.")
+
+    controller.set_guided_mode()
+    controller.force_arm_takeoff(original_gps.alt)
+
     return
 
 
