@@ -37,13 +37,31 @@ def aruco_land_precision(
         update = camera.vec_to_marker_3d(target_id)
 
         if update:
-            print("[*] Target Acquired! Switching to LAND mode.")
+            update.z = 0
+            controller.guide_move_relative_frame(update)
+
             target_found = True
         else:
             # descend??? -> Note: You could add a slow step-down here
             # (e.g., guide_move_relative_frame(0, 0, 0.5)) if you are too high to see it!
             time.sleep(0.1)  # Brief sleep to avoid maxing out CPU while searching
 
+    # 2. Maintain guided mode and move relative to center on marker
+    CENTER_TOL = 0.3  # Tolerance in meters
+    centered = False
+    while not centered:
+        update = camera.vec_to_marker_3d(target_id)
+        if update:
+            distance = (update.x**2 + update.y**2) ** 0.5
+            if distance < CENTER_TOL:
+                centered = True
+            else:
+                controller.guide_move_relative_frame(
+                    RelPosComplete(update.x, update.y, 0)
+                )
+        # time.sleep(0.05)  # Spam as fast as possible
+
+    print("[*] Target Acquired! Switching to LAND mode.")
     controller.set_land_mode()
     alt = lidar.get_distance()
     i = 1
