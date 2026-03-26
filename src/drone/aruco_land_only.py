@@ -91,7 +91,7 @@ def aruco_land_precision(
 ):
     controller.set_guided_mode()
     controller.guide_move_relative_frame(RelPosComplete(0, 0, 6.5))
-    original_gps = controller.get_current_gps()
+    # original_gps = controller.get_current_gps()
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
@@ -106,7 +106,7 @@ def aruco_land_precision(
         else:
             time.sleep(0.1)
 
-    controller.set_land_mode()
+    controller.set_precision_land_mode()
     alt = lidar.get_distance()
     i = 1
 
@@ -131,8 +131,6 @@ def aruco_land_precision(
     print("[*] Touchdown complete.")
 
     controller.set_guided_mode()
-    controller.force_arm_takeoff(original_gps.alt)
-
     return
 
 
@@ -196,7 +194,8 @@ try:
 
     aruco_land_precision(controller, camera, lidar, ID)
     # aruco_land_guide(controller, camera, lidar, ID, controller.get_current_gps())
-    time.sleep(1)
+    time.sleep(2)
+    controller.force_arm_takeoff(10)
 
     # controller.takeoff(10)
     controller.goto_waypoint(A)
