@@ -13,6 +13,8 @@ if not hasattr(collections, "MutableMapping"):
 from dronekit import connect, VehicleMode, LocationGlobalRelative, LocationGlobal  # type: ignore
 from pymavlink import mavutil  # type: ignore
 
+os.environ["MAVLINK20"] = "1"
+
 # === CONFIG ===
 GROUND_SPEED = 3.0
 ALT_TOL = 0.8
@@ -154,7 +156,6 @@ def goto(vehicle, lat, lon, alt_m):
 class DroneControl:
     def __init__(self, connection_port="/dev/cu.usbmodem1103"):
         print(f"Connecting to {connection_port} …")
-        os.environ["MAVLINK20"] = "1"
         vehicle = connect(
             connection_port,
             wait_ready=True,
