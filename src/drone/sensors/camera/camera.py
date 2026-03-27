@@ -42,10 +42,10 @@ class Camera:
 
                 # 2. Map Camera Frame -> Drone Body FRD Frame
                 # MOUNTING ASSUMPTIONS:
-                # - Top of image (-cam_y) is the drone's tail -> Bottom (+cam_y) is Nose
-                # - Left of image (-cam_x) is the right wing -> Right (+cam_x) is Left Wing
-                drone_forward = cam_y_m
-                drone_right = -cam_x_m
+                # - Top of image (-cam_y) is the drone's front -> Bottom (+cam_y) is back
+                # - Right of image (+cam_x) is the drone's right -> Left (-cam_x) is left
+                drone_forward = -cam_y_m
+                drone_right = cam_x_m
 
                 # 3. Integrate LiDAR
                 # Use highly accurate LiDAR for Z (Down) if available,

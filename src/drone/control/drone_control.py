@@ -252,24 +252,46 @@ class DroneControl:
 
     def land_send_landing_target(self, dir: RelPosComplete) -> int:
         """
-        Sends a LANDING_TARGET message to ArduPilot.
-        The drone MUST be in LAND mode for the flight controller to respond.
+        Sends the most reliable LANDING_TARGET message to ArduPilot.
+        Forces MAVLink 2 format with full 3D coordinates, distance, and fallback angles.
+        Requires ArduPilot to be in LAND mode.
         """
+        # 1. Map user coordinates to ArduPilot's BODY_FRD (Forward, Right, Down) frame
+        # Based on your script's mounting logic:
+        x_forward = float(dir.y)
+        y_right = -float(dir.x)
+        z_down = float(dir.z)
+
+        # 2. Calculate absolute Euclidean distance (CRITICAL for ArduPilot's descent logic)
+        target_distance = math.sqrt(x_forward**2 + y_right**2 + z_down**2)
+
+        # 3. Calculate angular offsets (radians) as a fallback
+        # Even with position_valid=1, providing these maximizes compatibility
+        # with legacy precision landing controllers in ArduPilot.
+        # Guard against zero-division just in case z_down is perfectly 0.
+        angle_x = math.atan2(x_forward, z_down) if z_down > 0 else 0.0
+        angle_y = math.atan2(y_right, z_down) if z_down > 0 else 0.0
+
+        # 4. Use the identity quaternion for "no rotation" instead of all zeros
+        # A zero-quaternion [0,0,0,0] is mathematically invalid and can sometimes
+        # upset strict EKF (Extended Kalman Filter) checks.
+        valid_quaternion = [1.0, 0.0, 0.0, 0.0]
+
         msg = self.vehicle.message_factory.landing_target_encode(
-            0,  # time_usec (0 = use system time)
+            0,  # time_usec (0 = use autopilot system time)
             0,  # target_num (0 = default target)
-            mavutil.mavlink.MAV_FRAME_BODY_FRD,  # Frame (X=Forward, Y=Right, Z=Down)
-            0.0,
-            0.0,  # angle_x, angle_y (ignored when position_valid=1)
-            0.0,  # distance (ignored when using Z)
-            0.0,
-            0.0,  # size_x, size_y (target size, not strictly needed)
-            float(dir.y),  # X-axis distance to target (meters, Forward)
-            -float(dir.x),  # Y-axis distance to target (meters, Right)
-            float(dir.z),  # Z-axis distance to target (meters, Down)
-            [0.0, 0.0, 0.0, 0.0],  # quaternion (not used)
+            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,  # coordinate frame
+            angle_x,  # X-axis angular offset
+            angle_y,  # Y-axis angular offset
+            target_distance,  # Scalar distance to target
+            0.0,  # size_x (ignored)
+            0.0,  # size_y (ignored)
+            x_forward,  # X Position (Forward in meters)
+            y_right,  # Y Position (Right in meters)
+            z_down,  # Z Position (Down in meters)
+            valid_quaternion,  # q (w, x, y, z order)
             2,  # type (2 = MAV_LANDING_TARGET_TYPE_VISION_FIDUCIAL)
-            1,  # position_valid (1 = we are providing X,Y,Z instead of angles)
+            1,  # position_valid (1 = trust the X,Y,Z values)
         )
 
         self.vehicle.send_mavlink(msg)

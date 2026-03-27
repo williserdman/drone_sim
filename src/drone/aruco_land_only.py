@@ -106,7 +106,8 @@ def aruco_land_precision(
         else:
             time.sleep(0.1)
 
-    controller.set_precision_land_mode()
+    # controller.set_precision_land_mode()
+    controller.set_land_mode()
     alt = lidar.get_distance()
     i = 1
 
