@@ -1,6 +1,8 @@
 from ..common_types import *
 import os
 
+os.environ["MAVLINK20"] = "1"
+
 import time
 import math
 import collections
@@ -12,8 +14,6 @@ if not hasattr(collections, "MutableMapping"):
 
 from dronekit import connect, VehicleMode, LocationGlobalRelative, LocationGlobal  # type: ignore
 from pymavlink import mavutil  # type: ignore
-
-os.environ["MAVLINK20"] = "1"
 
 # === CONFIG ===
 GROUND_SPEED = 3.0
@@ -308,7 +308,9 @@ class DroneControl:
         type_mask = 0b0000111111111000
 
         msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
-            0,  # time_boot_ms (not used)
+            int(
+                time.time() * 1e6
+            ),  # time_boot_ms in microseconds # maybe this is utc idk
             0,
             0,  # target_system, target_component (0 routes to the active vehicle)
             mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,  # mavutil.mavlink.MAV_FRAME_BODY_FRD,  # coordinate frame (Forward/Right/Down)
