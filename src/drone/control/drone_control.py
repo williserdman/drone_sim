@@ -1,7 +1,7 @@
 from ..common_types import *
 import os
 
-os.environ["MAVLINK20"] = "1"
+# os.environ["MAVLINK20"] = "1"
 
 import time
 import math
@@ -253,12 +253,12 @@ class DroneControl:
     # however, this would require a little bit more planning on my end so I'm sticking with the GUIDED mode descent which is little bit more 'manual'
     # additionally, if we switch to land mode then the RTL gets messed up, we could obviously fix by storing origin GPS coord then simple landing but wtv
 
-    def land_send_landing_target(self, dir: RelPosComplete) -> int:
-        """
+    """ def land_send_landing_target(self, dir: RelPosComplete) -> int:
+        "
         Sends the most reliable LANDING_TARGET message to ArduPilot.
         Forces MAVLink 2 format with full 3D coordinates, distance, and fallback angles.
         Requires ArduPilot to be in LAND mode.
-        """
+        "
         # 1. Map user coordinates to ArduPilot's BODY_FRD (Forward, Right, Down) frame
         # Based on your script's mounting logic:
         x_forward = float(dir.y)
@@ -300,6 +300,45 @@ class DroneControl:
         )
 
         self.vehicle.send_mavlink(msg)
+        return 0 """
+
+    def land_send_landing_target(self, dir: RelPosComplete) -> int:
+        """
+        Sends the MAVLink 1 LANDING_TARGET message to ArduPilot.
+        Forces the legacy 8-parameter format (relies on angles + distance).
+        Requires ArduPilot to be in LAND mode.
+        """
+        # 1. Map user coordinates to ArduPilot's BODY_FRD (Forward, Right, Down) frame
+        x_forward = float(dir.y)
+        y_right = -float(dir.x)
+        z_down = float(dir.z)
+
+        # 2. Calculate absolute Euclidean distance
+        target_distance = math.sqrt(x_forward**2 + y_right**2 + z_down**2)
+
+        # 3. Calculate angular offsets (radians)
+        # CRITICAL: MAVLink 1 does not send X/Y/Z directly. It relies entirely
+        # on these angles and the distance to reconstruct the target position.
+        angle_x = math.atan2(x_forward, z_down) if z_down > 0 else 0.0
+        angle_y = math.atan2(y_right, z_down) if z_down > 0 else 0.0
+
+        # 4. Use 0 so ArduPilot stamps the message with its internal time upon receipt
+        current_time_us = 0
+
+        msg = self.vehicle.message_factory.landing_target_encode(
+            current_time_us,  # time_usec (0 = use autopilot system time)
+            0,  # target_num (0 = default target)
+            mavutil.mavlink.MAV_FRAME_BODY_NED,  # coordinate frame
+            angle_x,  # X-axis angular offset (radians)
+            angle_y,  # Y-axis angular offset (radians)
+            target_distance,  # Scalar distance to target
+            0.0,  # size_x (ignored)
+            0.0,  # size_y (ignored)
+        )
+
+        self.vehicle.send_mavlink(msg)
+        self.vehicle.flush()  # Force the buffer to clear immediately
+
         return 0
 
     def guide_move_relative_frame(self, dir: RelPosComplete) -> int:
