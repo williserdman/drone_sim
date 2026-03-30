@@ -323,10 +323,10 @@ class DroneControl:
         angle_y = math.atan2(y_right, z_down) if z_down > 0 else 0.0
 
         # 4. Use 0 so ArduPilot stamps the message with its internal time upon receipt
-        current_time_us = 0
+        current_time_us = time.monotonic() - self.boot_time
 
         msg = self.vehicle.message_factory.landing_target_encode(
-            0, #current_time_us,  # time_usec (0 = use autopilot system time)
+            0,  # current_time_us,  # time_usec (0 = use autopilot system time)
             0,  # target_num (0 = default target)
             mavutil.mavlink.MAV_FRAME_BODY_NED,  # coordinate frame
             angle_x,  # X-axis angular offset (radians)

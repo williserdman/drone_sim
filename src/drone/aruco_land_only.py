@@ -90,6 +90,7 @@ def aruco_land_precision(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
     controller.set_guided_mode()
+    # TODO: ensure we are 3-4 meters using lidar above target before initializing PL sequence
     controller.guide_move_relative_frame(RelPosComplete(0, 0, 6))
     # original_gps = controller.get_current_gps()
 
