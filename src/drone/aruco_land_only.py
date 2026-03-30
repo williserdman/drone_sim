@@ -188,6 +188,7 @@ try:
     ### LAND AT WAYPOINT L
     mt.begin_aux_timer()
     # controller.takeoff(10)
+    original_gps = controller.get_current_gps()
     controller.force_arm_takeoff(10)
     controller.goto_waypoint(H)
     time.sleep(1)
@@ -196,13 +197,14 @@ try:
     aruco_land_precision(controller, camera, lidar, ID)
     # aruco_land_guide(controller, camera, lidar, ID, controller.get_current_gps())
     time.sleep(2)
-    controller.force_arm_takeoff(10)
+    controller.takeoff(10)
+    # controller.force_arm_takeoff(10)
 
     # controller.takeoff(10)
     controller.goto_waypoint(A)
     dropper.drop()
-    controller.goto_waypoint(H)
-    controller.set_land_mode()
+    controller.goto_waypoint(original_gps)
+    controller.simple_land()
     controller.disarm()
     mt.end_mission()
 except Exception as e:
