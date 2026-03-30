@@ -11,7 +11,7 @@ from .sensors.lidar.lidar import Lidar
 from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 
-H = GPSCoord(41.5013157, -81.6063829, 10)
+H = GPSCoord(41.5013453, -81.6064230, 10)
 A = GPSCoord(41.5013812, -81.606423, 10)
 ALT_TOL = 0.02
 WINDOW = 5
@@ -90,7 +90,7 @@ def aruco_land_precision(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
     controller.set_guided_mode()
-    controller.guide_move_relative_frame(RelPosComplete(0, 0, 6))
+    controller.guide_move_relative_frame(RelPosComplete(0, 0, 7))
     # original_gps = controller.get_current_gps()
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
