@@ -170,7 +170,23 @@ class DroneControl:
 
         self.boot_time = time.monotonic()
 
+        # TODO
+        # tracking landed state, probably should track a few more things
+        self.is_on_ground = False
+
+        @self.vehicle.on_message("EXTENDED_SYS_STATE")
+        def listener(self, name, message):
+            # MAV_LANDED_STATE_ON_GROUND = 1
+            # MAV_LANDED_STATE_IN_AIR = 2
+            if message.landed_state == 1:
+                self.is_on_ground = True
+            else:
+                self.is_on_ground = False
+
         pass
+
+    def is_landed(self) -> bool:
+        return self.is_on_ground
 
     def force_arm_takeoff(self, alt):
         arm_and_takeoff(self.vehicle, alt)
@@ -227,80 +243,6 @@ class DroneControl:
     def set_guided_mode(self):
         print("Shifting to GUIDED mode...")
         self.vehicle.mode = VehicleMode("GUIDED")
-
-    # TODO:
-
-    """msg = self.vehicle.message_factory.set_position_target_local_ned_encode(
-            0,  # time_boot_ms (not used)
-            0,
-            0,  # target_system, target_component (0 routes to the active vehicle)
-            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,  # coordinate frame
-            type_mask,  # type_mask
-            float(dir.y),  # X: Forward (meters)
-            float(dir.x),  # Y: Right (meters)
-            float(dir.z),  # Z: Down (meters) - remember, positive is DOWN!
-            0,
-            0,
-            0,  # vx, vy, vz (ignored)
-            0,
-            0,
-            0,  # afx, afy, afz (ignored)
-            0,
-            0,  # yaw, yaw_rate (ignored)
-        )"""
-
-    # there is a precision landing message in MAVLINK that you can specify as a fiducial marker and then somehow stream updates to the pixhawk
-    # however, this would require a little bit more planning on my end so I'm sticking with the GUIDED mode descent which is little bit more 'manual'
-    # additionally, if we switch to land mode then the RTL gets messed up, we could obviously fix by storing origin GPS coord then simple landing but wtv
-
-    """ def land_send_landing_target(self, dir: RelPosComplete) -> int:
-        "
-        Sends the most reliable LANDING_TARGET message to ArduPilot.
-        Forces MAVLink 2 format with full 3D coordinates, distance, and fallback angles.
-        Requires ArduPilot to be in LAND mode.
-        "
-        # 1. Map user coordinates to ArduPilot's BODY_FRD (Forward, Right, Down) frame
-        # Based on your script's mounting logic:
-        x_forward = float(dir.y)
-        y_right = -float(dir.x)
-        z_down = float(dir.z)
-
-        # 2. Calculate absolute Euclidean distance (CRITICAL for ArduPilot's descent logic)
-        target_distance = math.sqrt(x_forward**2 + y_right**2 + z_down**2)
-
-        # 3. Calculate angular offsets (radians) as a fallback
-        # Even with position_valid=1, providing these maximizes compatibility
-        # with legacy precision landing controllers in ArduPilot.
-        # Guard against zero-division just in case z_down is perfectly 0.
-        angle_x = math.atan2(x_forward, z_down) if z_down > 0 else 0.0
-        angle_y = math.atan2(y_right, z_down) if z_down > 0 else 0.0
-
-        # 4. Use the identity quaternion for "no rotation" instead of all zeros
-        # A zero-quaternion [0,0,0,0] is mathematically invalid and can sometimes
-        # upset strict EKF (Extended Kalman Filter) checks.
-        valid_quaternion = [1.0, 0.0, 0.0, 0.0]
-
-        current_time_us = int((time.monotonic() - self.boot_time) * 1e6)
-
-        msg = self.vehicle.message_factory.landing_target_encode(
-            current_time_us,  # time_usec (0 = use autopilot system time)
-            0,  # target_num (0 = default target)
-            mavutil.mavlink.MAV_FRAME_BODY_NED,  # coordinate frame
-            angle_x,  # X-axis angular offset
-            angle_y,  # Y-axis angular offset
-            target_distance,  # Scalar distance to target
-            0.0,  # size_x (ignored)
-            0.0,  # size_y (ignored)
-            x_forward,  # X Position (Forward in meters)
-            y_right,  # Y Position (Right in meters)
-            z_down,  # Z Position (Down in meters)
-            valid_quaternion,  # q (w, x, y, z order)
-            2,  # type (2 = MAV_LANDING_TARGET_TYPE_VISION_FIDUCIAL)
-            1,  # position_valid (1 = trust the X,Y,Z values)
-        )
-
-        self.vehicle.send_mavlink(msg)
-        return 0 """
 
     def land_send_landing_target(self, dir: RelPosComplete) -> int:
         """
@@ -388,12 +330,8 @@ class DroneControl:
         """
         print("[*] Landing…")
         # Set LAND mode using MAVLink (mode 9 for ArduCopter)
-        self.vehicle._master.mav.set_mode_send(
-            self.vehicle._master.target_system,
-            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-            9,  # LAND mode
-        )
-        time.sleep(1)
+        self.set_land_mode()
+        time.sleep(0.1)
 
         t0 = time.time()
         timeout = 180
@@ -410,7 +348,7 @@ class DroneControl:
             if not getattr(self.vehicle, "armed", True):
                 print("[!] Vehicle disarmed during landing.")
                 return -1
-            time.sleep(0.5)
+            time.sleep(0.1)
         print("[!] Landing timed out.")
         return -1
 
@@ -420,12 +358,12 @@ class DroneControl:
         # Wait until the vehicle is actually armed
         while not self.vehicle.armed:
             print(" Waiting for arming to complete...")
-            time.sleep(1)
+            time.sleep(0.1)
         print("Vehicle is ARMED!")
 
         while not self.vehicle.mode.name == "GUIDED":  # type: ignore
             print(" Waiting for mode change...")
-            time.sleep(1)
+            time.sleep(0.1)
 
         print(f"[*] Taking off to {alt:.2f} m AGL…")
         self.vehicle.simple_takeoff(alt)
@@ -444,3 +382,23 @@ class DroneControl:
     def get_current_gps(self) -> GPSCoord:
         f = self.vehicle.location.global_relative_frame
         return GPSCoord(f.lat, f.lon, f.alt)  # type: ignore
+
+    def climb(self, target_alt: float) -> None:
+        """Ascend to a specific altitude mid-flight without using takeoff commands."""
+        print(f"[*] Climbing to {target_alt:.2f} m AGL...")
+
+        # Get current location
+        loc = self.vehicle.location.global_relative_frame
+        if loc.lat is None or loc.lon is None:
+            print("[!] No GPS fix available for climb.")
+            return
+
+        # Command a vertical move to the new altitude
+        target_loc = LocationGlobalRelative(loc.lat, loc.lon, target_alt)
+        self.vehicle.simple_goto(target_loc)
+
+        # Wait until we reach the target altitude
+        if not wait_alt(self.vehicle, target_alt, tol=max(ALT_TOL, 0.9), timeout=45):
+            print(
+                "[!] Climb altitude tolerance not reached in time; continuing anyway."
+            )

@@ -18,74 +18,6 @@ WINDOW = 5
 MULT = 0.3
 
 
-def drop(dropper):
-    dropper.drop()
-
-
-""" def aruco_land_precision(
-    controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
-):
-    controller.set_guided_mode()
-    controller.guide_move_relative_frame(RelPosComplete(0, 0, 6.5))
-    original_gps = controller.get_current_gps()
-
-    print("[*] Searching for ArUco to initiate Precision Landing...")
-    target_found = False
-
-    # 1. Hover and search
-    while not target_found:
-        update = camera.vec_to_marker_3d(target_id)
-        if update:
-            print("[*] Target Acquired! Switching to LAND mode.")
-            target_found = True
-        else:
-            time.sleep(0.1)
-
-    controller.set_land_mode()
-    alt = lidar.get_distance()
-
-    # 2. Instantiate the smoother ONCE before the continuous loop
-    # You can tweak the window size. A smaller window is more responsive,
-    # a larger window is smoother but adds latency.
-    smoother = RelPosSmoother(window=5)
-    i = 1
-
-    # 3. Continuous rapid-fire update loop
-    while alt > ALT_TOL:
-        # Get raw 3D update (returns RelPosComplete with x, y, z)
-        raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt)
-
-        if raw_update:
-            # Feed raw X and Y into the rolling smoother
-            # (RelPosComplete has .x and .y, so it safely duck-types as RelativePosition)
-            smoother.append(RelativePosition(raw_update.x, raw_update.y))
-
-            # Extract the smoothed X and Y
-            smoothed_xy = smoother.get_ema()
-
-            if isinstance(smoothed_xy, RelativePosition):
-                # Recombine the smoothed X and Y with our highly accurate LiDAR altitude
-                smoothed_3d = RelPosComplete(smoothed_xy.x, smoothed_xy.y, alt)
-
-                # Fire it off to ArduPilot
-                controller.land_send_landing_target(smoothed_3d)
-        else:
-            # Target lost in this frame; ArduPilot will rely on PLND_STRICT settings
-            pass
-
-        # Update LiDAR distance periodically to save serial bandwidth
-        if i % 5 == 0:
-            alt = lidar.get_distance()
-            i = 0
-        i += 1
-
-    print("[*] Touchdown complete.")
-
-    controller.set_guided_mode()
-    controller.force_arm_takeoff(original_gps.alt)
-    return """
-
-
 def aruco_land_precision(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
@@ -114,26 +46,25 @@ def aruco_land_precision(
     alt = lidar.get_distance()
     i = 1
 
-    # 2. Continuous rapid-fire update loop (Raw, un-filtered data)
-    while alt > ALT_TOL:
-        # Get raw 3D update (returns RelPosComplete with x, y, and lidar_alt combined)
+    # Loop until ArduPilot explicitly confirms touchdown
+    while not controller.is_on_ground:
+
+        # Get raw 3D update
         raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt)
 
         if raw_update:
-            # Fire the raw update directly to ArduPilot
             controller.land_send_landing_target(raw_update)
-        else:
-            # Target lost in this frame; ArduPilot will rely on PLND_STRICT settings
-            pass
 
-        # Update LiDAR distance periodically to save serial bandwidth
+        # Update LiDAR distance periodically
         if i % 5 == 0:
             alt = lidar.get_distance()
             i = 0
         i += 1
 
-    print("[*] Touchdown complete.")
+        # Add a tiny sleep to prevent maxing out the CPU loop
+        time.sleep(0.05)
 
+    print("[*] ArduPilot EKF confirms touchdown!")
     controller.set_guided_mode()
     return
 
@@ -202,7 +133,7 @@ try:
     time.sleep(2)
 
     controller.set_guided_mode()
-    controller.takeoff(10)
+    controller.climb(10)
 
     controller.goto_waypoint(A)
     dropper.drop()
@@ -210,6 +141,7 @@ try:
     controller.simple_land()
     controller.disarm()
     mt.end_mission()
+
 except Exception as e:
     print("[ERR]", e)
     controller.rtl()
