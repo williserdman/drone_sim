@@ -198,10 +198,10 @@ try:
     aruco_land_precision(controller, camera, lidar, ID)
     # aruco_land_guide(controller, camera, lidar, ID, controller.get_current_gps())
     time.sleep(2)
-    controller.takeoff(10)
-    # controller.force_arm_takeoff(10)
 
-    # controller.takeoff(10)
+    controller.set_guided_mode()
+    controller.takeoff(10)
+
     controller.goto_waypoint(A)
     dropper.drop()
     controller.goto_waypoint(original_gps)
