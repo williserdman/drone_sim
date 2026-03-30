@@ -168,6 +168,8 @@ class DroneControl:
         self.vehicle = vehicle
         self.cruise_alt = 10  # meters
 
+        self.boot_time = time.monotonic()
+
         pass
 
     def force_arm_takeoff(self, alt):
@@ -278,8 +280,10 @@ class DroneControl:
         # upset strict EKF (Extended Kalman Filter) checks.
         valid_quaternion = [1.0, 0.0, 0.0, 0.0]
 
+        current_time_us = int((time.monotonic() - self.boot_time) * 1e6)
+
         msg = self.vehicle.message_factory.landing_target_encode(
-            0,  # time_usec (0 = use autopilot system time)
+            current_time_us,  # time_usec (0 = use autopilot system time)
             0,  # target_num (0 = default target)
             mavutil.mavlink.MAV_FRAME_BODY_NED,  # coordinate frame
             angle_x,  # X-axis angular offset
