@@ -13,7 +13,7 @@ from .utils.position_smoother import RelPosSmoother
 
 H = GPSCoord(41.5013453, -81.6064230, 10)
 A = GPSCoord(41.5013812, -81.606423, 10)
-ALT_TOL = 0.02
+ALT_TOL = 0.01
 WINDOW = 5
 MULT = 0.3
 
