@@ -124,10 +124,15 @@ try:
     controller.force_arm_takeoff(10)
 
     for id in IDs:
+        print("going to pickup waypoint")
         controller.goto_waypoint(ARUCO_PICKUP)
-        aruco_land_precision(controller, camera, lidar, id)
+        print("init pickup sequence")
+        pickup_sequence(controller, camera, lidar, id)
+        print("climb")
         controller.climb(10)
+        print("going to drop point")
         controller.goto_waypoint(DROP_POINT)
+        print("dropping")
         time.sleep(2)
         dropper.drop()
 
