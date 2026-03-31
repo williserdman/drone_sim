@@ -88,7 +88,9 @@ def pickup_sequence(
             break
 
         # Move to grid position
-        controller.guide_move_relative_frame(RelPosComplete(x, y, 0))
+        alt = lidar.get_distance()
+        z_adjust = alt - 3
+        controller.guide_move_relative_frame(RelPosComplete(x, y, z_adjust))
         time.sleep(3)  # Stabilize at position
 
         # Search for target at this position
