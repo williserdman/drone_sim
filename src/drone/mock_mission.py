@@ -17,7 +17,7 @@ from .utils.position_smoother import RelPosSmoother
 
 ARUCO_PICKUP = GPSCoord(41.5013720, -81.6064288, 10)
 DROP_POINT = GPSCoord(41.5016162, -81.6061652, 10)
-ALT_TOL = 0.01
+ALT_TOL = 0.00
 WINDOW = 5
 MULT = 0.3
 
@@ -31,7 +31,7 @@ def aruco_land_precision(
     i = 1
 
     # Loop until ArduPilot explicitly confirms touchdown
-    while not controller.is_on_ground:
+    while alt > ALT_TOL:
 
         # Get raw 3D update
         raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt)
