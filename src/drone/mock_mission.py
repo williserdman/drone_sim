@@ -96,6 +96,7 @@ def pickup_sequence(
             update = camera.vec_to_marker_3d(target_id)
             if update:
                 print("[*] Target Acquired! Switching to LAND mode.")
+                controller.vehicle.flush()
                 controller.guide_move_relative_frame(
                     RelPosComplete(update.x, update.y, 0)
                 )
