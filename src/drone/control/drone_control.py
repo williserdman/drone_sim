@@ -240,7 +240,9 @@ class DroneControl:
 
     def set_guided_mode(self):
         print("Shifting to GUIDED mode...")
-        self.vehicle.mode = VehicleMode("GUIDED")
+        while self.vehicle.mode != VehicleMode("GUIDED"):
+            time.sleep(0.5)
+            self.vehicle.mode = VehicleMode("GUIDED")
 
     def land_send_landing_target(self, dir: RelPosComplete) -> int:
         """
@@ -380,6 +382,9 @@ class DroneControl:
     def get_current_gps(self) -> GPSCoord:
         f = self.vehicle.location.global_relative_frame
         return GPSCoord(f.lat, f.lon, f.alt)  # type: ignore
+
+    def simple_takeoff(self, alt: int):
+        self.vehicle.simple_takeoff(alt)
 
     def climb(self, target_alt: float) -> None:
         """Ascend to a specific altitude mid-flight without using takeoff commands."""
