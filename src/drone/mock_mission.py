@@ -15,7 +15,7 @@ from .sensors.lidar.lidar import Lidar
 from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 
-ARUCO_PICKUP = GPSCoord(41.5013866, -81.6064099, 10)
+ARUCO_PICKUP = GPSCoord(41.5013720, -81.6064288, 10)
 DROP_POINT = GPSCoord(41.5016162, -81.6061652, 10)
 ALT_TOL = 0.01
 WINDOW = 5
