@@ -134,7 +134,8 @@ try:
     time.sleep(2)
 
     controller.set_guided_mode()
-    controller.climb(10)
+    controller.force_arm_takeoff(10)
+    # controller.climb(10)
 
     controller.goto_waypoint(A)
     dropper.drop()
