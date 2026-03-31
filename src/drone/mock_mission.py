@@ -49,6 +49,7 @@ def aruco_land_precision(
         time.sleep(0.05)
 
     print("[*] ArduPilot EKF confirms touchdown!")
+    time.sleep(3)
     controller.set_guided_mode()
     return
 
@@ -135,9 +136,9 @@ try:
         print("init pickup sequence")
         pickup_sequence(controller, camera, lidar, id)
         print("climb")
-        # controller.climb(10)
-        time.sleep(5)
-        controller.force_arm_takeoff(10)
+        controller.climb(10)
+        # time.sleep(5)
+        # controller.force_arm_takeoff(10)
         print("going to drop point")
         controller.goto_waypoint(DROP_POINT)
         print("dropping")
