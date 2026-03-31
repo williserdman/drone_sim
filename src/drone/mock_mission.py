@@ -70,29 +70,33 @@ def pickup_sequence(
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
 
-    # 1. Hover and search in 3x3 grid pattern
-    grid_size = 1.5  # 1.5m steps for 3m x 3m grid coverage
-    grid_positions = [
-        (0, 0),  # center
-        (grid_size, 0),  # right
-        (grid_size, grid_size),  # right-up
-        (0, grid_size),  # up
-        (-grid_size, grid_size),  # left-up
-        (-grid_size, 0),  # left
-        (-grid_size, -grid_size),  # left-down
-        (0, -grid_size),  # down
-        (grid_size, -grid_size),  # right-down
+    # These are deltas (dx, dy) from the PREVIOUS position
+    grid_size = 1.5
+    grid_deltas = [
+        (0, 0),  # 1. center (stay put)
+        (grid_size, 0),  # 2. move right
+        (0, grid_size),  # 3. move up
+        (-grid_size, 0),  # 4. move left
+        (-grid_size, 0),  # 5. move left
+        (0, -grid_size),  # 6. move down
+        (0, -grid_size),  # 7. move down
+        (grid_size, 0),  # 8. move right
+        (grid_size, 0),  # 9. move right
     ]
 
-    for x, y in grid_positions:
+    for dx, dy in grid_deltas:
         if target_found:
             break
 
-        # Move to grid position
+        # Adjust altitude dynamically based on LiDAR
         alt = lidar.get_distance()
         z_adjust = alt - 3
-        controller.guide_move_relative_frame(RelPosComplete(x, y, z_adjust))
-        time.sleep(3)  # Stabilize at position
+
+        # Now we are moving correctly relative to the current position
+        controller.guide_move_relative_frame(RelPosComplete(dx, dy, z_adjust))
+
+        # Wait for the GUIDED position controller to fight the wind and settle
+        time.sleep(3)
 
         # Search for target at this position
         for _ in range(5):  # Check multiple times at each position
