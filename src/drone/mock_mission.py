@@ -89,7 +89,7 @@ def pickup_sequence(
 
         # Move to grid position
         controller.guide_move_relative_frame(RelPosComplete(x, y, 0))
-        time.sleep(2)  # Stabilize at position
+        time.sleep(3)  # Stabilize at position
 
         # Search for target at this position
         for _ in range(5):  # Check multiple times at each position

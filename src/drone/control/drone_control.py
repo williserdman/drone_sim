@@ -183,8 +183,6 @@ class DroneControl:
             else:
                 self.is_on_ground = False
 
-        pass
-
     def is_landed(self) -> bool:
         return self.is_on_ground
 
