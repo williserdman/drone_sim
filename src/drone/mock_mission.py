@@ -60,8 +60,11 @@ def pickup_sequence(
     # TODO: ensure we are 3-4 meters using lidar above target before initializing PL sequence
     alt = lidar.get_distance()
     how_much_down = alt - 3
+    print(f"moving down {how_much_down}m")
     controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
     # original_gps = controller.get_current_gps()
+
+    time.sleep(4)
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
