@@ -69,6 +69,7 @@ def aruco_land_precision(
     return
 
 
+""" 
 def aruco_land_guide(
     controller: DroneControl,
     camera: Camera,
@@ -102,7 +103,7 @@ def aruco_land_guide(
 
     controller.goto_waypoint(current_pos)
     return
-
+ """
 
 ID = 1
 mt = MissonTracker()
