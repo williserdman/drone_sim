@@ -136,6 +136,7 @@ try:
         pickup_sequence(controller, camera, lidar, id)
         print("climb")
         # controller.climb(10)
+        time.sleep(5)
         controller.force_arm_takeoff(10)
         print("going to drop point")
         controller.goto_waypoint(DROP_POINT)
