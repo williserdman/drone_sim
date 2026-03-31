@@ -100,7 +100,7 @@ def pickup_sequence(
                 break
             time.sleep(0.1)
 
-        aruco_land_precision(controller, camera, lidar, target_id)
+    aruco_land_precision(controller, camera, lidar, target_id)
 
 
 IDs = [4, 5, 6]
