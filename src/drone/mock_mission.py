@@ -135,6 +135,7 @@ try:
         controller.goto_waypoint(ARUCO_PICKUP)
         print("init pickup sequence")
         pickup_sequence(controller, camera, lidar, id)
+        time.sleep(3)
         print("climb")
         controller.climb(10)
         # time.sleep(5)
