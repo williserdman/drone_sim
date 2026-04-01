@@ -2,7 +2,7 @@
 Mission:
 Begins at Home, takes off to 30ft AGL, transits horizontally to waypoint L, and lands.
 Must be carrying at least one payload to proceed to fm2.
-Wait flagger flag and judge approval at H before starting fm2.
+Wait flagger flag and judge approval at L before starting fm2.
 """
 
 from ..common_types import *
