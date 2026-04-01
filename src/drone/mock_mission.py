@@ -31,7 +31,8 @@ def aruco_land_precision(
     i = 1
 
     # Loop until ArduPilot explicitly confirms touchdown
-    while alt > ALT_TOL:
+    while not controller.is_landed:
+        # while alt > ALT_TOL:
 
         # Get raw 3D update
         raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt)
@@ -49,8 +50,8 @@ def aruco_land_precision(
         time.sleep(0.05)
 
     print("[*] ArduPilot EKF confirms touchdown!")
-    time.sleep(3)
-    controller.set_guided_mode()
+    # time.sleep(3)
+    # controller.set_guided_mode()
     return
 
 
@@ -58,60 +59,74 @@ def pickup_sequence(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
     controller.set_guided_mode()
-    # TODO: ensure we are 3-4 meters using lidar above target before initializing PL sequence
+
+    # 1. Drop down to search altitude
     alt = lidar.get_distance()
     how_much_down = alt - 3
     print(f"moving down {how_much_down}m")
-    controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
-    # original_gps = controller.get_current_gps()
 
+    # You can still use a relative move just for the Z-axis drop,
+    # but make sure to wait for it to finish!
+    controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
     time.sleep(4)
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
 
-    # These are deltas (dx, dy) from the PREVIOUS position
+    # 2. CAPTURE THE ANCHOR POINT
+    # We grab the absolute GPS location right now. This is the center of our grid.
+    center_anchor = controller.get_current_gps()
+
+    # 3. Define the grid as absolute North/East offsets in meters
     grid_size = 1.5
-    grid_deltas = [
-        (0, 0),  # 1. center (stay put)
-        (grid_size, 0),  # 2. move right
-        (0, grid_size),  # 3. move up
-        (-grid_size, 0),  # 4. move left
-        (-grid_size, 0),  # 5. move left
-        (0, -grid_size),  # 6. move down
-        (0, -grid_size),  # 7. move down
-        (grid_size, 0),  # 8. move right
-        (grid_size, 0),  # 9. move right
+    grid_offsets_ne = [
+        (0, 0),  # center
+        (0, grid_size),  # right (East)
+        (grid_size, grid_size),  # right-up (North-East)
+        (grid_size, 0),  # up (North)
+        (grid_size, -grid_size),  # left-up (North-West)
+        (0, -grid_size),  # left (West)
+        (-grid_size, -grid_size),  # left-down (South-West)
+        (-grid_size, 0),  # down (South)
+        (-grid_size, grid_size),  # right-down (South-East)
     ]
 
-    for dx, dy in grid_deltas:
+    for dNorth, dEast in grid_offsets_ne:
         if target_found:
             break
 
-        # Adjust altitude dynamically based on LiDAR
-        alt = lidar.get_distance()
-        z_adjust = alt - 3
+        # Calculate the exact GPS coordinate for this grid point
+        target_wp = controller.get_location_metres(center_anchor, dNorth, dEast)
 
-        # Now we are moving correctly relative to the current position
-        controller.guide_move_relative_frame(RelPosComplete(dx, dy, z_adjust))
+        # Use your robust spin-wait goto!
+        # The drone will fight the wind until it reaches this exact earth coordinate.
+        controller.goto_waypoint(target_wp)
 
-        # Wait for the GUIDED position controller to fight the wind and settle
-        time.sleep(3)
+        # Wait a moment for the drone to stabilize its tilt/roll after stopping
+        controller.wait_until_stable()
 
         # Search for target at this position
-        for _ in range(5):  # Check multiple times at each position
+        for _ in range(5):
             update = camera.vec_to_marker_3d(target_id)
             if update:
                 print("[*] Target Acquired! Switching to LAND mode.")
                 controller.vehicle.flush()
+
+                # At this point, the camera has visual, so we can trust the
+                # visual relative update to center over the marker.
                 controller.guide_move_relative_frame(
                     RelPosComplete(update.x, update.y, 0)
                 )
+                time.sleep(1)  # Let it center before triggering land
                 target_found = True
                 break
             time.sleep(0.1)
 
-    aruco_land_precision(controller, camera, lidar, target_id)
+    # Trigger landing sequence outside the loop
+    if target_found:
+        aruco_land_precision(controller, camera, lidar, target_id)
+    else:
+        print("[!] Grid search exhausted, target not found.")
 
 
 IDs = [4, 5, 6]
@@ -139,10 +154,11 @@ try:
         controller.goto_waypoint(ARUCO_PICKUP)
         print("init pickup sequence")
         pickup_sequence(controller, camera, lidar, id)
+
         time.sleep(3)
         print("climb")
-
         if controller.vehicle.armed:
+            controller.set_guided_mode()
             controller.simple_takeoff(10)
         else:
             time.sleep(3)
@@ -151,7 +167,7 @@ try:
         print("going to drop point")
         controller.goto_waypoint(DROP_POINT)
         print("dropping")
-        time.sleep(2)
+        controller.wait_until_stable()
         dropper.drop()
 
     controller.goto_waypoint(original_gps)

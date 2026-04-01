@@ -405,3 +405,61 @@ class DroneControl:
             print(
                 "[!] Climb altitude tolerance not reached in time; continuing anyway."
             )
+
+    def get_location_metres(self, original_location: GPSCoord, dNorth: int, dEast: int):
+        """
+        Returns a new Location object offset by dNorth and dEast meters
+        from the original location.
+        """
+        earth_radius = 6378137.0  # Radius of "spherical" earth
+
+        # Coordinate offsets in radians
+        dLat = dNorth / earth_radius
+        dLon = dEast / (earth_radius * math.cos(math.pi * original_location.lat / 180))
+
+        # New position in decimal degrees
+        newlat = original_location.lat + (dLat * 180 / math.pi)
+        newlon = original_location.long + (dLon * 180 / math.pi)
+
+        # Assuming your GPSCoord or DroneKit Location object structure
+        return GPSCoord(newlat, newlon, original_location.alt)
+
+    def wait_until_stable(
+        self, vel_threshold=0.3, stable_duration=1.5, timeout=10.0
+    ) -> bool:
+        """
+        Waits until the drone's velocity drops below a specific threshold
+        for a continuous period of time.
+
+        :param vel_threshold: Maximum acceptable velocity in m/s.
+        :param stable_duration: How many consecutive seconds it must remain below the threshold.
+        :param timeout: Maximum time to wait before giving up.
+        """
+        print(f"[*] Waiting for drone to stabilize (velocity < {vel_threshold} m/s)...")
+        t_start = time.time()
+        stable_start_time = None
+
+        while time.time() - t_start < timeout:
+            # vehicle.velocity returns a list [vx, vy, vz] in m/s
+            vel = self.vehicle.velocity
+
+            if vel is not None and len(vel) == 3:
+                # Calculate the overall 3D speed magnitude
+                speed = math.sqrt(vx**2 + vy**2 + vz**2)  # type: ignore
+
+                if speed < vel_threshold:
+                    # It's moving slowly enough. Did we just dip below the threshold?
+                    if stable_start_time is None:
+                        stable_start_time = time.time()
+                    # Has it been stable long enough?
+                    elif (time.time() - stable_start_time) >= stable_duration:
+                        print(f"[*] Drone stabilized. (Current speed: {speed:.2f} m/s)")
+                        return True
+                else:
+                    # It moved too fast, reset the continuous stability timer
+                    stable_start_time = None
+
+            time.sleep(0.1)
+
+        print("[!] Stabilization timeout reached; moving on anyway.")
+        return False
