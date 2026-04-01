@@ -2,10 +2,11 @@ import time
 from common_types import *
 import json
 
-<<<<<<< HEAD
-=======
+"""
+mission_info.py - This file allows tracking of time within a mission, storing waypoints (id, coord), and storing payload id's
+"""
 
->>>>>>> f867fa4109256812835521bc050d036dfdcf1fc5
+__author__ = "Vivian Chuang"
 
 class MissonTracker:
     def __init__(self, mission_time_seconds=600):
@@ -15,6 +16,7 @@ class MissonTracker:
         # record of past passes using keyword: list of timed passes
         self.timed_passes = {}
 
+    # set a waypoint by giving the waypoint id and coordinate
     def set_waypoint(self, waypoint_ID:str, coords:GPSCoord):
         with open("mission_data/waypoints.json", "r+") as waypoints_JSON:
             waypoints_data = json.load(waypoints_JSON)
@@ -25,6 +27,7 @@ class MissonTracker:
             json.dump(waypoints_data, waypoints_JSON)
             waypoints_JSON.truncate()
 
+    # get a waypoint's coordinates from its' id
     def get_waypoint(self, waypoint_ID:str) -> GPSCoord:
         with open("mission_data/waypoints.json", "r") as waypoints_JSON:
             waypoints_data = json.load(waypoints_JSON)
@@ -33,6 +36,7 @@ class MissonTracker:
             
         return None
     
+    # get a list of all waypoint id's
     def get_waypoint_id(self) -> list[str]:
         waypoint_IDs = []
         with open("mission_data/waypoints.json", "r") as waypoints_JSON:
@@ -42,7 +46,7 @@ class MissonTracker:
             
         return waypoint_IDs
     
-    # 
+    # add a payload id
     def add_payload(self, id:int):
         with open("mission_data/payloads.json", "r+") as payloads_write:
             payloads_data = json.load(payloads_write)
@@ -52,7 +56,7 @@ class MissonTracker:
             payloads_data["id"].append(id)
             json.dump(payloads_data, payloads_write)
 
-    # returns if removed or not
+    # remove a payload given its' id
     def remove_payload(self, id:int) -> bool:
         with open("mission_data/payloads.json", "r+") as payloads_write:
             payloads_data = json.load(payloads_write)
