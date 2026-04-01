@@ -2,6 +2,10 @@ import time
 from common_types import *
 import json
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> f867fa4109256812835521bc050d036dfdcf1fc5
 
 class MissonTracker:
     def __init__(self, mission_time_seconds=600):

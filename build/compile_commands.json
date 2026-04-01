@@ -1,0 +1,32 @@
+[
+{
+  "directory": "/Users/vivian/Documents/VTOL_2026/comp2026/build",
+  "command": "/usr/bin/clang++  -I/Users/vivian/Documents/VTOL_2026/comp2026/src/common -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/control -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/camera -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/lidar -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils -g -arch arm64 -o CMakeFiles/comp2026.dir/src/drone/control/MissionInfo.cpp.o -c /Users/vivian/Documents/VTOL_2026/comp2026/src/drone/control/MissionInfo.cpp",
+  "file": "/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/control/MissionInfo.cpp",
+  "output": "CMakeFiles/comp2026.dir/src/drone/control/MissionInfo.cpp.o"
+},
+{
+  "directory": "/Users/vivian/Documents/VTOL_2026/comp2026/build",
+  "command": "/usr/bin/clang++  -I/Users/vivian/Documents/VTOL_2026/comp2026/src/common -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/control -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/camera -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/lidar -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils -g -arch arm64 -o CMakeFiles/comp2026.dir/src/drone/sensors/camera/src/detect_marker.cpp.o -c /Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/camera/src/detect_marker.cpp",
+  "file": "/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/camera/src/detect_marker.cpp",
+  "output": "CMakeFiles/comp2026.dir/src/drone/sensors/camera/src/detect_marker.cpp.o"
+},
+{
+  "directory": "/Users/vivian/Documents/VTOL_2026/comp2026/build",
+  "command": "/usr/bin/clang++  -I/Users/vivian/Documents/VTOL_2026/comp2026/src/common -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/control -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/camera -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/lidar -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils -g -arch arm64 -o CMakeFiles/comp2026.dir/src/drone/utils/PositionSmoothing.cpp.o -c /Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils/PositionSmoothing.cpp",
+  "file": "/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils/PositionSmoothing.cpp",
+  "output": "CMakeFiles/comp2026.dir/src/drone/utils/PositionSmoothing.cpp.o"
+},
+{
+  "directory": "/Users/vivian/Documents/VTOL_2026/comp2026/build",
+  "command": "/usr/bin/clang++  -I/Users/vivian/Documents/VTOL_2026/comp2026/src/common -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/control -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/camera -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/lidar -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils -g -arch arm64 -o CMakeFiles/comp2026.dir/src/drone/utils/ValueSmoothing.cpp.o -c /Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils/ValueSmoothing.cpp",
+  "file": "/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils/ValueSmoothing.cpp",
+  "output": "CMakeFiles/comp2026.dir/src/drone/utils/ValueSmoothing.cpp.o"
+},
+{
+  "directory": "/Users/vivian/Documents/VTOL_2026/comp2026/build",
+  "command": "/usr/bin/clang++  -I/Users/vivian/Documents/VTOL_2026/comp2026/src/common -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/control -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/camera -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/sensors/lidar -I/Users/vivian/Documents/VTOL_2026/comp2026/src/drone/utils -g -arch arm64 -o CMakeFiles/comp2026.dir/common_type.cpp.o -c /Users/vivian/Documents/VTOL_2026/comp2026/common_type.cpp",
+  "file": "/Users/vivian/Documents/VTOL_2026/comp2026/common_type.cpp",
+  "output": "CMakeFiles/comp2026.dir/common_type.cpp.o"
+}
+]
