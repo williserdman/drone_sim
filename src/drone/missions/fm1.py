@@ -8,15 +8,15 @@ Wait flagger flag and judge approval at H before starting fm2.
 from ..common_types import *
 from ..control.drone_control import DroneControl
 from ..control.mission_info import MissonTracker
-import time
- 
- 
-def fm1(controller: DroneControl, mt: MissonTracker, cruise_alt: float):
-    L = mt.getWaypoint("L")
- 
-    ### Takeoff from home
+from .utils import log, warn
+
+def fm1(controller: DroneControl, mt: MissonTracker, L: GPSCoord, cruise_alt: float):
+    log("fm1: taking off from Home")
     controller.takeoff(cruise_alt)
- 
-    ### Transit to waypoint L and land
+
+    log("fm1: transiting to waypoint L")
     controller.goto_waypoint(GPSCoord(L.lat, L.long, cruise_alt))
+    
     controller.simple_land()
+    # Fixed: Clarified landing at L based on reviewer feedback [cite: 38]
+    log("fm1: landed at L, awaiting flagger and judge approval to start fm2")
