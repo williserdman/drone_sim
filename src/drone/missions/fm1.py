@@ -18,5 +18,5 @@ def fm1(controller: DroneControl, mt: MissonTracker, L: GPSCoord, cruise_alt: fl
     controller.goto_waypoint(GPSCoord(L.lat, L.long, cruise_alt))
     
     controller.simple_land()
-    # Fixed: Clarified landing at L based on reviewer feedback [cite: 38]
+
     log("fm1: landed at L, awaiting flagger and judge approval to start fm2")

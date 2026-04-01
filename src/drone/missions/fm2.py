@@ -16,11 +16,11 @@ def drop():
 
 
 def fm2(controller: DroneControl, mt: MissonTracker, drop_target: GPSCoord, cruise_alt: float):
-    ### TAKEOFF FROM WAYPOINT L
+    ### takeoff from waypoint L
     log("fm2: taking off from L")
     controller.takeoff(cruise_alt)
 
-    ### TRANSIT TO FIRE ZONE AND DROP
+    ### transit from fire zone to drop
     log("fm2: transiting to drop zone")
     controller.goto_waypoint(GPSCoord(drop_target.lat, drop_target.long, cruise_alt))
     drop()
