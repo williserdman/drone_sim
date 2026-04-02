@@ -136,13 +136,13 @@ def pickup_sequence(
         print("[!] Grid search exhausted, target not found.")
 
 
-IDs = [5, 11, 8]
+IDs = [3, 4, 5]
 
 mt = MissonTracker()
 print("mission tracker initialized")
 controller = DroneControl(connection_port="/dev/ttyACM0")
 print("controller init")
-camera = Camera(100)
+camera = Camera(50)
 print("camera init")
 lidar = Lidar()
 print("lidar init")
