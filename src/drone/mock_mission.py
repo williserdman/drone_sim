@@ -159,10 +159,14 @@ try:
 
         time.sleep(6)
         print("climb")
-        if controller.vehicle.armed:
+        if controller.vehicle.armed and controller.is_landed:
             print("vehicle armed")
             controller.set_guided_mode()
             controller.simple_takeoff(10)
+        elif controller.vehicle.armed:
+            gps = controller.get_current_gps()
+            gps.alt = 10
+            controller.goto_waypoint(gps)
         else:
             time.sleep(3)
             controller.force_arm_takeoff(10)
