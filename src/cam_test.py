@@ -18,8 +18,9 @@ if __name__ == "__main__":
     ARUCO_ID = 2
     counter = 1
     begin = time.time()
+    quality = 4
     while True:
-        rp = c.vec_to_marker_3d(ARUCO_ID)
+        rp = c.vec_to_marker_3d(ARUCO_ID, quality=quality)
         if isinstance(rp, RelPosComplete):
             # Print to 2 decimal places (centimeter resolution)
             print(f"Target: Fwd: {rp.x:.2f}m, Right: {rp.y:.2f}m, Down: {rp.z:.2f}m")

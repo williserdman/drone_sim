@@ -72,9 +72,9 @@ class Camera:
         return
 
     def vec_to_marker_3d(
-        self, id: int, lidar_alt: Optional[float] = None
+        self, id: int, lidar_alt: Optional[float] = None, quality: Optional[int] = 4
     ) -> RelPosComplete | None:
-        f = self.cm.capture_frame()
+        f = self.cm.capture_frame(quality)
         self._buffer_frame(f)
         corners, ids, rejected = self.cm.get_coords(f)
 
