@@ -14,6 +14,7 @@ from .sensors.camera.camera import Camera
 from .sensors.lidar.lidar import Lidar
 from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
+import math
 
 ARUCO_PICKUP = GPSCoord(41.5013920, -81.6064366, 10)
 DROP_POINT = GPSCoord(41.5016162, -81.6061652, 10)
@@ -116,8 +117,11 @@ def pickup_sequence(
                 # Convert vision-relative correction into an absolute GPS target,
                 # similar to the grid-search GPS waypoint approach.
                 current_gps = controller.get_current_gps()
+                yaw = controller.vehicle.attitude.yaw
+                dNorth = update.x * math.cos(yaw) - update.y * math.sin(yaw)  # type: ignore
+                dEast = update.x * math.sin(yaw) + update.y * math.cos(yaw)  # type: ignore
                 corrected_wp = controller.get_location_metres(
-                    current_gps, update.x, update.y
+                    current_gps, dNorth, dEast
                 )
                 controller.goto_waypoint(corrected_wp)
                 time.sleep(1)  # Let it center before triggering land
