@@ -16,7 +16,7 @@ from dronekit import connect, VehicleMode, LocationGlobalRelative, LocationGloba
 from pymavlink import mavutil  # type: ignore
 
 # === CONFIG ===
-GROUND_SPEED = 10.0
+GROUND_SPEED = 20.0
 ALT_TOL = 0.8
 POS_TOL = 1.0
 TIMEOUT_MOVE = 120
