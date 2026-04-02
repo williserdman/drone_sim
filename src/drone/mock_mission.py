@@ -173,6 +173,7 @@ try:
             controller.set_guided_mode()
             controller.simple_takeoff(10)
         elif controller.vehicle.armed:
+            controller.set_guided_mode()
             gps = controller.get_current_gps()
             gps.alt = 10
             controller.goto_waypoint(gps)
