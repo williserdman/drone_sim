@@ -19,6 +19,8 @@ import math
 ARUCO_PICKUP = GPSCoord(41.5013920, -81.6064366, 10)
 DROP_POINT = GPSCoord(41.5016162, -81.6061652, 10)
 ALT_TOL = 0.00
+HOVER_ALT_TOL = 0.3
+TARGET_HOVER_HEIGHT = 2
 WINDOW = 5
 MULT = 0.3
 
@@ -63,13 +65,13 @@ def pickup_sequence(
 
     # 1. Drop down to search altitude
     alt = lidar.get_distance()
-    how_much_down = alt - 2
+    how_much_down = alt - TARGET_HOVER_HEIGHT
     print(f"moving down {how_much_down}m")
 
     # You can still use a relative move just for the Z-axis drop,
     # but make sure to wait for it to finish!
     controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
-    time.sleep(5)
+    while lidar.get_distance() > (TARGET_HOVER_HEIGHT + HOWVER_ALT_TOL)
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
