@@ -157,7 +157,7 @@ try:
         print("init pickup sequence")
         pickup_sequence(controller, camera, lidar, id)
 
-        time.sleep(3)
+        time.sleep(6)
         print("climb")
         if controller.vehicle.armed:
             print("vehicle armed")
