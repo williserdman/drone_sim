@@ -160,6 +160,7 @@ try:
         time.sleep(3)
         print("climb")
         if controller.vehicle.armed:
+            print("vehicle armed")
             controller.set_guided_mode()
             controller.simple_takeoff(10)
         else:
@@ -168,6 +169,9 @@ try:
 
         print("going to drop point")
         controller.goto_waypoint(DROP_POINT)
+
+        camera.save_frame_buffer_async()
+
         print("dropping")
         controller.hold_waypoint_until_stable(DROP_POINT)
         dropper.drop()

@@ -82,7 +82,7 @@ class CameraManager:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Codec for MP4
         fps = 40  # Frames per second
 
-        self.out = cv2.VideoWriter(output_filename, fourcc, fps, self.frame_size)
+        # self.out = cv2.VideoWriter(output_filename, fourcc, fps, self.frame_size)
         # cap = cv2.VideoCapture("aruco/flight_videos/short_good_arucos.mp4")
 
         self.target_id = None
