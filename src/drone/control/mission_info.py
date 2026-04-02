@@ -1,5 +1,5 @@
 import time
-from common_types import *
+from src.drone.common_types import *
 import json
 
 """
