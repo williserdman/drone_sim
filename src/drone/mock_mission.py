@@ -31,7 +31,7 @@ def aruco_land_precision(
     i = 1
 
     # Loop until ArduPilot explicitly confirms touchdown
-    while alt > ALT_TOL: #not controller.is_landed:
+    while alt > ALT_TOL:  # not controller.is_landed:
         # while alt > ALT_TOL:
 
         # Get raw 3D update
@@ -148,6 +148,7 @@ try:
     mt.begin_aux_timer()
     # controller.takeoff(10)
     original_gps = controller.get_current_gps()
+    original_gps.alt = 10
     controller.force_arm_takeoff(10)
 
     for id in IDs:
