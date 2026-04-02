@@ -193,13 +193,19 @@ class DroneControl:
         self.vehicle.mode = VehicleMode("RTL")
 
     def goto_waypoint(self, coord: GPSCoord) -> int:
-        goto(self.vehicle, coord.lat, coord.long, self.cruise_alt)
+        # 1. Determine the correct target altitude
+        target_alt = coord.alt if coord.alt is not None else self.cruise_alt
+
+        # 2. Pass the dynamic target_alt instead of the hardcoded cruise_alt
+        goto(self.vehicle, coord.lat, coord.long, target_alt)
+
+        # 3. Ensure wait_pos also checks against the correct altitude
         if not wait_pos(
             self.vehicle,
             coord.lat,
             coord.long,
             POS_TOL,
-            coord.alt if coord.alt else self.cruise_alt,
+            target_alt,
             ALT_TOL,
             TIMEOUT_MOVE,
         ):
