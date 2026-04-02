@@ -416,7 +416,9 @@ class DroneControl:
                 "[!] Climb altitude tolerance not reached in time; continuing anyway."
             )
 
-    def get_location_metres(self, original_location: GPSCoord, dNorth: int, dEast: int):
+    def get_location_metres(
+        self, original_location: GPSCoord, dNorth: float, dEast: float
+    ):
         """
         Returns a new Location object offset by dNorth and dEast meters
         from the original location.

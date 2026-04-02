@@ -113,11 +113,13 @@ def pickup_sequence(
                 print("[*] Target Acquired! Switching to LAND mode.")
                 controller.vehicle.flush()
 
-                # At this point, the camera has visual, so we can trust the
-                # visual relative update to center over the marker.
-                controller.guide_move_relative_frame(
-                    RelPosComplete(update.x, update.y, 0)
+                # Convert vision-relative correction into an absolute GPS target,
+                # similar to the grid-search GPS waypoint approach.
+                current_gps = controller.get_current_gps()
+                corrected_wp = controller.get_location_metres(
+                    current_gps, update.x, update.y
                 )
+                controller.goto_waypoint(corrected_wp)
                 time.sleep(1)  # Let it center before triggering land
                 target_found = True
                 break
