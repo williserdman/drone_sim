@@ -203,16 +203,29 @@ class CameraManager:
             z = 0
         return np.array([x, y, z])
 
-    def capture_frame(self) -> np.ndarray:
+    def capture_frame(self, quality) -> np.ndarray:
         """Capture a BGR frame from the camera and downsample by sample_ratio."""
+
+
+        if quality == 4:
+            scale = 1
+        elif quality == 3:
+            scale = 0.75
+        elif quality == 2:
+            scale = 0.25
+        elif quality == 1:
+            scale == 0.10
+
         frame: np.ndarray = self.picam2.capture_array()  # capture frame in BGR
 
         # Downsample using cv2.resize for better quality (less aliasing) than slicing
         width = frame.shape[1] // self.sample_ratio
         height = frame.shape[0] // self.sample_ratio
-        frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
-        self.CAMERA_CENTER = [width / 2, height / 2]
+        small_w, small_h = int(width * scale), int(height * scale)
+        frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
+
+        self.CAMERA_CENTER = [small_w / 2, small_h / 2]
 
         return frame
 
