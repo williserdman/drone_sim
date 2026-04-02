@@ -391,6 +391,10 @@ class DroneControl:
 
     def simple_takeoff(self, alt: int):
         self.vehicle.simple_takeoff(alt)
+        if not wait_alt(self.vehicle, alt, tol=max(ALT_TOL, 0.1), timeout=45):
+            print(
+                "[!] Takeoff altitude tolerance not reached in time; continuing anyway."
+            )
 
     def climb(self, target_alt: float) -> None:
         """Ascend to a specific altitude mid-flight without using takeoff commands."""
