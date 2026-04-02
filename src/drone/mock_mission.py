@@ -62,7 +62,7 @@ def pickup_sequence(
 
     # 1. Drop down to search altitude
     alt = lidar.get_distance()
-    how_much_down = alt - 3
+    how_much_down = alt - 2
     print(f"moving down {how_much_down}m")
 
     # You can still use a relative move just for the Z-axis drop,
