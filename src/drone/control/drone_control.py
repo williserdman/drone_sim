@@ -199,7 +199,7 @@ class DroneControl:
             coord.lat,
             coord.long,
             POS_TOL,
-            self.cruise_alt,
+            coord.alt if coord.alt else self.cruise_alt,
             ALT_TOL,
             TIMEOUT_MOVE,
         ):
