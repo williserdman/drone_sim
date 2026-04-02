@@ -130,7 +130,7 @@ def pickup_sequence(
         print("[!] Grid search exhausted, target not found.")
 
 
-IDs = [5, 6, 7]
+IDs = [5, 7, 8]
 
 mt = MissonTracker()
 print("mission tracker initialized")
