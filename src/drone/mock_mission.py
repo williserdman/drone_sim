@@ -15,7 +15,7 @@ from .sensors.lidar.lidar import Lidar
 from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 
-ARUCO_PICKUP = GPSCoord(41.5013720, -81.6064288, 10)
+ARUCO_PICKUP = GPSCoord(41.5013920, -81.6064366, 10)
 DROP_POINT = GPSCoord(41.5016162, -81.6061652, 10)
 ALT_TOL = 0.00
 WINDOW = 5
@@ -130,7 +130,7 @@ def pickup_sequence(
         print("[!] Grid search exhausted, target not found.")
 
 
-IDs = [4, 5, 6]
+IDs = [5, 6, 7]
 
 mt = MissonTracker()
 print("mission tracker initialized")

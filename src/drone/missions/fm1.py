@@ -10,13 +10,14 @@ from ..control.drone_control import DroneControl
 from ..control.mission_info import MissonTracker
 from .utils import log, warn
 
-def fm1(controller: DroneControl, mt: MissonTracker, L: GPSCoord, cruise_alt: float):
+
+def fm1(controller: DroneControl, mt: MissonTracker, L: GPSCoord, cruise_alt: int):
     log("fm1: taking off from Home")
     controller.takeoff(cruise_alt)
 
     log("fm1: transiting to waypoint L")
     controller.goto_waypoint(GPSCoord(L.lat, L.long, cruise_alt))
-    
+
     controller.simple_land()
 
     log("fm1: landed at L, awaiting flagger and judge approval to start fm2")
