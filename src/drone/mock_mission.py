@@ -103,8 +103,8 @@ def pickup_sequence(
         controller.goto_waypoint(target_wp)
 
         # Wait a moment for the drone to stabilize its tilt/roll after stopping
-        # controller.wait_until_stable()
-        controller.hold_waypoint_until_stable(target_wp)
+        controller.wait_until_stable()
+        # controller.hold_waypoint_until_stable(target_wp)
 
         # Search for target at this position
         for _ in range(5):
