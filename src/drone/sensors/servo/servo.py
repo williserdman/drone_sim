@@ -1,6 +1,7 @@
 from gpiozero import Servo
 import time
 
+
 class Dropper:
     def __init__(self, pins=[1, 7, 8, 25]):
         self.servos = [
@@ -13,7 +14,7 @@ class Dropper:
         time.sleep(delay_hold)
         for s in self.servos:
             s.mid()
-        time.sleep(delay_hold)
+
 
 if __name__ == "__main__":
     dropper = Dropper()

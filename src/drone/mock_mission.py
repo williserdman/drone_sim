@@ -68,7 +68,7 @@ def pickup_sequence(
     # You can still use a relative move just for the Z-axis drop,
     # but make sure to wait for it to finish!
     controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
-    time.sleep(4)
+    time.sleep(5)
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
