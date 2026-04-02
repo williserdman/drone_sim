@@ -428,38 +428,104 @@ class DroneControl:
         self, vel_threshold=0.3, stable_duration=1.5, timeout=10.0
     ) -> bool:
         """
-        Waits until the drone's velocity drops below a specific threshold
+            Waits until the drone's pitch magnitude drops below a specific threshold
         for a continuous period of time.
 
-        :param vel_threshold: Maximum acceptable velocity in m/s.
+            :param vel_threshold: Maximum acceptable absolute pitch in radians.
         :param stable_duration: How many consecutive seconds it must remain below the threshold.
         :param timeout: Maximum time to wait before giving up.
         """
-        print(f"[*] Waiting for drone to stabilize (velocity < {vel_threshold} m/s)...")
+        print(
+            f"[*] Waiting for drone to stabilize (|pitch| < {vel_threshold:.3f} rad)..."
+        )
         t_start = time.time()
         stable_start_time = None
 
         while time.time() - t_start < timeout:
-            # vehicle.velocity returns a list [vx, vy, vz] in m/s
-            vel = self.vehicle.velocity
+            attitude = self.vehicle.attitude
 
-            if vel is not None and len(vel) == 3:
-                # Calculate the overall 3D speed magnitude
-                speed = math.sqrt(vx**2 + vy**2 + vz**2)  # type: ignore
+            if attitude is not None and attitude.pitch is not None:
+                pitch = abs(attitude.pitch)
 
-                if speed < vel_threshold:
+                if pitch < vel_threshold:
                     # It's moving slowly enough. Did we just dip below the threshold?
                     if stable_start_time is None:
                         stable_start_time = time.time()
                     # Has it been stable long enough?
                     elif (time.time() - stable_start_time) >= stable_duration:
-                        print(f"[*] Drone stabilized. (Current speed: {speed:.2f} m/s)")
+                        print(
+                            f"[*] Drone stabilized. (Current |pitch|: {pitch:.3f} rad)"
+                        )
                         return True
-                else:
-                    # It moved too fast, reset the continuous stability timer
-                    stable_start_time = None
+            else:
+                # It moved too fast, reset the continuous stability timer
+                stable_start_time = None
 
             time.sleep(0.1)
 
         print("[!] Stabilization timeout reached; moving on anyway.")
+        return False
+
+    def hold_waypoint_until_stable(
+        self,
+        coord: GPSCoord,
+        hold_seconds=2.0,
+        vel_threshold=0.3,
+        pos_tolerance=POS_TOL,
+        timeout=30.0,
+    ) -> bool:
+        """
+        Commands and holds a GPS waypoint, then waits until the drone is both
+        near the waypoint and stable (low pitch magnitude) for hold_seconds.
+
+        :param coord: Target GPS waypoint.
+        :param hold_seconds: Continuous stable time required.
+        :param vel_threshold: Maximum absolute pitch (rad) to count as stable.
+        :param pos_tolerance: Horizontal distance tolerance to waypoint (m).
+        :param timeout: Maximum overall wait time (s).
+        """
+        target_alt = coord.alt if coord.alt is not None else self.cruise_alt
+        target = LocationGlobalRelative(coord.lat, coord.long, target_alt)
+
+        print(
+            f"[*] Holding waypoint ({coord.lat:.7f}, {coord.long:.7f}) and waiting {hold_seconds:.1f}s stable..."
+        )
+
+        t_start = time.time()
+        stable_start_time = None
+
+        while time.time() - t_start < timeout:
+            # Re-issue target to emulate a GUIDED loiter-at-waypoint hold
+            self.vehicle.simple_goto(target)
+
+            loc = self.vehicle.location.global_relative_frame
+            attitude = self.vehicle.attitude
+
+            if (
+                loc is not None
+                and loc.lat is not None
+                and loc.lon is not None
+                and attitude is not None
+                and attitude.pitch is not None
+            ):
+                pitch = abs(attitude.pitch)
+
+                current_pos = GPSCoord(loc.lat, loc.lon, loc.alt if loc.alt else 0)
+                target_pos = GPSCoord(coord.lat, coord.long, 0)
+                distance = horiz_distance_m(current_pos, target_pos)
+
+                if distance <= pos_tolerance and pitch < vel_threshold:
+                    if stable_start_time is None:
+                        stable_start_time = time.time()
+                    elif (time.time() - stable_start_time) >= hold_seconds:
+                        print(
+                            f"[*] Waypoint hold stable. dist={distance:.2f}m |pitch|={pitch:.3f}rad"
+                        )
+                        return True
+                else:
+                    stable_start_time = None
+
+            time.sleep(0.2)
+
+        print("[!] Waypoint hold stability timeout reached.")
         return False
