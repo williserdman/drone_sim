@@ -31,7 +31,7 @@ def aruco_land_precision(
     i = 1
 
     # Loop until ArduPilot explicitly confirms touchdown
-    while not controller.is_landed:
+    while alt > ALT_TOL: #not controller.is_landed:
         # while alt > ALT_TOL:
 
         # Get raw 3D update
