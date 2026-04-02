@@ -32,13 +32,14 @@ def aruco_land_precision(
     controller.set_land_mode()
     alt = lidar.get_distance()
     i = 1
+    quality = 2
 
     # Loop until ArduPilot explicitly confirms touchdown
     while alt > ALT_TOL:  # not controller.is_landed:
         # while alt > ALT_TOL:
 
         # Get raw 3D update
-        raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt)
+        raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt, quality=quality)
 
         if raw_update:
             controller.land_send_landing_target(raw_update)
@@ -109,10 +110,11 @@ def pickup_sequence(
         # Wait a moment for the drone to stabilize its tilt/roll after stopping
         # controller.wait_until_stable()
         # controller.hold_waypoint_until_stable(target_wp)
+        quality = 4
 
         # Search for target at this position
         for _ in range(5):
-            update = camera.vec_to_marker_3d(target_id)
+            update = camera.vec_to_marker_3d(target_id, quality=quality)
             if update:
                 print("[*] Target Acquired! Switching to LAND mode.")
                 controller.vehicle.flush()
