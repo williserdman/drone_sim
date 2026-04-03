@@ -216,6 +216,12 @@ class CameraManager:
 
         if not hasattr(self, "webcam"):
             self.webcam = cv2.VideoCapture(0)
+            # Request full sensor/frame size to maximize captured scene.
+            self.webcam.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
+            self.webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
+            # Try to force widest view by disabling digital zoom (if supported).
+            if hasattr(cv2, "CAP_PROP_ZOOM"):
+                self.webcam.set(cv2.CAP_PROP_ZOOM, 0)
         ok, frame = self.webcam.read()
         if not ok:
             raise RuntimeError("Failed to capture frame from webcam index 0")
@@ -295,7 +301,7 @@ class CameraManager:
     def end_all(self):
         if hasattr(self, "webcam"):
             self.webcam.release()
-        self.out.release()
+        # self.out.release()
 
     def step(self):
         s = time.time()
