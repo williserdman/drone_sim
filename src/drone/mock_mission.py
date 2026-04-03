@@ -32,7 +32,7 @@ def aruco_land_precision(
     controller.set_land_mode()
     alt = lidar.get_distance()
     i = 1
-    quality = 2
+    quality = 4
 
     # Loop until ArduPilot explicitly confirms touchdown
     while alt > ALT_TOL:  # not controller.is_landed:
@@ -141,7 +141,7 @@ def pickup_sequence(
         print("[!] Grid search exhausted, target not found.")
 
 
-IDs = [3, 4, 5]
+IDs = [5, 6, 7, 8]
 
 mt = MissonTracker()
 print("mission tracker initialized")
