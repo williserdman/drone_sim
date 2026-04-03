@@ -203,20 +203,22 @@ class CameraManager:
             z = 0
         return np.array([x, y, z])
 
-    def capture_frame(self, quality) -> np.ndarray:
+    def capture_frame(self, quality=4) -> np.ndarray:
         """Capture a BGR frame from the camera and downsample by sample_ratio."""
 
-
-        if quality == 4:
-            scale = 1
-        elif quality == 3:
+        scale = 1
+        if quality == 3:
             scale = 0.75
         elif quality == 2:
             scale = 0.25
         elif quality == 1:
-            scale == 0.10
+            scale = 0.10
 
-        frame: np.ndarray = self.picam2.capture_array()  # capture frame in BGR
+        if not hasattr(self, "webcam"):
+            self.webcam = cv2.VideoCapture(0)
+        ok, frame = self.webcam.read()
+        if not ok:
+            raise RuntimeError("Failed to capture frame from webcam index 0")
 
         # Downsample using cv2.resize for better quality (less aliasing) than slicing
         width = frame.shape[1] // self.sample_ratio
@@ -291,11 +293,13 @@ class CameraManager:
         self.out.write(frame) """
 
     def end_all(self):
+        if hasattr(self, "webcam"):
+            self.webcam.release()
         self.out.release()
 
     def step(self):
         s = time.time()
-        frame = self.capture_frame()
+        frame = self.capture_frame(4)
         centers, ids, corners = self.find_centers(frame)  # type: ignore
         vc_cm = self.find_target_center(centers, ids, corners)  # type: ignore
         delta = time.time() - s
