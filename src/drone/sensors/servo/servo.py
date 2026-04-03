@@ -18,5 +18,6 @@ class Dropper:
 
 if __name__ == "__main__":
     dropper = Dropper()
-    time.sleep(5)
+    time.sleep(3)
     dropper.drop()
+    time.sleep(5)

@@ -31,7 +31,11 @@ class CameraManager:
         # camera_width, camera_height, camera_frame_rate = 640, 480, 40
 
         # for full sensor area
-        self.camera_width, self.camera_height, self.camera_frame_rate = 1640, 1232, 40
+        # self.camera_width, self.camera_height, self.camera_frame_rate = 1640, 1232, 40
+        
+        # for webcam
+        self.camera_width, self.camera_height, self.camera_frame_rate = 1920, 1080, 30
+        self.camera_width, self.camera_height, self.camera_frame_rate = 1280, 720, 30
 
         # https://picamera.readthedocs.io/en/release-1.13/fov.html#sensor-modes
         # if we set 480p as the target resolution for the camera then we get a high framerate (way more that we can process)
