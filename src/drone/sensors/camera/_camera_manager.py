@@ -32,10 +32,6 @@ class CameraManager:
 
         # for full sensor area
         # self.camera_width, self.camera_height, self.camera_frame_rate = 1640, 1232, 40
-        
-        # for webcam
-        self.camera_width, self.camera_height, self.camera_frame_rate = 1920, 1080, 30
-        self.camera_width, self.camera_height, self.camera_frame_rate = 1280, 720, 30
 
         # https://picamera.readthedocs.io/en/release-1.13/fov.html#sensor-modes
         # if we set 480p as the target resolution for the camera then we get a high framerate (way more that we can process)
@@ -52,6 +48,19 @@ class CameraManager:
         self.picam2.configure(video_config)
         self.picam2.set_controls({"ExposureValue": -1.5})
         self.picam2.start() """
+
+        # for webcam
+        self.camera_width, self.camera_height, self.camera_frame_rate = 1920, 1080, 30
+        self.camera_width, self.camera_height, self.camera_frame_rate = 1280, 720, 30
+
+        if not hasattr(self, "webcam"):
+            self.webcam = cv2.VideoCapture(0)
+            # Request full sensor/frame size to maximize captured scene.
+            self.webcam.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
+            self.webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
+            # Try to force widest view by disabling digital zoom (if supported).
+            if hasattr(cv2, "CAP_PROP_ZOOM"):
+                self.webcam.set(cv2.CAP_PROP_ZOOM, 0)
 
         self.DISTANCE_THRESHOLD = 50  # pixels
         # dropper = ElectromagneticDropper()
@@ -218,26 +227,19 @@ class CameraManager:
         elif quality == 1:
             scale = 0.10
 
-        if not hasattr(self, "webcam"):
-            self.webcam = cv2.VideoCapture(0)
-            # Request full sensor/frame size to maximize captured scene.
-            self.webcam.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
-            self.webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
-            # Try to force widest view by disabling digital zoom (if supported).
-            if hasattr(cv2, "CAP_PROP_ZOOM"):
-                self.webcam.set(cv2.CAP_PROP_ZOOM, 0)
         ok, frame = self.webcam.read()
         if not ok:
             raise RuntimeError("Failed to capture frame from webcam index 0")
 
-        # Downsample using cv2.resize for better quality (less aliasing) than slicing
-        width = frame.shape[1] // self.sample_ratio
-        height = frame.shape[0] // self.sample_ratio
+        if scale != 1:
+            # Downsample using cv2.resize for better quality (less aliasing) than slicing
+            width = frame.shape[1] // self.sample_ratio
+            height = frame.shape[0] // self.sample_ratio
 
-        small_w, small_h = int(width * scale), int(height * scale)
-        frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            small_w, small_h = int(width * scale), int(height * scale)
+            frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
 
-        self.CAMERA_CENTER = [small_w / 2, small_h / 2]
+            self.CAMERA_CENTER = [small_w / 2, small_h / 2]
 
         return frame
 
