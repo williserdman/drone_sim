@@ -3,7 +3,7 @@ import cv2  # type: ignore
 import cv2.aruco as aruco  # type: ignore
 import math
 
-from picamera2 import Picamera2  # type: ignore
+# from picamera2 import Picamera2  # type: ignore
 import time
 from datetime import datetime
 
@@ -26,7 +26,7 @@ class CameraManager:
         # --------------------------------------------------------------
         self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_250)
 
-        self.picam2 = Picamera2()
+        # self.picam2 = Picamera2()
         # this only gives partial sensor area
         # camera_width, camera_height, camera_frame_rate = 640, 480, 40
 
