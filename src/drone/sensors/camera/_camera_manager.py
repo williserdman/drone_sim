@@ -36,6 +36,7 @@ class CameraManager:
         # https://picamera.readthedocs.io/en/release-1.13/fov.html#sensor-modes
         # if we set 480p as the target resolution for the camera then we get a high framerate (way more that we can process)
         # instead we can try to set camera resolution to capture the entire sensor area then downsample it
+
         """ video_config = self.picam2.create_video_configuration(
             main={"size": (self.camera_width, self.camera_height), "format": "BGR888"},
             controls={
@@ -53,6 +54,7 @@ class CameraManager:
         self.camera_width, self.camera_height, self.camera_frame_rate = 1920, 1080, 30
         self.camera_width, self.camera_height, self.camera_frame_rate = 1280, 720, 30
 
+        """
         if not hasattr(self, "webcam"):
             self.webcam = cv2.VideoCapture(0)
             # Request full sensor/frame size to maximize captured scene.
@@ -61,7 +63,8 @@ class CameraManager:
             # Try to force widest view by disabling digital zoom (if supported).
             if hasattr(cv2, "CAP_PROP_ZOOM"):
                 self.webcam.set(cv2.CAP_PROP_ZOOM, 0)
-
+        """
+        self.webcam = cv2.VideoCapture(0)
         self.DISTANCE_THRESHOLD = 50  # pixels
         # dropper = ElectromagneticDropper()
         self.sample_ratio = 3
