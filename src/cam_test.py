@@ -14,8 +14,8 @@ import time
         time.sleep(1) """
 
 if __name__ == "__main__":
-    c = Camera(50)  # marker size is 100mm
-    ARUCO_ID = 3
+    c = Camera(75)  # marker size is 100mm
+    ARUCO_ID = 9
     counter = 1
     begin = time.time()
     quality = 4
