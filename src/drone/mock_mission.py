@@ -140,7 +140,14 @@ def pickup_sequence(
     else:
         print("[!] Grid search exhausted, target not found.")
 
-def fm3(mt: MissonTracker, controller: DroneControl, camera: Camera, lidar: Lidar, dropper: Dropper):
+
+def fm3(
+    mt: MissonTracker,
+    controller: DroneControl,
+    camera: Camera,
+    lidar: Lidar,
+    dropper: Dropper,
+):
     IDs = [5, 6, 7, 8]
     try:
         mt.begin_mission()
@@ -188,3 +195,13 @@ def fm3(mt: MissonTracker, controller: DroneControl, camera: Camera, lidar: Lida
     except Exception as e:
         print("[ERR]", e)
         controller.rtl()
+
+
+if __name__ == "__main__":
+    mt = MissonTracker(600)
+    controller = DroneControl("/dev/ttyAMA0")
+    camera = Camera(50)
+    lidar = Lidar()
+    dropper = Dropper()
+
+    fm3(mt, controller, camera, lidar, dropper)

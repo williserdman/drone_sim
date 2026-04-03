@@ -8,18 +8,20 @@ from ..sensors.lidar.lidar import Lidar
 from ..sensors.servo.servo import Dropper
 from ..missions.fm1 import fm1
 from ..missions.fm2 import fm2
-#from ..missions.fm3 import fm3
+
+# from ..missions.fm3 import fm3
 from ..mock_mission import fm3
 
 CONNECTION_STRING = "tcp:localhost:5763"  # "/dev/ttyAMA0"
 BAUD_RATE = 921600
+CRUISE_ALT = 10
 
 CMD_FM1 = mavutil.mavlink.MAV_CMD_USER_1  # 31000
 CMD_FM2 = mavutil.mavlink.MAV_CMD_USER_2  # 31001
 CMD_FM3 = mavutil.mavlink.MAV_CMD_USER_3  # 31002
-L = GPSCoord(41.5016162, -81.6061652) # Need to change hardcode for comp
-F1 = GPSCoord(41.5016162, -81.6061652)
-F2 = GPSCoord(41.5016162, -81.6061652)
+L = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)  # Need to change hardcode for comp
+F1 = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
+F2 = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
 
 
 def start_repl():
@@ -68,7 +70,7 @@ def start_repl():
             if msg.command == 31000:
                 print(">> SUCCESS: Received command to trigger FM1")
                 fm1(mt, controller, 10, L)
-                #fm1(controller, mt, camera, lidar)
+                # fm1(controller, mt, camera, lidar)
             elif msg.command == 31001:
                 print(">> SUCCESS: Received command to trigger FM2")
                 fm2(mt, controller, 10, F1, dropper)
