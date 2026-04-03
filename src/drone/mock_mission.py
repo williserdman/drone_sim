@@ -16,8 +16,8 @@ from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 import math
 
-ARUCO_PICKUP = GPSCoord(41.5013920, -81.6064366, 10)
-DROP_POINT = GPSCoord(41.5016162, -81.6061652, 10)
+ARUCO_PICKUP = GPSCoord(41.5013629, -81.6064521, 10)
+DROP_POINT = GPSCoord(41.5013606, -81.6062998, 10)
 ALT_TOL = 0.00
 HOVER_ALT_TOL = 0.3
 TARGET_HOVER_HEIGHT = 3
