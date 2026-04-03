@@ -140,63 +140,51 @@ def pickup_sequence(
     else:
         print("[!] Grid search exhausted, target not found.")
 
+def fm3(mt: MissonTracker, controller: DroneControl, camera: Camera, lidar: Lidar, dropper: Dropper):
+    IDs = [3, 4, 5]
+    try:
+        mt.begin_mission()
+        mt.begin_aux_timer()
+        # controller.takeoff(10)
+        original_gps = controller.get_current_gps()
+        original_gps.alt = 10
+        controller.force_arm_takeoff(10)
 
-IDs = [3, 4, 5]
+        for id in IDs:
+            print("going to pickup waypoint")
+            controller.goto_waypoint(ARUCO_PICKUP)
+            print("init pickup sequence")
+            pickup_sequence(controller, camera, lidar, id)
 
-mt = MissonTracker()
-print("mission tracker initialized")
-controller = DroneControl(connection_port="/dev/ttyACM0")
-print("controller init")
-camera = Camera(50)
-print("camera init")
-lidar = Lidar()
-print("lidar init")
-dropper = Dropper()
-print("dropper init")
+            time.sleep(6)
+            print("climb")
+            if controller.vehicle.armed and controller.is_landed:
+                print("vehicle armed")
+                controller.set_guided_mode()
+                controller.simple_takeoff(10)
+            elif controller.vehicle.armed:
+                controller.set_guided_mode()
+                gps = controller.get_current_gps()
+                gps.alt = 10
+                controller.goto_waypoint(gps)
+            else:
+                time.sleep(3)
+                controller.force_arm_takeoff(10)
 
-try:
-    mt.begin_mission()
-    mt.begin_aux_timer()
-    # controller.takeoff(10)
-    original_gps = controller.get_current_gps()
-    original_gps.alt = 10
-    controller.force_arm_takeoff(10)
+            print("going to drop point")
+            controller.goto_waypoint(DROP_POINT)
 
-    for id in IDs:
-        print("going to pickup waypoint")
-        controller.goto_waypoint(ARUCO_PICKUP)
-        print("init pickup sequence")
-        pickup_sequence(controller, camera, lidar, id)
+            camera.save_frame_buffer_async()
 
-        time.sleep(6)
-        print("climb")
-        if controller.vehicle.armed and controller.is_landed:
-            print("vehicle armed")
-            controller.set_guided_mode()
-            controller.simple_takeoff(10)
-        elif controller.vehicle.armed:
-            controller.set_guided_mode()
-            gps = controller.get_current_gps()
-            gps.alt = 10
-            controller.goto_waypoint(gps)
-        else:
-            time.sleep(3)
-            controller.force_arm_takeoff(10)
+            print("dropping")
+            controller.hold_waypoint_until_stable(DROP_POINT)
+            dropper.drop()
 
-        print("going to drop point")
-        controller.goto_waypoint(DROP_POINT)
+        controller.goto_waypoint(original_gps)
+        controller.simple_land()
+        controller.disarm()
+        mt.end_mission()
 
-        camera.save_frame_buffer_async()
-
-        print("dropping")
-        controller.hold_waypoint_until_stable(DROP_POINT)
-        dropper.drop()
-
-    controller.goto_waypoint(original_gps)
-    controller.simple_land()
-    controller.disarm()
-    mt.end_mission()
-
-except Exception as e:
-    print("[ERR]", e)
-    controller.rtl()
+    except Exception as e:
+        print("[ERR]", e)
+        controller.rtl()

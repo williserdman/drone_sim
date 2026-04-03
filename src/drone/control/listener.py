@@ -1,5 +1,15 @@
 import time
 from pymavlink import mavutil
+from ..common_types import *
+from drone_control import DroneControl
+from mission_info import MissonTracker
+from ..sensors.camera.camera import Camera
+from ..sensors.lidar.lidar import Lidar
+from ..sensors.servo.servo import Dropper
+from ..missions.fm1 import fm1
+from ..missions.fm2 import fm2
+#from ..missions.fm3 import fm3
+from ..mock_mission import fm3
 
 CONNECTION_STRING = "tcp:localhost:5763"  # "/dev/ttyAMA0"
 BAUD_RATE = 921600
@@ -7,6 +17,9 @@ BAUD_RATE = 921600
 CMD_FM1 = mavutil.mavlink.MAV_CMD_USER_1  # 31000
 CMD_FM2 = mavutil.mavlink.MAV_CMD_USER_2  # 31001
 CMD_FM3 = mavutil.mavlink.MAV_CMD_USER_3  # 31002
+L = GPSCoord(41.5016162, -81.6061652) # Need to change hardcode for comp
+F1 = GPSCoord(41.5016162, -81.6061652)
+F2 = GPSCoord(41.5016162, -81.6061652)
 
 
 def start_repl():
@@ -20,6 +33,17 @@ def start_repl():
     print("[*] Waiting for heartbeat from Pixhawk...")
     master.wait_heartbeat()
     print("[+] Heartbeat received! Ready to receive commands.\n")
+
+    mt = MissonTracker()
+    print("mission tracker initialized")
+    controller = DroneControl(connection_port="/dev/ttyACM0")
+    print("controller init")
+    camera = Camera(50)
+    print("camera init")
+    lidar = Lidar()
+    print("lidar init")
+    dropper = Dropper()
+    print("dropper init")
 
     while True:
         # i think we have to send at least one heartbeat so px4 knows where the component is
@@ -43,10 +67,14 @@ def start_repl():
         if msg.target_component == 191:
             if msg.command == 31000:
                 print(">> SUCCESS: Received command to trigger FM1")
+                fm1(mt, controller, 10, L)
+                #fm1(controller, mt, camera, lidar)
             elif msg.command == 31001:
                 print(">> SUCCESS: Received command to trigger FM2")
+                fm2(mt, controller, 10, F1, dropper)
             elif msg.command == 31002:
                 print(">> SUCCESS: Received command to trigger FM3")
+                fm3(mt, controller, camera, lidar, dropper)
             else:
                 print(f">> UNKNOWN: Received unmapped COMMAND ID: {msg.command}")
 
