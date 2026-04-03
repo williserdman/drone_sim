@@ -36,7 +36,7 @@ class CameraManager:
         # https://picamera.readthedocs.io/en/release-1.13/fov.html#sensor-modes
         # if we set 480p as the target resolution for the camera then we get a high framerate (way more that we can process)
         # instead we can try to set camera resolution to capture the entire sensor area then downsample it
-        video_config = self.picam2.create_video_configuration(
+        """ video_config = self.picam2.create_video_configuration(
             main={"size": (self.camera_width, self.camera_height), "format": "BGR888"},
             controls={
                 "FrameDurationLimits": (
@@ -47,7 +47,7 @@ class CameraManager:
         )
         self.picam2.configure(video_config)
         self.picam2.set_controls({"ExposureValue": -1.5})
-        self.picam2.start()
+        self.picam2.start() """
 
         self.DISTANCE_THRESHOLD = 50  # pixels
         # dropper = ElectromagneticDropper()
