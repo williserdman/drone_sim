@@ -91,8 +91,8 @@ class Camera:
                 # MOUNTING ASSUMPTIONS:
                 # - Top of image (-cam_y) is the drone's front -> Bottom (+cam_y) is back
                 # - Right of image (+cam_x) is the drone's right -> Left (-cam_x) is left
-                drone_forward = -cam_y_m
-                drone_right = cam_x_m
+                drone_forward = cam_x_m
+                drone_right = cam_y_m
 
                 # 3. Integrate LiDAR
                 # Use highly accurate LiDAR for Z (Down) if available,
