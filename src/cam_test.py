@@ -14,8 +14,8 @@ import time
         time.sleep(1) """
 
 if __name__ == "__main__":
-    c = Camera(100)  # marker size is 100mm
-    ARUCO_ID = 2
+    c = Camera(50)  # marker size is 100mm
+    ARUCO_ID = 3
     counter = 1
     begin = time.time()
     quality = 4
@@ -24,6 +24,7 @@ if __name__ == "__main__":
         if isinstance(rp, RelPosComplete):
             # Print to 2 decimal places (centimeter resolution)
             print(f"Target: Fwd: {rp.x:.2f}m, Right: {rp.y:.2f}m, Down: {rp.z:.2f}m")
+            pass
         else:
             pass
             # print(f"no markers of id:{ARUCO_ID} detected")

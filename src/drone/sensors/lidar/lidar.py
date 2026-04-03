@@ -14,7 +14,7 @@ class Lidar:
 
     def get_distance(self) -> float:
         # from mounting 27 cm offset
-        return (self.sensor.distance -27) / 100  # distance in meters
+        return (self.sensor.distance -15) / 100  # distance in meters
 
 
 if __name__ == "__main__":

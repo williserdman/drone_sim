@@ -16,11 +16,11 @@ from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 import math
 
-ARUCO_PICKUP = GPSCoord(41.5013920, -81.6064366, 10)
-DROP_POINT = GPSCoord(41.5016162, -81.6061652, 10)
+ARUCO_PICKUP = GPSCoord(41.5013629, -81.6064521, 10)
+DROP_POINT = GPSCoord(41.5013606, -81.6062998, 10)
 ALT_TOL = 0.00
 HOVER_ALT_TOL = 0.3
-TARGET_HOVER_HEIGHT = 2
+TARGET_HOVER_HEIGHT = 3
 WINDOW = 5
 MULT = 0.3
 
@@ -32,7 +32,7 @@ def aruco_land_precision(
     controller.set_land_mode()
     alt = lidar.get_distance()
     i = 1
-    quality = 2
+    quality = 4
 
     # Loop until ArduPilot explicitly confirms touchdown
     while alt > ALT_TOL:  # not controller.is_landed:
@@ -141,7 +141,7 @@ def pickup_sequence(
         print("[!] Grid search exhausted, target not found.")
 
 def fm3(mt: MissonTracker, controller: DroneControl, camera: Camera, lidar: Lidar, dropper: Dropper):
-    IDs = [3, 4, 5]
+    IDs = [5, 6, 7, 8]
     try:
         mt.begin_mission()
         mt.begin_aux_timer()
