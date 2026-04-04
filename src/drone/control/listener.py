@@ -10,6 +10,7 @@ from ..missions.fm1 import fm1
 from ..missions.fm2 import fm2
 from ..mock_mission import fm3
 from ..missions.utils import log, warn
+import serial
 
 CONNECTION_STRING = "/dev/ttyACM0"
 BAUD_RATE = 115200
