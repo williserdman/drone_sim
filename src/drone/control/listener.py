@@ -4,15 +4,11 @@ from ..common_types import *
 from .drone_control import DroneControl
 from .mission_info import MissonTracker
 from ..sensors.camera.camera import Camera
-
 from ..sensors.lidar.lidar import Lidar
 from ..sensors.servo.servo import Dropper
 from ..missions.fm1 import fm1
 from ..missions.fm2 import fm2
-
-# from ..missions.fm3 import fm3
 from ..mock_mission import fm3
-
 from ..missions.utils import log, warn
 
 CONNECTION_STRING = "/dev/ttyACM0"
@@ -33,6 +29,8 @@ TARGET = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
 WA_IDS = {6}
 WM_IDS = {7, 8}
 
+ARUCO_SIZE = 75
+
 
 def start_repl():
     """print(f"[*] Starting RPi Command Listener on {CONNECTION_STRING}...")
@@ -48,9 +46,9 @@ def start_repl():
 
     mt = MissonTracker()
     print("mission tracker initialized")
-    controller = DroneControl(connection_port="/dev/ttyACM0")
+    controller = DroneControl(connection_port=CONNECTION_STRING)
     print("controller init")
-    camera = Camera(50)
+    camera = Camera(ARUCO_SIZE)
     print("camera init")
     lidar = Lidar()
     print("lidar init")
@@ -61,7 +59,7 @@ def start_repl():
 
     # controller.takeoff(10)
     original_gps = controller.get_current_gps()
-    original_gps.alt = 10
+    original_gps.alt = CRUISE_ALT
 
     while True:
         # i think we have to send at least one heartbeat so px4 knows where the component is
@@ -112,6 +110,8 @@ def start_repl():
             master.mav.command_ack_send(
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED
             )
+
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
