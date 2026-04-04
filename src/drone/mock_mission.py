@@ -198,6 +198,7 @@ def fm3(
 
 if __name__ == "__main__":
     mt = MissonTracker(600)
+    mt.begin_mission()
     controller = DroneControl("/dev/ttyACM0")
     camera = Camera(50)
     lidar = Lidar()
