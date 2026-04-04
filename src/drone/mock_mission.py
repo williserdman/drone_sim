@@ -198,7 +198,7 @@ def fm3(
 
 if __name__ == "__main__":
     mt = MissonTracker(600)
-    controller = DroneControl("/dev/ttyAMA0")
+    controller = DroneControl("/dev/ttyACM0")
     camera = Camera(50)
     lidar = Lidar()
     dropper = Dropper()
