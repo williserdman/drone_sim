@@ -166,11 +166,11 @@ def fm3(
             print("init pickup sequence")
             success = pickup_sequence(controller, camera, lidar, id)
 
+            controller.set_guided_mode()
             if success:
                 print("climb")
                 if controller.vehicle.armed and controller.is_landed():
                     print("vehicle armed")
-                    controller.set_guided_mode()
                     controller.simple_takeoff(10)
                 elif controller.vehicle.armed:
                     controller.set_guided_mode()
@@ -189,6 +189,7 @@ def fm3(
                 dropper.drop()
             else:
                 print(f"Skipping drop for ID {id} because pickup failed.")
+                controller.climb(10)
 
     except Exception as e:
         print("[ERR]", e)

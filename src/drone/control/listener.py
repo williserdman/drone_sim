@@ -1,9 +1,10 @@
 import time
 from pymavlink import mavutil
 from ..common_types import *
-from drone_control import DroneControl
-from mission_info import MissonTracker
+from .drone_control import DroneControl
+from .mission_info import MissonTracker
 from ..sensors.camera.camera import Camera
+
 from ..sensors.lidar.lidar import Lidar
 from ..sensors.servo.servo import Dropper
 from ..missions.fm1 import fm1
@@ -58,6 +59,10 @@ def start_repl():
 
     master = controller.vehicle._master
 
+    # controller.takeoff(10)
+    original_gps = controller.get_current_gps()
+    original_gps.alt = 10
+
     while True:
         # i think we have to send at least one heartbeat so px4 knows where the component is
         # should we keep sending it? im not sure if anything beyond the first one is in use
@@ -92,8 +97,13 @@ def start_repl():
             elif msg.command == 31002:
                 print(">> SUCCESS: Received command to trigger FM3")
                 fm3(mt, controller, camera, lidar, dropper, WA_IDS, WA, TARGET)
+                warn("proceeding to WM targets", master)
                 fm3(mt, controller, camera, lidar, dropper, WM_IDS, WM, TARGET)
                 warn("fm3 finised, returning home", master)
+                controller.goto_waypoint(original_gps)
+                controller.simple_land()
+                controller.disarm()
+
             else:
                 print(f">> UNKNOWN: Received unmapped COMMAND ID: {msg.command}")
                 warn("invalid command", master)
