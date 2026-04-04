@@ -1,5 +1,6 @@
 from ..common_types import *
 import os
+from typing import Optional
 
 # os.environ["MAVLINK20"] = "1"
 
@@ -192,8 +193,11 @@ class DroneControl:
     def rtl(self):
         self.vehicle.mode = VehicleMode("RTL")
 
-    def goto_waypoint(self, coord: GPSCoord) -> int:
-        # 1. Determine the correct target altitude
+    def goto_waypoint(
+        self, coord: GPSCoord, position_tol: Optional[float] = None
+    ) -> int:
+        position_tol = POS_TOL if position_tol is None else position_tol
+
         target_alt = coord.alt if coord.alt is not None else self.cruise_alt
 
         # 2. Pass the dynamic target_alt instead of the hardcoded cruise_alt
@@ -204,7 +208,7 @@ class DroneControl:
             self.vehicle,
             coord.lat,
             coord.long,
-            POS_TOL,
+            position_tol,
             target_alt,
             ALT_TOL,
             TIMEOUT_MOVE,

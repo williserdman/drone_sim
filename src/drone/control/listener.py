@@ -12,20 +12,29 @@ from ..missions.fm2 import fm2
 # from ..missions.fm3 import fm3
 from ..mock_mission import fm3
 
-CONNECTION_STRING = "tcp:localhost:5763"  # "/dev/ttyAMA0"
-BAUD_RATE = 921600
+from ..missions.utils import log, warn
+
+CONNECTION_STRING = "/dev/ttyACM0"
+BAUD_RATE = 115200
 CRUISE_ALT = 10
 
 CMD_FM1 = mavutil.mavlink.MAV_CMD_USER_1  # 31000
 CMD_FM2 = mavutil.mavlink.MAV_CMD_USER_2  # 31001
 CMD_FM3 = mavutil.mavlink.MAV_CMD_USER_3  # 31002
+
 L = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)  # Need to change hardcode for comp
 F1 = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
 F2 = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
+WA = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
+WM = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
+TARGET = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
+
+WA_IDS = {6}
+WM_IDS = {7, 8}
 
 
 def start_repl():
-    print(f"[*] Starting RPi Command Listener on {CONNECTION_STRING}...")
+    """print(f"[*] Starting RPi Command Listener on {CONNECTION_STRING}...")
 
     # connect as companion computer, default source for companion computer is 191
     master = mavutil.mavlink_connection(
@@ -34,7 +43,7 @@ def start_repl():
 
     print("[*] Waiting for heartbeat from Pixhawk...")
     master.wait_heartbeat()
-    print("[+] Heartbeat received! Ready to receive commands.\n")
+    print("[+] Heartbeat received! Ready to receive commands.\n")"""
 
     mt = MissonTracker()
     print("mission tracker initialized")
@@ -46,6 +55,8 @@ def start_repl():
     print("lidar init")
     dropper = Dropper()
     print("dropper init")
+
+    master = controller.vehicle._master
 
     while True:
         # i think we have to send at least one heartbeat so px4 knows where the component is
@@ -65,20 +76,27 @@ def start_repl():
         if not msg:
             continue
 
+        mt.begin_mission()
+        warn("time started: 10:00 minutes", master)
+
         # i think type command_int, not sure which one actually worked
         if msg.target_component == 191:
             if msg.command == 31000:
                 print(">> SUCCESS: Received command to trigger FM1")
-                fm1(mt, controller, 10, L)
-                # fm1(controller, mt, camera, lidar)
+                fm1(mt, controller, CRUISE_ALT, L)
+                warn("fm1 finished, awaiting command", master)
             elif msg.command == 31001:
                 print(">> SUCCESS: Received command to trigger FM2")
-                fm2(mt, controller, 10, F1, dropper)
+                fm2(mt, controller, CRUISE_ALT, F1, dropper)
+                warn("fm2 finished, awaiting command", master)
             elif msg.command == 31002:
                 print(">> SUCCESS: Received command to trigger FM3")
-                fm3(mt, controller, camera, lidar, dropper)
+                fm3(mt, controller, camera, lidar, dropper, WA_IDS, WA, TARGET)
+                fm3(mt, controller, camera, lidar, dropper, WM_IDS, WM, TARGET)
+                warn("fm3 finised, returning home", master)
             else:
                 print(f">> UNKNOWN: Received unmapped COMMAND ID: {msg.command}")
+                warn("invalid command", master)
 
             # ack? not sure if this is needed
             master.mav.command_ack_send(

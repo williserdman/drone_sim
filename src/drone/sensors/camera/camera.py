@@ -72,9 +72,9 @@ class Camera:
         return
 
     def vec_to_marker_3d(
-        self, id: int, lidar_alt: Optional[float] = None, quality: Optional[int] = 4
+        self, id: int, lidar_alt: Optional[float] = None, quality: int = 4
     ) -> RelPosComplete | None:
-        f = self.cm.capture_frame(quality)
+        f = self.cm.capture_frame(quality=quality)
         self._buffer_frame(f)
         corners, ids, rejected = self.cm.get_coords(f)
 
@@ -105,6 +105,44 @@ class Camera:
 
                 camera_offset = 0.1  # meters
                 return RelPosComplete(drone_forward, drone_right, drone_down + 0.1)
+
+        return None
+
+    def vec_to_any_marker_3d(
+        self, lidar_alt: Optional[float] = None, quality: int = 4
+    ) -> tuple[RelPosComplete, int] | None:
+        f = self.cm.capture_frame(quality=quality)
+        self._buffer_frame(f)
+        corners, ids, rejected = self.cm.get_coords(f)
+
+        if ids is not None and len(ids) > 0:
+            id = ids[0]
+            tvec_mm = self.cm.estimate_pose_3d(id, corners, ids, self.marker_size_mm)
+
+            if tvec_mm is not None:
+                # 1. Convert camera translation from millimeters to meters
+                cam_x_m = tvec_mm[0] / 1000.0
+                cam_y_m = tvec_mm[1] / 1000.0
+                cam_z_m = tvec_mm[2] / 1000.0
+
+                # 2. Map Camera Frame -> Drone Body FRD Frame
+                # MOUNTING ASSUMPTIONS:
+                # - Top of image (-cam_y) is the drone's front -> Bottom (+cam_y) is back
+                # - Right of image (+cam_x) is the drone's right -> Left (-cam_x) is left
+                drone_forward = cam_x_m
+                drone_right = cam_y_m
+
+                # 3. Integrate LiDAR
+                # Use highly accurate LiDAR for Z (Down) if available,
+                # otherwise fallback to OpenCV's visual depth estimation.
+                drone_down = lidar_alt if lidar_alt is not None else cam_z_m
+
+                print(
+                    f"forward: {drone_forward:.2f}m, right: {drone_right:.2f}m, down: {drone_down:.2f}m"
+                )
+
+                camera_offset = 0.1  # meters
+                return RelPosComplete(drone_forward, drone_right, drone_down + 0.1), id
 
         return None
 

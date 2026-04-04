@@ -35,7 +35,7 @@ def aruco_land_precision(
     quality = 4
 
     # Loop until ArduPilot explicitly confirms touchdown
-    while alt > ALT_TOL:  # not controller.is_landed():
+    while not controller.is_landed():  # alt > ALT_TOL:  #
         # while alt > ALT_TOL:
 
         # Get raw 3D update
@@ -105,7 +105,7 @@ def pickup_sequence(
 
         # Use your robust spin-wait goto!
         # The drone will fight the wind until it reaches this exact earth coordinate.
-        controller.goto_waypoint(target_wp)
+        controller.goto_waypoint(target_wp, position_tol=0.2)
 
         # Wait a moment for the drone to stabilize its tilt/roll after stopping
         # controller.wait_until_stable()
@@ -137,8 +137,10 @@ def pickup_sequence(
     # Trigger landing sequence outside the loop
     if target_found:
         aruco_land_precision(controller, camera, lidar, target_id)
+        return True
     else:
         print("[!] Grid search exhausted, target not found.")
+        return False
 
 
 def fm3(
@@ -147,50 +149,46 @@ def fm3(
     camera: Camera,
     lidar: Lidar,
     dropper: Dropper,
+    possible_ids: set,
+    pickup_point: GPSCoord,
+    target_point: GPSCoord,
 ):
-    IDs = [5, 6, 7, 8]
+    IDs = list(possible_ids)
     try:
-        mt.begin_mission()
-        mt.begin_aux_timer()
-        # controller.takeoff(10)
-        original_gps = controller.get_current_gps()
-        original_gps.alt = 10
-        controller.force_arm_takeoff(10)
-
         for id in IDs:
+
+            if mt.time_left() < 60:
+                return
+
             print("going to pickup waypoint")
-            controller.goto_waypoint(ARUCO_PICKUP)
+            controller.goto_waypoint(pickup_point)
+
             print("init pickup sequence")
-            pickup_sequence(controller, camera, lidar, id)
+            success = pickup_sequence(controller, camera, lidar, id)
 
-            time.sleep(6)
-            print("climb")
-            if controller.vehicle.armed and controller.is_landed:
-                print("vehicle armed")
-                controller.set_guided_mode()
-                controller.simple_takeoff(10)
-            elif controller.vehicle.armed:
-                controller.set_guided_mode()
-                gps = controller.get_current_gps()
-                gps.alt = 10
-                controller.goto_waypoint(gps)
+            if success:
+                print("climb")
+                if controller.vehicle.armed and controller.is_landed():
+                    print("vehicle armed")
+                    controller.set_guided_mode()
+                    controller.simple_takeoff(10)
+                elif controller.vehicle.armed:
+                    controller.set_guided_mode()
+                    controller.climb(10)
+                else:
+                    time.sleep(8)
+                    controller.force_arm_takeoff(10)
+
+                print("going to drop point")
+                controller.goto_waypoint(DROP_POINT)
+
+                camera.save_frame_buffer_async()
+
+                print("dropping")
+                controller.hold_waypoint_until_stable(target_point)
+                dropper.drop()
             else:
-                time.sleep(3)
-                controller.force_arm_takeoff(10)
-
-            print("going to drop point")
-            controller.goto_waypoint(DROP_POINT)
-
-            camera.save_frame_buffer_async()
-
-            print("dropping")
-            controller.hold_waypoint_until_stable(DROP_POINT)
-            dropper.drop()
-
-        controller.goto_waypoint(original_gps)
-        controller.simple_land()
-        controller.disarm()
-        mt.end_mission()
+                print(f"Skipping drop for ID {id} because pickup failed.")
 
     except Exception as e:
         print("[ERR]", e)
@@ -204,4 +202,13 @@ if __name__ == "__main__":
     lidar = Lidar()
     dropper = Dropper()
 
-    fm3(mt, controller, camera, lidar, dropper)
+    # controller.takeoff(10)
+    original_gps = controller.get_current_gps()
+    original_gps.alt = 10
+    controller.force_arm_takeoff(10)
+
+    fm3(mt, controller, camera, lidar, dropper, {6, 7, 8}, ARUCO_PICKUP, DROP_POINT)
+
+    controller.goto_waypoint(original_gps)
+    controller.simple_land()
+    controller.disarm()
