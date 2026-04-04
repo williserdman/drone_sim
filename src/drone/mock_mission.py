@@ -180,7 +180,7 @@ def fm3(
                     controller.force_arm_takeoff(10)
 
                 print("going to drop point")
-                controller.goto_waypoint(DROP_POINT)
+                controller.goto_waypoint(target_point)
 
                 camera.save_frame_buffer_async()
 
