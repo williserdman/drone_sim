@@ -174,13 +174,15 @@ class DroneControl:
         # TODO
         # tracking landed state, probably should track a few more things
         self.is_on_ground = False
-        controller_ref = self
 
         @self.vehicle.on_message("EXTENDED_SYS_STATE")
-        def listener(vehicle, name, message):
+        def listener(self, name, message):
             # MAV_LANDED_STATE_ON_GROUND = 1
             # MAV_LANDED_STATE_IN_AIR = 2
-            controller_ref.is_on_ground = getattr(message, "landed_state", None) == 1
+            if message.landed_state == 1:
+                self.is_on_ground = True
+            else:
+                self.is_on_ground = False
 
     def is_landed(self) -> bool:
         return self.is_on_ground
@@ -246,16 +248,11 @@ class DroneControl:
 
         return
 
-    def set_guided_mode(self, timeout: float = 10.0) -> bool:
+    def set_guided_mode(self):
         print("Shifting to GUIDED mode...")
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            if getattr(self.vehicle.mode, "name", None) == "GUIDED":
-                return True
+        while self.vehicle.mode != VehicleMode("GUIDED"):
+            time.sleep(0.5)
             self.vehicle.mode = VehicleMode("GUIDED")
-            time.sleep(0.3)
-        print("[!] Timed out waiting for GUIDED mode.")
-        return False
 
     def land_send_landing_target(self, dir: RelPosComplete) -> int:
         """
