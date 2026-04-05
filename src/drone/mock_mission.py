@@ -198,6 +198,9 @@ def fm3(
     except Exception as e:
         print("[ERR]", e)
         controller.rtl()
+    except KeyboardInterrupt as e:
+        print("[ERR]", e)
+        controller.rtl()
 
 
 if __name__ == "__main__":
