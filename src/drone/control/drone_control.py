@@ -39,7 +39,7 @@ def horiz_distance_m(a: GPSCoord, b: GPSCoord):
     y = dlat
     return 6378137.0 * math.sqrt(x * x + y * y)
 
-
+# good has timeout
 def wait_alt(vehicle, target_alt_m, tol=ALT_TOL, timeout=60):
     """Wait until relative altitude is within tol of target_alt_m."""
     t0 = time.time()
@@ -51,6 +51,7 @@ def wait_alt(vehicle, target_alt_m, tol=ALT_TOL, timeout=60):
     return False
 
 
+# good has timeout
 def wait_pos(
     vehicle,
     target_lat,
@@ -86,7 +87,7 @@ def wait_pos(
         time.sleep(0.3)
     return False
 
-
+# I hope the drone is on the ground when this is called...
 def arm_and_takeoff(vehicle, target_alt_m):
     # Basic pre-arm wait
     print("[*] Waiting for vehicle to initialize & become armable…")
@@ -102,7 +103,6 @@ def arm_and_takeoff(vehicle, target_alt_m):
     # print("Disabling pre-arm checks...")
     # vehicle.parameters["ARMING_CHECK"] = 0
 
-    # 3. Switch to a non-GPS flight mode
     # You cannot arm in GUIDED or AUTO without a GPS fix.
     print("Switching to STABILIZE mode...")
     vehicle.mode = VehicleMode("STABILIZE")
@@ -112,7 +112,6 @@ def arm_and_takeoff(vehicle, target_alt_m):
         print(" Waiting for mode change...")
         time.sleep(1)
 
-    # 4. Force Arm the vehicle
     print("Arming motors...")
     vehicle.armed = True
 

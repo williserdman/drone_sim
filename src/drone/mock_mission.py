@@ -37,6 +37,7 @@ def aruco_land_precision(
     timeout = 60.0
 
     # Loop until ArduPilot explicitly confirms touchdown
+    # this for loop will exit after timeout -> 60 seconds
     while not controller.is_landed():  # alt > ALT_TOL:  #
         if time.time() - t0 > timeout:
             raise TimeoutError("Precision-landing timeout waiting for landed state")
@@ -67,6 +68,8 @@ def pickup_sequence(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
     controller.set_guided_mode()
+    timeout = 60
+    t0 = time.time()
 
     # 1. Drop down to search altitude
     alt = lidar.get_distance()
@@ -76,9 +79,15 @@ def pickup_sequence(
     # You can still use a relative move just for the Z-axis drop,
     # but make sure to wait for it to finish!
     controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
-    while abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
+    
+    # attempt for one minute
+    for _ in range (600):
+        if abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
+            break
         time.sleep(0.1)
-
+    
+    print(f"[*] Hover alt difference: {abs(lidar.get_distance() - TARGET_HOVER_HEIGHT)}")
+    
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
 
@@ -109,8 +118,8 @@ def pickup_sequence(
 
         # Use your robust spin-wait goto!
         # The drone will fight the wind until it reaches this exact earth coordinate.
-        controller.goto_waypoint(target_wp, position_tol=0.2)
-
+        val = controller.goto_waypoint(target_wp, position_tol=0.2)
+        print(f"return of goto func: {val}")
         # Wait a moment for the drone to stabilize its tilt/roll after stopping
         # controller.wait_until_stable()
         # controller.hold_waypoint_until_stable(target_wp)
@@ -132,7 +141,10 @@ def pickup_sequence(
                 corrected_wp = controller.get_location_metres(
                     current_gps, dNorth, dEast
                 )
-                controller.goto_waypoint(corrected_wp)
+                val = controller.goto_waypoint(corrected_wp)
+                print(f"return of goto func: {val}")
+
+
                 time.sleep(1)  # Let it center before triggering land
                 target_found = True
                 break
@@ -165,7 +177,9 @@ def fm3(
                 return
 
             print("going to pickup waypoint")
-            controller.goto_waypoint(pickup_point)
+            val = controller.goto_waypoint(pickup_point)
+            print(f"return of goto func: {val}")
+
 
             print("init pickup sequence")
             success = pickup_sequence(controller, camera, lidar, id)
@@ -184,7 +198,8 @@ def fm3(
                     controller.force_arm_takeoff(10)
 
                 print("going to drop point")
-                controller.goto_waypoint(target_point)
+                val = controller.goto_waypoint(target_point)
+                print(f"return of goto func: {val}")
 
                 camera.save_frame_buffer_async()
 
@@ -218,6 +233,8 @@ if __name__ == "__main__":
 
     fm3(mt, controller, camera, lidar, dropper, {6, 7, 8}, ARUCO_PICKUP, DROP_POINT)
 
-    controller.goto_waypoint(original_gps)
+    val = controller.goto_waypoint(original_gps)
+
+    print(f"return of goto func: {val}")
     controller.simple_land()
     controller.disarm()
