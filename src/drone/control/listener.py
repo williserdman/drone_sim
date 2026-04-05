@@ -10,7 +10,6 @@ from ..missions.fm1 import fm1
 from ..missions.fm2 import fm2
 from ..mock_mission import fm3
 from ..missions.utils import log, warn
-import serial
 
 CONNECTION_STRING = "/dev/ttyACM0"
 BAUD_RATE = 115200
@@ -32,41 +31,28 @@ WA_IDS = {6}
 WM_IDS = {7, 8}
 
 ARUCO_SIZE = 75
+COMPANION_COMPONENT_ID = 191
+GCS_SYSTEM_ID = 200
+
+
+import queue
 
 
 def start_repl():
-    """print(f"[*] Starting RPi Command Listener on {CONNECTION_STRING}...")
-
-    # connect as companion computer, default source for companion computer is 191
-    master = mavutil.mavlink_connection(
-        CONNECTION_STRING, baud=BAUD_RATE, source_system=1, source_component=191
-    )
-
-    print("[*] Waiting for heartbeat from Pixhawk...")
-    master.wait_heartbeat()
-    print("[+] Heartbeat received! Ready to receive commands.\n")"""
-
     mt = MissonTracker()
-    print("mission tracker initialized")
     controller = DroneControl(connection_port=CONNECTION_STRING)
-    print("controller init")
     camera = Camera(ARUCO_SIZE)
-    print("camera init")
     lidar = Lidar()
-    print("lidar init")
     dropper = Dropper()
-    print("dropper init")
 
-    master = controller.vehicle._master
-
-    # controller.takeoff(10)
     original_gps = controller.get_current_gps()
     original_gps.alt = CRUISE_ALT
 
+    print("\n[+] System initialized. Waiting for commands from GCS...")
+
     while True:
-        # i think we have to send at least one heartbeat so px4 knows where the component is
-        # should we keep sending it? im not sure if anything beyond the first one is in use
-        master.mav.heartbeat_send(
+        # 1. Send heartbeat for the companion computer
+        controller.vehicle._master.mav.heartbeat_send(
             mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER,
             mavutil.mavlink.MAV_AUTOPILOT_INVALID,
             0,
@@ -74,46 +60,45 @@ def start_repl():
             0,
         )
 
-        msg = master.recv_match(
-            type=["COMMAND_LONG", "COMMAND_INT"], blocking=True, timeout=1.0
-        )
+        try:
+            # 2. Check the queue for new commands (blocks for 1 second)
+            cmd = controller.command_queue.get(timeout=1.0)
 
-        if not msg:
-            continue
+            # 3. Route the command
+            mt.begin_mission()
+            warn("time started: 10:00 minutes", controller.vehicle._master)
 
-        mt.begin_mission()
-        warn("time started: 10:00 minutes", master)
-
-        # i think type command_int, not sure which one actually worked
-        if msg.target_component == 191:
-            if msg.command == 31000:
-                print(">> SUCCESS: Received command to trigger FM1")
+            if cmd == CMD_FM1:
+                print(">> SUCCESS: Triggering FM1")
                 fm1(mt, controller, CRUISE_ALT, L)
-                warn("fm1 finished, awaiting command", master)
-            elif msg.command == 31001:
-                print(">> SUCCESS: Received command to trigger FM2")
+                warn("fm1 finished, awaiting command", controller.vehicle._master)
+
+            elif cmd == CMD_FM2:
+                print(">> SUCCESS: Triggering FM2")
                 fm2(mt, controller, CRUISE_ALT, F1, dropper)
-                warn("fm2 finished, awaiting command", master)
-            elif msg.command == 31002:
-                print(">> SUCCESS: Received command to trigger FM3")
+                warn("fm2 finished, awaiting command", controller.vehicle._master)
+
+            elif cmd == CMD_FM3:
+                print(">> SUCCESS: Triggering FM3")
                 fm3(mt, controller, camera, lidar, dropper, WA_IDS, WA, TARGET)
-                warn("proceeding to WM targets", master)
+                warn("proceeding to WM targets", controller.vehicle._master)
                 fm3(mt, controller, camera, lidar, dropper, WM_IDS, WM, TARGET)
-                warn("fm3 finised, returning home", master)
+                warn("fm3 finished, returning home", controller.vehicle._master)
+
                 controller.goto_waypoint(original_gps)
                 controller.simple_land()
                 controller.disarm()
 
             else:
-                print(f">> UNKNOWN: Received unmapped COMMAND ID: {msg.command}")
-                warn("invalid command", master)
+                print(f">> UNKNOWN: Unmapped COMMAND ID: {cmd}")
+                warn("invalid command", controller.vehicle._master)
 
-            # ack? not sure if this is needed
-            master.mav.command_ack_send(
-                msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED
-            )
+            # Mark the queue task as done
+            controller.command_queue.task_done()
 
-        time.sleep(0.5)
+        except queue.Empty:
+            # No command received in the last second, just loop and send heartbeat again
+            continue
 
 
 if __name__ == "__main__":

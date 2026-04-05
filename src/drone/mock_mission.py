@@ -33,9 +33,13 @@ def aruco_land_precision(
     alt = lidar.get_distance()
     i = 1
     quality = 4
+    t0 = time.time()
+    timeout = 60.0
 
     # Loop until ArduPilot explicitly confirms touchdown
     while not controller.is_landed():  # alt > ALT_TOL:  #
+        if time.time() - t0 > timeout:
+            raise TimeoutError("Precision-landing timeout waiting for landed state")
         # while alt > ALT_TOL:
 
         # Get raw 3D update
@@ -72,7 +76,7 @@ def pickup_sequence(
     # You can still use a relative move just for the Z-axis drop,
     # but make sure to wait for it to finish!
     controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
-    while lidar.get_distance() > (TARGET_HOVER_HEIGHT + HOVER_ALT_TOL):
+    while abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
         time.sleep(0.1)
 
     print("[*] Searching for ArUco to initiate Precision Landing...")

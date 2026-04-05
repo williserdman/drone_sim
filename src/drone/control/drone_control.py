@@ -1,6 +1,7 @@
 from ..common_types import *
 import os
 from typing import Optional
+import queue
 
 # os.environ["MAVLINK20"] = "1"
 
@@ -162,27 +163,36 @@ class DroneControl:
             wait_ready=True,
             heartbeat_timeout=60,
             timeout=120,
-            source_system=1,  # 1 drone
-            source_component=191,  # standard for companion computer
+            source_system=1,
+            source_component=191,
         )
-        # vehicle.wait_ready("gps_0", "mode", "system_status", "attitude", "location")
         self.vehicle = vehicle
-        self.cruise_alt = 10  # meters
-
+        self.cruise_alt = 10
         self.boot_time = time.monotonic()
-
-        # TODO
-        # tracking landed state, probably should track a few more things
         self.is_on_ground = False
 
+        # Create a thread-safe queue to pass commands to the main thread
+        self.command_queue = queue.Queue()
+
+        controller_ref = self
+
         @self.vehicle.on_message("EXTENDED_SYS_STATE")
-        def listener(self, name, message):
-            # MAV_LANDED_STATE_ON_GROUND = 1
-            # MAV_LANDED_STATE_IN_AIR = 2
-            if message.landed_state == 1:
-                self.is_on_ground = True
-            else:
-                self.is_on_ground = False
+        def listener_sys_state(vehicle, name, message):
+            controller_ref.is_on_ground = getattr(message, "landed_state", None) == 1
+
+        @self.vehicle.on_message(["COMMAND_LONG", "COMMAND_INT"])
+        def listener_commands(vehicle, name, message):
+            # 191 is our companion computer component ID
+            if message.target_component == 191:
+                print(f"[*] Received MAVLink Command: {message.command}")
+
+                # Instantly ACK the command so the GCS knows we got it
+                self.vehicle._master.mav.command_ack_send(
+                    message.command, mavutil.mavlink.MAV_RESULT_ACCEPTED
+                )
+
+                # Pass the command ID to the main thread via the queue
+                self.command_queue.put(message.command)
 
     def is_landed(self) -> bool:
         return self.is_on_ground
