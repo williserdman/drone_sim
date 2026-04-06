@@ -16,11 +16,11 @@ from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 import math
 
-ARUCO_PICKUP = GPSCoord(41.5013629, -81.6064521, 10)
-DROP_POINT = GPSCoord(41.5013606, -81.6062998, 10)
+ARUCO_PICKUP = GPSCoord(39.9337075, -75.7802787, 10)
+DROP_POINT = GPSCoord(39.9338306, -75.7801814, 10)
 ALT_TOL = 0.00
 HOVER_ALT_TOL = 0.3
-TARGET_HOVER_HEIGHT = 5
+TARGET_HOVER_HEIGHT = 3
 WINDOW = 5
 MULT = 0.3
 
@@ -38,7 +38,7 @@ def aruco_land_precision(
 
     # Loop until ArduPilot explicitly confirms touchdown
     # this for loop will exit after timeout -> 60 seconds
-    while not controller.is_landed():  # alt > ALT_TOL:  #
+    while alt > ALT_TOL:
         if time.time() - t0 > timeout:
             raise TimeoutError("Precision-landing timeout waiting for landed state")
         # while alt > ALT_TOL:
@@ -78,13 +78,16 @@ def pickup_sequence(
 
     # You can still use a relative move just for the Z-axis drop,
     # but make sure to wait for it to finish!
-    controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
+    # controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
+    # time.sleep(5)
+    controller.climb(alt-how_much_down)
     
     # attempt for one minute
-    for _ in range (600):
-        if abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
-            break
-        time.sleep(0.1)
+    # print("entering height wait")
+    # for _ in range (600):
+        # if abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
+            # break
+        # time.sleep(0.1)
     
     print(f"[*] Hover alt difference: {abs(lidar.get_distance() - TARGET_HOVER_HEIGHT)}")
     
