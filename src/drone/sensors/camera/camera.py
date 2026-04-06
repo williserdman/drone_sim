@@ -11,7 +11,7 @@ class Camera:
     def __init__(self, marker_size_mm: int):
         self.cm = CameraManager()
         self.marker_size_mm = marker_size_mm
-        self.frame_buffer = deque(maxlen=10_000)
+        self.frame_buffer = deque(maxlen=100) # 10_000
         self._frame_buffer_lock = threading.Lock()
 
     def _buffer_frame(self, frame) -> None:

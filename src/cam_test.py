@@ -15,7 +15,7 @@ import time
 
 if __name__ == "__main__":
     c = Camera(75)  # marker size is 100mm
-    ARUCO_ID = 9
+    ARUCO_ID = 8
     counter = 1
     begin = time.time()
     quality = 4

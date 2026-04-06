@@ -32,9 +32,8 @@ class CameraManager:
         with open(json_file_path, "r") as file:
             json_data = json.load(file)
 
-        # Convert lists to NumPy arrays (Critical Step)
-        self.cam_mat = np.array(json_data["mtx"])  # Intrinsic matrix
-        self.cam_dist = np.array(json_data["dist"])  # Distortion coefficients
+        self.cam_mat = np.array(json_data["camera_matrix"])  # Intrinsic matrix
+        self.cam_dist = np.array(json_data["dist_coeff"])  # Distortion coefficients
 
         # self.picam2 = Picamera2()
         # this only gives partial sensor area
@@ -97,10 +96,10 @@ class CameraManager:
         scale_x = self.frame_width / 640.0
         scale_y = self.frame_height / 480.0
 
-        self.camera_matrix[0, 0] *= scale_x  # Scale Focal Length X (fx)
-        self.camera_matrix[1, 1] *= scale_y  # Scale Focal Length Y (fy)
-        self.camera_matrix[0, 2] = self.CAMERA_CENTER[0]  # Set Optical Center X (cx)
-        self.camera_matrix[1, 2] = self.CAMERA_CENTER[1]  # Set Optical Center Y (cy)
+        # self.camera_matrix[0, 0] *= scale_x  # Scale Focal Length X (fx)
+        # self.camera_matrix[1, 1] *= scale_y  # Scale Focal Length Y (fy)
+        # self.camera_matrix[0, 2] = self.CAMERA_CENTER[0]  # Set Optical Center X (cx)
+        # self.camera_matrix[1, 2] = self.CAMERA_CENTER[1]  # Set Optical Center Y (cy)
 
         self.one_over_root_2 = 1 / np.sqrt(2)
 
