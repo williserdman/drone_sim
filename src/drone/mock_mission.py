@@ -216,9 +216,11 @@ def fm3(
     except Exception as e:
         print("[ERR]", e)
         controller.rtl()
+        camera.save_frame_buffer_async()
     except KeyboardInterrupt as e:
         print("[ERR]", e)
         controller.rtl()
+        camera.save_frame_buffer_async()
 
 
 if __name__ == "__main__":
