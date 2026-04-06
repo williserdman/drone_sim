@@ -15,17 +15,18 @@ CONNECTION_STRING = "/dev/ttyACM0"
 BAUD_RATE = 115200
 CRUISE_ALT = 10
 
-CMD_FM1 = mavutil.mavlink.MAV_CMD_USER_1  # 31000
-CMD_FM2 = mavutil.mavlink.MAV_CMD_USER_2  # 31001
-CMD_FM3 = mavutil.mavlink.MAV_CMD_USER_3  # 31002
+CMD_FM1 = 31000 # mavutil.mavlink.MAV_CMD_USER_1  # 31000
+CMD_FM2 = 31001 # mavutil.mavlink.MAV_CMD_USER_2  # 31001
+CMD_FM3 = 31002 # mavutil.mavlink.MAV_CMD_USER_3  # 31002
 
-L = GPSCoord(41.5013063, -81.6063508, CRUISE_ALT)  # Need to change hardcode for comp
-F1 = GPSCoord(41.5015115, -81.6063900, CRUISE_ALT)
+L = GPSCoord(39.9337075, -75.7802787, CRUISE_ALT)  # Need to change hardcode for comp
+# F1 = GPSCoord(41.5015115, -81.6063900, CRUISE_ALT)
 # F2 = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
-WM = GPSCoord(41.5013420, -81.6063845, CRUISE_ALT)
-WA = GPSCoord(41.5013240, -81.6062797, CRUISE_ALT)
+# WM = GPSCoord(41.5013420, -81.6063845, CRUISE_ALT)
+# WA = GPSCoord(41.5013240, -81.6062797, CRUISE_ALT)
 # TARGET = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
-TARGET = F1
+TARGET = GPSCoord(39.9338306, -75.7801814, CRUISE_ALT)
+
 
 WA_IDS = {6}
 WM_IDS = {7, 8}
@@ -64,6 +65,8 @@ def start_repl():
             # 2. Check the queue for new commands (blocks for 1 second)
             cmd = controller.command_queue.get(timeout=1.0)
 
+            print(cmd)
+
             # 3. Route the command
             mt.begin_mission()
             warn("time started: 10:00 minutes", controller.vehicle._master)
@@ -75,7 +78,7 @@ def start_repl():
 
             elif cmd == CMD_FM2:
                 print(">> SUCCESS: Triggering FM2")
-                fm2(mt, controller, CRUISE_ALT, F1, dropper)
+                fm2(mt, controller, CRUISE_ALT, TARGET, dropper)
                 warn("fm2 finished, awaiting command", controller.vehicle._master)
 
             elif cmd == CMD_FM3:

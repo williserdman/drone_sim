@@ -3,7 +3,8 @@ from flask import Flask, Response
 
 app = Flask(__name__)
 camera = cv2.VideoCapture(0)  # default webcam
-camera.set(cv2.CAP_PROP_EXPOSURE, -1.0)
+camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+camera.set(cv2.CAP_PROP_EXPOSURE, 40)
 
 
 def generate_frames():

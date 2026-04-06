@@ -74,7 +74,8 @@ class CameraManager:
                 self.webcam.set(cv2.CAP_PROP_ZOOM, 0)
         """
         self.webcam = cv2.VideoCapture(0)
-        self.webcam.set(cv2.CAP_PROP_EXPOSURE, -2.0)
+        self.webcam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        self.webcam.set(cv2.CAP_PROP_EXPOSURE, 20)
         self.DISTANCE_THRESHOLD = 50  # pixels
         # dropper = ElectromagneticDropper()
         self.sample_ratio = 3

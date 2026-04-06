@@ -99,7 +99,7 @@ def pickup_sequence(
     center_anchor = controller.get_current_gps()
 
     # 3. Define the grid as absolute North/East offsets in meters
-    grid_size = 1.5
+    grid_size = 2
     grid_offsets_ne = [
         (0, 0),  # center
         (0, grid_size),  # right (East)
@@ -121,7 +121,7 @@ def pickup_sequence(
 
         # Use your robust spin-wait goto!
         # The drone will fight the wind until it reaches this exact earth coordinate.
-        val = controller.goto_waypoint(target_wp, position_tol=0.2)
+        val = controller.goto_waypoint(target_wp, position_tol=0.8)
         print(f"return of goto func: {val}")
         # Wait a moment for the drone to stabilize its tilt/roll after stopping
         # controller.wait_until_stable()
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     original_gps.alt = 10
     controller.force_arm_takeoff(10)
 
-    fm3(mt, controller, camera, lidar, dropper, {6, 7, 8}, ARUCO_PICKUP, DROP_POINT)
+    fm3(mt, controller, camera, lidar, dropper, {6, 7}, ARUCO_PICKUP, DROP_POINT)
 
     val = controller.goto_waypoint(original_gps)
 
