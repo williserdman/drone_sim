@@ -6,6 +6,7 @@ import math
 # from picamera2 import Picamera2  # type: ignore
 import time
 from datetime import datetime
+import json
 
 one_over_root_2 = 1 / np.sqrt(2)
 
@@ -16,15 +17,24 @@ class CameraManager:
 
         # --- Default Camera Calibration for Raspberry Pi Camera v2 (480p) ---
         # Source: typical calibration for 640x480 with 62.2° x 48.8° FOV
-        self.camera_matrix = np.array(
+        """ self.camera_matrix = np.array(
             [[620.0, 0.0, 320.0], [0.0, 620.0, 240.0], [0.0, 0.0, 1.0]]
         )
-        self.camera_distortion = np.array([[-0.32, 0.1, 0.0, 0.0, 0.0]])
+        self.camera_distortion = np.array([[-0.32, 0.1, 0.0, 0.0, 0.0]]) """
 
         # --------------------------------------------------------------
         # Initialize PiCamera2
         # --------------------------------------------------------------
         self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_250)
+
+        # Load calibration data from JSON
+        json_file_path = "src/drone/sensors/camera/calibration.json"
+        with open(json_file_path, "r") as file:
+            json_data = json.load(file)
+
+        # Convert lists to NumPy arrays (Critical Step)
+        self.cam_mat = np.array(json_data["mtx"])  # Intrinsic matrix
+        self.cam_dist = np.array(json_data["dist"])  # Distortion coefficients
 
         # self.picam2 = Picamera2()
         # this only gives partial sensor area
@@ -234,6 +244,9 @@ class CameraManager:
         if not ok:
             raise RuntimeError("Failed to capture frame from webcam index 0")
 
+        width = frame.shape[1]
+        height = frame.shape[0]
+
         if scale != 1:
             # Downsample using cv2.resize for better quality (less aliasing) than slicing
             width = frame.shape[1] // self.sample_ratio
@@ -338,7 +351,10 @@ class CameraManager:
         # estimatePoseSingleMarkers returns rotation (rvecs) and translation (tvecs)
         # Because we pass marker_size_mm, the resulting tvec will be in millimeters.
         rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
-            target_corners, marker_size_mm, self.camera_matrix, self.camera_distortion
+            target_corners,
+            marker_size_mm,
+            self.cam_mat,
+            self.cam_dist,
         )
 
         # tvecs is returned as an array of shape (1, 1, 3) for a single marker
