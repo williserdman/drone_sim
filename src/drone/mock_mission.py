@@ -15,6 +15,7 @@ from .sensors.lidar.lidar import Lidar
 from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 import math
+from typing import Optional, Tuple
 
 ARUCO_PICKUP = GPSCoord(39.9337075, -75.7802787, 10)
 DROP_POINT = GPSCoord(39.9338306, -75.7801814, 10)
@@ -25,12 +26,31 @@ WINDOW = 5
 MULT = 0.3
 
 
+def _read_lidar_or_fallback(
+    lidar: Lidar, controller: DroneControl
+) -> Tuple[Optional[float], bool]:
+    """Return (altitude, has_lidar) with GPS fallback when LiDAR is unavailable."""
+    try:
+        return lidar.get_distance(), True
+    except Exception as lidar_error:
+        print(f"[WARN] LiDAR read failed: {lidar_error}. Falling back to GPS altitude.")
+        try:
+            return controller.get_current_gps().alt, False
+        except Exception as gps_error:
+            print(f"[ERR] GPS fallback after LiDAR failure also failed: {gps_error}")
+            return None, False
+
+
 def aruco_land_precision(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
     # controller.set_precision_land_mode()
     controller.set_land_mode()
-    alt = lidar.get_distance()
+
+    alt, has_lidar = _read_lidar_or_fallback(lidar, controller)
+    if alt is None:
+        raise RuntimeError("Unable to determine altitude from LiDAR or GPS.")
+
     i = 1
     quality = 4
     t0 = time.time()
@@ -38,27 +58,36 @@ def aruco_land_precision(
 
     # Loop until ArduPilot explicitly confirms touchdown
     # this for loop will exit after timeout -> 60 seconds
-    while alt > ALT_TOL:
-        if time.time() - t0 > timeout:
-            raise TimeoutError("Precision-landing timeout waiting for landed state")
-        # while alt > ALT_TOL:
+    for i in range(10_000):
+        if alt > ALT_TOL:
+            if time.time() - t0 > timeout:
+                raise TimeoutError("Precision-landing timeout waiting for landed state")
+            # while alt > ALT_TOL:
 
-        # Get raw 3D update
-        raw_update = camera.vec_to_marker_3d(target_id, lidar_alt=alt, quality=quality)
+            # Get raw 3D update
+            if has_lidar:
+                raw_update = camera.vec_to_marker_3d(
+                    target_id, lidar_alt=alt, quality=quality
+                )
+            else:
+                raw_update = camera.vec_to_marker_3d(target_id, quality=quality)
 
-        if raw_update:
-            controller.land_send_landing_target(raw_update)
+            if raw_update:
+                controller.land_send_landing_target(raw_update)
 
-        # Update LiDAR distance periodically
-        if i % 5 == 0:
-            alt = lidar.get_distance()
-            i = 0
-        i += 1
+            # Update LiDAR distance periodically
+            if i % 5 == 0:
+                if has_lidar:
+                    alt, has_lidar = _read_lidar_or_fallback(lidar, controller)
+                    if alt is None:
+                        raise RuntimeError(
+                            "Lost both LiDAR and GPS altitude sources during landing."
+                        )
 
-        # Add a tiny sleep to prevent maxing out the CPU loop
-        time.sleep(0.05)
+            # Add a tiny sleep to prevent maxing out the CPU loop
+            time.sleep(0.05)
 
-    print("[*] ArduPilot EKF confirms touchdown!")
+    print("[*] Lidar confirms touchdown!")
     # time.sleep(3)
     # controller.set_guided_mode()
     return
@@ -72,7 +101,10 @@ def pickup_sequence(
     t0 = time.time()
 
     # 1. Drop down to search altitude
-    alt = lidar.get_distance()
+    alt, _ = _read_lidar_or_fallback(lidar, controller)
+    if alt is None:
+        print("[ERR] Cannot start pickup sequence without altitude data.")
+        return False
     how_much_down = alt - TARGET_HOVER_HEIGHT
     print(f"moving down {how_much_down}m")
 
@@ -80,17 +112,21 @@ def pickup_sequence(
     # but make sure to wait for it to finish!
     # controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
     # time.sleep(5)
-    controller.climb(alt-how_much_down)
-    
+    controller.climb(alt - how_much_down)
+
     # attempt for one minute
     # print("entering height wait")
     # for _ in range (600):
-        # if abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
-            # break
-        # time.sleep(0.1)
-    
-    print(f"[*] Hover alt difference: {abs(lidar.get_distance() - TARGET_HOVER_HEIGHT)}")
-    
+    # if abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
+    # break
+    # time.sleep(0.1)
+
+    hover_alt, _ = _read_lidar_or_fallback(lidar, controller)
+    if hover_alt is not None:
+        print(f"[*] Hover alt difference: {abs(hover_alt - TARGET_HOVER_HEIGHT)}")
+    else:
+        print("[WARN] Hover altitude difference unavailable due to sensor read failures.")
+
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
 
@@ -147,7 +183,6 @@ def pickup_sequence(
                 val = controller.goto_waypoint(corrected_wp)
                 print(f"return of goto func: {val}")
 
-
                 time.sleep(1)  # Let it center before triggering land
                 target_found = True
                 break
@@ -182,7 +217,6 @@ def fm3(
             print("going to pickup waypoint")
             val = controller.goto_waypoint(pickup_point)
             print(f"return of goto func: {val}")
-
 
             print("init pickup sequence")
             success = pickup_sequence(controller, camera, lidar, id)
@@ -228,7 +262,11 @@ if __name__ == "__main__":
     mt.begin_mission()
     controller = DroneControl("/dev/ttyACM0")
     camera = Camera(50)
-    lidar = Lidar()
+    try:
+        lidar = Lidar()
+    except Exception as e:
+        print(f"[ERR] LiDAR initialization failed: {e}")
+        raise SystemExit(1)
     dropper = Dropper()
 
     # controller.takeoff(10)

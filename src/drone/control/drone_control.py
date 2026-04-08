@@ -39,6 +39,7 @@ def horiz_distance_m(a: GPSCoord, b: GPSCoord):
     y = dlat
     return 6378137.0 * math.sqrt(x * x + y * y)
 
+
 # good has timeout
 def wait_alt(vehicle, target_alt_m, tol=ALT_TOL, timeout=60):
     """Wait until relative altitude is within tol of target_alt_m."""
@@ -86,6 +87,7 @@ def wait_pos(
                 return True
         time.sleep(0.3)
     return False
+
 
 # I hope the drone is on the ground when this is called...
 def arm_and_takeoff(vehicle, target_alt_m):
@@ -259,16 +261,16 @@ class DroneControl:
 
     def set_guided_mode(self):
         print("Shifting to GUIDED mode...")
-        print(self.vehicle.mode)
         for i in range(10):
-            t = self.vehicle.mode
-            print(t)
-            if t != VehicleMode("GUIDED"):
-                print("in loop")
-                time.sleep(0.5)
+            # Compare strings to avoid object instance issues
+            if self.vehicle.mode != VehicleMode("GUIDED"):
                 self.vehicle.mode = VehicleMode("GUIDED")
+                time.sleep(1)  # Give it more time to ACK
             else:
+                print("[*] Confirmed GUIDED mode.")
                 return 0
+        print("[!] Failed to set GUIDED mode after 10 attempts.")
+        return -1
 
     def land_send_landing_target(self, dir: RelPosComplete) -> int:
         """

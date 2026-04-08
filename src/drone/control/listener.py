@@ -1,4 +1,5 @@
 import time
+from typing import Optional
 from pymavlink import mavutil
 from ..common_types import *
 from .drone_control import DroneControl
@@ -15,9 +16,9 @@ CONNECTION_STRING = "/dev/ttyACM0"
 BAUD_RATE = 115200
 CRUISE_ALT = 10
 
-CMD_FM1 = 31000 # mavutil.mavlink.MAV_CMD_USER_1  # 31000
-CMD_FM2 = 31001 # mavutil.mavlink.MAV_CMD_USER_2  # 31001
-CMD_FM3 = 31002 # mavutil.mavlink.MAV_CMD_USER_3  # 31002
+CMD_FM1 = 31000  # mavutil.mavlink.MAV_CMD_USER_1  # 31000
+CMD_FM2 = 31001  # mavutil.mavlink.MAV_CMD_USER_2  # 31001
+CMD_FM3 = 31002  # mavutil.mavlink.MAV_CMD_USER_3  # 31002
 
 L = GPSCoord(39.9338000, -75.7801279, CRUISE_ALT)  # Need to change hardcode for comp
 # F1 = GPSCoord(41.5015115, -81.6063900, CRUISE_ALT)
