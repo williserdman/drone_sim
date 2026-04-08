@@ -82,7 +82,8 @@ class MissonTracker:
                             or (time.time() - loaded_at) > max_age_seconds
                         ):
                             return None
-                    return waypoint_entry["coords"]
+                    coords = waypoint_entry["coords"]
+                    return GPSCoord(**coords) if isinstance(coords, dict) else coords
 
         return None
 
