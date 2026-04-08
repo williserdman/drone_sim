@@ -58,7 +58,7 @@ def aruco_land_precision(
 
     # Loop until ArduPilot explicitly confirms touchdown
     # this for loop will exit after timeout -> 60 seconds
-    for i in range(2_000):
+    for i in range(1_000):
         if alt > ALT_TOL:
             if time.time() - t0 > timeout:
                 raise TimeoutError("Precision-landing timeout waiting for landed state")
