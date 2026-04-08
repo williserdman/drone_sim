@@ -118,8 +118,37 @@ def start_repl():
         warn(f"{name} cleared", controller.vehicle._master)
         warn_waypoint_status(force=True)
 
+    def load_all_waypoints():
+        loaded = []
+        missing = []
+        now = time.time()
+
+        for name in sorted(ALL_CLEARABLE_WAYPOINT_KEYS):
+            waypoint = mt.get_waypoint(name)
+            if waypoint is None:
+                missing.append(name)
+            else:
+                waypoint_update_times[name] = now
+                loaded.append(name)
+
+        if loaded:
+            warn(
+                f"loaded waypoints: {', '.join(loaded)}",
+                controller.vehicle._master,
+            )
+
+        if missing:
+            warn(
+                f"unable to load waypoints: {', '.join(missing)}",
+                controller.vehicle._master,
+            )
+
+        warn_waypoint_status(force=True)
+
     """ original_gps = controller.get_current_gps()
     original_gps.alt = CRUISE_ALT """
+
+    load_all_waypoints()
 
     print("\n[+] System initialized. Waiting for commands from GCS...")
 
