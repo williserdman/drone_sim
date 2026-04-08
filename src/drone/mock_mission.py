@@ -58,7 +58,7 @@ def aruco_land_precision(
 
     # Loop until ArduPilot explicitly confirms touchdown
     # this for loop will exit after timeout -> 60 seconds
-    for i in range(10_000):
+    for i in range(2_000):
         if alt > ALT_TOL:
             if time.time() - t0 > timeout:
                 raise TimeoutError("Precision-landing timeout waiting for landed state")
@@ -86,6 +86,8 @@ def aruco_land_precision(
 
             # Add a tiny sleep to prevent maxing out the CPU loop
             time.sleep(0.05)
+        else:
+            break
 
     print("[*] Lidar confirms touchdown!")
     # time.sleep(3)
@@ -125,7 +127,9 @@ def pickup_sequence(
     if hover_alt is not None:
         print(f"[*] Hover alt difference: {abs(hover_alt - TARGET_HOVER_HEIGHT)}")
     else:
-        print("[WARN] Hover altitude difference unavailable due to sensor read failures.")
+        print(
+            "[WARN] Hover altitude difference unavailable due to sensor read failures."
+        )
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
