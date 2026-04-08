@@ -246,6 +246,9 @@ def start_repl():
             elif cmd == CMD_UPDATE_L:
                 update_waypoint("L")
 
+            elif cmd == CMD_UPDATE_TARGET:
+                update_waypoint("TARGET")
+
             elif cmd == CMD_CLEAR_ALL_PICKUP_WPS:
                 for wp_name in sorted(PICKUP_WAYPOINT_KEYS):
                     clear_waypoint(wp_name)
