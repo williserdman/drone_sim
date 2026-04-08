@@ -23,33 +23,59 @@ class MissonTracker:
     def set_waypoint(self, waypoint_ID: str, coords: GPSCoord):
         with open("mission_data/waypoints.json", "r+") as waypoints_JSON:
             waypoints_data = json.load(waypoints_JSON)
-            waypoints_data[waypoint_ID] = coords
+            serialized_coords = (
+                asdict(coords) if hasattr(coords, "__dataclass_fields__") else coords
+            )
+            waypoints_data[waypoint_ID] = {
+                "coords": serialized_coords,
+                "loaded_at": time.time(),
+            }
 
             # writing to file
             waypoints_JSON.seek(0)
             json.dump(waypoints_data, waypoints_JSON)
             waypoints_JSON.truncate()
 
+    # clear a waypoint by its id
+    def clear_waypoint(self, waypoint_ID: str) -> bool:
+        with open("mission_data/waypoints.json", "r+") as waypoints_JSON:
+            waypoints_data = json.load(waypoints_JSON)
+
+            if waypoint_ID not in waypoints_data:
+                return False
+
+            del waypoints_data[waypoint_ID]
+
+            # writing to file
+            waypoints_JSON.seek(0)
+            json.dump(waypoints_data, waypoints_JSON)
+            waypoints_JSON.truncate()
+
+            return True
+
     # get a waypoint's coordinates from its' id
-    def get_waypoint(self, waypoint_ID: str) -> GPSCoord:
+    def get_waypoint(
+        self, waypoint_ID: str, max_age_seconds: float | None = None
+    ) -> GPSCoord | None:
         with open("mission_data/waypoints.json", "r") as waypoints_JSON:
             waypoints_data = json.load(waypoints_JSON)
             if waypoint_ID in waypoints_data:
-                return waypoints_data[waypoint_ID]
+                waypoint_entry = waypoints_data[waypoint_ID]
+
+                # New format with metadata
+                if isinstance(waypoint_entry, dict) and "coords" in waypoint_entry:
+                    loaded_at = waypoint_entry.get("loaded_at")
+                    if max_age_seconds is not None:
+                        if (
+                            loaded_at is None
+                            or (time.time() - loaded_at) > max_age_seconds
+                        ):
+                            return None
+                    return waypoint_entry["coords"]
 
         return None
 
-    # get a list of all waypoint id's
-    def get_waypoint_id(self) -> list[str]:
-        waypoint_IDs = []
-        with open("mission_data/waypoints.json", "r") as waypoints_JSON:
-            waypoints_data = json.load(waypoints_JSON)
-            for elem in list(waypoints_data.keys()):
-                waypoint_IDs.append(elem)
-
-        return waypoint_IDs
-
-    # add a payload id
+    """ # add a payload id
     def add_payload(self, id: int):
         with open("mission_data/payloads.json", "r+") as payloads_write:
             payloads_data = json.load(payloads_write)
@@ -75,7 +101,7 @@ class MissonTracker:
     def get_payload_id(self) -> list[int]:
         with open("mission_data/payloads.json", "r") as payloads_read:
             payloads_data = json.load(payloads_read)
-            return payloads_data["id"]
+            return payloads_data["id"] """
 
     def begin_mission(self):
         self.mission_begin = time.time()
