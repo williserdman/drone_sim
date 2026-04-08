@@ -22,7 +22,13 @@ class MissonTracker:
     # set a waypoint by giving the waypoint id and coordinate
     def set_waypoint(self, waypoint_ID: str, coords: GPSCoord):
         with open("mission_data/waypoints.json", "r+") as waypoints_JSON:
-            waypoints_data = json.load(waypoints_JSON)
+            try:
+                waypoints_data = json.load(waypoints_JSON)
+                if not isinstance(waypoints_data, dict):
+                    waypoints_data = {}
+            except json.JSONDecodeError:
+                waypoints_data = {}
+
             serialized_coords = (
                 asdict(coords) if hasattr(coords, "__dataclass_fields__") else coords
             )
@@ -39,7 +45,12 @@ class MissonTracker:
     # clear a waypoint by its id
     def clear_waypoint(self, waypoint_ID: str) -> bool:
         with open("mission_data/waypoints.json", "r+") as waypoints_JSON:
-            waypoints_data = json.load(waypoints_JSON)
+            try:
+                waypoints_data = json.load(waypoints_JSON)
+                if not isinstance(waypoints_data, dict):
+                    waypoints_data = {}
+            except json.JSONDecodeError:
+                waypoints_data = {}
 
             if waypoint_ID not in waypoints_data:
                 return False
