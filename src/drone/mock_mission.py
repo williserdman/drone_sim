@@ -18,9 +18,9 @@ import math
 
 ARUCO_PICKUP = GPSCoord(39.9337075, -75.7802787, 10)
 DROP_POINT = GPSCoord(39.9338306, -75.7801814, 10)
-ALT_TOL = 0.00
-HOVER_ALT_TOL = 0.3
-TARGET_HOVER_HEIGHT = 3
+ALT_TOL = 0.03
+HOVER_ALT_TOL = 1
+TARGET_HOVER_HEIGHT = 2.5
 WINDOW = 5
 MULT = 0.3
 
@@ -99,7 +99,7 @@ def pickup_sequence(
     center_anchor = controller.get_current_gps()
 
     # 3. Define the grid as absolute North/East offsets in meters
-    grid_size = 2
+    grid_size = 1.5
     grid_offsets_ne = [
         (0, 0),  # center
         (0, grid_size),  # right (East)

@@ -19,17 +19,17 @@ CMD_FM1 = 31000 # mavutil.mavlink.MAV_CMD_USER_1  # 31000
 CMD_FM2 = 31001 # mavutil.mavlink.MAV_CMD_USER_2  # 31001
 CMD_FM3 = 31002 # mavutil.mavlink.MAV_CMD_USER_3  # 31002
 
-L = GPSCoord(39.9337075, -75.7802787, CRUISE_ALT)  # Need to change hardcode for comp
+L = GPSCoord(39.9338000, -75.7801279, CRUISE_ALT)  # Need to change hardcode for comp
 # F1 = GPSCoord(41.5015115, -81.6063900, CRUISE_ALT)
 # F2 = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
-# WM = GPSCoord(41.5013420, -81.6063845, CRUISE_ALT)
-# WA = GPSCoord(41.5013240, -81.6062797, CRUISE_ALT)
-# TARGET = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
-TARGET = GPSCoord(39.9338306, -75.7801814, CRUISE_ALT)
+WM = GPSCoord(39.9338529, -75.7801723, CRUISE_ALT)
+WA = GPSCoord(39.9338594, -75.7801754, CRUISE_ALT)
+TARGET = GPSCoord(39.9338515, -75.7799904, CRUISE_ALT)
+# TARGET = GPSCoord(39.9338306, -75.7801814, CRUISE_ALT)
 
 
-WA_IDS = {6}
-WM_IDS = {7, 8}
+WA_IDS = {7}
+WM_IDS = {6}
 
 ARUCO_SIZE = 75
 COMPANION_COMPONENT_ID = 191
@@ -67,11 +67,9 @@ def start_repl():
 
             print(cmd)
 
-            # 3. Route the command
-            mt.begin_mission()
-            warn("time started: 10:00 minutes", controller.vehicle._master)
-
             if cmd == CMD_FM1:
+                mt.begin_mission()
+                warn("time started: 10:00 minutes", controller.vehicle._master)
                 print(">> SUCCESS: Triggering FM1")
                 fm1(mt, controller, CRUISE_ALT, L)
                 warn("fm1 finished, awaiting command", controller.vehicle._master)

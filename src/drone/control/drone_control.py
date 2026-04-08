@@ -259,9 +259,16 @@ class DroneControl:
 
     def set_guided_mode(self):
         print("Shifting to GUIDED mode...")
-        while self.vehicle.mode != VehicleMode("GUIDED"):
-            time.sleep(0.5)
-            self.vehicle.mode = VehicleMode("GUIDED")
+        print(self.vehicle.mode)
+        for i in range(10):
+            t = self.vehicle.mode
+            print(t)
+            if t != VehicleMode("GUIDED"):
+                print("in loop")
+                time.sleep(0.5)
+                self.vehicle.mode = VehicleMode("GUIDED")
+            else:
+                return 0
 
     def land_send_landing_target(self, dir: RelPosComplete) -> int:
         """
