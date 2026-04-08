@@ -20,19 +20,23 @@ CMD_FM1 = 31000  # mavutil.mavlink.MAV_CMD_USER_1  # 31000
 CMD_FM2 = 31001  # mavutil.mavlink.MAV_CMD_USER_2  # 31001
 CMD_FM3 = 31002  # mavutil.mavlink.MAV_CMD_USER_3  # 31002
 
-L = GPSCoord(39.9338000, -75.7801279, CRUISE_ALT)  # Need to change hardcode for comp
-# F1 = GPSCoord(41.5015115, -81.6063900, CRUISE_ALT)
-# F2 = GPSCoord(41.5016162, -81.6061652, CRUISE_ALT)
-WM = GPSCoord(39.9338529, -75.7801723, CRUISE_ALT)
-WA = GPSCoord(39.9338594, -75.7801754, CRUISE_ALT)
-TARGET = GPSCoord(39.9338515, -75.7799904, CRUISE_ALT)
-# TARGET = GPSCoord(39.9338306, -75.7801814, CRUISE_ALT)
+L = GPSCoord(39.5681330, -76.2071687, CRUISE_ALT)  # Need to change hardcode for comp
+
+WA = GPSCoord(39.5680688, -76.2069547, CRUISE_ALT)
+
+WM1 = GPSCoord(39.5681781, -76.2069580, CRUISE_ALT)
+WM2  = GPSCoord(39.5681999, -76.2069617, CRUISE_ALT)
+WM3 = GPSCoord(39.9338594, -75.7801754, CRUISE_ALT)
+
+TARGET = GPSCoord(39.5681374, -76.2078682, 10)
 
 
-WA_IDS = {7}
-WM_IDS = {6}
+WA_IDS = {3}
+WM1_IDS = {4, 5}
+WM2_IDS = {6, 7}
+# WM3_IDS = {10, 11, 12}
 
-ARUCO_SIZE = 75
+ARUCO_SIZE = 100
 COMPANION_COMPONENT_ID = 191
 GCS_SYSTEM_ID = 200
 
@@ -84,7 +88,9 @@ def start_repl():
                 print(">> SUCCESS: Triggering FM3")
                 fm3(mt, controller, camera, lidar, dropper, WA_IDS, WA, TARGET)
                 warn("proceeding to WM targets", controller.vehicle._master)
-                fm3(mt, controller, camera, lidar, dropper, WM_IDS, WM, TARGET)
+                fm3(mt, controller, camera, lidar, dropper, WM1_IDS, WM1, TARGET)
+                fm3(mt, controller, camera, lidar, dropper, WM2_IDS, WM2, TARGET)
+                # fm3(mt, controller, camera, lidar, dropper, WM3_IDS, WM3, TARGET)
                 warn("fm3 finished, returning home", controller.vehicle._master)
 
                 controller.goto_waypoint(original_gps)

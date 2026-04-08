@@ -70,7 +70,7 @@ def setup_camera(device="/dev/video0"):
     print("=== Setup Complete! ===\n")
 
 time.sleep(2)
-setup_camera("/dev/video0")
+# setup_camera("/dev/video0")
 
 def generate_frames():
     while True:

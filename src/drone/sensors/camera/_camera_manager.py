@@ -75,8 +75,8 @@ class CameraManager:
         """
         self.webcam = cv2.VideoCapture(0)
         ### ENABLE FOR LOW FOV CAMERA
-        # self.webcam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        # self.webcam.set(cv2.CAP_PROP_EXPOSURE, 20)
+        # self.webcam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
+        # self.webcam.set(cv2.CAP_PROP_EXPOSURE, 40)
 
         self.DISTANCE_THRESHOLD = 50  # pixels
         # dropper = ElectromagneticDropper()
