@@ -161,7 +161,7 @@ def start_repl():
                     warn("missing waypoint: TARGET", controller.vehicle._master)
                     controller.command_queue.task_done()
                     continue
-                fm2(mt, controller, CRUISE_ALT, target_waypoint, dropper)
+                fm2(mt, controller, CRUISE_ALT, target_waypoint, dropper, lidar)
                 warn("fm2 finished, awaiting command", controller.vehicle._master)
 
             elif cmd == CMD_FM3:

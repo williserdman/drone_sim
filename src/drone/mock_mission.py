@@ -212,6 +212,7 @@ def fm3(
     target_point: GPSCoord,
 ):
     IDs = list(possible_ids)
+    desired_drop_height_m = 10
     try:
         for id in IDs:
 
@@ -245,7 +246,14 @@ def fm3(
                 camera.save_frame_buffer_async()
 
                 print("dropping")
-                controller.hold_waypoint_until_stable(target_point)
+                drop_target = GPSCoord(
+                    target_point.lat, target_point.long, target_point.alt
+                )
+                lidar_alt, _ = _read_lidar_or_fallback(lidar, controller)
+                if lidar_alt is not None and lidar_alt < desired_drop_height_m:
+                    drop_target.alt += desired_drop_height_m - lidar_alt
+                    controller.goto_waypoint(drop_target)
+                controller.hold_waypoint_until_stable(drop_target)
                 dropper.drop()
             else:
                 print(f"Skipping drop for ID {id} because pickup failed.")
