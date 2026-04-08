@@ -28,6 +28,8 @@ class Lidar:
         self._thread = threading.Thread(target=self._poll_sensor, daemon=True)
         self._thread.start()
 
+        time.sleep(2)
+
     def _poll_sensor(self):
         """Continuously polls the I2C bus in the background."""
         while self._running:

@@ -12,6 +12,7 @@ if __name__ == "__main__":
         # Read and print the distance in centimeters
         for _ in range(100):
             distance = l.get_distance()
+            time.sleep(0.05)
             print(f"Distance: {distance} cm")
             s += distance
             c += 1
