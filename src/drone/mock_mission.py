@@ -61,7 +61,8 @@ def aruco_land_precision(
     for i in range(1_000):
         if alt > ALT_TOL and controller.vehicle.armed:
             if time.time() - t0 > timeout:
-                raise TimeoutError("Precision-landing timeout waiting for landed state")
+                break
+                # raise TimeoutError("Precision-landing timeout waiting for landed state")
             # while alt > ALT_TOL:
 
             # Get raw 3D update
