@@ -1,0 +1,103 @@
+{
+    "version": 1,
+    "fileType": "MavlinkActions",
+    "title": "RPi FM Controls",
+    "actions": [
+        {
+            "label": "Trigger FM1",
+            "description": "Sends MAV_CMD_USER_1 to the RPi",
+            "mavCmd": 31000,
+            "compId": 191
+        },
+        {
+            "label": "Trigger FM2",
+            "description": "Sends MAV_CMD_USER_2 to the RPi",
+            "mavCmd": 31001,
+            "compId": 191
+        },
+        {
+            "label": "Trigger FM3",
+            "description": "Sends MAV_CMD_USER_3 to the RPi",
+            "mavCmd": 31002,
+            "compId": 191
+        },
+        {
+            "label": "DO NOTHING",
+            "description": "Sends MAV_CMD_USER_3 to the RPi",
+            "mavCmd": 0,
+            "compId": 191
+        },
+        {
+            "label": "Update WA",
+            "description": "Updates WA on the RPi",
+            "mavCmd": 31003,
+            "compId": 191
+        },
+        {
+            "label": "Update WM1",
+            "description": "Updates WM1 on the RPi",
+            "mavCmd": 31004,
+            "compId": 191
+        },
+        {
+            "label": "Update WM2",
+            "description": "Updates WM2 on the RPi",
+            "mavCmd": 31005,
+            "compId": 191
+        },
+        {
+            "label": "Update WM3",
+            "description": "Updates WM3 on the RPi",
+            "mavCmd": 31006,
+            "compId": 191
+        },
+        {
+            "label": "Updates WM4",
+            "description": "Updates WM4 on the RPi",
+            "mavCmd": 31007,
+            "compId": 191
+        },
+        {
+            "label": "Update WM5",
+            "description": "Updates WM5 on the RPi",
+            "mavCmd": 31008,
+            "compId": 191
+        },
+        {
+            "label": "Update WM6",
+            "description": "Updates WM6 on the RPi",
+            "mavCmd": 31009,
+            "compId": 191
+        },
+        {
+            "label": "Update L",
+            "description": "Updates L on the RPi",
+            "mavCmd": 31010,
+            "compId": 191
+        },
+        {
+            "label": "Update TARGET",
+            "description": "Updates TARGET on the RPi",
+            "mavCmd": 31011,
+            "compId": 191
+        },
+        {
+            "label": "DO NOTHING",
+            "description": "Sends MAV_CMD_USER_3 to the RPi",
+            "mavCmd": 0,
+            "compId": 191
+        },
+        {
+            "label": "Clear All Pickup Waypoints",
+            "description": "Clears all pickup waypoints on the RPi",
+            "mavCmd": 31012,
+            "compId": 191
+        },
+        {
+            "label": "Clear All Waypoints",
+            "description": "Clears all waypoints on the RPi",
+            "mavCmd": 31013,
+            "compId": 191
+        }
+    ]
+}
