@@ -30,7 +30,7 @@ The source contract test passes all six message declaration cases and lifecycle 
 
 ## Commit
 
-`cb1c3d9` (`feat: define shared simulation ROS interfaces`)
+`3a1c73e8d859b716eb4cdbe664137f9d1e6e05fb` (`feat: define shared simulation ROS interfaces`)
 
 ## Self-review
 
@@ -44,3 +44,24 @@ The source contract test passes all six message declaration cases and lifecycle 
 ## Concerns
 
 None.
+
+## Fix round 1/5
+
+### Changed files
+
+- `tests/contracts/test_ros_interfaces.py`: parse lifecycle constant declarations and compare the complete sequence against the required ordered list.
+- `.superpowers/sdd/2026-08-22-phase-1-foundation/task-1-report.md`: corrected the original commit hash and appended this fix-round record.
+
+### Verification
+
+Command: `uv run pytest tests/contracts/test_ros_interfaces.py -v`
+
+Output: `7 passed in 0.04s`.
+
+### Commit
+
+`1ad151fcd3380d50b8b7a59e25a99f885683b0ea` (`fix: assert lifecycle declaration order`)
+
+### Self-review
+
+The assertion now fails if any lifecycle constant is missing, has a wrong value, or appears in the wrong order. No other Task 1 paths were modified.

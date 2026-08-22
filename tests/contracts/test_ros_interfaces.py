@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pytest
 
@@ -63,14 +64,15 @@ def test_message_contract(filename: str, declarations: list[str]) -> None:
 
 def test_run_state_lifecycle_constants_are_in_order() -> None:
     text = (MSG / "RunState.msg").read_text()
-    for state, value in (
-        ("CREATED", 0),
-        ("STARTING", 1),
-        ("READY", 2),
-        ("RUNNING", 3),
-        ("FINALIZING", 4),
-        ("COMPLETED", 5),
-        ("FAILED", 6),
-        ("ABORTED", 7),
-    ):
-        assert f"uint8 {state}={value}" in text
+    expected = [
+        ("CREATED", "0"),
+        ("STARTING", "1"),
+        ("READY", "2"),
+        ("RUNNING", "3"),
+        ("FINALIZING", "4"),
+        ("COMPLETED", "5"),
+        ("FAILED", "6"),
+        ("ABORTED", "7"),
+    ]
+    actual = re.findall(r"^uint8 ([A-Z]+)=([0-9]+)$", text, re.MULTILINE)
+    assert actual == expected
