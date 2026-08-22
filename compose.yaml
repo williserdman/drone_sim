@@ -1,0 +1,9 @@
+services:
+  foundation:
+    init: true
+    build:
+      context: .
+      dockerfile: tests/foundation/Dockerfile
+    environment:
+      SIM_RUN_ID: ${SIM_RUN_ID:-00000000-0000-4000-8000-000000000001}
+      SIM_OUTPUT_ROOT: ${SIM_OUTPUT_ROOT:-/output}
