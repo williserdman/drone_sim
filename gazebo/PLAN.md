@@ -36,5 +36,5 @@ Gazebo consumes ArduPilot actuator outputs and electromagnet physical-effect req
 ## Deferred decisions
 
 - Gazebo distribution, world, vehicle, and plugins
-- ROS 2 topic names, schemas, and QoS
+- Electromagnet physical-effect request topic and schema
 - ArduPilot adapter version

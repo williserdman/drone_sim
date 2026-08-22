@@ -35,5 +35,5 @@ The scorekeeper consumes run configuration, ROS 2 `/clock`, Gazebo ground truth,
 ## Deferred decisions
 
 - Scoring rules and result schema
-- Topic names, message schemas, and QoS
-- Result persistence format
+- Event buffering and result-finalization window
+- Result fields beyond the fixed scoring summary

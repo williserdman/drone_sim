@@ -2,13 +2,14 @@
 
 ## ROS 2 inputs
 
-- Authoritative `/clock` with `use_sim_time=true`
+- Authoritative `/clock` using best-effort QoS depth 1 with `use_sim_time=true`
 - Run and scenario configuration supplied through the orchestration lifecycle
 
 ## ROS 2 outputs
 
 - Idempotent physical-effect requests consumed by Gazebo
-- Scenario events consumed by the scorekeeper
+- Scenario events on `/simulation/scenario_events` using
+  `simulation_interfaces/msg/ScenarioEvent` and reliable QoS depth 100
 
 Each output identifies `run_id`, event identity, `magnet_id`, desired state, and simulation timestamp. Repeated delivery of the same event identity must not apply an effect or score twice.
 
@@ -22,7 +23,5 @@ The module must never directly command ArduPilot or directly mutate aircraft pos
 
 ## Deferred decisions
 
-- Topic names, message schemas, and QoS
-- Effect-request acknowledgement semantics
+- Physical-effect request topic, schema, and acknowledgement semantics
 - Physical effect parameters
-

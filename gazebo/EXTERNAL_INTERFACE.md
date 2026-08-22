@@ -8,12 +8,18 @@
 
 ## ROS 2 outputs
 
-- Authoritative `/clock`
-- Onboard and observer camera frames at 20 frames per simulated second
-- Ground truth for the scorekeeper
+- Authoritative `/clock` using best-effort QoS depth 1
+- Onboard `/camera/onboard/image_raw` and observer
+  `/camera/observer/image_raw` frames at 20 frames per simulated second, each
+  using best-effort QoS depth 5
+- `/simulation/ground_truth` using
+  `simulation_interfaces/msg/GroundTruth` and best-effort QoS depth 10
 - Contact, collision, and diagnostic state as required
 
-All run-scoped outputs carry `run_id`; each camera message also carries a stream-specific `frame_id` and its simulation capture timestamp. The onboard stream is identical to the imagery supplied to companion vision.
+All run-scoped outputs carry `run_id`; camera images correlate with
+`simulation_interfaces/msg/FrameMetadata`, which carries stream-specific
+`frame_id` and simulation capture timestamp. The onboard stream is identical
+to the imagery supplied to companion vision.
 
 ## ROS 2 inputs
 
@@ -25,5 +31,5 @@ Reset clears run-scoped world state before accepting the new `run_id`. Stale-run
 
 ## Deferred decisions
 
-- Exact topics, schemas, QoS values, and reset endpoint
+- Physical-effect request and reset endpoint contracts
 - World/plugin selection and adapter version

@@ -33,7 +33,7 @@ Coordinate the lifecycle and configuration of deterministic simulation runs cont
 
 ## Acceptance criteria
 
-- All six modules have a plan and separate internal and external interfaces.
+- All seven child modules have a plan and separate internal and external interfaces.
 - Every communication path identifies its producer, consumer, mechanism, and clock.
 - Responsibilities do not overlap.
 - The scorekeeper cannot change control or physics.
@@ -45,5 +45,5 @@ Coordinate the lifecycle and configuration of deterministic simulation runs cont
 ## Deferred decisions
 
 - Exact reset and readiness protocols
-- DDS implementation and Docker Compose topology
-- Result persistence format
+- Production Docker Compose topology and health-check intervals
+- Operator command-line or service syntax

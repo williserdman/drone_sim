@@ -42,5 +42,4 @@ MAVLink flight and mission commands plus wall-clock performance diagnostics.
 ## Deferred decisions
 
 - Mission and vision language
-- Exact ROS 2 topic names and QoS
 - MAVLink endpoint and causal-correlation encoding

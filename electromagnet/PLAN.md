@@ -32,6 +32,5 @@ The module consumes run configuration and ROS 2 `/clock`. It produces physical-e
 ## Deferred decisions
 
 - Scenario rule representation
-- Topic names, message schemas, and QoS
+- Physical-effect request topic, schema, and acknowledgement semantics
 - Force, field, or constraint model parameters
-

@@ -2,10 +2,13 @@
 
 ## ROS 2 inputs
 
-- Gazebo camera frames through ROS 2 image transport at 20 frames per simulated second
-- Authoritative `/clock` with `use_sim_time=true`
+- Gazebo camera frames on `/camera/onboard/image_raw` through ROS 2 image
+  transport at 20 frames per simulated second, using best-effort QoS depth 5
+- Authoritative `/clock` using best-effort QoS depth 1 with `use_sim_time=true`
 
-Each frame carries `run_id`, `frame_id`, and a simulation capture timestamp.
+Each frame correlates with `simulation_interfaces/msg/FrameMetadata`, which
+carries `run_id`, `frame_id`, stream identity, and a simulation capture
+timestamp.
 
 ## MAVLink interface
 
@@ -24,6 +27,4 @@ The companion must never directly command or mutate Gazebo.
 
 ## Deferred decisions
 
-- Exact topic names, message schemas, and QoS values
 - MAVLink ports, routing, and command-to-frame correlation encoding
-
