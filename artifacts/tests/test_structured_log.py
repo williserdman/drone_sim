@@ -74,6 +74,53 @@ def test_structured_event_rejects_event_field_collisions():
         )
 
 
+@pytest.mark.parametrize(
+    "sim_timestamp",
+    [
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+)
+def test_structured_event_rejects_non_finite_simulation_timestamps(sim_timestamp):
+    """Serializing a non-finite simulation timestamp would emit invalid JSON."""
+    with pytest.raises(ValueError, match="finite"):
+        StructuredEvent(
+            run_id="run-7",
+            module="artifacts",
+            severity="INFO",
+            event="starting",
+            sim_timestamp=sim_timestamp,
+            wall_timestamp=datetime(2026, 8, 22, tzinfo=UTC),
+        )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"measurement": float("nan")},
+        {"measurement": float("inf")},
+        {"measurement": float("-inf")},
+        {"nested": {"measurement": float("nan")}},
+        {"measurements": [1.0, float("inf")]},
+    ],
+)
+def test_structured_event_rejects_non_finite_float_event_fields(fields):
+    """Allowing nested non-finite floats would emit non-standard JSON tokens."""
+    with pytest.raises(ValueError, match="finite"):
+        StructuredEvent(
+            run_id="run-7",
+            module="artifacts",
+            severity="INFO",
+            event="starting",
+            wall_timestamp=datetime(2026, 8, 22, tzinfo=UTC),
+            fields=fields,
+        )
+
+
 def test_write_event_writes_and_flushes_one_complete_line():
     """Omitting the flush could lose a final lifecycle event on shutdown."""
     class FlushingStream(StringIO):
