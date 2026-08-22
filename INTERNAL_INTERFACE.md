@@ -8,6 +8,8 @@ Define relationships among the repository's immediate child modules. Top-level c
 
 | Producer | Consumer | Mechanism | Data |
 | --- | --- | --- | --- |
+| Orchestration | All modules | Compose configuration and lifecycle | Run identity, configuration, startup, and finalization |
+| Artifacts | Orchestration | Lifecycle status | Recorder readiness and artifact completeness |
 | Companion | ArduPilot SITL | MAVLink | Mission and flight commands |
 | ArduPilot SITL | Companion | MAVLink | Telemetry, modes, acknowledgements |
 | ArduPilot SITL | Gazebo | ArduPilot-Gazebo adapter | Actuator outputs |
@@ -17,6 +19,9 @@ Define relationships among the repository's immediate child modules. Top-level c
 | Electromagnet | Gazebo | ROS 2 | Physical-effect requests |
 | Electromagnet | Scorekeeper | ROS 2 | Scenario events |
 | Gazebo | Simulation-aware modules | ROS 2 `/clock` | Simulation time |
+| All modules | Artifacts | Structured stdout | Run-correlated JSON Lines logs |
+| Gazebo | Artifacts | ROS 2 and filesystem | Both camera streams, ground truth, server log, and state |
+| Scorekeeper | Artifacts | ROS 2 and filesystem | Score events and final result |
 
 ## Allowed dependencies
 
@@ -36,4 +41,3 @@ Every run has a unique `run_id`. Run-scoped messages preserve it, and receivers 
 ## Timing rules
 
 Simulation time schedules simulated behavior. Wall time is limited to infrastructure health checks, profiling, and host-performance diagnostics.
-

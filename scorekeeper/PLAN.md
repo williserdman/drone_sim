@@ -22,6 +22,7 @@ The scorekeeper consumes run configuration, ROS 2 `/clock`, Gazebo ground truth,
 4. Calculate deterministic score changes.
 5. Publish or persist results.
 6. Diagnose incomplete runs.
+7. Prove a completed acceptance run can achieve the versioned maximum score.
 
 ## Acceptance criteria
 
@@ -29,10 +30,10 @@ The scorekeeper consumes run configuration, ROS 2 `/clock`, Gazebo ground truth,
 - Duplicate inputs cannot score twice.
 - Results are reproducible for the same ordered run inputs.
 - The module remains read-only with respect to flight control and physics.
+- The final result records achieved score, maximum available score, scoring-configuration checksum, and evidence for every awarded event.
 
 ## Deferred decisions
 
 - Scoring rules and result schema
 - Topic names, message schemas, and QoS
 - Result persistence format
-

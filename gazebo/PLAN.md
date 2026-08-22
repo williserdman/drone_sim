@@ -13,7 +13,7 @@ Own authoritative physics, dynamics, sensors, camera generation, collisions, ext
 
 ## Inputs and outputs
 
-Gazebo consumes ArduPilot actuator outputs and electromagnet physical-effect requests. It produces simulated sensor data, ROS 2 `/clock`, camera frames, ground truth, contacts, and diagnostics.
+Gazebo consumes ArduPilot actuator outputs and electromagnet physical-effect requests. It produces simulated sensor data, ROS 2 `/clock`, onboard and observer camera frames, ground truth, contacts, native state, server logs, and diagnostics.
 
 ## Implementation stages
 
@@ -21,7 +21,7 @@ Gazebo consumes ArduPilot actuator outputs and electromagnet physical-effect req
 2. Establish the ArduPilot adapter.
 3. Publish authoritative `/clock`.
 4. Prove lockstep physics.
-5. Configure a camera at 20 Hz in simulation time.
+5. Configure onboard and observer cameras at 20 Hz in simulation time.
 6. Publish ground truth.
 7. Apply validated physical-effect requests.
 8. Expose collision and health diagnostics.
@@ -30,7 +30,7 @@ Gazebo consumes ArduPilot actuator outputs and electromagnet physical-effect req
 
 - Physical truth has one owner.
 - ArduPilot and Gazebo remain in lockstep at any real-time factor.
-- Camera frames are spaced 0.05 simulated seconds apart.
+- Both camera streams are spaced 0.05 simulated seconds apart.
 - Resets isolate runs by `run_id`.
 
 ## Deferred decisions
@@ -38,4 +38,3 @@ Gazebo consumes ArduPilot actuator outputs and electromagnet physical-effect req
 - Gazebo distribution, world, vehicle, and plugins
 - ROS 2 topic names, schemas, and QoS
 - ArduPilot adapter version
-

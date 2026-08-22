@@ -23,7 +23,7 @@ Secret values must be supplied at runtime and must not be committed.
 
 ## Observable outputs
 
-Lifecycle status, module diagnostics, score results, logs, and run metadata are correlated by `run_id`.
+Lifecycle status, module diagnostics, score results, logs, recordings, ROS bags, and run metadata are correlated by `run_id`. A terminal run preserves a manifest describing completeness and checksums even when the run failed or was aborted.
 
 ## Health semantics
 

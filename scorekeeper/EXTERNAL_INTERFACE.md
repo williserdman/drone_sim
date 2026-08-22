@@ -11,7 +11,7 @@ Inputs carry `run_id`, simulation timestamps, and stable state or event identiti
 
 ## Outputs
 
-The module emits run-scoped score events, final results, and incomplete-run diagnostics. It is read-only with respect to the simulated aircraft.
+The module emits run-scoped score events, final results, and incomplete-run diagnostics. The final result contains achieved score, maximum available score, scoring-configuration checksum, and evidence references. It is read-only with respect to the simulated aircraft.
 
 ## Ordering and failure behavior
 

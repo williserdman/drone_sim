@@ -9,11 +9,11 @@
 ## ROS 2 outputs
 
 - Authoritative `/clock`
-- Camera frames at 20 frames per simulated second
+- Onboard and observer camera frames at 20 frames per simulated second
 - Ground truth for the scorekeeper
 - Contact, collision, and diagnostic state as required
 
-All run-scoped outputs carry `run_id`; camera messages also carry `frame_id` and their simulation capture timestamp.
+All run-scoped outputs carry `run_id`; each camera message also carries a stream-specific `frame_id` and its simulation capture timestamp. The onboard stream is identical to the imagery supplied to companion vision.
 
 ## ROS 2 inputs
 

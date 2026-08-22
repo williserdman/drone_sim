@@ -4,6 +4,12 @@
 
 Run mission, vision, and autonomy logic; consume imagery and vehicle state; command the aircraft through ArduPilot.
 
+## Implementation constraints
+
+- Keep edits to the nested `companion/comp2026` repository to the minimum required for new camera input, simulation timing, MAVLink wiring, and removal or disabling of incompatible LiDAR assumptions.
+- Do not push changes from the nested repository.
+- Keep container adapters and simulation-specific wrappers outside the nested repository whenever possible.
+
 ## Non-responsibilities
 
 - Flight stabilization and actuator control
@@ -38,4 +44,3 @@ MAVLink flight and mission commands plus wall-clock performance diagnostics.
 - Mission and vision language
 - Exact ROS 2 topic names and QoS
 - MAVLink endpoint and causal-correlation encoding
-

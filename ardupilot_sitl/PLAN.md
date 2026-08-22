@@ -12,6 +12,12 @@ Act as the simulated flight controller by running estimation, navigation, and ve
 
 This is an ArduPilot SITL or simulated flight-controller module, not a Pixhawk simulator.
 
+## Implementation constraints
+
+- Prefer a maintained, readily available ArduPilot SITL image when it satisfies the required Gazebo adapter and architecture support; otherwise build a pinned image reproducibly in this directory.
+- Support parameter-file injection at startup.
+- Keep ArduPilot Dockerfiles, parameter files, entrypoints, and owned configuration under `ardupilot_sitl/`.
+
 ## Inputs and outputs
 
 It consumes companion MAVLink commands and Gazebo sensor data. It produces MAVLink telemetry and acknowledgements for the companion and actuator outputs for Gazebo.
@@ -36,4 +42,3 @@ It consumes companion MAVLink commands and Gazebo sensor data. It produces MAVLi
 - Vehicle firmware and configuration
 - Adapter version and configuration
 - MAVLink ports and routing
-

@@ -13,6 +13,8 @@ Coordinate the lifecycle and configuration of deterministic simulation runs cont
 
 | Module | Responsibility |
 | --- | --- |
+| `orchestration` | Run lifecycle, readiness, terminal state, and manifest metadata |
+| `artifacts` | Videos, ROS bags, logs, checksums, and bundle finalization |
 | `companion` | Mission, vision, and autonomy decisions |
 | `ardupilot_sitl` | Estimation, navigation, and flight control |
 | `gazebo` | Physics, sensors, camera, external forces, and ground truth |
@@ -38,10 +40,10 @@ Coordinate the lifecycle and configuration of deterministic simulation runs cont
 - The companion cannot directly change Gazebo.
 - Simulation and wall-clock time have distinct uses.
 - Unresolved implementation choices are explicitly deferred.
+- A preserved completed run achieves the versioned scoring configuration's maximum score.
 
 ## Deferred decisions
 
 - Exact reset and readiness protocols
 - DDS implementation and Docker Compose topology
 - Result persistence format
-

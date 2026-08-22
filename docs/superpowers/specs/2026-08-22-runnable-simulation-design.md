@@ -209,7 +209,7 @@ Containerize the nested companion repository with minimal local edits, disable i
 
 ### Phase 6: Scenario, scoring, and complete run
 
-Implement electromagnet physics requests, ground-truth scoring, deterministic completion criteria, failure and abort cases, and a complete recorded descent.
+Implement electromagnet physics requests, ground-truth scoring, deterministic completion criteria, failure and abort cases, and a complete recorded descent that achieves the maximum possible score.
 
 Each phase has its own implementation plan and integration gate. Work inside a phase may run concurrently only when file ownership and interfaces do not overlap.
 
@@ -243,6 +243,8 @@ A real end-to-end descent must finish with status `COMPLETED` and validate:
 - score events and final result;
 - manifest checksums, source revisions, image digests, timing, and artifact completeness;
 - no dependence of simulated behavior on host real-time factor.
+
+At least one preserved acceptance run must achieve the maximum score defined by the versioned scoring configuration. Its manifest records the maximum available score, achieved score, scoring-configuration checksum, and evidence paths for every awarded event.
 
 ## Agent Orchestration
 
