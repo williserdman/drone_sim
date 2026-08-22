@@ -34,6 +34,6 @@ The scorekeeper consumes run configuration, ROS 2 `/clock`, Gazebo ground truth,
 
 ## Deferred decisions
 
-- Scoring rules and result schema
+- Scoring rules
 - Event buffering and result-finalization window
 - Result fields beyond the fixed scoring summary
