@@ -56,8 +56,10 @@ and fixed fields are:
 `ABORTED=7`. The domain lifecycle tests cover the success path, failure and
 abort from `STARTING`, `READY`, and `RUNNING`, finalization failure, invalid
 transition diagnostics, and rejection of every event from terminal states.
-The synthetic integration covers published states `STARTING`, `READY`,
+The synthetic integration observes DDS-delivered states `STARTING`, `READY`,
 `RUNNING`, `FINALIZING`, and `COMPLETED` at deterministic simulation times.
+Its concurrent ROS node waits for bidirectional discovery, subscribes to both
+foundation topics, and records every received message before publisher exit.
 
 The fixed topic/QoS contract is:
 
@@ -71,22 +73,29 @@ The fixed topic/QoS contract is:
 | `/camera/onboard/image_raw` | Best effort, depth 5 |
 | `/camera/observer/image_raw` | Best effort, depth 5 |
 
-Phase 1 executes only the synthetic `/clock` and `/simulation/run_state`
-publishers. The remaining topic/QoS entries are fixed contracts for later
-phases, not evidence that their producers or consumers exist yet.
+Phase 1 executes the synthetic `/clock` and `/simulation/run_state` publishers
+and a concurrent observer with compatible subscriptions. The integration test
+asserts the exact three received clock values, the exact five received run-state
+messages in order, and the discovered publisher reliability and durability
+against the observer's requested QoS. The remaining topic/QoS entries are fixed
+contracts for later phases, not evidence that their producers or consumers
+exist yet.
 
 The structured-log common fields are exactly `run_id`, `module`, `severity`,
 `event`, `sim_timestamp`, and `wall_timestamp`; the Phase 1 serializer nests
 event-specific values under `fields`. Tests cover compact valid JSON Lines,
 UTC timestamps, nullable simulation time, field-collision rejection,
-non-finite-number rejection, and flush behavior.
+non-finite-number rejection, flush behavior, and equality between the
+foundation process's stdout and file event streams.
 
 The required artifact categories are configuration, Gazebo server log and
 native state, onboard and observer MP4, ROS bag, JSONL logs for orchestration,
 artifacts, companion, ArduPilot SITL, Gazebo, electromagnet, and scorekeeper,
 score events, and score result. Phase 1 tests their manifest inventory and
-validation rules with synthetic filesystem data; it does not produce a full
-run bundle.
+validation rules with synthetic filesystem data. Score summaries reject NaN
+and positive or negative infinity at the domain boundary, and manifest JSON is
+encoded with non-standard numeric tokens disabled. Phase 1 does not produce a
+full run bundle.
 
 ## Explicit non-claims
 

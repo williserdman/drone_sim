@@ -1,5 +1,7 @@
+from dataclasses import replace
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -101,6 +103,42 @@ def test_manifest_round_trips_scoring_summary_and_evidence_paths(tmp_path):
         "scoring_checksum": "a" * 64,
         "evidence_paths": ["scoring/events.jsonl#12", "video/observer.mp4#frame-42"],
     }
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("achieved_score", math.nan),
+        ("achieved_score", math.inf),
+        ("achieved_score", -math.inf),
+        ("maximum_available_score", math.nan),
+        ("maximum_available_score", math.inf),
+        ("maximum_available_score", -math.inf),
+    ],
+)
+def test_build_manifest_rejects_non_finite_score_values(tmp_path, field_name, value):
+    """A non-finite score would make the persisted manifest invalid JSON."""
+    with pytest.raises(ValueError, match=field_name):
+        build_manifest(
+            tmp_path,
+            "run-7",
+            "FAILED",
+            "scoring_failed",
+            **{field_name: value},
+        )
+
+
+@pytest.mark.parametrize("field_name", ["achieved_score", "maximum_available_score"])
+def test_write_manifest_atomic_refuses_non_standard_json_numbers(tmp_path, field_name):
+    """The persistence boundary must reject invalid manifests from any caller."""
+    manifest = build_manifest(tmp_path, "run-7", "FAILED", "scoring_failed")
+    invalid_manifest = replace(manifest, **{field_name: math.nan})
+
+    with pytest.raises(ValueError, match="JSON compliant"):
+        write_manifest_atomic(tmp_path, invalid_manifest)
+
+    assert not (tmp_path / "manifest.json").exists()
+    assert not (tmp_path / "manifest.json.tmp").exists()
 
 
 def test_manifest_schema_accepts_a_completed_manifest(tmp_path):

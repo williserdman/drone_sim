@@ -57,9 +57,13 @@ EXPECTED = {
 
 @pytest.mark.parametrize("filename,declarations", EXPECTED.items())
 def test_message_contract(filename: str, declarations: list[str]) -> None:
-    text = (MSG / filename).read_text()
-    for declaration in declarations:
-        assert declaration in text, f"{filename} missing {declaration}"
+    actual = []
+    for raw_line in (MSG / filename).read_text().splitlines():
+        declaration = raw_line.split("#", 1)[0].strip()
+        if declaration and not re.fullmatch(r"uint8 [A-Z]+=[0-9]+", declaration):
+            actual.append(declaration)
+
+    assert actual == declarations
 
 
 def test_run_state_lifecycle_constants_are_in_order() -> None:

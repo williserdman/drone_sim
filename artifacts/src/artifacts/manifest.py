@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 
@@ -96,6 +97,11 @@ def _record(run_directory: Path, relative_path: str) -> ArtifactRecord:
     return ArtifactRecord(relative_path, path.stat().st_size, _sha256(path), "present")
 
 
+def _require_finite_score(field_name: str, value: float | None) -> None:
+    if value is not None and not math.isfinite(value):
+        raise ValueError(f"{field_name} must be finite or None")
+
+
 def build_manifest(
     run_directory: Path | str,
     run_id: str,
@@ -110,6 +116,8 @@ def build_manifest(
     """Inventory all required bundle paths without hiding incomplete artifacts."""
     if terminal_status not in TERMINAL_STATUSES:
         raise ValueError(f"terminal_status must be one of {sorted(TERMINAL_STATUSES)}")
+    _require_finite_score("achieved_score", achieved_score)
+    _require_finite_score("maximum_available_score", maximum_available_score)
     records = tuple(_record(Path(run_directory), relative_path) for relative_path in REQUIRED_ARTIFACT_PATHS)
     if terminal_status == "COMPLETED" and any(record.validation != "present" for record in records):
         raise ValueError("COMPLETED manifests require every required artifact to be present")
@@ -130,7 +138,13 @@ def write_manifest_atomic(run_directory: Path | str, manifest: RunManifest) -> P
     directory = Path(run_directory)
     target = directory / "manifest.json"
     temporary = directory / "manifest.json.tmp"
-    payload = json.dumps(manifest.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        manifest.to_dict(),
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     with temporary.open("w", encoding="utf-8") as stream:
         stream.write(payload)
         stream.flush()
