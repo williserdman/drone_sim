@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 from orchestration.config import RunConfig, load_run_config
 
@@ -17,7 +17,11 @@ def test_run_schema_is_valid_and_default_run_validates():
     schema = json.loads((ROOT / "../config/run.schema.json").resolve().read_text())
     default = json.loads((ROOT / "../config/default-run.json").resolve().read_text())
     Draft202012Validator.check_schema(schema)
-    Draft202012Validator(schema).validate(default)
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator.validate(default)
+    invalid = {**default, "run_id": "not-a-uuid"}
+    with pytest.raises(ValidationError):
+        validator.validate(invalid)
 
 
 def test_load_run_config_returns_frozen_config_with_canonical_checksum():

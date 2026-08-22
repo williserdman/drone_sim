@@ -1,29 +1,29 @@
 """Immutable run lifecycle state machine."""
 
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum
 
 
-class LifecycleState(Enum):
-    CREATED = auto()
-    STARTING = auto()
-    READY = auto()
-    RUNNING = auto()
-    FINALIZING = auto()
-    COMPLETED = auto()
-    FAILED = auto()
-    ABORTED = auto()
+class LifecycleState(str, Enum):
+    CREATED = "CREATED"
+    STARTING = "STARTING"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    FINALIZING = "FINALIZING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ABORTED = "ABORTED"
 
 
-class LifecycleEvent(Enum):
-    START = auto()
-    MODULES_READY = auto()
-    CLOCK_STARTED = auto()
-    COMPLETE = auto()
-    FAIL = auto()
-    ABORT = auto()
-    ARTIFACTS_FINALIZED = auto()
-    FINALIZATION_FAILED = auto()
+class LifecycleEvent(str, Enum):
+    START = "START"
+    MODULES_READY = "MODULES_READY"
+    CLOCK_STARTED = "CLOCK_STARTED"
+    COMPLETE = "COMPLETE"
+    FAIL = "FAIL"
+    ABORT = "ABORT"
+    ARTIFACTS_FINALIZED = "ARTIFACTS_FINALIZED"
+    FINALIZATION_FAILED = "FINALIZATION_FAILED"
 
 
 class InvalidTransition(ValueError):
