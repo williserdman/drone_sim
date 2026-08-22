@@ -1,41 +1,54 @@
 # Phase 1 Foundation Verification
 
-## Verification identity
+## Current post-fix verification (authoritative)
 
-- Tested source commit: `9a4fb51b4b649ca05bdc9c35fbfae99a3ef567c5`
-- Verification window: `2026-08-22T16:21:34Z` through `2026-08-22T16:23:46Z`
+- Tested implementation commit: `7064e860b395a1cb21c3d8c40064b0bbc07e912f`
+- Verification completed: `2026-08-22T16:56:48Z`
 - Built foundation image digest:
-  `sha256:4715ba350468c424bbc211c44f4c72ba6a196e8d6ec21209f13fd62cba2a1be4`
+  `sha256:7431edf66d1fb49a52898b3d918bbbcac2c3fefed9d803380be27a2b13296f12`
 - Authorities compared: `docs/superpowers/specs/2026-08-22-runnable-simulation-design.md`,
   `docs/superpowers/plans/2026-08-22-phase-1-foundation.md`, the root
   interface documents, and each affected module interface document.
 
-The tested commit is the Phase 1 implementation commit immediately preceding
-this evidence-only gate commit. Documentation alignment changes were checked
-separately with `git diff --check`; recording the gate commit as its own tested
-commit would require a self-referential commit hash.
+The tested implementation commit contains the DDS observer, stdout/file sink
+comparison, finite-score validation, bounded integration timeout, and exact ROS
+field checks described below. This evidence-only document commit follows that
+tested implementation commit, avoiding a self-referential commit identity.
 
-## Command evidence
+### Post-fix command evidence
 
 | Command | Exit | Evidence |
 | --- | ---: | --- |
-| `make test` | 0 | 50 unit/contract tests passed and 1 Docker Compose integration test passed; 51 total, 0 failed |
+| `make test` | 0 | 58 unit/contract tests passed and 2 Docker Compose integration tests passed; 60 total, 0 failed |
 | `docker compose config --quiet` | 0 | Compose configuration accepted with no output |
 | `git diff --check` | 0 | No whitespace errors |
 | `docker image inspect phase-1-foundation-foundation:latest --format '{{.Id}}'` | 0 | Returned the image digest recorded above |
-| `git status --short` | 0 | Listed only the intentional Task 5 documentation alignment and verification record before staging |
-| `git -C companion/comp2026 status --short` | 128 | Expected diagnostic: the nested repository is absent from this isolated worktree |
+| `git status --short --untracked-files=all` | 0 | No tracked implementation changes after the fix commit |
 | `test ! -e companion/comp2026` | 0 | Confirmed the nested repository was not materialized by Phase 1 |
-| `git diff --name-only 068de23..HEAD -- companion/comp2026` | 0 | Empty output; Phase 1 commits did not add or modify the nested repository path |
+| `git diff --name-only dbd7d63..7064e86 -- companion/comp2026` | 0 | Empty output; the final-review fix did not add or modify the nested repository path |
 
 The `make test` result consists of:
 
 - 9 configuration tests;
 - 10 lifecycle tests;
-- 8 manifest tests;
+- 16 manifest tests;
 - 16 structured-log tests;
 - 7 ROS source-contract tests;
-- 1 Docker Compose foundation integration test.
+- 2 Docker Compose foundation integration tests.
+
+## Superseded original gate (historical only)
+
+The original Phase 1 gate below predates the final-review fixes. It is retained
+only as historical evidence and must not be used to support the post-fix DDS,
+stdout/file equality, finite-score, timeout, or exact-field claims in this
+document.
+
+- Tested source commit: `9a4fb51b4b649ca05bdc9c35fbfae99a3ef567c5`
+- Verification window: `2026-08-22T16:21:34Z` through `2026-08-22T16:23:46Z`
+- Built foundation image digest:
+  `sha256:4715ba350468c424bbc211c44f4c72ba6a196e8d6ec21209f13fd62cba2a1be4`
+- Test result: 50 unit/contract tests and 1 Docker Compose integration
+  test passed; 51 total, 0 failed.
 
 ## Contract alignment
 
