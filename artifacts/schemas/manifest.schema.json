@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["run_id", "terminal_status", "reason", "artifacts", "scoring"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "terminal_status": {"enum": ["COMPLETED", "FAILED", "ABORTED"]},
+    "reason": {"type": "string"},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["relative_path", "size_bytes", "sha256", "validation"],
+        "properties": {
+          "relative_path": {"type": "string"},
+          "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+          "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "validation": {"enum": ["present", "missing", "invalid"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "required": ["achieved_score", "maximum_available_score", "scoring_checksum", "evidence_paths"],
+      "properties": {
+        "achieved_score": {"type": ["number", "null"]},
+        "maximum_available_score": {"type": ["number", "null"]},
+        "scoring_checksum": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "evidence_paths": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
