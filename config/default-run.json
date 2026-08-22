@@ -1,0 +1,9 @@
+{
+  "run_id": "00000000-0000-4000-8000-000000000001",
+  "world": "competition",
+  "vehicle": "iris",
+  "mission": "descent",
+  "scenario": "maximum_score",
+  "output_root": "runs",
+  "max_wall_seconds": 3600
+}

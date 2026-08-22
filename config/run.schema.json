@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "world", "vehicle", "mission", "scenario", "output_root", "max_wall_seconds"],
+  "properties": {
+    "run_id": {"type": "string", "format": "uuid"},
+    "world": {"type": "string", "minLength": 1},
+    "vehicle": {"type": "string", "minLength": 1},
+    "mission": {"type": "string", "minLength": 1},
+    "scenario": {"type": "string", "minLength": 1},
+    "output_root": {"type": "string", "minLength": 1},
+    "max_wall_seconds": {"type": "integer", "minimum": 1}
+  }
+}
