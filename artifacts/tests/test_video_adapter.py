@@ -1102,11 +1102,13 @@ def test_finalize_closes_stdin_validates_and_publishes_without_clobber(tmp_path)
     assert recorder._process.stdin.closed is True
     assert recorder.final_path.read_bytes() == b"encoded"
     assert not recorder.partial_path.exists()
-    assert validator.calls == [(
-        tmp_path.resolve(), "video/onboard.mp4", 1, "COMPLETED", deadline,
-        validator.calls[0][5],
-    )]
-    assert isinstance(validator.calls[0][5], int)
+    assert len(validator.calls) == 1
+    call = validator.calls[0]
+    assert call[:4] == (
+        tmp_path.resolve(), "video/onboard.mp4", 1, "COMPLETED"
+    )
+    assert call[4] == pytest.approx(deadline - 0.5)
+    assert isinstance(call[5], int)
 
 
 @pytest.mark.parametrize("returncode", [1, 137])
@@ -1135,19 +1137,200 @@ def test_broken_pipe_while_closing_fails_closed_but_still_reaps_process(tmp_path
     assert recorder._root_fd is None and recorder._video_fd is None
 
 
-def test_unconfirmed_stuck_process_is_not_linked_after_shared_deadline(tmp_path):
+def test_unconfirmed_writer_gets_stable_snapshot_before_shared_deadline(tmp_path):
     clock = FakeClock()
-    process = FakeProcess(("timeout", "timeout", "timeout"), advance=clock.advance)
-    recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(process),
-                         monotonic=clock.monotonic)
+    release_cleanup = threading.Event()
+    cleanup_finished = threading.Event()
+    captured = {}
+
+    class LateWriterProcess(FakeProcess):
+        def wait(self, timeout):
+            if len(self.wait_timeouts) < 3:
+                return super().wait(timeout)
+            self.wait_timeouts.append(timeout)
+            assert release_cleanup.wait(5)
+            os.close(captured["writer_fd"])
+            self.returncode = -signal.SIGKILL
+            cleanup_finished.set()
+            return self.returncode
+
+    process = LateWriterProcess(
+        ("timeout", "timeout", "timeout"), advance=clock.advance
+    )
+
+    def factory(command, **kwargs):
+        output_fd = int(command[-1].rsplit("/", 1)[1])
+        captured["writer_fd"] = os.dup(output_fd)
+        captured["source_identity"] = os.fstat(output_fd)
+        captured["log"] = kwargs["stderr"]
+        return process
+
+    recorder = _recorder(
+        tmp_path, process_factory=factory, monotonic=clock.monotonic
+    )
     _write_anonymous_output(recorder, b"partial output")
+
     result = recorder.finalize(deadline=9.0, outcome="aborted")
+
     assert result.exited is False
     assert result.signals == ("SIGTERM", "SIGKILL") and result.escalated is True
-    assert sum(process.wait_timeouts) == pytest.approx(9.0)
-    assert clock.now == pytest.approx(9.0)
-    assert not recorder.partial_path.exists() and not recorder.final_path.exists()
+    assert sum(process.wait_timeouts[:3]) < 9.0
+    assert clock.now < 9.0
+    assert recorder.partial_path.read_bytes() == b"partial output"
+    partial_before = recorder.partial_path.stat()
+    assert partial_before.st_mode & 0o777 == 0o444
+    assert (partial_before.st_dev, partial_before.st_ino) != (
+        captured["source_identity"].st_dev,
+        captured["source_identity"].st_ino,
+    )
+    stable_before = tuple(
+        getattr(partial_before, field)
+        for field in (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+            "st_mtime_ns", "st_ctime_ns",
+        )
+    )
+    assert not recorder.final_path.exists()
     assert recorder._root_fd is None and recorder._video_fd is None
+    assert captured["log"].closed is True
+
+    os.pwrite(captured["writer_fd"], b"late mutation!", 0)
+    assert recorder.partial_path.read_bytes() == b"partial output"
+    assert tuple(
+        getattr(recorder.partial_path.stat(), field)
+        for field in (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+            "st_mtime_ns", "st_ctime_ns",
+        )
+    ) == stable_before
+
+    release_cleanup.set()
+    assert cleanup_finished.wait(5)
+    assert recorder.partial_path.read_bytes() == b"partial output"
+    assert tuple(
+        getattr(recorder.partial_path.stat(), field)
+        for field in (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+            "st_mtime_ns", "st_ctime_ns",
+        )
+    ) == stable_before
+    with pytest.raises(OSError) as closed_writer:
+        os.fstat(captured["writer_fd"])
+    assert closed_writer.value.errno == errno.EBADF
+
+
+def test_recovery_copy_cutoff_still_links_an_empty_snapshot(tmp_path, monkeypatch):
+    clock = FakeClock()
+    process = FakeProcess(
+        ("timeout", "timeout", "timeout"), advance=clock.advance
+    )
+    recorder = _recorder(
+        tmp_path,
+        process_factory=FakeProcessFactory(process),
+        monotonic=clock.monotonic,
+    )
+    _write_anonymous_output(recorder, b"must not cross copy cutoff")
+    source_fd = recorder._output_fd
+    real_pread = video_module.os.pread
+
+    def consume_copy_budget(descriptor, size, offset):
+        chunk = real_pread(descriptor, size, offset)
+        if descriptor == source_fd:
+            clock.now = 8.9
+        return chunk
+
+    monkeypatch.setattr(video_module.os, "pread", consume_copy_budget)
+
+    result = recorder.finalize(deadline=9.0, outcome="ABORTED")
+
+    assert result.exited is False
+    assert clock.now < 9.0
+    assert recorder.partial_path.read_bytes() == b""
+    assert recorder.partial_path.stat().st_mode & 0o777 == 0o444
+    assert not recorder.final_path.exists()
+
+
+def test_recovery_read_failure_links_bytes_copied_so_far(tmp_path, monkeypatch):
+    clock = FakeClock()
+    process = FakeProcess(
+        ("timeout", "timeout", "timeout"), advance=clock.advance
+    )
+    recorder = _recorder(
+        tmp_path,
+        process_factory=FakeProcessFactory(process),
+        monotonic=clock.monotonic,
+    )
+    _write_anonymous_output(recorder, b"source")
+    source_fd = recorder._output_fd
+    reads = 0
+    real_pread = video_module.os.pread
+
+    def fail_after_one_chunk(descriptor, size, offset):
+        nonlocal reads
+        if descriptor != source_fd:
+            return real_pread(descriptor, size, offset)
+        reads += 1
+        if reads == 1:
+            return b"copied"
+        raise OSError("injected recovery read failure")
+
+    monkeypatch.setattr(video_module.os, "pread", fail_after_one_chunk)
+
+    result = recorder.finalize(deadline=9.0, outcome="ABORTED")
+
+    assert result.exited is False
+    assert recorder.partial_path.read_bytes() == b"copied"
+    assert recorder.partial_path.stat().st_mode & 0o777 == 0o444
+    assert any(
+        item.event == "video_recovery_copy_failed"
+        for item in recorder.diagnostics
+    )
+
+
+@pytest.mark.parametrize("contents", [b"", b"corrupt bytes"])
+def test_empty_or_corrupt_stopped_output_is_preserved_readonly(tmp_path, contents):
+    invalid = VideoValidationResult(
+        ValidationStatus.INVALID,
+        len(contents),
+        None,
+        "video is empty or corrupt",
+    )
+    recorder = _recorder(tmp_path, validator=FakeValidator(invalid))
+    _write_anonymous_output(recorder, contents)
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome="FAILED"
+    )
+
+    assert result.published is False
+    assert recorder.partial_path.read_bytes() == contents
+    assert recorder.partial_path.stat().st_mode & 0o777 == 0o444
+    assert not recorder.final_path.exists()
+
+
+def test_validator_timeout_uses_reserved_recovery_slice(tmp_path):
+    clock = FakeClock()
+    captured = {}
+
+    class DeadlineValidator:
+        def validate(self, *_args, **kwargs):
+            captured["validation_deadline"] = kwargs["deadline"]
+            clock.now = kwargs["deadline"]
+            raise subprocess.TimeoutExpired("validator", 0)
+
+    recorder = _recorder(
+        tmp_path, validator=DeadlineValidator(), monotonic=clock.monotonic
+    )
+    _write_anonymous_output(recorder, b"corrupt but recoverable")
+
+    result = recorder.finalize(deadline=9.0, outcome="FAILED")
+
+    assert result.published is False
+    assert captured["validation_deadline"] < 9.0
+    assert clock.now < 9.0
+    assert recorder.partial_path.read_bytes() == b"corrupt but recoverable"
+    assert recorder.partial_path.stat().st_mode & 0o777 == 0o444
+    assert not recorder.final_path.exists()
 
 
 def test_invalid_output_is_retained_as_partial(tmp_path):
@@ -1556,6 +1739,110 @@ def test_wait_and_signal_exceptions_still_kill_and_reap_real_child(tmp_path):
         assert not marker.exists()
     finally:
         child = child_holder.get("child")
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait()
+
+
+def test_real_unconfirmed_child_cannot_mutate_published_recovery_snapshot(tmp_path):
+    release_cleanup = threading.Event()
+    cleanup_finished = threading.Event()
+    captured = {}
+
+    class DeferredKillBoundary:
+        def __init__(self, child):
+            self._child = child
+            self.stdin = child.stdin
+            self.returncode = None
+            self.signals = []
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            if len(self.signals) < 3:
+                time.sleep(timeout)
+                raise subprocess.TimeoutExpired("child", timeout)
+            self.returncode = self._child.wait(timeout=timeout)
+            cleanup_finished.set()
+            return self.returncode
+
+        def send_signal(self, signum):
+            self.signals.append(signum)
+            if len(self.signals) >= 3:
+                assert release_cleanup.wait(5)
+                self._child.kill()
+
+    def factory(command, **kwargs):
+        output_fd = int(command[-1].rsplit("/", 1)[1])
+        assert os.pwrite(output_fd, b"before", 0) == 6
+        os.ftruncate(output_fd, 6)
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os,time; time.sleep(0.8); "
+                f"os.pwrite({output_fd}, b'after!', 0); time.sleep(30)",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=kwargs["stderr"],
+            pass_fds=(output_fd,),
+        )
+        captured["child"] = child
+        captured["source_identity"] = os.fstat(output_fd)
+        captured["output_fd"] = output_fd
+        captured["log"] = kwargs["stderr"]
+        return DeferredKillBoundary(child)
+
+    recorder = _recorder(tmp_path, process_factory=factory)
+    started = time.monotonic()
+
+    try:
+        result = recorder.finalize(
+            deadline=started + 1.0, outcome="ABORTED"
+        )
+
+        assert time.monotonic() - started < 1.05
+        assert result.exited is False and result.published is False
+        assert recorder.partial_path.read_bytes() == b"before"
+        partial_before = recorder.partial_path.stat()
+        stable_before = tuple(
+            getattr(partial_before, field)
+            for field in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+                "st_mtime_ns", "st_ctime_ns",
+            )
+        )
+        assert partial_before.st_mode & 0o777 == 0o444
+        assert (partial_before.st_dev, partial_before.st_ino) != (
+            captured["source_identity"].st_dev,
+            captured["source_identity"].st_ino,
+        )
+        assert not recorder.final_path.exists()
+        assert captured["log"].closed is True
+        with pytest.raises(OSError) as closed_output:
+            os.fstat(captured["output_fd"])
+        assert closed_output.value.errno == errno.EBADF
+
+        time.sleep(0.5)
+        assert recorder.partial_path.read_bytes() == b"before"
+        partial_after_write = recorder.partial_path.stat()
+        assert tuple(
+            getattr(partial_after_write, field)
+            for field in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+                "st_mtime_ns", "st_ctime_ns",
+            )
+        ) == stable_before
+
+        release_cleanup.set()
+        assert cleanup_finished.wait(5)
+        assert captured["child"].poll() is not None
+        assert recorder.partial_path.read_bytes() == b"before"
+    finally:
+        release_cleanup.set()
+        child = captured.get("child")
         if child is not None and child.poll() is None:
             child.kill()
             child.wait()

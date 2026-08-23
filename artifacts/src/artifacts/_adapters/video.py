@@ -27,6 +27,9 @@ ENCODING = "rgb8"
 STEP_BYTES = WIDTH_PX * 3
 PAYLOAD_BYTES = WIDTH_PX * HEIGHT_PX * 3
 STREAMS = ("onboard", "observer")
+_RECOVERY_RESERVE_SECONDS = 0.5
+_RECOVERY_LINK_MARGIN_SECONDS = 0.1
+_RECOVERY_COPY_CHUNK_BYTES = 1024 * 1024
 _DIRECTORY_FLAGS = (
     os.O_RDONLY
     | getattr(os, "O_CLOEXEC", 0)
@@ -1077,6 +1080,9 @@ class VideoStreamRecorder:
             raise RuntimeError("video recorder has not been started")
         signals: list[str] = []
         path_watch_fd: int | None = None
+        primary_deadline, recovery_copy_deadline = self._recovery_deadlines(
+            deadline
+        )
         try:
             canonical_outcome = outcome.upper()
             if canonical_outcome not in {"COMPLETED", "FAILED", "ABORTED"}:
@@ -1086,8 +1092,8 @@ class VideoStreamRecorder:
                     "unmatched_frame",
                     "finalization found an unmatched image or metadata item",
                 )
-            self._close_stdin_within(deadline)
-            self._reap_within(process, deadline, signals)
+            self._close_stdin_within(primary_deadline)
+            self._reap_within(process, primary_deadline, signals)
 
             returncode = process.poll()
             exited = returncode is not None
@@ -1104,8 +1110,12 @@ class VideoStreamRecorder:
                 if boundary_failure is not None:
                     detail = f"{detail}; {boundary_failure}"
                 self._record_failure("ffmpeg_timeout", detail)
+                self._snapshot_recovery_output(
+                    recovery_copy_deadline, deadline
+                )
+                self._start_async_process_cleanup(process)
                 return VideoFinalization(False, None, tuple(signals), bool(signals), False, detail)
-            self._seal_output_readonly(deadline)
+            self._seal_output_readonly(primary_deadline)
             if returncode != 0:
                 detail = f"FFmpeg exited with return code {returncode}"
                 self._record_failure("ffmpeg_failed", detail)
@@ -1124,7 +1134,7 @@ class VideoStreamRecorder:
                 f"video/{self.stream}.mp4",
                 expected_frame_count=self.expected_frame_count,
                 outcome=canonical_outcome,
-                deadline=deadline,
+                deadline=primary_deadline,
                 descriptor=self._readonly_output_fd,
             )
             if _watch_changed(path_watch_fd) or not self._paths_safe():
@@ -1141,6 +1151,8 @@ class VideoStreamRecorder:
                     True, 0, tuple(signals), bool(signals), False, validation.detail
                 )
             try:
+                if self._monotonic() >= primary_deadline:
+                    raise subprocess.TimeoutExpired("video publication", 0)
                 self._publish_readonly_output(f"{self.stream}.mp4")
             except Exception as error:
                 detail = (
@@ -1158,7 +1170,10 @@ class VideoStreamRecorder:
         except Exception as error:
             detail = f"video finalization failed: {type(error).__name__}: {error}"
             self._record_failure("video_finalize_failed", detail)
-            self._preserve_recovery_output(deadline)
+            if not self._preserve_recovery_output(deadline):
+                self._snapshot_recovery_output(
+                    recovery_copy_deadline, deadline
+                )
             try:
                 returncode = process.poll()
             except Exception:
@@ -1178,6 +1193,23 @@ class VideoStreamRecorder:
                 except OSError:
                     pass
             self._close_resources()
+
+    def _recovery_deadlines(self, deadline: float) -> tuple[float, float]:
+        remaining = max(0.0, deadline - self._monotonic())
+        recovery_reserve = min(
+            _RECOVERY_RESERVE_SECONDS, remaining / 2
+        )
+        link_margin = min(
+            _RECOVERY_LINK_MARGIN_SECONDS, recovery_reserve / 2
+        )
+        return deadline - recovery_reserve, deadline - link_margin
+
+    def _start_async_process_cleanup(self, process: _Process) -> None:
+        threading.Thread(
+            target=self._terminate_worker_process,
+            args=(process,),
+            daemon=True,
+        ).start()
 
     def _close_stdin_within(self, deadline: float) -> None:
         process = self._process
@@ -1311,11 +1343,28 @@ class VideoStreamRecorder:
         writable_fd = self._output_fd
         readonly_fd: int | None = None
         try:
-            if deadline - self._monotonic() <= 0:
-                raise subprocess.TimeoutExpired("video output fsync", 0)
+            readonly_fd = self._reopen_anonymous_readonly(
+                writable_fd, deadline
+            )
+            os.close(writable_fd)
+            self._output_fd = None
+            self._readonly_output_fd = readonly_fd
+            readonly_fd = None
+        finally:
+            if readonly_fd is not None:
+                try:
+                    os.close(readonly_fd)
+                except OSError:
+                    pass
+
+    def _reopen_anonymous_readonly(
+        self, writable_fd: int, deadline: float
+    ) -> int:
+        readonly_fd: int | None = None
+        try:
+            self._require_recovery_time(deadline, "video output fsync")
             os.fsync(writable_fd)
-            if deadline - self._monotonic() <= 0:
-                raise subprocess.TimeoutExpired("video output reopen", 0)
+            self._require_recovery_time(deadline, "video output reopen")
             readonly_fd = os.open(
                 f"/proc/self/fd/{writable_fd}",
                 os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
@@ -1330,17 +1379,17 @@ class VideoStreamRecorder:
                 != os.O_RDONLY
             ):
                 raise RuntimeError("anonymous video output identity is unsafe")
+            self._require_recovery_time(deadline, "video output chmod")
             os.fchmod(writable_fd, 0o444)
+            self._require_recovery_time(deadline, "video output fsync")
             os.fsync(writable_fd)
-            if deadline - self._monotonic() <= 0:
-                raise subprocess.TimeoutExpired("video output sealing", 0)
+            self._require_recovery_time(deadline, "video output sealing")
             readonly_identity = os.fstat(readonly_fd)
             if readonly_identity.st_mode & 0o777 != 0o444:
                 raise RuntimeError("video output permissions are not read-only")
-            os.close(writable_fd)
-            self._output_fd = None
-            self._readonly_output_fd = readonly_fd
+            result = readonly_fd
             readonly_fd = None
+            return result
         finally:
             if readonly_fd is not None:
                 try:
@@ -1348,31 +1397,35 @@ class VideoStreamRecorder:
                 except OSError:
                     pass
 
+    def _require_recovery_time(self, deadline: float, label: str) -> None:
+        if self._monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(label, 0)
+
     def _publish_readonly_output(self, name: str) -> None:
         if self._readonly_output_fd is None or self._video_fd is None:
             raise RuntimeError("read-only video output is not available")
-        retained = os.fstat(self._readonly_output_fd)
+        self._publish_readonly_descriptor(self._readonly_output_fd, name)
+
+    def _publish_readonly_descriptor(self, descriptor: int, name: str) -> None:
+        if self._video_fd is None:
+            raise RuntimeError("video directory is not available")
+        retained = os.fstat(descriptor)
         if (
             not self._paths_safe()
             or not stat.S_ISREG(retained.st_mode)
             or retained.st_nlink != 0
             or retained.st_mode & 0o777 != 0o444
-            or fcntl.fcntl(self._readonly_output_fd, fcntl.F_GETFL)
-            & os.O_ACCMODE
+            or fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE
             != os.O_RDONLY
         ):
             raise RuntimeError("read-only video output is unsafe")
-        _link_descriptor_noreplace(
-            self._readonly_output_fd, self._video_fd, name
-        )
+        _link_descriptor_noreplace(descriptor, self._video_fd, name)
 
     def _preserve_recovery_output(self, deadline: float) -> bool:
         if self._readonly_output_fd is None:
             return False
         try:
             if deadline - self._monotonic() <= 0:
-                return False
-            if os.fstat(self._readonly_output_fd).st_size <= 0:
                 return False
             self._publish_readonly_output(f"{self.stream}.mp4.partial")
             return True
@@ -1382,6 +1435,81 @@ class VideoStreamRecorder:
                 f"video recovery publication failed: {type(error).__name__}: {error}",
             )
             return False
+
+    def _snapshot_recovery_output(
+        self, copy_deadline: float, deadline: float
+    ) -> bool:
+        source_fd = self._output_fd
+        if source_fd is None or self._video_fd is None:
+            return False
+        snapshot_fd: int | None = None
+        readonly_fd: int | None = None
+        try:
+            self._require_recovery_time(deadline, "video recovery snapshot")
+            snapshot_fd = os.open(
+                ".", _OUTPUT_FLAGS, 0o600, dir_fd=self._video_fd
+            )
+            offset = 0
+            copying = True
+            try:
+                while copying and self._monotonic() < copy_deadline:
+                    self._require_recovery_time(
+                        copy_deadline, "video recovery copy"
+                    )
+                    chunk = os.pread(
+                        source_fd, _RECOVERY_COPY_CHUNK_BYTES, offset
+                    )
+                    if self._monotonic() >= copy_deadline or not chunk:
+                        break
+                    view = memoryview(chunk)
+                    while view:
+                        if self._monotonic() >= copy_deadline:
+                            copying = False
+                            break
+                        count = os.write(snapshot_fd, view)
+                        if (
+                            not isinstance(count, int)
+                            or isinstance(count, bool)
+                            or count <= 0
+                            or count > len(view)
+                        ):
+                            raise RuntimeError(
+                                "video recovery write returned a malformed byte count"
+                            )
+                        offset += count
+                        view = view[count:]
+            except Exception as error:
+                self._record_failure(
+                    "video_recovery_copy_failed",
+                    "video recovery copy stopped: "
+                    f"{type(error).__name__}: {error}",
+                )
+            readonly_fd = self._reopen_anonymous_readonly(
+                snapshot_fd, deadline
+            )
+            os.close(snapshot_fd)
+            snapshot_fd = None
+            self._require_recovery_time(
+                deadline, "video recovery publication"
+            )
+            self._publish_readonly_descriptor(
+                readonly_fd, f"{self.stream}.mp4.partial"
+            )
+            return True
+        except Exception as error:
+            self._record_failure(
+                "video_recovery_failed",
+                "video recovery snapshot failed: "
+                f"{type(error).__name__}: {error}",
+            )
+            return False
+        finally:
+            for descriptor in (readonly_fd, snapshot_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
 
     def _close_resources(self) -> None:
         if self._log_stream is not None:

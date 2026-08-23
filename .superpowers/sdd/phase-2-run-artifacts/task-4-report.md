@@ -3,7 +3,7 @@
 ## Scope and baseline
 
 - Baseline: `d527abbf60a9bc2b2fae2621b68f8ed67cc9298f`
-- Verification audit: `2026-08-23T22:29:42Z`
+- Verification audit: `2026-08-23T23:27:44Z`
 - Scope: two 20-FPS, 320x240 `rgb8` FFmpeg pipelines, their ROS-facing
   subscriptions/readiness/errors, read-only MP4 validation, and the pinned
   artifact-image FFmpeg extension.
@@ -88,6 +88,15 @@ thread-order-dependent spawn cleanup cutoff: it was computed after the worker
 started. The real-child test failed intermittently, then passed 10 consecutive
 runs after the caller computed and owned the cutoff before launching the worker.
 
+Review fix round 4 began with `4 failed, 1 passed, 118 deselected`. The failures
+showed that reap consumed the entire caller deadline, zero-byte output was
+dropped, validation received the absolute deadline rather than a recovery-safe
+primary deadline, and a real unconfirmed child returned without a diagnostic
+partial. The first recovery selection then passed `7 passed, 117 deselected`.
+Self-review added a further genuine RED: an injected read failure after one
+copied chunk discarded the snapshot. The repaired copy boundary seals and links
+the bytes copied so far and records `video_recovery_copy_failed`.
+
 ## Implementation and files
 
 - `artifacts/src/artifacts/_adapters/video.py`
@@ -106,6 +115,13 @@ runs after the caller computed and owned the cutoff before launching the worker.
     permission seal to `0444`, closure of every writable descriptor, stable
     semantic validation, then one descriptor-bound Linux `linkat` no-clobber
     publication of that exact inode;
+  - finalization partitions that same absolute deadline once into primary,
+    recovery-copy, and seal/link boundaries; unconfirmed writers are copied
+    per chunk into an independent anonymous inode, including an empty or
+    truncated snapshot when the copy budget/error boundary is reached;
+  - the recovery snapshot is fsynced, reopened read-only, sealed `0444`, and
+    linked before return; process-only asynchronous cleanup can then kill/reap
+    the child without retaining or mutating the named recovery inode;
   - descriptor-backed ffprobe JSON, `-xerror` full decode, same-descriptor
     before/after hashes/fstats, and retained run-root/video/file mutation
     watches;
@@ -126,7 +142,7 @@ runs after the caller computed and owned the cutoff before launching the worker.
     caller deadline and contained subscription callbacks so one failed stream
     does not terminate the executor.
 - `artifacts/tests/test_video_adapter.py`
-  - 119 host/container behavioral cases covering pairing, every frozen frame
+  - 125 host/container behavioral cases covering pairing, every frozen frame
     invariant, bounded pending state, process/finalization races and failures,
     filesystem collisions, semantic validation, a real recorder pipe, and the
     real Jazzy node/QoS shape.
@@ -134,6 +150,10 @@ runs after the caller computed and owned the cutoff before launching the worker.
   - exact Ubuntu FFmpeg delta installation and build-time verification;
   - test-target-only anonymous `/test-run-volume` plus pytest basetemp routing,
     so plain container test commands use an `O_TMPFILE`-capable local volume.
+- `artifacts/INTERNAL_INTERFACE.md`
+  - records the exclusive orchestration-owned run root, trusted-container and
+    host path-stability assumptions, writer quiescence, and the distinction
+    between lifecycle read-only protection and hostile-co-tenant immutability.
 - `artifacts/src/artifacts/__init__.py`
   - exports `VideoStreamRecorder`, `VideoRecorderNode`, and `VideoValidator`
     plus their immutable diagnostic/result types.
@@ -205,22 +225,22 @@ probed and fully decoded that recovered file as valid.
 
 ```text
 uv run pytest artifacts/tests/test_video_adapter.py -v
-113 passed, 6 skipped in 2.92s
+119 passed, 6 skipped in 3.84s
 
 uv run pytest artifacts/tests -v
-223 passed, 10 skipped in 3.99s
+229 passed, 10 skipped in 4.53s
 
 docker build -f artifacts/Dockerfile --target test -t drone-sim-artifacts:test .
-exit 0; image sha256:3d93ddfe52b03402df8c6c2cd4ac2b4062058de59607dd7a0703ee95c2b4d0e4
+exit 0; image sha256:1527619f464159bf4355b720107993573fd0e3db8d2df77b8b9228b95ba61651
 
 docker run --rm drone-sim-artifacts:test uv run pytest artifacts/tests/test_video_adapter.py -v
-119 passed in 9.44s
+125 passed in 11.67s
 
 docker run --rm drone-sim-artifacts:test
-233 passed in 14.47s
+239 passed in 12.38s
 
 uv run pytest -v
-277 passed, 10 skipped in 11.75s
+283 passed, 10 skipped in 14.17s
 
 uv run python -m compileall -q artifacts/src artifacts/tests
 exit 0
@@ -255,6 +275,12 @@ Jazzy node.
 - Slow close, semantic timeouts, unexpected subprocess/validator/signal/wait
   failures, and throwing diagnostic sinks return immutable failure surfaces
   and do not leak retained descriptors.
+- An unconfirmed real child can continue writing only its original inode. The
+  named recovery snapshot exists at adapter return and its bytes, inode, mode,
+  size, and timestamps remain stable before and after asynchronous child reap.
+- Recovery copy loops check the caller deadline before/after reads and before
+  every write. A separate seal/link margin preserves the copied prefix,
+  including zero bytes, if copy time or an I/O error ends the copy phase.
 - Startup preflight and process creation consume only the caller's remaining
   deadline. A synchronized single-owner handoff gives cancellation cleanup a
   pre-reserved budget; timeout races and malformed post-spawn contracts kill
@@ -264,6 +290,10 @@ Jazzy node.
   descriptor linking/no-clobber, real four-frame success and recoverable
   failure fixtures, and strict full decode.
 - The node is a real rclpy node in Jazzy and does not overwrite rclpy internals.
+- The filesystem safety claims assume the documented exclusive trusted
+  container/run-root model. Mode `0444` protects lifecycle ownership but is not
+  presented as Linux immutability against malicious same-UID or privileged
+  code.
 - No unresolved contract or package-lock contradiction remains. The host's
   legacy Docker builder is slow and emits its upstream deprecation warning;
   this does not affect the locked image or test results.
