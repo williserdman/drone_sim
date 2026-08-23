@@ -1,9 +1,16 @@
 {
-  "run_id": "00000000-0000-4000-8000-000000000001",
   "world": "competition",
   "vehicle": "iris",
   "mission": "descent",
   "scenario": "maximum_score",
   "output_root": "runs",
-  "max_wall_seconds": 3600
+  "max_wall_seconds": 3600,
+  "startup_wall_seconds": 120,
+  "finalization_wall_seconds": 120,
+  "recording": {
+    "width_px": 320,
+    "height_px": 240,
+    "fps": 20,
+    "encoding": "rgb8"
+  }
 }

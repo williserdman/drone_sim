@@ -3,7 +3,6 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "run_id",
     "world",
     "vehicle",
     "mission",
@@ -12,11 +11,9 @@
     "max_wall_seconds",
     "startup_wall_seconds",
     "finalization_wall_seconds",
-    "recording",
-    "config_sha256"
+    "recording"
   ],
   "properties": {
-    "run_id": {"type": "string", "format": "uuid"},
     "world": {"type": "string", "minLength": 1},
     "vehicle": {"type": "string", "minLength": 1},
     "mission": {"type": "string", "minLength": 1},
@@ -25,8 +22,7 @@
     "max_wall_seconds": {"type": "integer", "minimum": 1},
     "startup_wall_seconds": {"type": "integer", "minimum": 1},
     "finalization_wall_seconds": {"type": "integer", "minimum": 1},
-    "recording": {"$ref": "#/$defs/recording"},
-    "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    "recording": {"$ref": "#/$defs/recording"}
   },
   "$defs": {
     "recording": {

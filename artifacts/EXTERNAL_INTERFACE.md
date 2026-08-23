@@ -3,24 +3,28 @@
 ## Inputs
 
 - Orchestration start and finalize lifecycle events
-- `/clock`, both full image streams, ground truth, scenario events, score events, and run state
+- `/clock`, both full image and frame-metadata streams, artifact status, ground
+  truth, scenario events, score events, and run state
 - Structured stdout from every module
 - Gazebo server log and native state
 - Scorekeeper result files
 
 The fixed ROS subscriptions are `/clock` at best-effort depth 1,
 `/simulation/run_state` at reliable transient-local depth 1,
+`/simulation/artifact_status` at reliable transient-local depth 1,
 `/simulation/ground_truth` at best-effort depth 10,
 `/simulation/scenario_events` and `/simulation/score_events` at reliable depth
-100, and both `/camera/onboard/image_raw` and
-`/camera/observer/image_raw` at best-effort depth 5. Camera frames correlate
-with `simulation_interfaces/msg/FrameMetadata`; the other simulation topics use
-the corresponding shared `simulation_interfaces` message.
+100, and `/camera/{onboard,observer}/{image_raw,frame_metadata}` at best-effort
+depth 5. The metadata topics are `/camera/onboard/frame_metadata` and
+`/camera/observer/frame_metadata`, both using
+`simulation_interfaces/msg/FrameMetadata`. The exact subscriber overrides are
+stored in `config/recording-qos.yaml`.
 
 ## Outputs
 
-- Recorder readiness
-- Final artifact completeness report
+- Aggregate recorder readiness and final completeness on
+  `/simulation/artifact_status`
+- Durable `.status/artifacts-ready.json` and `.status/artifacts-final.json`
 - `runs/<run_id>/manifest.json`
 - Onboard and observer MP4 files, ROS 2 bag, logs, Gazebo state, configuration snapshots, and scoring files
 
@@ -37,3 +41,10 @@ Every owned process log line has `run_id`, `module`, `severity`, `event`,
 ## Failure behavior
 
 Recorder failure is reported immediately. Finalization uses bounded wall time after simulation stops, writes the manifest atomically, and explicitly records missing or invalid artifacts.
+
+Artifacts does not begin draining until `.status/runtime-frozen.json` proves
+all publishers are permanently quiescent. It closes both video pipelines and
+the bag before writing `artifacts-final.json`. The bag deliberately ends with
+`FINALIZING`; the host-written `manifest.json` is authoritative for terminal
+status. After `.control/terminal-committed.json`, the final artifact-status
+notification writes no required artifact data.

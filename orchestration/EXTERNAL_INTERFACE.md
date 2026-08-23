@@ -2,7 +2,17 @@
 
 ## Operator operations
 
-`start`, `status`, `abort`, and `collect-results` are the initial conceptual operations. Their CLI names remain stable once Phase 1 implements them.
+```text
+uv run drone-sim start --config PATH
+uv run drone-sim status RUN_ID [--output-root PATH]
+uv run drone-sim abort RUN_ID [--output-root PATH]
+uv run drone-sim collect-results RUN_ID [--output-root PATH]
+```
+
+`start` resolves the operator template, generates the run ID, and owns the
+foreground Compose run. It exits `0` for `COMPLETED`, `1` for `FAILED`, and
+`130` for `ABORTED`. The other commands communicate only through the run
+directory and may run concurrently. `collect-results` is read-only.
 
 ## Module lifecycle
 
@@ -15,8 +25,16 @@ transient-local QoS depth 1. Phase 1 proves this publisher with the synthetic
 foundation service; production orchestration is implemented in a later phase.
 
 Artifact readiness and completeness use
-`simulation_interfaces/msg/ArtifactStatus`; its final topic or service binding
-is deferred to Phase 2.
+`simulation_interfaces/msg/ArtifactStatus` on
+`/simulation/artifact_status` with reliable, transient-local QoS depth 1. The
+aggregate pre-clock message uses simulation time zero. The final message uses
+portable `manifest_path` value `manifest.json` and reports sorted missing or
+invalid relative paths.
+
+The run directory also carries the durable wall-time control/status protocol:
+`.control/finalize-request.json`, `.control/terminal-committed.json`, and
+`.status/{operator-state,artifacts-ready,source-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
+Each file is atomically replaced only after file and directory `fsync`.
 
 ## Timing
 
@@ -25,3 +43,8 @@ Simulation state uses `/clock`. Wall-clock deadlines are restricted to startup, 
 ## Failure behavior
 
 Startup fails closed. Partial outputs are preserved. A manifest is produced for completed, failed, and aborted runs.
+
+All terminal paths stop publishers and cross the `runtime-frozen.json`
+quiescence barrier before recorders drain and close. The bag ends at
+`FINALIZING`; `manifest.json` is authoritative for terminal status because the
+terminal state depends on successful close and validation.

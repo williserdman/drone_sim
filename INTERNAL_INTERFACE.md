@@ -9,7 +9,7 @@ Define relationships among the repository's immediate child modules. Top-level c
 | Producer | Consumer | Mechanism | Data |
 | --- | --- | --- | --- |
 | Orchestration | All modules | Compose configuration and lifecycle | Run identity, configuration, startup, and finalization |
-| Artifacts | Orchestration | Lifecycle status | Recorder readiness and artifact completeness |
+| Artifacts | Orchestration | ROS 2 `/simulation/artifact_status` and run-directory status files | Recorder readiness and artifact completeness |
 | Companion | ArduPilot SITL | MAVLink | Mission and flight commands |
 | ArduPilot SITL | Companion | MAVLink | Telemetry, modes, acknowledgements |
 | ArduPilot SITL | Gazebo | ArduPilot-Gazebo adapter | Actuator outputs |
@@ -41,3 +41,20 @@ Every run has a unique `run_id`. Run-scoped messages preserve it, and receivers 
 ## Timing rules
 
 Simulation time schedules simulated behavior. Wall time is limited to infrastructure health checks, profiling, and host-performance diagnostics.
+
+## Finalization protocol
+
+The run directory is the wall-time-safe control plane. Orchestration writes
+`.control/finalize-request.json`; the runtime then writes
+`.status/runtime-frozen.json` only after all synthetic publishers have stopped
+permanently. Artifacts treats that file as the quiescence barrier, drains
+callbacks, closes videos and the bag, and writes `.status/artifacts-final.json`.
+The host captures logs, validates the bundle, commits `manifest.json`, and
+writes `.control/terminal-committed.json`. Terminal ROS notifications happen
+after that commit and write no required artifact data.
+
+All control and status JSON is committed through a collision-safe temporary
+sibling, file flush and `fsync`, atomic replacement, and directory `fsync`.
+The complete status set is `operator-state.json`, `artifacts-ready.json`,
+`source-finished.json`, `runtime-failure.json`, `runtime-frozen.json`,
+`artifacts-final.json`, and `terminal-notified.json` under `.status/`.
