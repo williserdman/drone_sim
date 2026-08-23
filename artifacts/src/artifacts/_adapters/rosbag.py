@@ -2,8 +2,10 @@
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import time
 from types import MappingProxyType
@@ -43,6 +45,20 @@ FIXED_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
 
 _QOS_OVERRIDES_PATH = "/etc/drone_sim/recording-qos.yaml"
 _FRAME_INTERVAL_NS = 50_000_000
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+_LOG_OPEN_FLAGS = (
+    os.O_WRONLY
+    | os.O_APPEND
+    | os.O_CREAT
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
 
 
 class _Process(Protocol):
@@ -132,6 +148,64 @@ def _production_qos_compatible(offered: Any, requested: Any) -> bool:
     return compatibility != QoSCompatibility.ERROR
 
 
+def _same_entry(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        first.st_dev == second.st_dev
+        and first.st_ino == second.st_ino
+        and first.st_mode == second.st_mode
+    )
+
+
+def _unsafe_log_path(error: BaseException | None = None) -> RuntimeError:
+    failure = RuntimeError("unsafe recorder log path")
+    if error is not None:
+        failure.__cause__ = error
+    return failure
+
+
+def _open_or_create_directory_at(parent_fd: int, name: str) -> tuple[int, os.stat_result]:
+    try:
+        os.mkdir(name, mode=0o755, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    except OSError as error:
+        raise _unsafe_log_path(error)
+
+    descriptor: int | None = None
+    try:
+        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+            raise _unsafe_log_path()
+        descriptor = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+        opened = os.fstat(descriptor)
+    except RuntimeError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise _unsafe_log_path(error)
+    if not _same_entry(before, opened):
+        os.close(descriptor)
+        raise _unsafe_log_path()
+    return descriptor, opened
+
+
+def _entry_still_matches(
+    parent_fd: int,
+    name: str,
+    descriptor: int,
+    identity: os.stat_result,
+) -> bool:
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        opened = os.fstat(descriptor)
+    except OSError:
+        return False
+    return _same_entry(current, identity) and _same_entry(opened, identity)
+
+
 class RosbagRecorder:
     """Own one explicit shell-free rosbag2 recorder process."""
 
@@ -185,6 +259,78 @@ class RosbagRecorder:
             *self.topics,
         )
 
+    def _open_log_for_append(self) -> Any:
+        held_descriptors: list[int] = []
+        retained_entries: list[tuple[int, str, int, os.stat_result]] = []
+        root_fd: int | None = None
+        log_descriptor: int | None = None
+        try:
+            try:
+                root_before = os.stat(self.run_directory, follow_symlinks=False)
+                if not stat.S_ISDIR(root_before.st_mode):
+                    raise _unsafe_log_path()
+                root_fd = os.open(self.run_directory, _DIRECTORY_OPEN_FLAGS)
+                root_opened = os.fstat(root_fd)
+            except RuntimeError:
+                raise
+            except OSError as error:
+                if root_fd is not None:
+                    os.close(root_fd)
+                raise _unsafe_log_path(error)
+            assert root_fd is not None
+            if not _same_entry(root_before, root_opened):
+                os.close(root_fd)
+                raise _unsafe_log_path()
+            held_descriptors.append(root_fd)
+
+            parent_fd = root_fd
+            for name in ("logs", "docker"):
+                descriptor, identity = _open_or_create_directory_at(parent_fd, name)
+                held_descriptors.append(descriptor)
+                retained_entries.append((parent_fd, name, descriptor, identity))
+                parent_fd = descriptor
+
+            try:
+                log_descriptor = os.open(
+                    "rosbag2.log.partial",
+                    _LOG_OPEN_FLAGS,
+                    0o644,
+                    dir_fd=parent_fd,
+                )
+                log_identity = os.fstat(log_descriptor)
+                current_log = os.stat(
+                    "rosbag2.log.partial",
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise _unsafe_log_path(error)
+            if (
+                not stat.S_ISREG(log_identity.st_mode)
+                or log_identity.st_nlink != 1
+                or not _same_entry(current_log, log_identity)
+            ):
+                raise _unsafe_log_path()
+            if not all(
+                _entry_still_matches(*entry) for entry in retained_entries
+            ):
+                raise _unsafe_log_path()
+            try:
+                current_root = os.stat(self.run_directory, follow_symlinks=False)
+            except OSError as error:
+                raise _unsafe_log_path(error)
+            if not _same_entry(current_root, root_opened):
+                raise _unsafe_log_path()
+
+            log_stream = os.fdopen(log_descriptor, "ab", buffering=0)
+            log_descriptor = None
+            return log_stream
+        finally:
+            if log_descriptor is not None:
+                os.close(log_descriptor)
+            for descriptor in reversed(held_descriptors):
+                os.close(descriptor)
+
     def start(self) -> None:
         if self._process is not None:
             raise RuntimeError("rosbag recorder has already been started")
@@ -198,8 +344,7 @@ class RosbagRecorder:
                 raise FileExistsError(f"refusing nonempty rosbag output directory: {output}")
             output.rmdir()
 
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_stream = self.log_path.open("ab")
+        log_stream = self._open_log_for_append()
         try:
             process = self._process_factory(
                 self.command(),
@@ -225,20 +370,30 @@ class RosbagRecorder:
             return False
 
         for topic in self.topics:
-            recorder_subscriptions = tuple(
+            expected_type = FIXED_TOPIC_TYPES[topic]
+            recorder_endpoints = tuple(
                 endpoint
                 for endpoint in graph.get_subscriptions_info_by_topic(topic)
                 if endpoint.node_name == self.node_name
             )
-            if not recorder_subscriptions:
+            if not recorder_endpoints or any(
+                getattr(endpoint, "topic_type", None) != expected_type
+                for endpoint in recorder_endpoints
+            ):
                 return False
-            for publisher in graph.get_publishers_info_by_topic(topic):
+            publishers = tuple(graph.get_publishers_info_by_topic(topic))
+            if any(
+                getattr(publisher, "topic_type", None) != expected_type
+                for publisher in publishers
+            ):
+                return False
+            for publisher in publishers:
                 if not any(
                     self._qos_compatible(
                         publisher.qos_profile,
                         subscription.qos_profile,
                     )
-                    for subscription in recorder_subscriptions
+                    for subscription in recorder_endpoints
                 ):
                     return False
         return True
@@ -389,9 +544,35 @@ class RosbagValidator:
     def validate(
         self, run_directory: Path | str, relative_path: Path | str = "rosbag"
     ) -> RosbagValidationResult:
-        filesystem = validate_tree(run_directory, relative_path)
-        if filesystem.status is not ValidationStatus.VALID:
-            return self._result(filesystem, filesystem.status, filesystem.detail)
+        before = validate_tree(run_directory, relative_path)
+        if before.status is not ValidationStatus.VALID:
+            return self._result(before, before.status, before.detail)
+
+        semantic_result = self._validate_semantics(
+            run_directory,
+            relative_path,
+            before,
+        )
+        after = validate_tree(run_directory, relative_path)
+        if (
+            after.status is not ValidationStatus.VALID
+            or after.size_bytes != before.size_bytes
+            or after.sha256 != before.sha256
+        ):
+            return RosbagValidationResult(
+                ValidationStatus.INVALID,
+                None,
+                None,
+                "rosbag changed during semantic validation",
+            )
+        return semantic_result
+
+    def _validate_semantics(
+        self,
+        run_directory: Path | str,
+        relative_path: Path | str,
+        filesystem: ValidationResult,
+    ) -> RosbagValidationResult:
 
         bag_directory = Path(run_directory) / relative_path
         if not (bag_directory / "metadata.yaml").is_file():

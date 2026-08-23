@@ -2,10 +2,13 @@ FROM ros:jazzy-ros-base@sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        python3-venv \
-        python3-wheel \
-        ros-jazzy-rosbag2 \
-        ros-jazzy-rosbag2-storage-mcap \
+        python3-venv=3.12.3-0ubuntu2.1 \
+        python3.12-venv=3.12.3-1ubuntu0.15 \
+        python3-pip-whl=24.0+dfsg-1ubuntu1.3 \
+        python3-setuptools-whl=68.1.2-2ubuntu1.2 \
+        python3-wheel=0.42.0-2 \
+        ros-jazzy-rosbag2=0.26.11-1noble.20260616.084050 \
+        ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260616.074830 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros_ws
@@ -33,6 +36,7 @@ FROM runtime AS test
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/drone_sim/venv
 ENV DRONE_SIM_REQUIRE_ROS_TESTS=1
+ENV DRONE_SIM_APT_PACKAGE_LOCK="python3-venv=3.12.3-0ubuntu2.1,python3.12-venv=3.12.3-1ubuntu0.15,python3-pip-whl=24.0+dfsg-1ubuntu1.3,python3-setuptools-whl=68.1.2-2ubuntu1.2,python3-wheel=0.42.0-2,ros-jazzy-rosbag2=0.26.11-1noble.20260616.084050,ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260616.074830"
 
 RUN /opt/drone_sim/venv/bin/pip install \
     --no-cache-dir \

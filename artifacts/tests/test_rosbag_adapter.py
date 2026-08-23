@@ -18,7 +18,7 @@ from artifacts._adapters.rosbag import (
     RosbagRecorder,
     RosbagValidator,
 )
-from artifacts.validation import ValidationStatus
+from artifacts.validation import ValidationStatus, validate_tree
 
 
 RECORDER_UUID = UUID("01234567-89ab-cdef-0123-456789abcdef")
@@ -67,8 +67,19 @@ class FakeClock:
 
 
 class Endpoint:
-    def __init__(self, node_name, qos_profile="compatible"):
+    def __init__(
+        self,
+        node_name,
+        topic_type,
+        qos_profile="compatible",
+        *,
+        endpoint_type="subscription",
+    ):
         self.node_name = node_name
+        self.node_namespace = "/"
+        self.topic_type = topic_type
+        self.endpoint_type = endpoint_type
+        self.endpoint_gid = bytes(24)
         self.qos_profile = qos_profile
 
 
@@ -85,11 +96,18 @@ class FakeGraph:
     def get_subscriptions_info_by_topic(self, topic):
         if topic == self.missing_topic:
             return []
-        return [Endpoint(self.recorder_node)]
+        return [Endpoint(self.recorder_node, FIXED_TOPIC_TYPES[topic])]
 
     def get_publishers_info_by_topic(self, topic):
         qos = "incompatible" if topic == self.incompatible_topic else "compatible"
-        return [Endpoint("publisher", qos)]
+        return [
+            Endpoint(
+                "publisher",
+                FIXED_TOPIC_TYPES[topic],
+                qos,
+                endpoint_type="publisher",
+            )
+        ]
 
 
 def _recorder(tmp_path, **changes):
@@ -140,8 +158,54 @@ def test_start_uses_shell_free_process_and_appends_combined_recorder_log(tmp_pat
     assert kwargs["shell"] is False
     assert kwargs["stderr"] is subprocess.STDOUT
     assert kwargs["stdin"] is subprocess.DEVNULL
-    assert kwargs["stdout"].name == str(log_path)
+    assert os.path.samefile(f"/proc/self/fd/{kwargs['stdout'].fileno()}", log_path)
     assert log_path.read_bytes() == b"existing diagnostics\n"
+
+
+@pytest.mark.parametrize("symlink_component", ["logs", "docker", "log-file"])
+def test_start_rejects_symlinked_log_path_without_writing_outside_run(
+    tmp_path,
+    symlink_component,
+):
+    outside = tmp_path.parent / f"outside-{symlink_component}"
+    outside.mkdir()
+    outside_log = outside / "rosbag2.log.partial"
+    outside_log.write_bytes(b"outside must stay unchanged")
+
+    if symlink_component == "logs":
+        (tmp_path / "logs").symlink_to(outside, target_is_directory=True)
+    elif symlink_component == "docker":
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "logs/docker").symlink_to(outside, target_is_directory=True)
+    else:
+        log_directory = tmp_path / "logs/docker"
+        log_directory.mkdir(parents=True)
+        (log_directory / "rosbag2.log.partial").symlink_to(outside_log)
+
+    factory = FakeProcessFactory()
+    recorder = _recorder(tmp_path, process_factory=factory)
+
+    with pytest.raises(RuntimeError, match="unsafe recorder log path"):
+        recorder.start()
+
+    assert factory.calls == []
+    assert outside_log.read_bytes() == b"outside must stay unchanged"
+
+
+def test_start_rejects_hardlinked_log_without_writing_outside_run(tmp_path):
+    outside_log = tmp_path.parent / "outside-hardlinked.log"
+    outside_log.write_bytes(b"outside must stay unchanged")
+    log_directory = tmp_path / "logs/docker"
+    log_directory.mkdir(parents=True)
+    os.link(outside_log, log_directory / "rosbag2.log.partial")
+    factory = FakeProcessFactory()
+    recorder = _recorder(tmp_path, process_factory=factory)
+
+    with pytest.raises(RuntimeError, match="unsafe recorder log path"):
+        recorder.start()
+
+    assert factory.calls == []
+    assert outside_log.read_bytes() == b"outside must stay unchanged"
 
 
 def test_start_refuses_existing_nonempty_bag_directory_without_spawning(tmp_path):
@@ -190,6 +254,44 @@ def test_readiness_is_false_when_offered_and_requested_qos_are_incompatible(tmp_
     recorder = _recorder(tmp_path)
     recorder.start()
     graph = FakeGraph(recorder.node_name, incompatible_topic=FIXED_TOPICS[0])
+
+    assert recorder.is_ready(graph) is False
+
+
+def test_readiness_is_false_when_recorder_subscription_has_wrong_topic_type(tmp_path):
+    recorder = _recorder(tmp_path)
+    recorder.start()
+    graph = FakeGraph(recorder.node_name)
+    original = graph.get_subscriptions_info_by_topic
+
+    def subscriptions(topic):
+        if topic == FIXED_TOPICS[0]:
+            return [Endpoint(recorder.node_name, "std_msgs/msg/String")]
+        return original(topic)
+
+    graph.get_subscriptions_info_by_topic = subscriptions
+
+    assert recorder.is_ready(graph) is False
+
+
+def test_readiness_is_false_when_publisher_has_wrong_topic_type(tmp_path):
+    recorder = _recorder(tmp_path)
+    recorder.start()
+    graph = FakeGraph(recorder.node_name)
+    original = graph.get_publishers_info_by_topic
+
+    def publishers(topic):
+        if topic == FIXED_TOPICS[0]:
+            return [
+                Endpoint(
+                    "publisher",
+                    "std_msgs/msg/String",
+                    endpoint_type="publisher",
+                )
+            ]
+        return original(topic)
+
+    graph.get_publishers_info_by_topic = publishers
 
     assert recorder.is_ready(graph) is False
 
@@ -363,6 +465,26 @@ def test_valid_bag_returns_immutable_topic_count_type_and_timestamp_diagnostics(
     assert result.topics[0].last_sim_timestamp_ns == 0
     with pytest.raises(FrozenInstanceError):
         result.topics[0].message_count = 2
+
+
+def test_validation_rejects_bag_mutated_during_semantic_read(tmp_path):
+    bag = _bag_directory(tmp_path)
+    before = validate_tree(tmp_path, "rosbag")
+
+    class MutatingBackend(FakeBagBackend):
+        def read_metadata(self, bag_directory):
+            with (bag_directory / "bag_0.mcap").open("ab") as stream:
+                stream.write(b" changed during metadata read")
+            return super().read_metadata(bag_directory)
+
+    result = _validate(tmp_path, MutatingBackend())
+    after = validate_tree(tmp_path, "rosbag")
+
+    assert before.sha256 != after.sha256
+    assert result.status is ValidationStatus.INVALID
+    assert result.size_bytes is None
+    assert result.sha256 is None
+    assert "changed during semantic validation" in result.detail
 
 
 def test_validation_rejects_missing_metadata_file_before_opening_bag(tmp_path):
@@ -647,6 +769,7 @@ def test_real_jazzy_mcap_fixture_is_read_via_rosbag2_and_deserialized(tmp_path):
 
 def test_real_jazzy_qos_api_rejects_best_effort_offer_for_reliable_request(tmp_path):
     qos = _require_ros_module("rclpy.qos")
+    endpoint_info = _require_ros_module("rclpy.topic_endpoint_info")
     process_factory = FakeProcessFactory()
     recorder = RosbagRecorder(
         tmp_path,
@@ -664,10 +787,81 @@ def test_real_jazzy_qos_api_rejects_best_effort_offer_for_reliable_request(tmp_p
         reliability=qos.ReliabilityPolicy.RELIABLE,
     )
     graph.get_publishers_info_by_topic = lambda topic: [
-        Endpoint("publisher", offered)
+        endpoint_info.TopicEndpointInfo(
+            node_name="publisher",
+            node_namespace="/",
+            topic_type=FIXED_TOPIC_TYPES[topic],
+            endpoint_type=endpoint_info.TopicEndpointTypeEnum.PUBLISHER,
+            qos_profile=offered,
+        )
     ]
     graph.get_subscriptions_info_by_topic = lambda topic: [
-        Endpoint(recorder.node_name, requested)
+        endpoint_info.TopicEndpointInfo(
+            node_name=recorder.node_name,
+            node_namespace="/",
+            topic_type=FIXED_TOPIC_TYPES[topic],
+            endpoint_type=endpoint_info.TopicEndpointTypeEnum.SUBSCRIPTION,
+            qos_profile=requested,
+        )
     ]
 
     assert recorder.is_ready(graph) is False
+
+
+def test_real_jazzy_endpoint_shape_rejects_wrong_recorder_topic_type(tmp_path):
+    qos = _require_ros_module("rclpy.qos")
+    endpoint_info = _require_ros_module("rclpy.topic_endpoint_info")
+    recorder = RosbagRecorder(
+        tmp_path,
+        process_factory=FakeProcessFactory(),
+        uuid_factory=lambda: RECORDER_UUID,
+    )
+    recorder.start()
+    graph = FakeGraph(recorder.node_name)
+    profile = qos.QoSProfile(depth=1)
+    graph.get_publishers_info_by_topic = lambda topic: []
+    graph.get_subscriptions_info_by_topic = lambda topic: [
+        endpoint_info.TopicEndpointInfo(
+            node_name=recorder.node_name,
+            node_namespace="/",
+            topic_type=(
+                "std_msgs/msg/String"
+                if topic == FIXED_TOPICS[0]
+                else FIXED_TOPIC_TYPES[topic]
+            ),
+            endpoint_type=endpoint_info.TopicEndpointTypeEnum.SUBSCRIPTION,
+            qos_profile=profile,
+        )
+    ]
+
+    assert recorder.is_ready(graph) is False
+
+
+def test_test_image_apt_dependencies_match_recorded_exact_versions():
+    if os.environ.get("DRONE_SIM_REQUIRE_ROS_TESTS") != "1":
+        pytest.skip("apt dependency lock is verified in the artifact test image")
+    expected = {
+        "python3-venv": "3.12.3-0ubuntu2.1",
+        "python3.12-venv": "3.12.3-1ubuntu0.15",
+        "python3-pip-whl": "24.0+dfsg-1ubuntu1.3",
+        "python3-setuptools-whl": "68.1.2-2ubuntu1.2",
+        "python3-wheel": "0.42.0-2",
+        "ros-jazzy-rosbag2": "0.26.11-1noble.20260616.084050",
+        "ros-jazzy-rosbag2-storage-mcap": "0.26.11-1noble.20260616.074830",
+    }
+    recorded_lock = os.environ.get("DRONE_SIM_APT_PACKAGE_LOCK")
+    assert recorded_lock is not None, "artifact test image must record its apt package lock"
+    recorded = dict(
+        item.split("=", 1)
+        for item in recorded_lock.split(",")
+    )
+    installed = {
+        package: subprocess.check_output(
+            ["dpkg-query", "-W", "-f=${Version}", package],
+            text=True,
+        )
+        for package in expected
+    }
+
+    assert recorded == expected
+    assert installed == expected
