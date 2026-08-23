@@ -398,37 +398,51 @@ def write_manifest_atomic(run_directory: Path | str, manifest: RunManifest) -> P
     directory = Path(run_directory)
     target = directory / "manifest.json"
     payload = canonical_manifest_bytes(manifest)
-    if target.exists():
-        if target.read_bytes() == payload:
-            return target
-        raise FinalizationConflict(
-            f"run {manifest.run_id!r} is already finalized differently"
-        )
-
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".manifest.json.", suffix=".tmp", dir=directory
+    directory_fd = os.open(
+        directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     )
-    temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if target.exists():
-            if target.read_bytes() == payload:
-                return target
-            raise FinalizationConflict(
-                f"run {manifest.run_id!r} is already finalized differently"
-            )
-        os.replace(temporary, target)
-        directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".manifest.json.", suffix=".tmp", dir=directory
+        )
+        temporary = Path(temporary_name)
         try:
-            os.fsync(directory_fd)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, target, follow_symlinks=False)
+            except FileExistsError:
+                existing = _read_existing_manifest(directory_fd, manifest.run_id)
+                if existing == payload:
+                    return target
+                raise FinalizationConflict(
+                    f"run {manifest.run_id!r} is already finalized differently"
+                )
+            return target
         finally:
-            os.close(directory_fd)
-        return target
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            os.fsync(directory_fd)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        os.close(directory_fd)
+
+
+def _read_existing_manifest(directory_fd: int, run_id: str) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open("manifest.json", flags, dir_fd=directory_fd)
+    except OSError as exc:
+        raise FinalizationConflict(
+            f"run {run_id!r} has an unreadable existing manifest"
+        ) from exc
+    try:
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)

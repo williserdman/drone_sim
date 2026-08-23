@@ -1,13 +1,21 @@
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import math
 from pathlib import Path
+import threading
 
 import pytest
 from jsonschema import Draft202012Validator
 
-from artifacts.manifest import REQUIRED_ARTIFACT_PATHS, build_manifest, write_manifest_atomic
+from artifacts.manifest import (
+    FinalizationConflict,
+    REQUIRED_ARTIFACT_PATHS,
+    build_manifest,
+    canonical_manifest_bytes,
+    write_manifest_atomic,
+)
 
 
 def _write(run_dir, relative_path, contents="artifact"):
@@ -73,7 +81,7 @@ def test_non_completed_manifest_retains_missing_artifact_records(tmp_path, termi
     assert all(record.validation == "missing" for record in manifest.artifacts)
 
 
-def test_write_manifest_atomic_replaces_manifest_without_a_temporary_sibling(tmp_path):
+def test_write_manifest_atomic_publishes_manifest_without_a_temporary_sibling(tmp_path):
     """Leaving the temporary file behind would make finalization non-atomic."""
     _complete_run_directory(tmp_path)
     manifest = build_manifest(tmp_path, "run-7", "COMPLETED", "mission_complete")
@@ -83,6 +91,49 @@ def test_write_manifest_atomic_replaces_manifest_without_a_temporary_sibling(tmp
     assert manifest_path == tmp_path / "manifest.json"
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["run_id"] == "run-7"
     assert not (tmp_path / "manifest.json.tmp").exists()
+
+
+def test_concurrent_conflicting_finalizations_publish_one_winner_without_clobber(
+    tmp_path, monkeypatch
+):
+    _complete_run_directory(tmp_path)
+    first = build_manifest(tmp_path, "run-7", "COMPLETED", "first")
+    second = replace(first, reason="second")
+    start_gate = threading.Barrier(2)
+    check_gate = threading.Barrier(2)
+    check_counts: dict[int, int] = {}
+    check_lock = threading.Lock()
+    target = tmp_path / "manifest.json"
+    real_exists = Path.exists
+
+    def synchronized_exists(path):
+        result = real_exists(path)
+        if path == target:
+            thread_id = threading.get_ident()
+            with check_lock:
+                check_counts[thread_id] = check_counts.get(thread_id, 0) + 1
+                count = check_counts[thread_id]
+            if count == 2:
+                check_gate.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(Path, "exists", synchronized_exists)
+
+    def finalize(manifest):
+        start_gate.wait(timeout=5)
+        try:
+            write_manifest_atomic(tmp_path, manifest)
+        except FinalizationConflict:
+            return "conflict", canonical_manifest_bytes(manifest)
+        return "returned", canonical_manifest_bytes(manifest)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(finalize, (first, second)))
+
+    assert sorted(outcome for outcome, _ in outcomes) == ["conflict", "returned"]
+    winner = next(payload for outcome, payload in outcomes if outcome == "returned")
+    assert target.read_bytes() == winner
+    assert list(tmp_path.glob(".manifest.json.*.tmp")) == []
 
 
 def test_manifest_round_trips_scoring_summary_and_evidence_paths(tmp_path):

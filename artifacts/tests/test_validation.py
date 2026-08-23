@@ -83,15 +83,46 @@ def test_validate_regular_file_rejects_unreadable_file(tmp_path, monkeypatch):
     path.write_bytes(b"secret")
     real_open = os.open
 
-    def reject_target(candidate, flags):
-        if Path(candidate) == path:
+    def reject_target(candidate, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is None and Path(candidate) == path:
             raise PermissionError("unreadable fixture")
-        return real_open(candidate, flags)
+        if dir_fd is not None and os.fspath(candidate) == "unreadable.bin":
+            raise PermissionError("unreadable fixture")
+        return real_open(candidate, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "open", reject_target)
 
     assert validate_regular_file(tmp_path, "unreadable.bin") == ValidationResult(
         ValidationStatus.INVALID, None, None, "file could not be read"
+    )
+
+
+def test_validate_regular_file_rejects_intermediate_symlink_swap_race(
+    tmp_path, monkeypatch
+):
+    inside_directory = tmp_path / "logs"
+    inside_directory.mkdir()
+    (inside_directory / "artifact.bin").write_bytes(b"inside")
+    outside_directory = tmp_path.parent / f"{tmp_path.name}-outside-file"
+    outside_directory.mkdir()
+    (outside_directory / "artifact.bin").write_bytes(b"outside")
+    real_open = os.open
+    swapped = False
+
+    def racing_open(candidate, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        by_path = dir_fd is None and Path(candidate) == inside_directory / "artifact.bin"
+        by_descriptor = dir_fd is not None and os.fspath(candidate) == "artifact.bin"
+        if not swapped and (by_path or by_descriptor):
+            swapped = True
+            inside_directory.rename(tmp_path / "logs-original")
+            inside_directory.symlink_to(outside_directory, target_is_directory=True)
+        return real_open(candidate, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", racing_open)
+
+    assert validate_regular_file(tmp_path, "logs/artifact.bin") == ValidationResult(
+        ValidationStatus.INVALID, None, None, "path changed during validation"
     )
 
 
@@ -164,4 +195,59 @@ def test_validate_tree_rejects_fifo_anywhere_in_tree(tmp_path):
 def test_validate_tree_rejects_path_escape(tmp_path):
     assert validate_tree(tmp_path, "../outside") == ValidationResult(
         ValidationStatus.INVALID, None, None, "path escapes run directory"
+    )
+
+
+def test_validate_tree_rejects_intermediate_symlink_swap_race(tmp_path, monkeypatch):
+    tree = tmp_path / "rosbag"
+    tree.mkdir()
+    (tree / "data.bin").write_bytes(b"inside")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-tree"
+    outside.mkdir()
+    (outside / "data.bin").write_bytes(b"outside")
+    real_scandir = os.scandir
+    real_listdir = os.listdir
+    swapped = False
+
+    def swap_tree():
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            tree.rename(tmp_path / "rosbag-original")
+            tree.symlink_to(outside, target_is_directory=True)
+
+    def racing_scandir(path):
+        swap_tree()
+        return real_scandir(path)
+
+    def racing_listdir(path="."):
+        swap_tree()
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "scandir", racing_scandir)
+    monkeypatch.setattr(os, "listdir", racing_listdir)
+
+    assert validate_tree(tmp_path, "rosbag") == ValidationResult(
+        ValidationStatus.INVALID, None, None, "path changed during validation"
+    )
+
+
+def test_validate_tree_rejects_non_utf8_filename_without_raising(tmp_path):
+    tree = tmp_path / "rosbag"
+    tree.mkdir()
+    descriptor = os.open(
+        os.fsencode(tree) + b"/\xff",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        os.write(descriptor, b"data")
+    finally:
+        os.close(descriptor)
+
+    assert validate_tree(tmp_path, "rosbag") == ValidationResult(
+        ValidationStatus.INVALID,
+        None,
+        None,
+        "directory tree contains a non-UTF-8 path",
     )

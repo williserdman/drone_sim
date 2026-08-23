@@ -157,38 +157,42 @@ def test_conflicting_second_finalization_raises_and_preserves_first_manifest(tmp
     assert first.read_bytes() == original
 
 
-def test_finalize_fsyncs_parent_directory_after_replacement(tmp_path, monkeypatch):
+def test_finalize_fsyncs_parent_directory_after_no_clobber_publication(
+    tmp_path, monkeypatch
+):
     _complete_run_directory(tmp_path)
     events = []
-    real_replace = os.replace
+    real_link = os.link
     real_fsync = os.fsync
 
-    def recording_replace(source, target):
-        real_replace(source, target)
-        events.append("replace")
+    def recording_link(source, target, **kwargs):
+        real_link(source, target, **kwargs)
+        events.append("link")
 
     def recording_fsync(fd):
         real_fsync(fd)
         event = "directory-fsync" if os.path.isdir(f"/proc/self/fd/{fd}") else "file-fsync"
         events.append(event)
 
-    monkeypatch.setattr(os, "replace", recording_replace)
+    monkeypatch.setattr(os, "link", recording_link)
     monkeypatch.setattr(os, "fsync", recording_fsync)
 
     ArtifactSession(tmp_path).finalize(_finalization_input())
 
-    assert events[-2:] == ["replace", "directory-fsync"]
+    assert events[-2:] == ["link", "directory-fsync"]
 
 
-def test_finalize_cleans_collision_safe_temporary_after_replace_error(tmp_path, monkeypatch):
+def test_finalize_cleans_collision_safe_temporary_after_publication_error(
+    tmp_path, monkeypatch
+):
     _complete_run_directory(tmp_path)
 
-    def fail_replace(source, target):
-        raise OSError("replace failed")
+    def fail_link(source, target, **kwargs):
+        raise OSError("publication failed")
 
-    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(os, "link", fail_link)
 
-    with pytest.raises(OSError, match="replace failed"):
+    with pytest.raises(OSError, match="publication failed"):
         ArtifactSession(tmp_path).finalize(_finalization_input())
 
     assert not (tmp_path / "manifest.json").exists()
