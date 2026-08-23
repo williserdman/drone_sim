@@ -32,6 +32,18 @@ def _run_foundation_compose(command):
         ) from error
 
 
+def _parse_structured_stdout(stdout):
+    events = []
+    for line in stdout.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and COMMON_FIELDS <= value.keys():
+            events.append(value)
+    return events
+
+
 def test_foundation_subprocess_timeout_includes_captured_diagnostics(monkeypatch):
     def raise_timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(
@@ -50,6 +62,20 @@ def test_foundation_subprocess_timeout_includes_captured_diagnostics(monkeypatch
     assert "180 seconds" in message
     assert "publisher output" in message
     assert "discovery stalled" in message
+
+
+def test_parse_structured_stdout_ignores_compose_progress():
+    event = {
+        "run_id": RUN_ID,
+        "module": "foundation",
+        "severity": "INFO",
+        "event": "starting",
+        "sim_timestamp": None,
+        "wall_timestamp": "2026-08-23T00:00:00+00:00",
+    }
+    stdout = '#0 building with "default" instance using docker driver\n' + json.dumps(event)
+
+    assert _parse_structured_stdout(stdout) == [event]
 
 
 def test_foundation_compose_emits_an_ordered_structured_lifecycle(tmp_path):
@@ -88,7 +114,7 @@ def test_foundation_compose_emits_an_ordered_structured_lifecycle(tmp_path):
     ]
     assert events[-1]["sim_timestamp"] is not None
 
-    stdout_events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    stdout_events = _parse_structured_stdout(result.stdout)
     assert stdout_events == events
 
     observation_path = output_dir / "foundation-observation.json"
