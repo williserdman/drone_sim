@@ -20,7 +20,7 @@ def _write(run_dir, relative_path, contents="artifact"):
 def _complete_run_directory(run_dir):
     for relative_path in REQUIRED_ARTIFACT_PATHS:
         if relative_path in {"configuration", "gazebo/state", "rosbag"}:
-            (run_dir / relative_path).mkdir(parents=True, exist_ok=True)
+            _write(run_dir, f"{relative_path}/content.bin")
         else:
             _write(run_dir, relative_path)
 
@@ -36,28 +36,32 @@ def test_build_manifest_records_file_checksum_relative_path_size_and_validation(
     assert onboard.relative_path == "video/onboard.mp4"
     assert onboard.size_bytes == 5
     assert onboard.sha256 == hashlib.sha256(b"movie").hexdigest()
-    assert onboard.validation == "present"
+    assert onboard.validation == "valid"
+    assert onboard.detail == "valid regular file"
 
 
-def test_build_manifest_classifies_required_paths_as_present_missing_or_invalid(tmp_path):
-    """A directory at a required file path must not be reported as present."""
+def test_build_manifest_classifies_required_paths_as_valid_missing_or_invalid(tmp_path):
+    """A directory at a required file path must not be reported as valid."""
     _complete_run_directory(tmp_path)
     (tmp_path / "video/observer.mp4").unlink()
     (tmp_path / "video/observer.mp4").mkdir()
+    (tmp_path / "rosbag/content.bin").unlink()
     (tmp_path / "rosbag").rmdir()
 
     manifest = build_manifest(tmp_path, "run-7", "FAILED", "recorder_failed")
     records = {record.relative_path: record for record in manifest.artifacts}
 
-    assert records["video/onboard.mp4"].validation == "present"
+    assert records["video/onboard.mp4"].validation == "valid"
     assert records["rosbag"].validation == "missing"
     assert records["video/observer.mp4"].validation == "invalid"
 
 
-def test_completed_manifest_rejects_missing_required_artifact(tmp_path):
+def test_completed_manifest_downgrades_when_a_required_artifact_is_missing(tmp_path):
     """Accepting incomplete completed runs would violate bundle completeness."""
-    with pytest.raises(ValueError, match="COMPLETED"):
-        build_manifest(tmp_path, "run-7", "COMPLETED", "mission_complete")
+    manifest = build_manifest(tmp_path, "run-7", "COMPLETED", "mission_complete")
+
+    assert manifest.terminal_status == "FAILED"
+    assert manifest.incomplete_paths == REQUIRED_ARTIFACT_PATHS
 
 
 @pytest.mark.parametrize("terminal_status", ["FAILED", "ABORTED"])
@@ -150,3 +154,39 @@ def test_manifest_schema_accepts_a_completed_manifest(tmp_path):
 
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(manifest.to_dict())
+
+
+def test_manifest_schema_rejects_phase_one_present_validation(tmp_path):
+    _complete_run_directory(tmp_path)
+    manifest = build_manifest(tmp_path, "run-7", "COMPLETED", "mission_complete")
+    document = manifest.to_dict()
+    document["artifacts"][0]["validation"] = "present"
+    schema_path = Path(__file__).parents[1] / "schemas/manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(Exception):
+        Draft202012Validator(schema).validate(document)
+
+
+def test_persistence_rejects_completed_manifest_with_incomplete_required_path(tmp_path):
+    manifest = build_manifest(tmp_path, "run-7", "FAILED", "recording_failed")
+
+    with pytest.raises(ValueError, match="COMPLETED"):
+        write_manifest_atomic(tmp_path, replace(manifest, terminal_status="COMPLETED"))
+
+
+def test_persistence_rejects_incomplete_paths_that_disagree_with_artifacts(tmp_path):
+    manifest = build_manifest(tmp_path, "run-7", "FAILED", "recording_failed")
+
+    with pytest.raises(ValueError, match="incomplete_paths"):
+        write_manifest_atomic(tmp_path, replace(manifest, incomplete_paths=()))
+
+
+def test_persistence_rejects_duplicate_evidence_paths(tmp_path):
+    manifest = build_manifest(tmp_path, "run-7", "FAILED", "recording_failed")
+
+    with pytest.raises(ValueError, match="evidence paths must be unique"):
+        write_manifest_atomic(
+            tmp_path,
+            replace(manifest, evidence_paths=("scoring/events.jsonl#1",) * 2),
+        )

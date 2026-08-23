@@ -1,24 +1,101 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["run_id", "terminal_status", "reason", "artifacts", "scoring"],
+  "required": [
+    "schema_version",
+    "run_id",
+    "terminal_status",
+    "reason",
+    "simulation_timing",
+    "wall_timing",
+    "source_revisions",
+    "image_digests",
+    "configurations",
+    "artifacts",
+    "incomplete_paths",
+    "scoring"
+  ],
   "properties": {
-    "run_id": {"type": "string"},
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
     "terminal_status": {"enum": ["COMPLETED", "FAILED", "ABORTED"]},
     "reason": {"type": "string"},
+    "simulation_timing": {
+      "type": "object",
+      "required": ["start_ns", "end_ns", "duration_ns"],
+      "properties": {
+        "start_ns": {"type": ["integer", "null"], "minimum": 0},
+        "end_ns": {"type": ["integer", "null"], "minimum": 0},
+        "duration_ns": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "wall_timing": {
+      "type": "object",
+      "required": ["started_at", "ended_at", "duration_seconds"],
+      "properties": {
+        "started_at": {"type": "string", "format": "date-time"},
+        "ended_at": {"type": "string", "format": "date-time"},
+        "duration_seconds": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "source_revisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "revision", "dirty"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "revision": {"type": "string", "minLength": 1},
+          "dirty": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "image_digests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "digest"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "configurations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["relative_path", "sha256"],
+        "properties": {
+          "relative_path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": false
+      }
+    },
     "artifacts": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["relative_path", "size_bytes", "sha256", "validation"],
+        "required": ["relative_path", "size_bytes", "sha256", "validation", "detail"],
         "properties": {
-          "relative_path": {"type": "string"},
+          "relative_path": {"type": "string", "minLength": 1},
           "size_bytes": {"type": ["integer", "null"], "minimum": 0},
           "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-          "validation": {"enum": ["present", "missing", "invalid"]}
+          "validation": {"enum": ["valid", "missing", "invalid"]},
+          "detail": {"type": "string", "minLength": 1}
         },
         "additionalProperties": false
       }
+    },
+    "incomplete_paths": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
     },
     "scoring": {
       "type": "object",
@@ -27,7 +104,11 @@
         "achieved_score": {"type": ["number", "null"]},
         "maximum_available_score": {"type": ["number", "null"]},
         "scoring_checksum": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-        "evidence_paths": {"type": "array", "items": {"type": "string"}}
+        "evidence_paths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
       },
       "additionalProperties": false
     }
