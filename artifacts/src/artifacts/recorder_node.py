@@ -150,7 +150,7 @@ class VideoRecorderNode(_RosNode):
         started: list[str] = []
         for stream in STREAMS:
             try:
-                self.recorders[stream].start()
+                self.recorders[stream].start(deadline=deadline)
                 started.append(stream)
             except Exception as error:
                 self._safe_report(
@@ -160,7 +160,8 @@ class VideoRecorderNode(_RosNode):
                         f"video recorder start failed: {type(error).__name__}: {error}",
                     )
                 )
-                for started_stream in reversed(started):
+                rollback_streams = (stream, *reversed(started))
+                for started_stream in rollback_streams:
                     try:
                         self.recorders[started_stream].finalize(
                             deadline, outcome="FAILED"

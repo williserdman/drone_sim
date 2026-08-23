@@ -3,7 +3,7 @@
 ## Scope and baseline
 
 - Baseline: `d527abbf60a9bc2b2fae2621b68f8ed67cc9298f`
-- Verification audit: `2026-08-23T16:16:00Z`
+- Verification audit: `2026-08-23T17:13:33Z`
 - Scope: two 20-FPS, 320x240 `rgb8` FFmpeg pipelines, their ROS-facing
   subscriptions/readiness/errors, read-only MP4 validation, and the pinned
   artifact-image FFmpeg extension.
@@ -55,6 +55,22 @@ metadata. A retained-inode inotify watch now closes that transient-mutation gap;
 the ABA, pathname-swap, and stale-result cases pass together on host and in the
 pinned image.
 
+Review fix round 2 began with 18 persisted focused failures covering the
+remaining review seams: mutation after semantic validation and after the final
+link, run-root/video-directory ABA moves, short/zero/interrupted raw-pipe
+writes, post-open descriptor cleanup, missing/empty validation semantics,
+per-chunk hash deadlines, real-child reaping after injected process-boundary
+failures, bounded preflight/spawn, startup-deadline propagation, and rollback
+of the recorder whose own start partially failed. The same selection then
+passed `18 passed, 83 deselected`.
+
+The round-2 self-review added six more focused RED cases before their fixes.
+They reproduced a child handoff race exactly at the spawn deadline, leaked
+resources for a malformed spawned process and for a directory `fstat` failure,
+failure to kill a process that returned no stdin, incorrect `MISSING`
+classification when the ffprobe executable—not the video—was absent, and an
+A→B→A mutation occurring during the final post-link hash. Each now passes.
+
 ## Implementation and files
 
 - `artifacts/src/artifacts/_adapters/video.py`
@@ -66,11 +82,19 @@ pinned image.
     reservation of each output inode before process creation;
   - FFmpeg writes the retained inode via `/proc/self/fd/N` and `pass_fds`;
   - caller-owned absolute deadline bounds stdin close, wait/TERM/KILL,
-    ffprobe, and strict full decode;
+    startup preflight/process creation, descriptor hashing, ffprobe, and strict
+    full decode;
   - zero-exit, stable semantic validation before descriptor-bound Linux
     `linkat` no-clobber publication of that exact inode;
   - descriptor-backed ffprobe JSON, `-xerror` full decode, same-descriptor
-    before/after hashes/fstats, parent-entry checks, and an inode mutation watch;
+    before/after hashes/fstats, retained run-root/video/file mutation watches,
+    and post-link content/watch verification before publication succeeds;
+  - complete raw-pipe writes across short/interrupted writes, fail-closed zero
+    progress, exception-safe output preparation, and bounded TERM/KILL fallback
+    even when an injected process wrapper throws;
+  - cancellation-safe process handoff: a late process owns a duplicate output
+    descriptor and is killed/reaped without any daemon touching a closed or
+    reused retained descriptor;
   - immutable configured expected frame count independent of observations,
     accepting canonical `COMPLETED`, `FAILED`, and `ABORTED` outcomes.
 - `artifacts/src/artifacts/recorder_node.py`
@@ -78,10 +102,11 @@ pinned image.
     four best-effort depth-5 subscriptions;
   - discovered subscription counts, aggregate readiness, and structured
     recorder errors without terminal-status selection;
-  - startup rollback under the caller deadline and contained subscription
-    callbacks so one failed stream does not terminate the executor.
+  - startup rollback (including the recorder whose own start failed) under the
+    caller deadline and contained subscription callbacks so one failed stream
+    does not terminate the executor.
 - `artifacts/tests/test_video_adapter.py`
-  - 82 host/container behavioral cases covering pairing, every frozen frame
+  - 107 host/container behavioral cases covering pairing, every frozen frame
     invariant, bounded pending state, process/finalization races and failures,
     filesystem collisions, semantic validation, a real recorder pipe, and the
     real Jazzy node/QoS shape.
@@ -104,7 +129,7 @@ pinned image.
   `libx264` (so `libx264rgb` cannot satisfy the gate) and `ffprobe -version`
   succeeded.
 - Final test image:
-  `sha256:9e6890cbe198814c6b3723471bee65c6d4aa7c755e15b1e8bfec41c330d9f4a1`.
+  `sha256:2f1dc8acec7b953958fd757b9053b6ecb5b78f1c7a0fc6d56a2f340bbf476508`.
 
 ## Output-command security ruling
 
@@ -146,22 +171,22 @@ validation.
 
 ```text
 uv run pytest artifacts/tests/test_video_adapter.py -v
-78 passed, 4 skipped in 1.31s
+102 passed, 5 skipped in 1.79s
 
 uv run pytest artifacts/tests -v
-188 passed, 8 skipped in 3.65s
+212 passed, 9 skipped in 2.59s
 
 docker build -f artifacts/Dockerfile --target test -t drone-sim-artifacts:test .
-exit 0; image sha256:9e6890cbe198814c6b3723471bee65c6d4aa7c755e15b1e8bfec41c330d9f4a1
+exit 0; image sha256:2f1dc8acec7b953958fd757b9053b6ecb5b78f1c7a0fc6d56a2f340bbf476508
 
 docker run --rm drone-sim-artifacts:test uv run pytest artifacts/tests/test_video_adapter.py -v
-82 passed in 10.45s
+107 passed in 7.89s
 
 docker run --rm drone-sim-artifacts:test
-196 passed in 8.69s
+221 passed in 10.62s
 
 uv run pytest -v
-242 passed, 8 skipped in 9.72s
+266 passed, 9 skipped in 9.62s
 
 uv run python -m compileall -q artifacts/src artifacts/tests
 exit 0
@@ -185,11 +210,19 @@ the real recorder pipe, the full FFmpeg apt lock, and the real Jazzy node.
 - All finalize exits close parent resources while retaining failed partial
   output and immutable in-memory diagnostics.
 - Validation passes the retained no-follow file descriptor to both semantic
-  subprocesses, hashes that descriptor twice, and returns no stale checksum or
-  diagnostics if its inode, content, parent entry, or transient watch changes.
+  subprocesses, hashes that descriptor under the shared deadline, and returns
+  no stale checksum or diagnostics if its inode, content, retained parent
+  chain, or transient watch changes.
+- The recorder-level watch spans validation through exact-inode linking. It is
+  checked after each digest, including after the final link, so an A→B→A
+  mutation cannot hide behind an unchanged final checksum; late failure rolls
+  back the final link while retaining the encoded partial.
 - Slow close, semantic timeouts, unexpected subprocess/validator/signal/wait
   failures, and throwing diagnostic sinks return immutable failure surfaces
   and do not leak retained descriptors.
+- Startup preflight and process creation consume only the caller's remaining
+  deadline. Timeout/process-handoff races and malformed post-spawn contracts
+  kill any created child and close reserved path/log descriptors.
 - The pinned container demonstrated exact `libx264`, a working Linux inotify
   fd, the real four-frame fixture, strict full decode, and descriptor-bound
   publication.
