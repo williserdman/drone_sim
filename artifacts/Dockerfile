@@ -25,7 +25,8 @@ RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
         | sort > /tmp/ffmpeg-installed-delta \
     && sort /etc/drone_sim/ffmpeg-packages.lock > /tmp/ffmpeg-expected-delta \
     && diff --unified /tmp/ffmpeg-expected-delta /tmp/ffmpeg-installed-delta \
-    && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libx264' \
+    && ffmpeg -hide_banner -encoders 2>/dev/null \
+        | awk '$2 == "libx264" { found = 1 } END { exit !found }' \
     && ffprobe -version >/dev/null \
     && rm -f /tmp/packages-before-ffmpeg /tmp/packages-after-ffmpeg \
         /tmp/ffmpeg-installed-delta /tmp/ffmpeg-expected-delta \

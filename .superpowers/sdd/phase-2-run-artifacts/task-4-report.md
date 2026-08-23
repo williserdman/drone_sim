@@ -3,7 +3,7 @@
 ## Scope and baseline
 
 - Baseline: `d527abbf60a9bc2b2fae2621b68f8ed67cc9298f`
-- Verification audit: `2026-08-23T15:05:36Z`
+- Verification audit: `2026-08-23T16:16:00Z`
 - Scope: two 20-FPS, 320x240 `rgb8` FFmpeg pipelines, their ROS-facing
   subscriptions/readiness/errors, read-only MP4 validation, and the pinned
   artifact-image FFmpeg extension.
@@ -39,25 +39,49 @@ corresponding changes:
   failure, continues bounded process reaping, retains the partial, and releases
   its descriptors.
 
+Review fix round 1 added four deterministic critical RED cases. All four
+failed before the fix: the partial pathname was not reserved, a deliberately
+slow `stdin.close()` consumed about 101 ms despite a 10 ms deadline, semantic
+subprocesses had no timeout input, and a pathname swap after validation
+published attacker-controlled replacement bytes. The first production slice
+made all four pass.
+
+The next node-focused RED run had three failures: the node did not accept the
+configured expected count/startup deadline, and image/metadata callback
+exceptions escaped. Those three passed after transactional startup and callback
+containment. A later full-suite run exposed an ABA weakness not reliably visible
+in an isolated run: moving the same inode away and back need not alter its file
+metadata. A retained-inode inotify watch now closes that transient-mutation gap;
+the ABA, pathname-swap, and stale-result cases pass together on host and in the
+pinned image.
+
 ## Implementation and files
 
 - `artifacts/src/artifacts/_adapters/video.py`
-  - exact shell-free FFmpeg rawvideo command and `ffmpeg`/`ffprobe` preflight;
+  - shell-free FFmpeg rawvideo command and exact-name `libx264`/`ffprobe`
+    preflight;
   - exact timestamp pairing in either arrival order with one pending item per
     side, immutable diagnostics, and fail-closed sequence/format checks;
-  - hardened no-follow/single-link output and FFmpeg log paths;
-  - caller-owned absolute deadline with bounded wait/TERM/KILL phases;
-  - zero-exit, stable semantic validation before Linux `renameat2`
-    `RENAME_NOREPLACE` publication;
-  - descriptor-backed ffprobe JSON and full FFmpeg decode validation with
-    before/after stable checksum enforcement.
+  - hardened no-follow/single-link FFmpeg log paths plus `O_EXCL|O_NOFOLLOW`
+    reservation of each output inode before process creation;
+  - FFmpeg writes the retained inode via `/proc/self/fd/N` and `pass_fds`;
+  - caller-owned absolute deadline bounds stdin close, wait/TERM/KILL,
+    ffprobe, and strict full decode;
+  - zero-exit, stable semantic validation before descriptor-bound Linux
+    `linkat` no-clobber publication of that exact inode;
+  - descriptor-backed ffprobe JSON, `-xerror` full decode, same-descriptor
+    before/after hashes/fstats, parent-entry checks, and an inode mutation watch;
+  - immutable configured expected frame count independent of observations,
+    accepting canonical `COMPLETED`, `FAILED`, and `ABORTED` outcomes.
 - `artifacts/src/artifacts/recorder_node.py`
   - a spinable Jazzy node owning exactly `onboard` and `observer` recorders and
     four best-effort depth-5 subscriptions;
   - discovered subscription counts, aggregate readiness, and structured
-    recorder errors without terminal-status selection.
+    recorder errors without terminal-status selection;
+  - startup rollback under the caller deadline and contained subscription
+    callbacks so one failed stream does not terminate the executor.
 - `artifacts/tests/test_video_adapter.py`
-  - 57 host/container behavioral cases covering pairing, every frozen frame
+  - 82 host/container behavioral cases covering pairing, every frozen frame
     invariant, bounded pending state, process/finalization races and failures,
     filesystem collisions, semantic validation, a real recorder pipe, and the
     real Jazzy node/QoS shape.
@@ -76,10 +100,25 @@ corresponding changes:
 - The clean locked build reported `0 upgraded, 143 newly installed` and its
   before/after `dpkg-query` delta exactly matched the lock before accepting the
   layer.
-- The build also failed closed unless `ffmpeg -encoders` contained `libx264`
-  and `ffprobe -version` succeeded.
+- The build also failed closed unless encoder field 2 equaled exactly
+  `libx264` (so `libx264rgb` cannot satisfy the gate) and `ffprobe -version`
+  succeeded.
 - Final test image:
-  `sha256:1fafd88a9cde6eb3cf7b66682dc0298cea5162319c3dcb772dbd4c3912db0e41`.
+  `sha256:9e6890cbe198814c6b3723471bee65c6d4aa7c755e15b1e8bfec41c330d9f4a1`.
+
+## Output-command security ruling
+
+The original brief displayed the absolute partial pathname as FFmpeg's final
+argument. That pathname cannot bind FFmpeg to the inode validated and later
+published: a dangling symlink or pathname replacement can redirect one of
+those stages. Security and exact inode identity therefore take precedence, as
+the review explicitly directed. The semantic encoding settings remain frozen,
+but the implementation reserves the named partial first and passes
+`/proc/self/fd/N` plus `-y` so FFmpeg truncates/writes that already retained
+regular inode. Publication uses `linkat` through the retained descriptor with
+no replacement, verifies the final entry, and removes only the matching
+partial link. The final file can never be the pathname replacement validated
+or introduced by a race.
 
 ## Real four-frame evidence
 
@@ -107,24 +146,24 @@ validation.
 
 ```text
 uv run pytest artifacts/tests/test_video_adapter.py -v
-53 passed, 4 skipped in 0.66s
+78 passed, 4 skipped in 1.31s
 
 uv run pytest artifacts/tests -v
-163 passed, 8 skipped in 2.00s
+188 passed, 8 skipped in 3.65s
 
 docker build -f artifacts/Dockerfile --target test -t drone-sim-artifacts:test .
-exit 0; image sha256:1fafd88a9cde6eb3cf7b66682dc0298cea5162319c3dcb772dbd4c3912db0e41
+exit 0; image sha256:9e6890cbe198814c6b3723471bee65c6d4aa7c755e15b1e8bfec41c330d9f4a1
 
 docker run --rm drone-sim-artifacts:test uv run pytest artifacts/tests/test_video_adapter.py -v
-57 passed in 6.38s
+82 passed in 10.45s
 
 docker run --rm drone-sim-artifacts:test
-171 passed in 7.60s
+196 passed in 8.69s
 
 uv run pytest -v
-217 passed, 8 skipped in 7.61s
+242 passed, 8 skipped in 9.72s
 
-uv run python -m compileall -q artifacts/src/artifacts
+uv run python -m compileall -q artifacts/src artifacts/tests
 exit 0
 
 git diff --check
@@ -146,8 +185,14 @@ the real recorder pipe, the full FFmpeg apt lock, and the real Jazzy node.
 - All finalize exits close parent resources while retaining failed partial
   output and immutable in-memory diagnostics.
 - Validation passes the retained no-follow file descriptor to both semantic
-  subprocesses and returns no stale checksum or diagnostics if any snapshot
-  identity changes.
+  subprocesses, hashes that descriptor twice, and returns no stale checksum or
+  diagnostics if its inode, content, parent entry, or transient watch changes.
+- Slow close, semantic timeouts, unexpected subprocess/validator/signal/wait
+  failures, and throwing diagnostic sinks return immutable failure surfaces
+  and do not leak retained descriptors.
+- The pinned container demonstrated exact `libx264`, a working Linux inotify
+  fd, the real four-frame fixture, strict full decode, and descriptor-bound
+  publication.
 - The node is a real rclpy node in Jazzy and does not overwrite rclpy internals.
 - No unresolved contract or package-lock contradiction remains. The host's
   legacy Docker builder is slow and emits its upstream deprecation warning;

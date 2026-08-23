@@ -53,6 +53,7 @@ class VideoRecorderNode(_RosNode):
         run_directory: Path | str,
         run_id: str,
         *,
+        expected_frame_count: int = 40,
         node_backend: Any | None = None,
         recorder_factory: Callable[[Path, str, str, Callable[[VideoDiagnostic], None]], Any] | None = None,
         message_types: tuple[type[Any], type[Any]] | None = None,
@@ -62,8 +63,15 @@ class VideoRecorderNode(_RosNode):
     ) -> None:
         if not run_id:
             raise ValueError("run_id must not be empty")
+        if (
+            not isinstance(expected_frame_count, int)
+            or isinstance(expected_frame_count, bool)
+            or expected_frame_count <= 0
+        ):
+            raise ValueError("expected_frame_count must be a positive integer")
         self.run_directory = Path(run_directory).resolve()
         self.run_id = run_id
+        self._expected_frame_count = expected_frame_count
         if node_backend is None:
             super().__init__("video_recorder")
             self._node = self
@@ -77,6 +85,7 @@ class VideoRecorderNode(_RosNode):
                 run,
                 run_id=configured_run_id,
                 stream=stream,
+                expected_frame_count=self.expected_frame_count,
                 diagnostic_sink=errors,
             )
         self.recorders: Mapping[str, Any] = MappingProxyType(
@@ -98,7 +107,7 @@ class VideoRecorderNode(_RosNode):
                 self._node.create_subscription(
                     image_type,
                     image_topic,
-                    self.recorders[stream].accept_image,
+                    self._callback(stream, "image"),
                     qos_factory(),
                 )
             )
@@ -106,7 +115,7 @@ class VideoRecorderNode(_RosNode):
                 self._node.create_subscription(
                     metadata_type,
                     metadata_topic,
-                    self.recorders[stream].accept_metadata,
+                    self._callback(stream, "metadata"),
                     qos_factory(),
                 )
             )
@@ -116,9 +125,62 @@ class VideoRecorderNode(_RosNode):
     def subscription_handles(self) -> tuple[Any, ...]:
         return self._owned_subscriptions
 
-    def start(self) -> None:
+    @property
+    def expected_frame_count(self) -> int:
+        return self._expected_frame_count
+
+    def _callback(self, stream: str, kind: str) -> Callable[[Any], None]:
+        method = getattr(self.recorders[stream], f"accept_{kind}")
+
+        def contained_callback(message: Any) -> None:
+            try:
+                method(message)
+            except Exception as error:
+                self._safe_report(
+                    VideoDiagnostic(
+                        stream,
+                        "recorder_callback_failed",
+                        f"{kind} callback failed: {type(error).__name__}: {error}",
+                    )
+                )
+
+        return contained_callback
+
+    def start(self, *, deadline: float) -> None:
+        started: list[str] = []
         for stream in STREAMS:
-            self.recorders[stream].start()
+            try:
+                self.recorders[stream].start()
+                started.append(stream)
+            except Exception as error:
+                self._safe_report(
+                    VideoDiagnostic(
+                        stream,
+                        "video_start_failed",
+                        f"video recorder start failed: {type(error).__name__}: {error}",
+                    )
+                )
+                for started_stream in reversed(started):
+                    try:
+                        self.recorders[started_stream].finalize(
+                            deadline, outcome="FAILED"
+                        )
+                    except Exception as rollback_error:
+                        self._safe_report(
+                            VideoDiagnostic(
+                                started_stream,
+                                "video_start_rollback_failed",
+                                "video recorder rollback failed: "
+                                f"{type(rollback_error).__name__}: {rollback_error}",
+                            )
+                        )
+                raise
+
+    def _safe_report(self, diagnostic: VideoDiagnostic) -> None:
+        try:
+            self.report_error(diagnostic)
+        except Exception:
+            pass
 
     @property
     def discovered_subscription_counts(self) -> dict[str, int]:
