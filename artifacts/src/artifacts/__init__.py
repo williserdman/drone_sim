@@ -9,6 +9,15 @@ from .manifest import (
     build_manifest,
     write_manifest_atomic,
 )
+from ._adapters.rosbag import (
+    FIXED_TOPIC_TYPES,
+    FIXED_TOPICS,
+    RecorderFinalization,
+    RosbagRecorder,
+    RosbagTopicDiagnostic,
+    RosbagValidationResult,
+    RosbagValidator,
+)
 from .session import ArtifactSession, FinalizationConflict, FinalizationInput
 from .structured_log import StructuredEvent, write_event
 from .validation import ValidationResult, ValidationStatus, validate_regular_file, validate_tree
@@ -19,8 +28,15 @@ __all__ = [
     "ConfigurationRecord",
     "FinalizationConflict",
     "FinalizationInput",
+    "FIXED_TOPIC_TYPES",
+    "FIXED_TOPICS",
     "ImageDigest",
     "RunManifest",
+    "RecorderFinalization",
+    "RosbagRecorder",
+    "RosbagTopicDiagnostic",
+    "RosbagValidationResult",
+    "RosbagValidator",
     "SourceRevision",
     "StructuredEvent",
     "ValidationResult",
