@@ -240,6 +240,27 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
     assert json.loads(written.read_text(encoding="utf-8")) == document
 
 
+def test_write_resolved_config_rejects_invalid_run_id_before_creating_snapshot(
+    tmp_path,
+):
+    resolved = resolve_run_config(DEFAULT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+    document = _resolved_document()
+    document["run_id"] = "not-a-uuid"
+    document.pop("config_sha256")
+    checksum = hashlib.sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    invalid = replace(
+        resolved,
+        run_id="not-a-uuid",
+        config_sha256=checksum,
+    )
+
+    with pytest.raises(ValueError, match="run_id"):
+        write_resolved_config(tmp_path, invalid)
+    assert not (tmp_path / "configuration/run.json").exists()
+
+
 def test_load_run_config_rejects_checksum_mismatch(tmp_path):
     document = _resolved_document()
     document["world"] = "other"

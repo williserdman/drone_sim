@@ -40,7 +40,10 @@ Every owned process log line has `run_id`, `module`, `severity`, `event`,
 
 ## Failure behavior
 
-Recorder failure is reported immediately. Finalization uses bounded wall time after simulation stops, writes the manifest atomically, and explicitly records missing or invalid artifacts.
+Recorder failure is reported immediately. After simulation stops, finalization
+uses the remaining budget of one shared bounded deadline measured by a
+monotonic wall clock, writes the manifest atomically, and explicitly records
+missing or invalid artifacts.
 
 Artifacts does not begin draining until `.status/runtime-frozen.json` proves
 all publishers are permanently quiescent. It closes both video pipelines and

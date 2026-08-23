@@ -21,7 +21,8 @@ Own per-run ROS 2 bag recording, onboard and observer MP4 encoding, Gazebo logs 
 6. Publish aggregate readiness and completeness on
    `/simulation/artifact_status`, and persist the matching status files.
 7. Cross the runtime-frozen quiescence barrier, drain and close recorders, then
-   validate artifacts and return a completeness report.
+   validate artifacts and return a completeness report within the remaining
+   budget of one shared bounded deadline measured by a monotonic wall clock.
 
 ## Acceptance criteria
 

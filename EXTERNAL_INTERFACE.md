@@ -81,13 +81,13 @@ explicit missing or invalid records.
 
 The ROS bag contains the ten fixed topics above and deliberately ends with the
 `FINALIZING` lifecycle event. After all publishers are quiescent, recorders
-drain and close before validation. `manifest.json` is authoritative for the
-terminal status because `COMPLETED` depends on successful bag closure and
-artifact validation.
+drain, close, and validate within one shared bounded deadline measured by a
+monotonic wall clock. `manifest.json` is authoritative for the terminal status
+because `COMPLETED` depends on successful bag closure and artifact validation.
 
 ## Health semantics
 
-A container is ready only when its required process and communication endpoints are ready. Wall-clock health timeouts may identify a stalled host but never advance simulation state.
+A container is ready only when its required process and communication endpoints are ready. Bounded deadlines use a monotonic wall clock to identify a stalled host but never advance simulation state.
 
 ## Clock semantics
 

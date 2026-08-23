@@ -17,8 +17,9 @@ Own deterministic run lifecycle, `run_id` creation, configuration validation, Do
 3. Implement the fixed `drone-sim start`, `status`, `abort`, and
    `collect-results` commands and start Compose modules with a unique project.
 4. Require artifact readiness before simulation time advances.
-5. Route every terminal cause through bounded finalization using the durable
-   run-directory control/status protocol and runtime-frozen quiescence barrier.
+5. Route every terminal cause through one shared bounded finalization deadline
+   measured by a monotonic wall clock, using the durable run-directory
+   control/status protocol and runtime-frozen quiescence barrier.
 6. Write manifest metadata and preserve terminal results.
 
 ## Acceptance criteria

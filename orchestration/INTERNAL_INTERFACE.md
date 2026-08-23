@@ -15,6 +15,10 @@ supplied `run_id`, obtains exactly one UUID, resolves a relative `output_root`
 against the invoking process, and writes the immutable resolved snapshot with
 exclusive creation plus file and directory `fsync`.
 
+Run-directory allocation remains an operator-controller responsibility: it
+rejects any pre-existing run directory before calling `write_resolved_config`.
+The configuration writer itself rejects an existing `configuration/run.json`.
+
 ## Durable control seam
 
 The host controller owns `.control/finalize-request.json`,
@@ -25,3 +29,8 @@ controller waits for source completion, requests `FINALIZING`, waits for the
 `artifacts-final.json`. It commits the authoritative terminal manifest before
 allowing terminal ROS notifications; those notifications cannot append to
 required artifacts.
+
+The controller converts resolved `finalization_wall_seconds` to one absolute
+deadline using a monotonic wall clock. Every finalization wait and adapter call
+receives the remaining time from that shared deadline; no step receives a fresh
+timeout.

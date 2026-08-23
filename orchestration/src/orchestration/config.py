@@ -216,6 +216,10 @@ def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
     if target.exists():
         raise FileExistsError(target)
 
+    try:
+        UUID(config.run_id)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("run_id must be a valid UUID") from exc
     document = _document_without_checksum(config)
     if _checksum(document) != config.config_sha256:
         raise ValueError("config_sha256 does not match the resolved configuration")

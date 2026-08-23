@@ -53,6 +53,11 @@ The host captures logs, validates the bundle, commits `manifest.json`, and
 writes `.control/terminal-committed.json`. Terminal ROS notifications happen
 after that commit and write no required artifact data.
 
+The host establishes one absolute finalization deadline from the resolved
+`finalization_wall_seconds` using a monotonic wall clock. Publisher quiescence,
+recorder drain and close, validation, manifest commit, terminal notification,
+and teardown share its remaining bounded budget; no stage restarts the clock.
+
 All control and status JSON is committed through a collision-safe temporary
 sibling, file flush and `fsync`, atomic replacement, and directory `fsync`.
 The complete status set is `operator-state.json`, `artifacts-ready.json`,

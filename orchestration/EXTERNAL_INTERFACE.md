@@ -38,7 +38,11 @@ Each file is atomically replaced only after file and directory `fsync`.
 
 ## Timing
 
-Simulation state uses `/clock`. Wall-clock deadlines are restricted to startup, stalled-host detection, finalization, and forced shutdown.
+Simulation state uses `/clock`. Wall-clock deadlines are restricted to startup,
+stalled-host detection, finalization, and forced shutdown and are measured with
+a monotonic clock. Finalization uses one bounded deadline shared across
+quiescence, recorder closure, validation, manifest commit, notification, and
+teardown.
 
 ## Failure behavior
 
