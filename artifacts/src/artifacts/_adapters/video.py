@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 import ctypes
 from dataclasses import dataclass
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -39,10 +40,8 @@ _FILE_FLAGS = (
 )
 _OUTPUT_FLAGS = (
     os.O_RDWR
-    | os.O_CREAT
-    | os.O_EXCL
+    | os.O_TMPFILE
     | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
 )
 _LOG_FLAGS = (
     os.O_WRONLY
@@ -317,15 +316,14 @@ class VideoValidator:
                     return self._invalid(empty, "video changed during semantic validation", stream_name)
                 parent_fd = child_fd
             filename = parts[-1]
-            entry = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
             if file_fd is None:
+                entry = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
                 file_fd = os.open(filename, _FILE_FLAGS, dir_fd=parent_fd)
             initial_stat = os.fstat(file_fd)
-            if (
-                not stat.S_ISREG(initial_stat.st_mode)
-                or initial_stat.st_nlink != 1
-                or not _same_entry(entry, initial_stat)
-            ):
+            expected_links = 1 if owns_file else 0
+            if not stat.S_ISREG(initial_stat.st_mode) or initial_stat.st_nlink != expected_links:
+                return self._invalid(empty, "unsafe video path", stream_name)
+            if owns_file and not _same_entry(entry, initial_stat):
                 return self._invalid(empty, "unsafe video path", stream_name)
             parent_snapshot = os.fstat(parent_fd)
             watch_fd = _watch_descriptors((*held, file_fd))
@@ -425,9 +423,16 @@ class VideoValidator:
                         or parent_snapshot is None
                         or not _same_snapshot(parent_snapshot, os.fstat(parent_fd))
                         or (watch_fd is not None and _watch_changed(watch_fd))
-                        or not _same_entry(
-                            os.stat(filename, dir_fd=parent_fd, follow_symlinks=False),
-                            final_stat,
+                        or (
+                            owns_file
+                            and not _same_entry(
+                                os.stat(
+                                    filename,
+                                    dir_fd=parent_fd,
+                                    follow_symlinks=False,
+                                ),
+                                final_stat,
+                            )
                         )
                     )
                 except subprocess.TimeoutExpired:
@@ -571,7 +576,8 @@ class VideoStreamRecorder:
         self._log_stream: Any | None = None
         self._root_fd: int | None = None
         self._video_fd: int | None = None
-        self._partial_fd: int | None = None
+        self._output_fd: int | None = None
+        self._readonly_output_fd: int | None = None
         self._root_identity: os.stat_result | None = None
         self._video_identity: os.stat_result | None = None
         self._pending_image: Any | None = None
@@ -622,7 +628,7 @@ class VideoStreamRecorder:
         return self._process is not None and self._process.poll() is None and not self._failed
 
     def command(self, output_descriptor: int | None = None) -> tuple[str, ...]:
-        descriptor = self._partial_fd if output_descriptor is None else output_descriptor
+        descriptor = self._output_fd if output_descriptor is None else output_descriptor
         if descriptor is None:
             raise RuntimeError("video output has not been reserved")
         return (
@@ -686,7 +692,7 @@ class VideoStreamRecorder:
     def _prepare_output(self) -> None:
         root_fd: int | None = None
         video_fd: int | None = None
-        partial_fd: int | None = None
+        output_fd: int | None = None
         committed = False
         try:
             root_before = os.stat(self.run_directory, follow_symlinks=False)
@@ -697,24 +703,39 @@ class VideoStreamRecorder:
             if not _same_entry(root_before, root_opened):
                 raise _unsafe_path()
             video_fd, video_identity = _open_or_create_directory(root_fd, "video")
-            final_name = f"{self.stream}.mp4"
+            for output_name in (
+                f"{self.stream}.mp4",
+                f"{self.stream}.mp4.partial",
+            ):
+                try:
+                    os.stat(output_name, dir_fd=video_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise FileExistsError(
+                    f"refusing existing video output: {output_name}"
+                )
             try:
-                os.stat(final_name, dir_fd=video_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                raise FileExistsError(f"refusing existing video output: {final_name}")
-            partial_name = f"{self.stream}.mp4.partial"
-            partial_fd = os.open(partial_name, _OUTPUT_FLAGS, 0o644, dir_fd=video_fd)
-            partial_identity = os.fstat(partial_fd)
-            current = os.stat(partial_name, dir_fd=video_fd, follow_symlinks=False)
+                output_fd = os.open(".", _OUTPUT_FLAGS, 0o600, dir_fd=video_fd)
+            except OSError as error:
+                if error.errno in {
+                    errno.EINVAL,
+                    errno.EISDIR,
+                    errno.ENOTSUP,
+                    errno.EOPNOTSUPP,
+                }:
+                    raise RuntimeError(
+                        "video output filesystem does not support O_TMPFILE"
+                    ) from error
+                raise
+            output_identity = os.fstat(output_fd)
             if (
-                not stat.S_ISREG(partial_identity.st_mode)
-                or partial_identity.st_nlink != 1
-                or not _same_entry(partial_identity, current)
+                not stat.S_ISREG(output_identity.st_mode)
+                or output_identity.st_nlink != 0
+                or fcntl.fcntl(output_fd, fcntl.F_GETFL) & os.O_ACCMODE
+                != os.O_RDWR
             ):
                 raise _unsafe_path()
-            self._root_fd, self._video_fd, self._partial_fd = root_fd, video_fd, partial_fd
+            self._root_fd, self._video_fd, self._output_fd = root_fd, video_fd, output_fd
             self._root_identity, self._video_identity = root_opened, video_identity
             committed = True
         except (FileExistsError, RuntimeError):
@@ -723,21 +744,7 @@ class VideoStreamRecorder:
             raise _unsafe_path() from error
         finally:
             if not committed:
-                if partial_fd is not None and video_fd is not None:
-                    try:
-                        retained = os.fstat(partial_fd)
-                        current = os.stat(
-                            f"{self.stream}.mp4.partial",
-                            dir_fd=video_fd,
-                            follow_symlinks=False,
-                        )
-                        if _same_entry(retained, current):
-                            os.unlink(
-                                f"{self.stream}.mp4.partial", dir_fd=video_fd
-                            )
-                    except OSError:
-                        pass
-                for descriptor in (partial_fd, video_fd, root_fd):
+                for descriptor in (output_fd, video_fd, root_fd):
                     if descriptor is not None:
                         try:
                             os.close(descriptor)
@@ -812,25 +819,29 @@ class VideoStreamRecorder:
             if process is not None:
                 self._kill_started_process(process, deadline)
                 self._process = None
-            self._discard_reserved_partial()
             self._close_resources()
             raise
 
     def _spawn_with_deadline(self, deadline: float, log_stream: Any) -> tuple[_Process, Any]:
-        assert self._partial_fd is not None
+        assert self._output_fd is not None
         try:
-            output_fd = os.dup(self._partial_fd)
+            output_fd = os.dup(self._output_fd)
         except BaseException:
             try:
                 log_stream.close()
             except Exception:
                 pass
             raise
-        cancelled = threading.Event()
-        completed = threading.Event()
-        handoff_lock = threading.Lock()
-        result: list[_Process] = []
-        failures: list[BaseException] = []
+        handoff = threading.Condition()
+        state: dict[str, Any] = {
+            "status": "spawning",
+            "process": None,
+            "failure": None,
+            "cleaned": False,
+        }
+        started_remaining = max(0.0, deadline - self._monotonic())
+        cleanup_reserve = min(0.25, started_remaining / 2)
+        claim_deadline = deadline - cleanup_reserve
 
         def spawn_process() -> None:
             process: _Process | None = None
@@ -845,49 +856,74 @@ class VideoStreamRecorder:
                     bufsize=0,
                     timeout=max(0.0, deadline - self._monotonic()),
                 )
-                with handoff_lock:
-                    cancel_process = cancelled.is_set()
-                    if not cancel_process:
-                        result.append(process)
-                if cancel_process:
-                    self._terminate_late_process(process)
             except BaseException as error:
-                failures.append(error)
-            finally:
                 try:
                     os.close(output_fd)
                 except OSError:
                     pass
-                if cancelled.is_set():
-                    try:
-                        log_stream.close()
-                    except Exception:
-                        pass
-                completed.set()
+                try:
+                    log_stream.close()
+                except Exception:
+                    pass
+                with handoff:
+                    state["failure"] = error
+                    state["status"] = "failed"
+                    state["cleaned"] = True
+                    handoff.notify_all()
+                return
+            try:
+                os.close(output_fd)
+            except OSError:
+                pass
+            with handoff:
+                if state["status"] == "cancelled":
+                    claimed = False
+                else:
+                    state["process"] = process
+                    state["status"] = "ready"
+                    handoff.notify_all()
+                    while state["status"] == "ready":
+                        handoff.wait()
+                    claimed = state["status"] == "claimed"
+            if claimed:
+                return
+            try:
+                self._terminate_worker_process(process)
+            finally:
+                try:
+                    log_stream.close()
+                except Exception:
+                    pass
+                with handoff:
+                    state["cleaned"] = True
+                    handoff.notify_all()
 
         threading.Thread(target=spawn_process, daemon=True).start()
-        remaining = max(0.0, deadline - self._monotonic())
-        if not completed.wait(remaining):
-            with handoff_lock:
-                cancelled.set()
-                handed_off = result.pop() if result else None
-            if handed_off is not None:
-                self._kill_started_process(handed_off, deadline)
-            raise subprocess.TimeoutExpired("FFmpeg process creation", remaining)
-        if deadline - self._monotonic() <= 0:
-            with handoff_lock:
-                cancelled.set()
-                handed_off = result.pop() if result else None
-            if handed_off is not None:
-                self._kill_started_process(handed_off, deadline)
-            raise subprocess.TimeoutExpired("FFmpeg process creation", remaining)
-        if failures:
-            try:
-                log_stream.close()
-            except Exception:
-                pass
-            raise failures[0]
-        return result[0], log_stream
+        with handoff:
+            while (
+                state["status"] == "spawning"
+                and self._monotonic() < claim_deadline
+            ):
+                handoff.wait(
+                    max(0.0, claim_deadline - self._monotonic())
+                )
+            if (
+                state["status"] == "ready"
+                and self._monotonic() < claim_deadline
+            ):
+                state["status"] = "claimed"
+                process = state["process"]
+                handoff.notify_all()
+                return process, log_stream
+            if state["status"] == "failed":
+                raise state["failure"]
+            state["status"] = "cancelled"
+            handoff.notify_all()
+            while not state["cleaned"] and self._monotonic() < deadline:
+                handoff.wait(max(0.0, deadline - self._monotonic()))
+        raise subprocess.TimeoutExpired(
+            "FFmpeg process creation", started_remaining
+        )
 
     def _kill_started_process(self, process: _Process, deadline: float) -> None:
         try:
@@ -907,7 +943,7 @@ class VideoStreamRecorder:
                 pass
 
     @staticmethod
-    def _terminate_late_process(process: _Process) -> None:
+    def _terminate_worker_process(process: _Process) -> None:
         try:
             process.send_signal(signal.SIGKILL)
         except Exception:
@@ -920,7 +956,13 @@ class VideoStreamRecorder:
         try:
             process.wait(timeout=1.0)
         except Exception:
-            pass
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    _waited_pid, status = os.waitpid(pid, 0)
+                    process.returncode = os.waitstatus_to_exitcode(status)
+                except (ChildProcessError, OSError):
+                    pass
 
     def _record_failure(self, event: str, detail: str, sim_timestamp_ns: int | None = None) -> None:
         self._failed = True
@@ -1013,8 +1055,14 @@ class VideoStreamRecorder:
             except (BrokenPipeError, OSError) as error:
                 self._record_failure("ffmpeg_write_failed", f"FFmpeg pipe write failed: {error}", image_timestamp)
                 raise RuntimeError("FFmpeg pipe write failed") from error
-            if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
-                detail = "FFmpeg pipe write made no forward progress"
+            remaining = len(payload) - written
+            if (
+                not isinstance(count, int)
+                or isinstance(count, bool)
+                or count <= 0
+                or count > remaining
+            ):
+                detail = "FFmpeg pipe write returned a malformed byte count"
                 self._record_failure("ffmpeg_write_failed", detail, image_timestamp)
                 raise RuntimeError(detail)
             written += count
@@ -1028,7 +1076,7 @@ class VideoStreamRecorder:
         if process is None:
             raise RuntimeError("video recorder has not been started")
         signals: list[str] = []
-        guard_fd: int | None = None
+        path_watch_fd: int | None = None
         try:
             canonical_outcome = outcome.upper()
             if canonical_outcome not in {"COMPLETED", "FAILED", "ABORTED"}:
@@ -1057,54 +1105,60 @@ class VideoStreamRecorder:
                     detail = f"{detail}; {boundary_failure}"
                 self._record_failure("ffmpeg_timeout", detail)
                 return VideoFinalization(False, None, tuple(signals), bool(signals), False, detail)
+            self._seal_output_readonly(deadline)
             if returncode != 0:
                 detail = f"FFmpeg exited with return code {returncode}"
                 self._record_failure("ffmpeg_failed", detail)
+                self._preserve_recovery_output(deadline)
                 return VideoFinalization(True, returncode, tuple(signals), bool(signals), False, detail)
             if self._failed:
                 detail = "video recorder failed before publication"
-                return VideoFinalization(True, 0, tuple(signals), bool(signals), False, detail)
-            if not self._paths_safe() or not self._partial_matches():
-                detail = "unsafe video path at finalization"
-                self._record_failure("unsafe_video_path", detail)
+                self._preserve_recovery_output(deadline)
                 return VideoFinalization(True, 0, tuple(signals), bool(signals), False, detail)
 
-            assert self._partial_fd is not None
+            assert self._readonly_output_fd is not None
             assert self._root_fd is not None and self._video_fd is not None
-            guard_fd = _watch_descriptors(
-                (self._root_fd, self._video_fd, self._partial_fd)
-            )
-            publication_digest = self._hash_descriptor(self._partial_fd, deadline)
+            path_watch_fd = _watch_descriptors((self._root_fd, self._video_fd))
             validation = self._validator.validate(
                 self.run_directory,
-                f"video/{self.stream}.mp4.partial",
+                f"video/{self.stream}.mp4",
                 expected_frame_count=self.expected_frame_count,
                 outcome=canonical_outcome,
                 deadline=deadline,
-                descriptor=self._partial_fd,
+                descriptor=self._readonly_output_fd,
             )
+            if _watch_changed(path_watch_fd) or not self._paths_safe():
+                detail = "video parent path changed during validation"
+                self._record_failure("unsafe_video_path", detail)
+                self._preserve_recovery_output(deadline)
+                return VideoFinalization(
+                    True, 0, tuple(signals), bool(signals), False, detail
+                )
             if validation.status is not ValidationStatus.VALID:
                 self._record_failure("video_invalid", validation.detail)
+                self._preserve_recovery_output(deadline)
                 return VideoFinalization(
                     True, 0, tuple(signals), bool(signals), False, validation.detail
                 )
-            if not self._publication_guard_stable(
-                guard_fd, publication_digest, deadline
-            ):
-                detail = "video output changed after validation"
+            try:
+                self._publish_readonly_output(f"{self.stream}.mp4")
+            except Exception as error:
+                detail = (
+                    "video publication failed: "
+                    f"{type(error).__name__}: {error}"
+                )
                 self._record_failure("video_publish_failed", detail)
-                return VideoFinalization(True, 0, tuple(signals), bool(signals), False, detail)
-            self._publish_retained_inode(
-                deadline=deadline,
-                expected_digest=publication_digest,
-                guard_fd=guard_fd,
-            )
+                self._preserve_recovery_output(deadline)
+                return VideoFinalization(
+                    True, 0, tuple(signals), bool(signals), False, detail
+                )
             return VideoFinalization(
                 True, 0, tuple(signals), bool(signals), True, "video finalized"
             )
         except Exception as error:
             detail = f"video finalization failed: {type(error).__name__}: {error}"
             self._record_failure("video_finalize_failed", detail)
+            self._preserve_recovery_output(deadline)
             try:
                 returncode = process.poll()
             except Exception:
@@ -1118,9 +1172,9 @@ class VideoStreamRecorder:
                 detail,
             )
         finally:
-            if guard_fd is not None:
+            if path_watch_fd is not None:
                 try:
-                    os.close(guard_fd)
+                    os.close(path_watch_fd)
                 except OSError:
                     pass
             self._close_resources()
@@ -1249,109 +1303,85 @@ class VideoStreamRecorder:
                     min(0.01, max(0.0, deadline - self._monotonic()))
                 )
 
-    def _partial_matches(self, expected_links: int = 1) -> bool:
-        if self._partial_fd is None or self._video_fd is None:
-            return False
+    def _seal_output_readonly(self, deadline: float) -> None:
+        if self._output_fd is None or self._video_fd is None:
+            raise RuntimeError("video output is not available")
+        if not self._paths_safe():
+            raise RuntimeError("unsafe video path at finalization")
+        writable_fd = self._output_fd
+        readonly_fd: int | None = None
         try:
-            opened = os.fstat(self._partial_fd)
-            current = os.stat(
-                f"{self.stream}.mp4.partial",
-                dir_fd=self._video_fd,
-                follow_symlinks=False,
-            )
-            return (
-                stat.S_ISREG(opened.st_mode)
-                and opened.st_nlink == expected_links
-                and _same_entry(opened, current)
-            )
-        except OSError:
-            return False
-
-    def _hash_descriptor(self, descriptor: int, deadline: float) -> str:
-        digest = hashlib.sha256()
-        offset = 0
-        while True:
             if deadline - self._monotonic() <= 0:
-                raise subprocess.TimeoutExpired("video hash", 0)
-            chunk = os.pread(descriptor, 1024 * 1024, offset)
+                raise subprocess.TimeoutExpired("video output fsync", 0)
+            os.fsync(writable_fd)
             if deadline - self._monotonic() <= 0:
-                raise subprocess.TimeoutExpired("video hash", 0)
-            if not chunk:
-                return digest.hexdigest()
-            digest.update(chunk)
-            offset += len(chunk)
+                raise subprocess.TimeoutExpired("video output reopen", 0)
+            readonly_fd = os.open(
+                f"/proc/self/fd/{writable_fd}",
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+            )
+            writable_identity = os.fstat(writable_fd)
+            readonly_identity = os.fstat(readonly_fd)
+            if (
+                not stat.S_ISREG(writable_identity.st_mode)
+                or writable_identity.st_nlink != 0
+                or not _same_entry(writable_identity, readonly_identity)
+                or fcntl.fcntl(readonly_fd, fcntl.F_GETFL) & os.O_ACCMODE
+                != os.O_RDONLY
+            ):
+                raise RuntimeError("anonymous video output identity is unsafe")
+            os.fchmod(writable_fd, 0o444)
+            os.fsync(writable_fd)
+            if deadline - self._monotonic() <= 0:
+                raise subprocess.TimeoutExpired("video output sealing", 0)
+            readonly_identity = os.fstat(readonly_fd)
+            if readonly_identity.st_mode & 0o777 != 0o444:
+                raise RuntimeError("video output permissions are not read-only")
+            os.close(writable_fd)
+            self._output_fd = None
+            self._readonly_output_fd = readonly_fd
+            readonly_fd = None
+        finally:
+            if readonly_fd is not None:
+                try:
+                    os.close(readonly_fd)
+                except OSError:
+                    pass
 
-    def _publication_guard_stable(
-        self,
-        guard_fd: int,
-        expected_digest: str,
-        deadline: float,
-        *,
-        expected_links: int = 1,
-    ) -> bool:
+    def _publish_readonly_output(self, name: str) -> None:
+        if self._readonly_output_fd is None or self._video_fd is None:
+            raise RuntimeError("read-only video output is not available")
+        retained = os.fstat(self._readonly_output_fd)
         if (
             not self._paths_safe()
-            or not self._partial_matches(expected_links)
-            or _watch_changed(guard_fd)
-            or self._partial_fd is None
+            or not stat.S_ISREG(retained.st_mode)
+            or retained.st_nlink != 0
+            or retained.st_mode & 0o777 != 0o444
+            or fcntl.fcntl(self._readonly_output_fd, fcntl.F_GETFL)
+            & os.O_ACCMODE
+            != os.O_RDONLY
         ):
-            return False
-        digest = self._hash_descriptor(self._partial_fd, deadline)
-        return (
-            digest == expected_digest
-            and self._paths_safe()
-            and self._partial_matches(expected_links)
-            and not _watch_changed(guard_fd)
+            raise RuntimeError("read-only video output is unsafe")
+        _link_descriptor_noreplace(
+            self._readonly_output_fd, self._video_fd, name
         )
 
-    def _publish_retained_inode(
-        self, *, deadline: float, expected_digest: str, guard_fd: int
-    ) -> None:
-        assert self._partial_fd is not None and self._video_fd is not None
-        partial_name = f"{self.stream}.mp4.partial"
-        final_name = f"{self.stream}.mp4"
-        linked = False
+    def _preserve_recovery_output(self, deadline: float) -> bool:
+        if self._readonly_output_fd is None:
+            return False
         try:
-            _link_descriptor_noreplace(self._partial_fd, self._video_fd, final_name)
-            linked = True
-            final = os.stat(final_name, dir_fd=self._video_fd, follow_symlinks=False)
-            if not _same_entry(final, os.fstat(self._partial_fd)):
-                raise RuntimeError("published video does not match retained descriptor")
-            current_partial = os.stat(
-                partial_name, dir_fd=self._video_fd, follow_symlinks=False
+            if deadline - self._monotonic() <= 0:
+                return False
+            if os.fstat(self._readonly_output_fd).st_size <= 0:
+                return False
+            self._publish_readonly_output(f"{self.stream}.mp4.partial")
+            return True
+        except Exception as error:
+            self._record_failure(
+                "video_recovery_failed",
+                f"video recovery publication failed: {type(error).__name__}: {error}",
             )
-            retained = os.fstat(self._partial_fd)
-            if (
-                not _same_entry(current_partial, retained)
-                or retained.st_nlink != 2
-            ):
-                raise RuntimeError("partial video changed during publication")
-            if not self._publication_guard_stable(
-                guard_fd, expected_digest, deadline, expected_links=2
-            ):
-                raise RuntimeError("video changed during publication")
-            os.unlink(partial_name, dir_fd=self._video_fd)
-        except Exception:
-            if linked:
-                self._unlink_final_if_retained(final_name)
-            raise
-
-    def _unlink_final_if_retained(self, final_name: str) -> None:
-        assert self._partial_fd is not None and self._video_fd is not None
-        try:
-            current = os.stat(final_name, dir_fd=self._video_fd, follow_symlinks=False)
-            if _same_entry(current, os.fstat(self._partial_fd)):
-                os.unlink(final_name, dir_fd=self._video_fd)
-        except OSError:
-            pass
-
-    def _discard_reserved_partial(self) -> None:
-        if not self._partial_matches() or self._video_fd is None:
-            return
-        try:
-            os.unlink(f"{self.stream}.mp4.partial", dir_fd=self._video_fd)
-        except OSError:
-            pass
+            return False
 
     def _close_resources(self) -> None:
         if self._log_stream is not None:
@@ -1360,7 +1390,12 @@ class VideoStreamRecorder:
             except Exception:
                 pass
             self._log_stream = None
-        for name in ("_partial_fd", "_video_fd", "_root_fd"):
+        for name in (
+            "_readonly_output_fd",
+            "_output_fd",
+            "_video_fd",
+            "_root_fd",
+        ):
             descriptor = getattr(self, name)
             if descriptor is not None:
                 try:

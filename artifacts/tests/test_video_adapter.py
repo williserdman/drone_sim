@@ -1,5 +1,7 @@
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
+import errno
+import fcntl
 import io
 import hashlib
 import json
@@ -198,6 +200,11 @@ def _recorder(tmp_path, **changes):
     return recorder
 
 
+def _write_anonymous_output(recorder, contents):
+    os.ftruncate(recorder._output_fd, 0)
+    assert os.pwrite(recorder._output_fd, contents, 0) == len(contents)
+
+
 def test_command_is_exact_and_start_is_shell_free(tmp_path):
     factory = FakeProcessFactory()
     recorder = _recorder(tmp_path, process_factory=factory)
@@ -206,27 +213,172 @@ def test_command_is_exact_and_start_is_shell_free(tmp_path):
         "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "320x240",
         "-framerate", "20", "-i", "pipe:0", "-an", "-c:v", "libx264",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4",
-        f"/proc/self/fd/{recorder._partial_fd}",
+        f"/proc/self/fd/{recorder._output_fd}",
     )
     assert factory.calls[0][1]["shell"] is False
     assert factory.calls[0][1]["stdin"] is subprocess.PIPE
 
 
-def test_start_reserves_single_link_partial_and_ffmpeg_writes_retained_inode(tmp_path):
+def test_start_keeps_encoded_inode_anonymous_until_finalization(tmp_path):
     factory = FakeProcessFactory()
     recorder = _recorder(tmp_path, process_factory=factory)
 
-    assert recorder.partial_path.is_file()
+    retained = os.fstat(recorder._output_fd)
+    assert retained.st_nlink == 0
+    assert not recorder.partial_path.exists()
+    assert not recorder.final_path.exists()
+    assert (factory.output_identity.st_dev, factory.output_identity.st_ino) == (
+        retained.st_dev,
+        retained.st_ino,
+    )
+
+
+def test_unsupported_otmpfile_fails_without_named_fallback(tmp_path, monkeypatch):
+    real_open = video_module.os.open
+
+    def reject_anonymous(path, flags, *args, **kwargs):
+        if flags & os.O_TMPFILE == os.O_TMPFILE:
+            raise OSError(errno.EOPNOTSUPP, "O_TMPFILE unsupported")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(video_module.os, "open", reject_anonymous)
+    recorder = VideoStreamRecorder(
+        tmp_path,
+        run_id=RUN_ID,
+        stream="onboard",
+        command_runner=FakeCommandRunner(),
+        process_factory=FakeProcessFactory(),
+    )
+
+    with pytest.raises(RuntimeError, match="O_TMPFILE"):
+        recorder.start(deadline=time.monotonic() + 1)
+
+    assert not recorder.partial_path.exists()
+    assert not recorder.final_path.exists()
+
+
+def test_success_validates_only_readonly_anonymous_inode_then_links_final(tmp_path):
+    observed = {}
+
+    class ReadOnlyValidator(FakeValidator):
+        def validate(self, *args, **kwargs):
+            descriptor = kwargs["descriptor"]
+            retained = os.fstat(descriptor)
+            matching_access_modes = []
+            for candidate in os.listdir("/proc/self/fd"):
+                try:
+                    candidate_fd = int(candidate)
+                    candidate_identity = os.fstat(candidate_fd)
+                    if (
+                        candidate_identity.st_dev,
+                        candidate_identity.st_ino,
+                    ) == (retained.st_dev, retained.st_ino):
+                        matching_access_modes.append(
+                            fcntl.fcntl(candidate_fd, fcntl.F_GETFL)
+                            & os.O_ACCMODE
+                        )
+                except (OSError, ValueError):
+                    continue
+            observed.update(
+                access_mode=fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE,
+                permissions=retained.st_mode & 0o777,
+                links=retained.st_nlink,
+                matching_access_modes=matching_access_modes,
+            )
+            with pytest.raises(OSError) as write_error:
+                os.pwrite(descriptor, b"mutation", 0)
+            assert write_error.value.errno == errno.EBADF
+            return super().validate(*args, **kwargs)
+
+    recorder = _recorder(tmp_path, validator=ReadOnlyValidator())
+    _write_anonymous_output(recorder, b"encoded")
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome="COMPLETED"
+    )
+
+    assert result.published is True
+    assert observed == {
+        "access_mode": os.O_RDONLY,
+        "permissions": 0o444,
+        "links": 0,
+        "matching_access_modes": [os.O_RDONLY],
+    }
+    assert recorder.final_path.read_bytes() == b"encoded"
+    assert recorder.final_path.stat().st_mode & 0o777 == 0o444
+    assert recorder.final_path.stat().st_nlink == 1
+    assert not recorder.partial_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "outcome"),
+    [(1, "FAILED"), (137, "ABORTED")],
+)
+def test_encoder_failure_links_nonempty_anonymous_output_to_partial(
+    tmp_path, returncode, outcome
+):
+    recorder = _recorder(
+        tmp_path,
+        process_factory=FakeProcessFactory(FakeProcess((returncode,))),
+    )
+    _write_anonymous_output(recorder, b"recoverable")
+    assert not recorder.partial_path.exists()
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome=outcome
+    )
+
+    assert result.published is False
+    assert recorder.partial_path.read_bytes() == b"recoverable"
+    assert recorder.partial_path.stat().st_mode & 0o777 == 0o444
     assert recorder.partial_path.stat().st_nlink == 1
+    assert not recorder.final_path.exists()
+
+
+def test_invalid_output_links_nonempty_anonymous_inode_to_partial(tmp_path):
+    invalid = VideoValidationResult(
+        ValidationStatus.INVALID, 7, "a" * 64, "video is corrupt"
+    )
+    recorder = _recorder(tmp_path, validator=FakeValidator(invalid))
+    _write_anonymous_output(recorder, b"recoverable")
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome="FAILED"
+    )
+
+    assert result.published is False
+    assert recorder.partial_path.read_bytes() == b"recoverable"
+    assert not recorder.final_path.exists()
+
+
+def test_valid_failed_outcome_is_a_final_video_not_a_partial(tmp_path):
+    recorder = _recorder(tmp_path)
+    _write_anonymous_output(recorder, b"readable shorter output")
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome="FAILED"
+    )
+
+    assert result.published is True
+    assert recorder.final_path.read_bytes() == b"readable shorter output"
+    assert not recorder.partial_path.exists()
+
+
+def test_start_passes_exact_anonymous_inode_to_ffmpeg(tmp_path):
+    factory = FakeProcessFactory()
+    recorder = _recorder(tmp_path, process_factory=factory)
+
+    retained = os.fstat(recorder._output_fd)
+    assert retained.st_nlink == 0
+    assert not recorder.partial_path.exists()
     command, kwargs = factory.calls[0]
     output_argument = command[-1]
     assert output_argument.startswith("/proc/self/fd/")
     output_fd = int(output_argument.rsplit("/", 1)[1])
     assert kwargs["pass_fds"] == (output_fd,)
-    partial_identity = recorder.partial_path.stat()
     assert (factory.output_identity.st_dev, factory.output_identity.st_ino) == (
-        partial_identity.st_dev,
-        partial_identity.st_ino,
+        retained.st_dev,
+        retained.st_ino,
     )
 
 
@@ -234,12 +386,14 @@ def test_finalize_close_cannot_consume_past_caller_deadline(tmp_path):
     process = FakeProcess((0,))
     process.stdin = SlowCloseStream()
     recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(process))
-    recorder.partial_path.write_bytes(b"partial")
+    _write_anonymous_output(recorder, b"partial")
     started = time.monotonic()
 
     result = recorder.finalize(deadline=started + 0.01, outcome="COMPLETED")
 
-    assert time.monotonic() - started < 0.05
+    # Scheduling jitter may delay the caller after the 10 ms wait expires, but
+    # finalization must still return before the 100 ms close itself completes.
+    assert time.monotonic() - started < 0.09
     assert result.published is False
     assert any("deadline" in item.detail for item in recorder.diagnostics)
 
@@ -295,7 +449,7 @@ def test_path_swap_after_validation_never_publishes_replacement_inode(tmp_path):
             return result
 
     recorder = _recorder(tmp_path, validator=SwappingValidator())
-    recorder.partial_path.write_bytes(b"encoded original")
+    _write_anonymous_output(recorder, b"encoded original")
 
     recorder.finalize(deadline=time.monotonic() + 1, outcome="COMPLETED")
 
@@ -317,7 +471,7 @@ def test_content_mutation_after_validation_result_is_never_published(tmp_path):
             return result
 
     recorder = _recorder(tmp_path, validator=StaleSuccessValidator())
-    recorder.partial_path.write_bytes(original)
+    _write_anonymous_output(recorder, original)
 
     result = recorder.finalize(deadline=time.monotonic() + 1, outcome="COMPLETED")
 
@@ -326,57 +480,38 @@ def test_content_mutation_after_validation_result_is_never_published(tmp_path):
     assert recorder.partial_path.exists()
 
 
-def test_mutation_after_final_link_rolls_back_final_and_retains_partial(tmp_path, monkeypatch):
-    encoded = b"encoded recoverable partial"
-    validation = VideoValidationResult(
-        ValidationStatus.VALID,
-        len(encoded),
-        hashlib.sha256(encoded).hexdigest(),
-        "valid video",
-    )
-    recorder = _recorder(tmp_path, validator=FakeValidator(validation))
-    recorder.partial_path.write_bytes(encoded)
-    real_link = video_module._link_descriptor_noreplace
-
-    def mutate_after_link(descriptor, parent_fd, destination):
-        real_link(descriptor, parent_fd, destination)
-        os.pwrite(descriptor, b"corrupt", 0)
-
-    monkeypatch.setattr(video_module, "_link_descriptor_noreplace", mutate_after_link)
-
-    result = recorder.finalize(deadline=time.monotonic() + 1, outcome="COMPLETED")
-
-    assert result.published is False
-    assert not recorder.final_path.exists()
-    assert recorder.partial_path.exists()
-
-
-def test_aba_mutation_during_post_link_hash_is_observed_before_success(
+def test_success_is_one_readonly_noclobber_link_without_rollback_unlink(
     tmp_path, monkeypatch
 ):
     recorder = _recorder(tmp_path)
-    recorder.partial_path.write_bytes(b"encoded")
-    real_hash = recorder._hash_descriptor
-    calls = 0
+    _write_anonymous_output(recorder, b"encoded")
+    real_link = video_module._link_descriptor_noreplace
+    link_calls = []
+    unlink_calls = []
 
-    def mutate_during_post_link_hash(descriptor, deadline):
-        nonlocal calls
-        calls += 1
-        digest = real_hash(descriptor, deadline)
-        if calls == 3:
-            os.pwrite(descriptor, b"changed", 0)
-            os.pwrite(descriptor, b"encoded", 0)
-        return digest
+    def observed_link(descriptor, parent_fd, destination):
+        assert fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY
+        link_calls.append(destination)
+        real_link(descriptor, parent_fd, destination)
 
-    monkeypatch.setattr(recorder, "_hash_descriptor", mutate_during_post_link_hash)
+    real_unlink = video_module.os.unlink
+
+    def observed_unlink(*args, **kwargs):
+        unlink_calls.append((args, kwargs))
+        return real_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(video_module, "_link_descriptor_noreplace", observed_link)
+    monkeypatch.setattr(video_module.os, "unlink", observed_unlink)
 
     result = recorder.finalize(
         deadline=time.monotonic() + 10, outcome="COMPLETED"
     )
 
-    assert result.published is False
-    assert not recorder.final_path.exists()
-    assert recorder.partial_path.read_bytes() == b"encoded"
+    assert result.published is True
+    assert link_calls == ["onboard.mp4"]
+    assert unlink_calls == []
+    assert recorder.final_path.read_bytes() == b"encoded"
+    assert not recorder.partial_path.exists()
 
 
 @pytest.mark.parametrize("moved", ["run", "video"])
@@ -394,7 +529,7 @@ def test_parent_directory_aba_during_finalization_is_rejected(tmp_path, moved):
             return result
 
     recorder = _recorder(run_directory, validator=ParentAbaValidator())
-    recorder.partial_path.write_bytes(b"encoded")
+    _write_anonymous_output(recorder, b"encoded")
 
     result = recorder.finalize(deadline=time.monotonic() + 1, outcome="COMPLETED")
 
@@ -503,10 +638,23 @@ def test_start_bounds_hanging_preflight_by_caller_deadline(tmp_path):
 
 
 def test_start_cancels_and_reaps_process_created_after_spawn_deadline(tmp_path):
-    late_process = FakeProcess()
+    killed = threading.Event()
+    factory_entered = threading.Event()
+    captured = {}
 
-    def slow_factory(_command, **_kwargs):
-        time.sleep(0.10)
+    class TrackedLateProcess(FakeProcess):
+        def send_signal(self, signum):
+            super().send_signal(signum)
+            if signum == signal.SIGKILL:
+                killed.set()
+
+    late_process = TrackedLateProcess()
+
+    def slow_factory(command, **kwargs):
+        factory_entered.set()
+        captured["output_fd"] = int(command[-1].rsplit("/", 1)[1])
+        captured["log"] = kwargs["stderr"]
+        time.sleep(0.35)
         return late_process
 
     recorder = VideoStreamRecorder(
@@ -519,51 +667,129 @@ def test_start_cancels_and_reaps_process_created_after_spawn_deadline(tmp_path):
     started = time.monotonic()
 
     with pytest.raises(subprocess.TimeoutExpired):
-        recorder.start(deadline=started + 0.01)
+        recorder.start(deadline=started + 0.25)
 
-    assert time.monotonic() - started < 0.05
-    time.sleep(0.15)
+    assert factory_entered.is_set()
+    assert killed.wait(5)
     assert signal.SIGKILL in late_process.signals
+    cleanup_deadline = time.monotonic() + 5
+    while not captured["log"].closed and time.monotonic() < cleanup_deadline:
+        time.sleep(0.01)
+    assert captured["log"].closed is True
+    with pytest.raises(OSError) as closed_output:
+        os.fstat(captured["output_fd"])
+    assert closed_output.value.errno == errno.EBADF
     assert not recorder.partial_path.exists()
 
 
-def test_spawn_deadline_race_reaps_process_handed_off_before_completion_signal(
-    tmp_path, monkeypatch
-):
-    process = FakeProcess()
-    real_event = threading.Event
+def test_spawn_at_deadline_is_worker_reaped_and_closes_tracked_log(tmp_path):
+    clock = FakeClock()
+    captured = {}
 
-    class GatedCompletion:
-        def __init__(self):
-            self.entered = real_event()
-            self.release = real_event()
-
-        def set(self):
-            self.entered.set()
-            self.release.wait(1)
-
-        def wait(self, _timeout):
-            assert self.entered.wait(1)
-            self.release.set()
-            return False
+    def deadline_factory(command, **kwargs):
+        output_fd = int(command[-1].rsplit("/", 1)[1])
+        captured["output_fd"] = output_fd
+        captured["log"] = kwargs["stderr"]
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=kwargs["stderr"],
+        )
+        captured["child"] = child
+        # The caller reserves 250 ms from the initial one-second spawn budget,
+        # so a process returned after t=0.75 stays worker-owned and is reaped
+        # there regardless of which thread reaches the handoff first.
+        clock.now = 0.8
+        return child
 
     recorder = VideoStreamRecorder(
         tmp_path,
         run_id=RUN_ID,
         stream="onboard",
         command_runner=FakeCommandRunner(),
-        process_factory=lambda _command, **_kwargs: process,
+        process_factory=deadline_factory,
+        monotonic=clock.monotonic,
     )
-    recorder._preflight(time.monotonic() + 1)
-    monkeypatch.setattr(recorder, "_preflight", lambda _deadline: None)
-    events = iter((real_event(), GatedCompletion(), real_event()))
-    monkeypatch.setattr(video_module.threading, "Event", lambda: next(events))
 
-    with pytest.raises(subprocess.TimeoutExpired):
-        recorder.start(deadline=time.monotonic() + 1)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            recorder.start(deadline=1.0)
 
-    assert signal.SIGKILL in process.signals
-    assert not recorder.partial_path.exists()
+        child = captured["child"]
+        assert child.returncode is not None
+        assert captured["log"].closed is True
+        with pytest.raises(OSError) as closed_output:
+            os.fstat(captured["output_fd"])
+        assert closed_output.value.errno == errno.EBADF
+    finally:
+        child = captured.get("child")
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait()
+        log_stream = captured.get("log")
+        if log_stream is not None and not log_stream.closed:
+            log_stream.close()
+
+
+def test_process_spawned_after_start_returns_is_asynchronously_reaped(tmp_path):
+    allow_spawn = threading.Event()
+    factory_entered = threading.Event()
+    child_created = threading.Event()
+    captured = {}
+
+    def late_factory(command, **kwargs):
+        factory_entered.set()
+        assert allow_spawn.wait(1)
+        captured["output_fd"] = int(command[-1].rsplit("/", 1)[1])
+        captured["log"] = kwargs["stderr"]
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=kwargs["stderr"],
+        )
+        captured["child"] = child
+        child_created.set()
+        return child
+
+    recorder = VideoStreamRecorder(
+        tmp_path,
+        run_id=RUN_ID,
+        stream="onboard",
+        command_runner=FakeCommandRunner(),
+        process_factory=late_factory,
+    )
+    started = time.monotonic()
+
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            recorder.start(deadline=started + 0.25)
+        assert factory_entered.is_set()
+        allow_spawn.set()
+        assert child_created.wait(5)
+
+        cleanup_deadline = time.monotonic() + 5
+        while (
+            captured.get("child") is None
+            or captured["child"].returncode is None
+            or not captured["log"].closed
+        ) and time.monotonic() < cleanup_deadline:
+            time.sleep(0.01)
+        assert captured["child"].returncode is not None
+        assert captured["log"].closed is True
+        with pytest.raises(OSError) as closed_output:
+            os.fstat(captured["output_fd"])
+        assert closed_output.value.errno == errno.EBADF
+    finally:
+        allow_spawn.set()
+        child = captured.get("child")
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait()
+        log_stream = captured.get("log")
+        if log_stream is not None and not log_stream.closed:
+            log_stream.close()
 
 
 def test_start_kills_spawned_process_when_post_spawn_contract_check_fails(tmp_path):
@@ -586,21 +812,63 @@ def test_start_kills_spawned_process_when_post_spawn_contract_check_fails(tmp_pa
 
 
 def test_start_cleans_all_resources_when_spawn_returns_malformed_process(tmp_path):
-    before = len(os.listdir("/proc/self/fd"))
+    captured = {}
+
+    def malformed_factory(command, **kwargs):
+        captured["output_fd"] = int(command[-1].rsplit("/", 1)[1])
+        captured["log"] = kwargs["stderr"]
+        return object()
+
     recorder = VideoStreamRecorder(
         tmp_path,
         run_id=RUN_ID,
         stream="onboard",
         command_runner=FakeCommandRunner(),
-        process_factory=lambda _command, **_kwargs: object(),
+        process_factory=malformed_factory,
     )
 
     with pytest.raises(AttributeError):
         recorder.start(deadline=time.monotonic() + 1)
 
-    assert len(os.listdir("/proc/self/fd")) == before
+    with pytest.raises(OSError) as closed_output:
+        os.fstat(captured["output_fd"])
+    assert closed_output.value.errno == errno.EBADF
+    assert captured["log"].closed is True
     assert recorder._process is None
+    assert recorder._output_fd is None
+    assert recorder._readonly_output_fd is None
+    assert recorder._video_fd is None
+    assert recorder._root_fd is None
     assert not recorder.partial_path.exists()
+
+
+def test_startup_failure_closes_anonymous_resources_without_unlink_cleanup(
+    tmp_path, monkeypatch
+):
+    unlink_calls = []
+    real_unlink = video_module.os.unlink
+
+    def track_unlink(*args, **kwargs):
+        unlink_calls.append((args, kwargs))
+        return real_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(video_module.os, "unlink", track_unlink)
+    recorder = VideoStreamRecorder(
+        tmp_path,
+        run_id=RUN_ID,
+        stream="onboard",
+        command_runner=FakeCommandRunner(),
+        process_factory=lambda _command, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("spawn failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        recorder.start(deadline=time.monotonic() + 1)
+
+    assert unlink_calls == []
+    assert not recorder.partial_path.exists()
+    assert not recorder.final_path.exists()
 
 
 @pytest.mark.parametrize("order", [("image", "metadata"), ("metadata", "image")])
@@ -647,6 +915,30 @@ def test_frame_write_retries_until_the_complete_payload_is_written(tmp_path, out
 def test_zero_length_pipe_write_fails_closed_without_counting_frame(tmp_path):
     recorder = _recorder(tmp_path)
     recorder._process.stdin = ScriptedWriteStream((0,))
+
+    recorder.accept_image(_image())
+    with pytest.raises(RuntimeError, match="write"):
+        recorder.accept_metadata(_metadata())
+
+    assert recorder.frame_count == 0
+    assert recorder.pending_counts == (1, 1)
+
+
+@pytest.mark.parametrize("malformed_count", [-1, len(FRAME_BYTES) + 1])
+def test_malformed_pipe_write_count_fails_closed_without_counting_frame(
+    tmp_path, malformed_count
+):
+    class MalformedWriteStream:
+        closed = False
+
+        def write(self, _payload):
+            return malformed_count
+
+        def close(self):
+            self.closed = True
+
+    recorder = _recorder(tmp_path)
+    recorder._process.stdin = MalformedWriteStream()
 
     recorder.accept_image(_image())
     with pytest.raises(RuntimeError, match="write"):
@@ -741,7 +1033,7 @@ def test_start_rejects_symlinked_video_directory_without_external_write(tmp_path
     assert factory.calls == [] and list(outside.iterdir()) == []
 
 
-def test_prepare_output_failure_after_exclusive_open_cleans_partial_and_fds(
+def test_prepare_output_failure_after_anonymous_open_closes_output_and_parent_fds(
     tmp_path, monkeypatch
 ):
     recorder = VideoStreamRecorder(
@@ -750,18 +1042,18 @@ def test_prepare_output_failure_after_exclusive_open_cleans_partial_and_fds(
         stream="onboard",
         command_runner=FakeCommandRunner(),
     )
-    real_stat = video_module.os.stat
+    real_fstat = video_module.os.fstat
     before = len(os.listdir("/proc/self/fd"))
-    failed = False
+    calls = 0
 
-    def fail_partial_stat(path, *args, **kwargs):
-        nonlocal failed
-        if path == "onboard.mp4.partial" and not failed:
-            failed = True
-            raise OSError("post-open stat failed")
-        return real_stat(path, *args, **kwargs)
+    def fail_output_fstat(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("anonymous output fstat failed")
+        return real_fstat(descriptor)
 
-    monkeypatch.setattr(video_module.os, "stat", fail_partial_stat)
+    monkeypatch.setattr(video_module.os, "fstat", fail_output_fstat)
 
     with pytest.raises(RuntimeError, match="unsafe video path"):
         recorder.start(deadline=time.monotonic() + 1)
@@ -803,7 +1095,7 @@ def test_finalize_closes_stdin_validates_and_publishes_without_clobber(tmp_path)
     validator = FakeValidator()
     recorder = _recorder(tmp_path, validator=validator)
     recorder.accept_image(_image()); recorder.accept_metadata(_metadata())
-    recorder.partial_path.write_bytes(b"encoded")
+    _write_anonymous_output(recorder, b"encoded")
     deadline = time.monotonic() + 10
     result = recorder.finalize(deadline=deadline, outcome="completed")
     assert result == VideoFinalization(True, 0, (), False, True, "video finalized")
@@ -811,7 +1103,7 @@ def test_finalize_closes_stdin_validates_and_publishes_without_clobber(tmp_path)
     assert recorder.final_path.read_bytes() == b"encoded"
     assert not recorder.partial_path.exists()
     assert validator.calls == [(
-        tmp_path.resolve(), "video/onboard.mp4.partial", 1, "COMPLETED", deadline,
+        tmp_path.resolve(), "video/onboard.mp4", 1, "COMPLETED", deadline,
         validator.calls[0][5],
     )]
     assert isinstance(validator.calls[0][5], int)
@@ -820,7 +1112,7 @@ def test_finalize_closes_stdin_validates_and_publishes_without_clobber(tmp_path)
 @pytest.mark.parametrize("returncode", [1, 137])
 def test_nonzero_exit_retains_partial_and_diagnostic(tmp_path, returncode):
     recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(FakeProcess((returncode,))))
-    recorder.partial_path.write_bytes(b"partial output")
+    _write_anonymous_output(recorder, b"partial output")
     result = recorder.finalize(deadline=time.monotonic() + 10, outcome="failed")
     assert result.published is False and result.returncode == returncode
     assert recorder.partial_path.read_bytes() == b"partial output"
@@ -832,7 +1124,7 @@ def test_broken_pipe_while_closing_fails_closed_but_still_reaps_process(tmp_path
     process = FakeProcess((0,))
     process.stdin = BrokenCloseStream()
     recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(process))
-    recorder.partial_path.write_bytes(b"partial output")
+    _write_anonymous_output(recorder, b"partial output")
 
     result = recorder.finalize(deadline=time.monotonic() + 10, outcome="completed")
 
@@ -843,24 +1135,25 @@ def test_broken_pipe_while_closing_fails_closed_but_still_reaps_process(tmp_path
     assert recorder._root_fd is None and recorder._video_fd is None
 
 
-def test_stuck_process_uses_only_shared_deadline_and_bounded_term_kill(tmp_path):
+def test_unconfirmed_stuck_process_is_not_linked_after_shared_deadline(tmp_path):
     clock = FakeClock()
     process = FakeProcess(("timeout", "timeout", "timeout"), advance=clock.advance)
     recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(process),
                          monotonic=clock.monotonic)
-    recorder.partial_path.write_bytes(b"partial output")
+    _write_anonymous_output(recorder, b"partial output")
     result = recorder.finalize(deadline=9.0, outcome="aborted")
     assert result.exited is False
     assert result.signals == ("SIGTERM", "SIGKILL") and result.escalated is True
     assert sum(process.wait_timeouts) == pytest.approx(9.0)
-    assert clock.now == pytest.approx(9.0) and recorder.partial_path.exists()
+    assert clock.now == pytest.approx(9.0)
+    assert not recorder.partial_path.exists() and not recorder.final_path.exists()
     assert recorder._root_fd is None and recorder._video_fd is None
 
 
 def test_invalid_output_is_retained_as_partial(tmp_path):
     invalid = VideoValidationResult(ValidationStatus.INVALID, 7, "a" * 64, "video is corrupt")
     recorder = _recorder(tmp_path, validator=FakeValidator(invalid))
-    recorder.partial_path.write_bytes(b"partial")
+    _write_anonymous_output(recorder, b"partial")
     result = recorder.finalize(deadline=time.monotonic() + 10, outcome="failed")
     assert result.published is False and "corrupt" in result.detail
     assert recorder.partial_path.exists()
@@ -874,7 +1167,7 @@ def test_final_appearing_during_finalize_is_not_clobbered(tmp_path):
             tmp_path.joinpath("video/onboard.mp4").write_bytes(b"winner")
             return result
     recorder = _recorder(tmp_path, validator=CollidingValidator())
-    recorder.partial_path.write_bytes(b"partial")
+    _write_anonymous_output(recorder, b"partial")
     result = recorder.finalize(deadline=time.monotonic() + 10, outcome="completed")
     assert result.published is False
     assert recorder.final_path.read_bytes() == b"winner"
@@ -1083,7 +1376,7 @@ def test_configured_expected_count_is_independent_of_observed_frames(
 def test_finalize_passes_immutable_configured_count_not_observation_count(tmp_path):
     validator = FakeValidator()
     recorder = _recorder(tmp_path, validator=validator, expected_frame_count=40)
-    recorder.partial_path.write_bytes(b"encoded")
+    _write_anonymous_output(recorder, b"encoded")
 
     recorder.finalize(deadline=time.monotonic() + 10, outcome="COMPLETED")
 
@@ -1121,12 +1414,13 @@ def test_unexpected_validator_exception_returns_failure_and_closes_retained_fds(
             raise RuntimeError("validator exploded")
 
     recorder = _recorder(tmp_path, validator=ExplodingValidator())
-    recorder.partial_path.write_bytes(b"partial")
+    _write_anonymous_output(recorder, b"partial")
 
     result = recorder.finalize(deadline=time.monotonic() + 10, outcome="FAILED")
 
     assert result.published is False and "validator exploded" in result.detail
-    assert recorder._partial_fd is None and recorder._video_fd is None and recorder._root_fd is None
+    assert recorder._output_fd is None and recorder._readonly_output_fd is None
+    assert recorder._video_fd is None and recorder._root_fd is None
     assert recorder.partial_path.read_bytes() == b"partial"
 
 
@@ -1137,7 +1431,7 @@ def test_diagnostic_sink_exception_cannot_escape_finalization(tmp_path):
         process_factory=FakeProcessFactory(process),
         diagnostic_sink=lambda _item: (_ for _ in ()).throw(RuntimeError("sink")),
     )
-    recorder.partial_path.write_bytes(b"partial")
+    _write_anonymous_output(recorder, b"partial")
 
     result = recorder.finalize(deadline=time.monotonic() + 10, outcome="FAILED")
 
@@ -1205,12 +1499,13 @@ def test_unexpected_process_boundary_exception_returns_failure_and_closes_fds(
         process_factory=FakeProcessFactory(process),
         monotonic=clock.monotonic,
     )
-    recorder.partial_path.write_bytes(b"partial")
+    _write_anonymous_output(recorder, b"partial")
 
     result = recorder.finalize(deadline=9.0, outcome="FAILED")
 
     assert result.published is False and "exploded" in result.detail
-    assert recorder._partial_fd is None and recorder._video_fd is None and recorder._root_fd is None
+    assert recorder._output_fd is None and recorder._readonly_output_fd is None
+    assert recorder._video_fd is None and recorder._root_fd is None
 
 
 def test_wait_and_signal_exceptions_still_kill_and_reap_real_child(tmp_path):
@@ -1248,7 +1543,7 @@ def test_wait_and_signal_exceptions_still_kill_and_reap_real_child(tmp_path):
         return ExplodingBoundary(child)
 
     recorder = _recorder(tmp_path, process_factory=factory)
-    recorder.partial_path.write_bytes(b"partial")
+    _write_anonymous_output(recorder, b"partial")
 
     try:
         result = recorder.finalize(
@@ -1304,6 +1599,63 @@ def _require_ffmpeg():
     pytest.skip("real FFmpeg fixture runs in the artifact test image")
 
 
+def test_real_otmpfile_readonly_descriptor_link_is_exact_and_noclobber(tmp_path):
+    test_root = Path(os.environ.get("DRONE_SIM_TEST_RUN_VOLUME", tmp_path))
+    test_root.mkdir(parents=True, exist_ok=True)
+    name = f"otmpfile-capability-{os.getpid()}.mp4"
+    root_fd = os.open(test_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    writable_fd = None
+    readonly_fd = None
+    try:
+        writable_fd = os.open(
+            ".",
+            os.O_RDWR | os.O_TMPFILE | os.O_CLOEXEC,
+            0o600,
+            dir_fd=root_fd,
+        )
+        assert os.write(writable_fd, b"capability") == len(b"capability")
+        os.fsync(writable_fd)
+        os.fchmod(writable_fd, 0o444)
+        os.fsync(writable_fd)
+        readonly_fd = os.open(
+            f"/proc/self/fd/{writable_fd}", os.O_RDONLY | os.O_CLOEXEC
+        )
+        writable_identity = os.fstat(writable_fd)
+        readonly_identity = os.fstat(readonly_fd)
+        assert (writable_identity.st_dev, writable_identity.st_ino) == (
+            readonly_identity.st_dev,
+            readonly_identity.st_ino,
+        )
+        os.close(writable_fd)
+        writable_fd = None
+
+        video_module._link_descriptor_noreplace(readonly_fd, root_fd, name)
+        linked = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        assert (linked.st_dev, linked.st_ino) == (
+            readonly_identity.st_dev,
+            readonly_identity.st_ino,
+        )
+        assert linked.st_nlink == 1 and linked.st_mode & 0o777 == 0o444
+        with pytest.raises(FileExistsError):
+            video_module._link_descriptor_noreplace(readonly_fd, root_fd, name)
+    finally:
+        if readonly_fd is not None:
+            try:
+                linked = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+                retained = os.fstat(readonly_fd)
+                if (linked.st_dev, linked.st_ino) == (
+                    retained.st_dev,
+                    retained.st_ino,
+                ):
+                    os.unlink(name, dir_fd=root_fd)
+            except FileNotFoundError:
+                pass
+            os.close(readonly_fd)
+        if writable_fd is not None:
+            os.close(writable_fd)
+        os.close(root_fd)
+
+
 def test_real_four_frame_ffmpeg_fixture_probes_and_fully_decodes(tmp_path):
     _require_ffmpeg()
     raw = tmp_path / "four.rgb"; raw.write_bytes(FRAME_BYTES * 4)
@@ -1341,6 +1693,49 @@ def test_real_recorder_pipe_encodes_four_paired_frames_and_atomically_publishes(
         tmp_path, "video/onboard.mp4", expected_frame_count=4, outcome="COMPLETED",
         deadline=time.monotonic() + 15)
     assert validated.status is ValidationStatus.VALID and validated.frame_count == 4
+
+
+def test_real_encoded_video_is_playable_when_preserved_after_validation_failure(tmp_path):
+    _require_ffmpeg()
+
+    class RejectingValidator:
+        def validate(self, *_args, **_kwargs):
+            return VideoValidationResult(
+                ValidationStatus.INVALID,
+                None,
+                None,
+                "injected semantic rejection",
+            )
+
+    recorder = VideoStreamRecorder(
+        tmp_path,
+        run_id=RUN_ID,
+        stream="onboard",
+        expected_frame_count=4,
+        validator=RejectingValidator(),
+    )
+    recorder.start(deadline=time.monotonic() + 10)
+    for frame_id in range(4):
+        timestamp_ns = frame_id * 50_000_000
+        recorder.accept_image(_image(timestamp_ns))
+        recorder.accept_metadata(_metadata(timestamp_ns, frame_id))
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 15, outcome="COMPLETED"
+    )
+
+    assert result.published is False
+    assert not recorder.final_path.exists()
+    assert recorder.partial_path.is_file()
+    validated = VideoValidator().validate(
+        tmp_path,
+        "video/onboard.mp4.partial",
+        expected_frame_count=4,
+        outcome="COMPLETED",
+        deadline=time.monotonic() + 15,
+    )
+    assert validated.status is ValidationStatus.VALID
+    assert validated.frame_count == 4
 
 
 def test_real_validated_inode_truncated_before_publication_is_never_published(tmp_path):
