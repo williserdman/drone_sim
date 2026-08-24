@@ -56,6 +56,10 @@ COMPLETED_PARTIALS = {
     "logs/docker/ffmpeg-observer.log.partial",
     "logs/docker/rosbag2.log.partial",
 }
+RECOVERY_PARTIALS = {
+    "video/onboard.mp4.partial",
+    "video/observer.mp4.partial",
+}
 
 
 def _run(
@@ -287,7 +291,7 @@ def _assert_logs(bundle: Path, run_id: str) -> None:
         assert raw.stat().st_size > 0
 
 
-def _assert_inventory(bundle: Path, manifest: dict[str, Any], *, completed: bool) -> None:
+def _assert_inventory(bundle: Path, manifest: dict[str, Any]) -> None:
     paths = [item["relative_path"] for item in manifest["artifacts"]]
     assert len(paths) == len(set(paths))
     assert not any(path.startswith(".control/") or path.startswith(".status/") for path in paths)
@@ -298,8 +302,13 @@ def _assert_inventory(bundle: Path, manifest: dict[str, Any], *, completed: bool
         and path.relative_to(bundle).parts[0] not in {".control", ".status"}
     }
     assert partials <= set(paths)
-    if completed:
+    terminal_status = manifest["terminal_status"]
+    if terminal_status == "COMPLETED":
         assert partials == COMPLETED_PARTIALS
+    else:
+        assert terminal_status in {"FAILED", "ABORTED"}
+        assert COMPLETED_PARTIALS <= partials
+        assert partials <= COMPLETED_PARTIALS | RECOVERY_PARTIALS
     assert not any(path.name.startswith(".manifest.json.") for path in bundle.iterdir())
     assert not any(
         path.endswith(".partial") and path not in partials
@@ -346,7 +355,18 @@ def _assert_provenance(bundle: Path, manifest: dict[str, Any]) -> None:
     ]
 
 
-def _assert_collect_read_only(bundle: Path, terminal_status: str) -> None:
+def _canonical_terminal_result(bundle: Path) -> dict[str, Any]:
+    manifest = _manifest(bundle)
+    return {
+        "result_type": "run_result",
+        "run_id": manifest["run_id"],
+        "state": manifest["terminal_status"],
+        "reason": manifest["reason"],
+        "manifest_path": "manifest.json",
+    }
+
+
+def _assert_collect_read_only(bundle: Path, *, include_abort: bool = False) -> None:
     def snapshot() -> dict[str, tuple[int, int, bytes]]:
         return {
             path.relative_to(bundle).as_posix(): (
@@ -360,11 +380,17 @@ def _assert_collect_read_only(bundle: Path, terminal_status: str) -> None:
         }
 
     before = snapshot()
-    commands = [
-        ["status", bundle.name],
-        ["collect-results", bundle.name],
-        ["collect-results", bundle.name],
-    ]
+    commands = []
+    if include_abort:
+        commands.append(["abort", bundle.name])
+    commands.extend(
+        [
+            ["collect-results", bundle.name],
+            ["collect-results", bundle.name],
+            ["status", bundle.name],
+        ]
+    )
+    expected = _canonical_terminal_result(bundle)
     for command in commands:
         result = _run(
             [
@@ -377,8 +403,40 @@ def _assert_collect_read_only(bundle: Path, terminal_status: str) -> None:
             ]
         )
         assert result.returncode == 0, result.stderr
-        assert _parse_single(result)["state"] == terminal_status
+        assert _parse_single(result) == expected
     assert snapshot() == before
+
+
+def _assert_video_semantics(video: dict[str, Any], required_record: dict[str, Any]) -> None:
+    frame_count = video["recorder_frame_count"]
+    assert frame_count is None or (
+        isinstance(frame_count, int)
+        and not isinstance(frame_count, bool)
+        and frame_count >= 0
+    )
+    if frame_count:
+        assert video["probe_ok"] is True
+        assert video["decode_ok"] is True
+        assert len(video["streams"]) == 1
+        assert video["streams"][0] == {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "pix_fmt": "yuv420p",
+            "width": 320,
+            "height": 240,
+            "avg_frame_rate": "20/1",
+            "nb_read_frames": str(frame_count),
+        }
+        assert len(video["decoded_frame_hashes"]) == frame_count
+        assert video["validator"] == {
+            "status": "valid",
+            "detail": "valid H.264 yuv420p 20-FPS video with full decode",
+            "frame_count": frame_count,
+        }
+        return
+    assert required_record["validation"] in {"missing", "invalid"}
+    assert video["recorder_status"] in {"missing", "invalid"}
+    assert video["validator"]["status"] in {"missing", "invalid"}
 
 
 def _assert_completed_bundle(bundle: Path) -> dict[str, Any]:
@@ -399,24 +457,14 @@ def _assert_completed_bundle(bundle: Path) -> dict[str, Any]:
     assert scoring["scoring_checksum"] == manifest["scoring"]["scoring_checksum"]
     _assert_manifest_hashes(bundle, manifest)
     _assert_logs(bundle, manifest["run_id"])
-    _assert_inventory(bundle, manifest, completed=True)
+    _assert_inventory(bundle, manifest)
     _assert_provenance(bundle, manifest)
 
     inspected = _inspect(bundle)
-    for video in inspected["videos"].values():
-        assert video["probe_ok"] and video["decode_ok"]
-        assert len(video["streams"]) == 1
-        assert video["streams"][0] == {
-            "codec_type": "video",
-            "codec_name": "h264",
-            "pix_fmt": "yuv420p",
-            "width": 320,
-            "height": 240,
-            "avg_frame_rate": "20/1",
-            "nb_read_frames": "40",
-        }
-        assert len(video["decoded_frame_hashes"]) == 40
-        assert video["validator"]["status"] == "valid"
+    records = {item["relative_path"]: item for item in manifest["artifacts"]}
+    for stream, video in inspected["videos"].items():
+        assert video["recorder_frame_count"] == 40
+        _assert_video_semantics(video, records[f"video/{stream}.mp4"])
 
     bag = inspected["bag"]
     assert bag["structurally_readable"] is True
@@ -477,7 +525,7 @@ def test_completed_runs_are_semantically_identical_across_wall_delays(
         inspected = [_assert_completed_bundle(bundle) for bundle in runs]
         assert _normalized(inspected[0]) == _normalized(inspected[1])
         for bundle in runs:
-            _assert_collect_read_only(bundle, "COMPLETED")
+            _assert_collect_read_only(bundle)
             _assert_clean(bundle.name)
     finally:
         for bundle in runs:
@@ -504,13 +552,12 @@ def test_observer_encoder_failure_preserves_readable_recovery_bundle(
         assert "video/observer.mp4" in manifest["incomplete_paths"]
         _assert_manifest_hashes(bundle, manifest)
         _assert_logs(bundle, bundle.name)
-        _assert_inventory(bundle, manifest, completed=False)
+        _assert_inventory(bundle, manifest)
         _assert_provenance(bundle, manifest)
         inspected = _inspect(bundle)
         assert inspected["bag"]["structurally_readable"] is True
-        onboard = inspected["videos"]["onboard"]
-        assert onboard["probe_ok"] and onboard["decode_ok"]
-        assert len(onboard["decoded_frame_hashes"]) > 0
+        for stream, video in inspected["videos"].items():
+            _assert_video_semantics(video, records[f"video/{stream}.mp4"])
         observer_partials = {
             item["relative_path"]
             for item in manifest["artifacts"]
@@ -518,7 +565,7 @@ def test_observer_encoder_failure_preserves_readable_recovery_bundle(
         }
         assert observer_partials
         assert all((bundle / path).is_file() for path in observer_partials)
-        _assert_collect_read_only(bundle, "FAILED")
+        _assert_collect_read_only(bundle)
         _assert_clean(bundle.name)
     finally:
         if bundle is not None:
@@ -590,31 +637,20 @@ def test_abort_is_durable_idempotent_and_preserves_readable_bundle(
 
         manifest_path = bundle / "manifest.json"
         immutable = manifest_path.read_bytes()
-        second_abort = _run(
-            ["uv", "run", "drone-sim", "abort", bundle.name, "--output-root", str(output_root)]
-        )
-        first_collect = _run(
-            ["uv", "run", "drone-sim", "collect-results", bundle.name, "--output-root", str(output_root)]
-        )
-        second_collect = _run(
-            ["uv", "run", "drone-sim", "collect-results", bundle.name, "--output-root", str(output_root)]
-        )
-        terminal_facts = [_parse_single(value) for value in (second_abort, first_collect, second_collect)]
-        assert all(value["state"] == "ABORTED" for value in terminal_facts)
+        _assert_collect_read_only(bundle, include_abort=True)
         assert manifest_path.read_bytes() == immutable
 
         manifest = _manifest(bundle)
         assert manifest["terminal_status"] == "ABORTED"
         _assert_manifest_hashes(bundle, manifest)
         _assert_logs(bundle, bundle.name)
-        _assert_inventory(bundle, manifest, completed=False)
+        _assert_inventory(bundle, manifest)
         _assert_provenance(bundle, manifest)
         inspected = _inspect(bundle)
         assert inspected["bag"]["structurally_readable"] is True
-        for video in inspected["videos"].values():
-            if video["decoded_frame_hashes"]:
-                assert video["probe_ok"] and video["decode_ok"]
-        _assert_collect_read_only(bundle, "ABORTED")
+        records = {item["relative_path"]: item for item in manifest["artifacts"]}
+        for stream, video in inspected["videos"].items():
+            _assert_video_semantics(video, records[f"video/{stream}.mp4"])
         _assert_clean(bundle.name)
     finally:
         if process.poll() is None:
@@ -626,3 +662,102 @@ def test_abort_is_durable_idempotent_and_preserves_readable_bundle(
                 process.wait(timeout=10)
         if bundle is not None:
             _cleanup_project(bundle.name)
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "logs/docker/orchestration-runtime.log.partial",
+        "logs/orchestration.jsonl.partial",
+        "logs/orchestration-host.jsonl.partial",
+        "logs/docker/unknown-recorder.log.partial",
+        "unknown.partial",
+    ],
+    ids=(
+        "raw-log-publication",
+        "structured-log-publication",
+        "host-source-after-capture",
+        "unknown-recorder",
+        "unknown",
+    ),
+)
+def test_terminal_inventory_rejects_non_recorder_partial_candidates(
+    tmp_path: Path, relative_path: str
+) -> None:
+    bundle = tmp_path / "bundle"
+    candidate = bundle / relative_path
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_bytes(b"leftover")
+    manifest = {
+        "terminal_status": "FAILED",
+        "artifacts": [{"relative_path": relative_path}],
+    }
+
+    with pytest.raises(AssertionError):
+        _assert_inventory(bundle, manifest)
+
+
+def test_terminal_inventory_rejects_manifest_publication_candidate(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    artifacts = []
+    for relative_path in COMPLETED_PARTIALS:
+        candidate = bundle / relative_path
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_bytes(b"recorder diagnostic")
+        artifacts.append({"relative_path": relative_path})
+    (bundle / ".manifest.json.fixed.tmp").write_bytes(b"candidate")
+
+    with pytest.raises(AssertionError):
+        _assert_inventory(
+            bundle, {"terminal_status": "ABORTED", "artifacts": artifacts}
+        )
+
+
+@pytest.mark.parametrize("terminal_status", ["FAILED", "ABORTED"])
+def test_terminal_inventory_allows_only_inventoried_recorder_recovery_partials(
+    tmp_path: Path, terminal_status: str
+) -> None:
+    bundle = tmp_path / "bundle"
+    artifacts = []
+    for relative_path in COMPLETED_PARTIALS | {"video/observer.mp4.partial"}:
+        candidate = bundle / relative_path
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_bytes(b"frozen recorder output")
+        artifacts.append({"relative_path": relative_path})
+
+    _assert_inventory(
+        bundle,
+        {"terminal_status": terminal_status, "artifacts": artifacts},
+    )
+
+
+def test_positive_recorder_frame_count_requires_full_video_semantics() -> None:
+    corrupt_positive = {
+        "recorder_frame_count": 5,
+        "probe_ok": False,
+        "decode_ok": True,
+        "streams": [],
+        "decoded_frame_hashes": [],
+        "validator": {"status": "invalid", "frame_count": None},
+    }
+    record = {"validation": "invalid"}
+
+    with pytest.raises(AssertionError):
+        _assert_video_semantics(corrupt_positive, record)
+
+
+def test_zero_recorder_frame_count_requires_explicit_invalid_or_missing_record() -> None:
+    zero_frame = {
+        "recorder_frame_count": 0,
+        "recorder_status": "invalid",
+        "probe_ok": False,
+        "decode_ok": False,
+        "streams": [],
+        "decoded_frame_hashes": [],
+        "validator": {"status": "invalid", "frame_count": None},
+    }
+
+    with pytest.raises(AssertionError):
+        _assert_video_semantics(zero_frame, {"validation": "valid"})
+    _assert_video_semantics(zero_frame, {"validation": "invalid"})

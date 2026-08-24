@@ -173,7 +173,7 @@ Each representative project had 0 Compose-labeled containers and 0 `<project>_de
 
 ## Companion status
 
-The exact assigned-worktree command `git -C companion/comp2026 status --short` exits 128 because this linked worktree contains only the tracked companion interface documents and omits the separately nested, untracked repository. The corresponding read-only command at `/home/willis/projects/drone_sim/companion/comp2026` exits 0 with no output; that nested repository remains at `b903eddb56ff1319be219cb1edd84034dba9f4b4`. No Task 8 change touched it.
+For the exact assigned-worktree command only, verification temporarily linked the otherwise absent untracked path `companion/comp2026` to `/home/willis/projects/drone_sim/companion/comp2026`. The exact command `git -C companion/comp2026 status --short` exited 0 with no output. The temporary symlink was then removed and is absent from the worktree. No Task 8 change modified, copied, committed, or pushed the companion repository.
 
 ## Self-review
 
@@ -190,3 +190,100 @@ The exact assigned-worktree command `git -C companion/comp2026 status --short` e
 ## Exact non-claims
 
 Phase 2 uses synthetic Gazebo and scoring fixtures. Task 8 does not claim Gazebo Harmonic physics, a Gazebo-authoritative clock, native Gazebo state, ArduPilot lockstep, companion behavior, electromagnet physics, mission scoring, or maximum-score acceptance. Fixture `0.0 / 0.0` proves only lifecycle/artifact infrastructure and is explicitly not the eventual maximum-score goal.
+
+## Fix round 1 — five Important findings
+
+### RED evidence
+
+Fail-closed scoring was first expressed through whole-controller cases for absent and malformed provenance plus non-upgrade cases for already requested failure/abort:
+
+```text
+$ uv run pytest -q orchestration/tests/test_controller.py -k 'scoring_provenance'
+FF..                                                                     [100%]
+2 failed, 2 passed, 58 deselected in 1.87s
+```
+
+The absent case did reach `FAILED`, but retained reason `mission_complete`; the malformed case incorrectly committed `COMPLETED`. This isolated the missing controller decision after `_score_metadata` returned its invalid sentinel.
+
+The exact partial and positive-frame predicates were then added as negative acceptance tests before changing the helpers:
+
+```text
+$ DRONE_SIM_PHASE2_IMAGES_BUILT=1 uv run pytest -q tests/integration/test_phase2_compose.py -k 'terminal_inventory or positive_recorder'
+FFFFF.F                                                                  [100%]
+6 failed, 1 passed, 3 deselected in 0.54s
+```
+
+Failed mode admitted raw-log, structured-log, host-source, unknown-recorder, and unknown partials. The corrupt-positive video case also had no recorder-local semantic assertion helper. The already-existing manifest-candidate rejection was the one passing negative.
+
+### Minimal fixes
+
+- After strict `_score_metadata` parsing, the controller now changes only requested `COMPLETED` to `FAILED/scoring_provenance_invalid` when any required score/checksum fact is absent. Existing `FAILED` and `ABORTED` requests keep their state and original reason. Strict lowercase checksum and safe, unique evidence-path validation are unchanged; valid fixture `0.0 / 0.0` remains valid.
+- Terminal inventory now requires the three exact frozen recorder diagnostics in every terminal mode. Only failed/aborted modes may additionally retain `video/onboard.mp4.partial` or `video/observer.mp4.partial`, and those paths must be inventoried. Manifest candidates, DockerLogCapture raw/structured publication candidates, the consumed host source, and every unknown partial fail the gate.
+- Read-only CLI checks derive one canonical result from the committed manifest and require exit 0 plus exact equality of all fixed result fields (`result_type`, run ID, state, reason, and manifest path) for every repeated abort/collect/status command. Immutable output snapshots remain exact.
+- The container inspector now reads each video count from recorder-owned `.status/artifacts-final.json`. A positive count unconditionally requires FFprobe success, strict full decode, exact H.264/yuv420p/320×240/20-FPS facts, production validator success, and equality with the decoded-hash count. Zero/missing counts require explicit missing/invalid recorder and manifest records. A corrupt-positive negative cannot bypass the assertions.
+
+### GREEN commands and exact output
+
+| Command | Output | Exit |
+| --- | --- | ---: |
+| `uv run pytest -q orchestration/tests/test_controller.py -k 'scoring_provenance or score_metadata'` | `13 passed, 49 deselected in 3.68s` | 0 |
+| `DRONE_SIM_PHASE2_IMAGES_BUILT=1 uv run pytest -q tests/integration/test_phase2_compose.py -k 'terminal_inventory or recorder_frame_count'` | `10 passed, 3 deselected in 0.31s` | 0 |
+| `uv run pytest -q orchestration/tests/test_controller.py` | `62 passed in 15.16s` | 0 |
+| `make test-phase2` | one seven-image build, then `13 passed in 162.25s` | 0 |
+| independent container inspection of all four bundles | four one-line JSON summaries; every positive video count matched probe/decode/validator/hash facts and every bag structurally opened | 0 |
+| repeated public abort, collect twice, and status against the committed aborted bundle | four identical canonical `ABORTED/operator_abort/manifest.json` results; manifest hash unchanged | 0 |
+| `make test-unit` | `553 passed, 10 skipped in 27.38s` | 0 |
+| `make test-foundation` | `3 passed in 5.20s` | 0 |
+| `uv run python -m py_compile tests/integration/test_phase2_compose.py tests/phase2/inspect_bundle.py orchestration/src/orchestration/controller.py` | no output | 0 |
+| `git -C companion/comp2026 status --short` with the required temporary verification link | no output | 0 |
+
+The temporary companion link was removed immediately after the exact command; `test ! -e companion/comp2026 && test ! -L companion/comp2026` then exited 0.
+
+### Real terminal evidence
+
+| Mode | Run ID | Exit | Bundle | Manifest SHA-256 | Reason |
+| --- | --- | ---: | --- | --- | --- |
+| completed, 0 ms | `638d540f-5b34-4d4e-8696-933cd10501b6` | 0 | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/638d540f-5b34-4d4e-8696-933cd10501b6` | `c8cd458ccb9a4d4e545f5ba9fe133a0dd6862fda85e611337d1e96bd22deea25` | `mission_complete` |
+| completed, 17 ms | `dd0ae4cf-89b1-4c90-82aa-8da8fa0894e2` | 0 | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/dd0ae4cf-89b1-4c90-82aa-8da8fa0894e2` | `d274addacf526af576efdfe140cbfa57ae7026bf09848e2c9d74ad7f0f3d9fa1` | `mission_complete` |
+| failed observer | `2d2741fc-5487-4783-8669-ca3f293ccedc` | 1 | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/2d2741fc-5487-4783-8669-ca3f293ccedc` | `82bb40e40122eb3436b7030cb8a8591baaa53d8f87c524e92df4ac179a9dd1d6` | `observer encoder fault injected after frame 4` |
+| aborted from durable RUNNING | `c713c2d1-878b-43a4-84b5-2cfa4ee2e453` | 130 | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/c713c2d1-878b-43a4-84b5-2cfa4ee2e453` | `864687131bac9a53dab274242a43f5a77a22d07c563e0598c7191dbcefe8df06` | `operator_abort` |
+
+Every manifest had 25 artifact records, seven exact structured logs, seven nonempty raw logs, the declared `0.0 / 0.0` scoring fixture, and scoring checksum `5b227e82e9217c34c342e37d6ce2872edc28c63cded78e38d3698c673ddefedb`. Completed bags had the exact ten-topic counts: clock 41, run state 4, artifact status 1, ground truth/images/metadata 40, and scenario/score 1. Completed videos were 40/40; failed videos were 6/5; aborted videos were 10/10. Every count was recorder-local and exactly matched decoded hashes. The failed and aborted bags were structurally readable and correctly strict-invalid.
+
+The final manifest image mapping was:
+
+```text
+drone-sim-orchestration-runtime:phase2       d42a4503194c1ad4e7dfbb1aa53ea42efbb9ac9b4bc7dae8dad6c626dc2dd2e3
+drone-sim-artifacts-runtime:phase2           b2f719a243b1ada11267183038db7d81ead6860a7fe2f2c0cef83599b0c506f4
+drone-sim-synthetic-companion:phase2         90dc630531425c43d17a9d821cbfedb62f5e347ae89ad3fececfa78f8cd44ffe
+drone-sim-synthetic-ardupilot-sitl:phase2    c3ac9f20eaec2ccf661130ebca9ac9a1fc40b30d5d57417b0154f7043f0f4781
+drone-sim-synthetic-gazebo:phase2            8522f693b8b68c176cd26ef053ef5a3869cb26ddab20022630ce7e36473dc4e3
+drone-sim-synthetic-electromagnet:phase2     7adbb1f7845dc5166a4628160970e43baabcd6196b92a01cdbabf6d2471f6802
+drone-sim-synthetic-scorekeeper:phase2       62e945f5563bbd122efc1c6556e60888fcce71549d1537387e4ea62272bc2dae
+```
+
+All four bundles retained only the exact three frozen recorder diagnostics; the allowed recovery-video set was exercised synthetically in both failed and aborted policy tests. All four projects had no labeled containers, and exact network inspection returned exit 1 for every `<project>_default` network. Cleanup remained in `finally` paths.
+
+### Fix-round self-review and exact non-claims
+
+The five Important findings are covered directly: completion-only score downgrade; exact mode-specific partial policy; exit/result/immutability idempotence; recorder-local positive/zero video predicates; and the exact green worktree-relative companion command with no persistent link. The three explicitly deferred minors were not expanded in this round. No companion content or machine configuration changed.
+
+This fix round remains synthetic lifecycle/artifact acceptance only. It does not claim Gazebo Harmonic, real ArduPilot, mission behavior, electromagnet physics, real scoring, maximum-score success, or wall-derived simulation time. The `0.0 / 0.0` result is only the Phase 2 infrastructure fixture and is not the eventual maximum-score goal.
+
+### Final pre-commit verification
+
+After the last formatting and evidence edits, verification was repeated without rebuilding the already stable images:
+
+```text
+$ DRONE_SIM_PHASE2_IMAGES_BUILT=1 uv run pytest -q tests/integration/test_phase2_compose.py
+.............                                                            [100%]
+13 passed in 119.74s (0:01:59)
+
+$ make test-unit
+======================= 553 passed, 10 skipped in 19.33s =======================
+
+$ make test-foundation
+============================== 3 passed in 4.23s ===============================
+```
+
+The combined configuration, compile, and whitespace command (`docker compose config --quiet`; profiled config; `py_compile`; `git diff --check`) exited 0 with no additional output. The exact temporary-link companion command was repeated at exit 0/no output, and link removal plus absence checks again exited 0.

@@ -52,13 +52,37 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _video_facts(bundle: Path, stream: str) -> dict[str, Any]:
+def _video_facts(
+    bundle: Path,
+    stream: str,
+    *,
+    terminal_status: str,
+    recorder_record: dict[str, Any] | None,
+) -> dict[str, Any]:
     relative = f"video/{stream}.mp4"
     path = bundle / relative
+    recorder_status = (
+        recorder_record.get("status") if isinstance(recorder_record, dict) else "missing"
+    )
+    recorder_semantic = (
+        recorder_record.get("semantic") if isinstance(recorder_record, dict) else None
+    )
+    frame_count = (
+        recorder_semantic.get("frame_count")
+        if isinstance(recorder_semantic, dict)
+        else None
+    )
+    trustworthy_frame_count = (
+        isinstance(frame_count, int)
+        and not isinstance(frame_count, bool)
+        and frame_count >= 0
+    )
     if not path.is_file():
         return {
             "relative_path": relative,
             "exists": False,
+            "recorder_status": recorder_status,
+            "recorder_frame_count": frame_count,
             "probe_ok": False,
             "decode_ok": False,
             "streams": [],
@@ -110,14 +134,15 @@ def _video_facts(bundle: Path, stream: str) -> dict[str, Any]:
         fields = [item.strip() for item in line.split(",")]
         if len(fields) == 6 and len(fields[-1]) == 64:
             hashes.append(fields[-1])
-    expected = len(hashes) if hashes else 1
-    validated = VideoValidator().validate(
-        bundle,
-        relative,
-        expected_frame_count=expected,
-        outcome="ABORTED" if expected != 40 else "COMPLETED",
-        deadline=time.monotonic() + 60,
-    )
+    validated = None
+    if trustworthy_frame_count:
+        validated = VideoValidator().validate(
+            bundle,
+            relative,
+            expected_frame_count=frame_count,
+            outcome=terminal_status,
+            deadline=time.monotonic() + 60,
+        )
     selected_streams = []
     for value in streams:
         selected_streams.append(
@@ -137,14 +162,20 @@ def _video_facts(bundle: Path, stream: str) -> dict[str, Any]:
     return {
         "relative_path": relative,
         "exists": True,
+        "recorder_status": recorder_status,
+        "recorder_frame_count": frame_count,
         "probe_ok": probe.returncode == 0,
         "decode_ok": framehash.returncode == 0,
         "streams": selected_streams,
         "decoded_frame_hashes": hashes,
         "validator": {
-            "status": validated.status.value,
-            "detail": validated.detail,
-            "frame_count": validated.frame_count,
+            "status": validated.status.value if validated is not None else "invalid",
+            "detail": (
+                validated.detail
+                if validated is not None
+                else "recorder frame count is missing or invalid"
+            ),
+            "frame_count": validated.frame_count if validated is not None else None,
         },
     }
 
@@ -275,10 +306,27 @@ def _bag_facts(bundle: Path, run_id: str) -> dict[str, Any]:
 def inspect(bundle: Path) -> dict[str, Any]:
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     run_id = manifest["run_id"]
+    try:
+        artifact_report = json.loads(
+            (bundle / ".status/artifacts-final.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        artifact_report = {}
+    records = {
+        item["relative_path"]: item
+        for item in artifact_report.get("records", [])
+        if isinstance(item, dict) and isinstance(item.get("relative_path"), str)
+    }
     return {
         "run_id": run_id,
         "videos": {
-            stream: _video_facts(bundle, stream) for stream in ("onboard", "observer")
+            stream: _video_facts(
+                bundle,
+                stream,
+                terminal_status=manifest["terminal_status"],
+                recorder_record=records.get(f"video/{stream}.mp4"),
+            )
+            for stream in ("onboard", "observer")
         },
         "bag": _bag_facts(bundle, run_id),
     }

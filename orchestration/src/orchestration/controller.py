@@ -1125,6 +1125,17 @@ class RunController:
                         requested = "FAILED"
                         reason = "finalization_deadline"
                         primary = primary or TerminalCause("provenance", reason)
+                if (
+                    requested == "COMPLETED"
+                    and (
+                        achieved is None
+                        or maximum is None
+                        or scoring_checksum is None
+                    )
+                ):
+                    requested = "FAILED"
+                    reason = "scoring_provenance_invalid"
+                    primary = primary or TerminalCause("provenance", reason)
                 if (sim_start_ns is None) != (sim_end_ns is None):
                     sim_start_ns = None
                     sim_end_ns = None

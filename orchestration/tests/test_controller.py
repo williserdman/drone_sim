@@ -99,7 +99,9 @@ def _file_facts(path: Path) -> tuple[int, str]:
     return len(payload), hashlib.sha256(payload).hexdigest()
 
 
-def _complete_runtime_outputs(run_directory: Path, *, report_mutator=None) -> None:
+def _complete_runtime_outputs(
+    run_directory: Path, *, report_mutator=None, score_mutator=None
+) -> None:
     scoring_checksum = "c" * 64
     payloads = {
         "gazebo/server.log": b"fixture gazebo log",
@@ -121,6 +123,8 @@ def _complete_runtime_outputs(run_directory: Path, *, report_mutator=None) -> No
         target = run_directory / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
+    if score_mutator is not None:
+        score_mutator(run_directory / "scoring/result.json")
     (run_directory / "gazebo/state").mkdir(parents=True, exist_ok=True)
     (run_directory / "gazebo/state/state.json").write_bytes(b"{}")
     (run_directory / "rosbag").mkdir(parents=True, exist_ok=True)
@@ -267,6 +271,7 @@ class FakeCompose:
             "terminal-notified",
         ),
         report_mutator=None,
+        score_mutator=None,
         up_error: Exception | None = None,
         down_error: Exception | None = None,
         interrupt_sleep=None,
@@ -275,6 +280,7 @@ class FakeCompose:
         self.trace = trace
         self.statuses = statuses
         self.report_mutator = report_mutator
+        self.score_mutator = score_mutator
         self.up_error = up_error
         self.down_error = down_error
         self.down_timeouts: list[float] = []
@@ -284,7 +290,11 @@ class FakeCompose:
         self.trace.append("compose up")
         if self.up_error:
             raise self.up_error
-        _complete_runtime_outputs(self.run_directory, report_mutator=self.report_mutator)
+        _complete_runtime_outputs(
+            self.run_directory,
+            report_mutator=self.report_mutator,
+            score_mutator=self.score_mutator,
+        )
         documents = {
             "artifacts-ready": {"run_id": RUN_ID, "ready": True},
             "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
@@ -369,6 +379,7 @@ def _controller(
     *,
     statuses=None,
     report_mutator=None,
+    score_mutator=None,
     capture_failure=False,
     up_error=None,
     down_error=None,
@@ -391,6 +402,7 @@ def _controller(
             trace,
             statuses=FakeCompose.__init__.__kwdefaults__["statuses"] if statuses is None else statuses,
             report_mutator=report_mutator,
+            score_mutator=score_mutator,
             up_error=up_error,
             down_error=down_error,
         )
@@ -765,6 +777,82 @@ def test_completed_controller_executes_frozen_order_commits_manifest_then_tears_
         and json.loads(line)["module"] == "orchestration"
         for line in host_lines
     )
+
+
+@pytest.mark.parametrize(
+    "score_mutator",
+    [
+        lambda path: path.unlink(),
+        lambda path: path.write_bytes(b"{malformed"),
+    ],
+    ids=("absent", "malformed"),
+)
+def test_completed_request_fails_closed_without_valid_scoring_provenance(
+    tmp_path, score_mutator
+):
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path, score_mutator=score_mutator
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    manifest = json.loads(
+        (tmp_path / "runs" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert result.state == "FAILED"
+    assert result.reason == "scoring_provenance_invalid"
+    assert manifest["terminal_status"] == "FAILED"
+    assert manifest["reason"] == "scoring_provenance_invalid"
+
+
+def test_invalid_scoring_provenance_never_changes_requested_failure(tmp_path):
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        statuses=(
+            "artifacts-ready",
+            "runtime-running",
+            "runtime-frozen",
+            "terminal-notified",
+        ),
+        score_mutator=lambda path: path.write_bytes(b"{malformed"),
+    )
+
+    result = controller.start(
+        _template(tmp_path, max_wall_seconds=2, finalization_wall_seconds=5)
+    )
+
+    manifest = json.loads(
+        (tmp_path / "runs" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert result.state == "FAILED"
+    assert result.reason == "clock_source_stall"
+    assert manifest["terminal_status"] == "FAILED"
+    assert manifest["reason"] == "clock_source_stall"
+
+
+def test_invalid_scoring_provenance_never_changes_requested_abort(tmp_path):
+    class AbortingStore(TraceStore):
+        def write_operator_status(self, status):
+            path = super().write_operator_status(status)
+            if status.state == "RUNNING":
+                self.request_finalization(RUN_ID, "ABORTED", "operator_abort")
+            return path
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        store_type=AbortingStore,
+        score_mutator=lambda path: path.write_bytes(b"{malformed"),
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    manifest = json.loads(
+        (tmp_path / "runs" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert result.state == "ABORTED"
+    assert result.reason == "operator_abort"
+    assert manifest["terminal_status"] == "ABORTED"
+    assert manifest["reason"] == "operator_abort"
 
 
 def test_runtime_running_signal_is_validated_before_operator_reports_running(tmp_path):

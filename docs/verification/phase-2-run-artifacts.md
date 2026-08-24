@@ -1,8 +1,8 @@
 # Phase 2 synthetic run-artifact verification
 
-Tested implementation commit: `a08f52769f0eb3164f7c80f436df977356bfc442`
+Verified tree: Task 8 fix round 1 changes atop `7a39758352b542104bc679af2af1dd0839b1263f`
 
-Verification window: 2026-08-24 08:42:53–08:54:20 UTC
+Verification window: 2026-08-24 09:15–09:33 UTC
 
 Platform: local Docker Engine, ROS 2 Jazzy runtime images, host `uv` test environment
 
@@ -10,58 +10,59 @@ Platform: local Docker Engine, ROS 2 Jazzy runtime images, host `uv` test enviro
 
 | Command | Exit | Result |
 | --- | ---: | --- |
-| `make test` | 0 | 549 passed, 10 expected host skips; 3 Phase 1 passed; 3 Phase 2 passed |
+| `make test-phase2` | 0 | one stable seven-image build; 13 passed in 162.25 s, comprising three public-CLI terminal tests and ten negative/allow-policy assertions |
+| `DRONE_SIM_PHASE2_IMAGES_BUILT=1 uv run pytest -q tests/integration/test_phase2_compose.py` | 0 | final no-rebuild verification: 13 passed in 119.74 s |
+| `make test-unit` | 0 | 553 passed, 10 expected host skips in 27.38 s |
+| `make test-foundation` | 0 | 3 passed in 5.20 s |
 | `docker compose config --quiet` | 0 | no output |
 | `docker compose --profile phase2 config --quiet` | 0 | no output |
 | `git diff --check` | 0 | no output |
-| `git -C companion/comp2026 status --short` | 128 | assigned worktree omits the untracked nested repository |
-| `git -C /home/willis/projects/drone_sim/companion/comp2026 status --short` | 0 | no output; main-worktree nested repository is clean at `b903eddb56ff1319be219cb1edd84034dba9f4b4` |
+| `uv run python -m py_compile tests/integration/test_phase2_compose.py tests/phase2/inspect_bundle.py orchestration/src/orchestration/controller.py` | 0 | no output |
+| `git -C companion/comp2026 status --short` | 0 | no output |
 
-`test-phase2` issued one `docker compose --profile phase2 build`, then ran every CLI case with `DRONE_SIM_PHASE2_IMAGES_BUILT=1`; production Compose startup remained `up --detach --no-build`.
+For the exact companion command only, verification created the temporary untracked symlink `companion/comp2026` to `/home/willis/projects/drone_sim/companion/comp2026`, ran the command above, and removed the symlink. The linked companion repository was not modified, copied, committed, or pushed; the worktree has no remaining link.
+
+`test-phase2` built once before all cases. Every production start continued to use `up --detach --no-build`.
 
 ## Stable image evidence
 
 | Image | Local immutable image ID |
 | --- | --- |
-| `drone-sim-orchestration-runtime:phase2` | `9f2abc95b37c3dd8dff10fbd237fcfdd52f1e6cabad0016cd158a0ad9165acc5` |
-| `drone-sim-artifacts-runtime:phase2` | `4bea948cb892487c3a32a6779df93c478be246bcc30461e4a6c2433d8440e901` |
-| `drone-sim-synthetic-companion:phase2` | `64d2cec58ad57157c939d27160f88d200ded722eafc00124b4a871f3f73a8efe` |
-| `drone-sim-synthetic-ardupilot-sitl:phase2` | `d60b7f2fa0ad65d961ea781b8d9bd6b9062475c78e56463111815a0222135dc3` |
-| `drone-sim-synthetic-gazebo:phase2` | `95d7451a1f858f6fa953b244dc4ace5d3eb5314a78c36f3df2c12ed6a7157a8d` |
-| `drone-sim-synthetic-electromagnet:phase2` | `287e1e019c387e8dee92adcd63667e6334d2e00ac970fc857e5912a67cfd9ce3` |
-| `drone-sim-synthetic-scorekeeper:phase2` | `9fbdccfbba52ad433863c6ef0d63eaadac8bde2a8c09c459e606bef9ca42cef3` |
+| `drone-sim-orchestration-runtime:phase2` | `d42a4503194c1ad4e7dfbb1aa53ea42efbb9ac9b4bc7dae8dad6c626dc2dd2e3` |
+| `drone-sim-artifacts-runtime:phase2` | `b2f719a243b1ada11267183038db7d81ead6860a7fe2f2c0cef83599b0c506f4` |
+| `drone-sim-synthetic-companion:phase2` | `90dc630531425c43d17a9d821cbfedb62f5e347ae89ad3fececfa78f8cd44ffe` |
+| `drone-sim-synthetic-ardupilot-sitl:phase2` | `c3ac9f20eaec2ccf661130ebca9ac9a1fc40b30d5d57417b0154f7043f0f4781` |
+| `drone-sim-synthetic-gazebo:phase2` | `8522f693b8b68c176cd26ef053ef5a3869cb26ddab20022630ce7e36473dc4e3` |
+| `drone-sim-synthetic-electromagnet:phase2` | `7adbb1f7845dc5166a4628160970e43baabcd6196b92a01cdbabf6d2471f6802` |
+| `drone-sim-synthetic-scorekeeper:phase2` | `62e945f5563bbd122efc1c6556e60888fcce71549d1537387e4ea62272bc2dae` |
+
+Each representative manifest records the same seven-name digest mapping.
 
 ## Terminal bundles
 
-| Terminal | Run ID | Bundle | Manifest SHA-256 | Wall duration | FINALIZING to manifest |
-| --- | --- | --- | --- | ---: | ---: |
-| completed, zero delay | `985b5fd9-30f0-469d-bbed-c2f37d6f1180` | `/tmp/pytest-of-willis/pytest-4552/phase2-output0/985b5fd9-30f0-469d-bbed-c2f37d6f1180` | `4890340e9ee4cb32ddc74afe213fb44e84a8b3460fd1ea1916d181756f2fcea3` | 22.119050 s | 6.325604 s |
-| completed, 17 ms delay | `f0dd011e-1380-4bf9-bdc4-e42132f03699` | `/tmp/pytest-of-willis/pytest-4552/phase2-output0/f0dd011e-1380-4bf9-bdc4-e42132f03699` | `efbbb1a0f5a9613d000e7fd3ccf1e7942ee16c5faab07526a3a45af9baf79219` | 22.620563 s | acceptance-bounded |
-| failed, observer fault | `d8649952-bba5-4bc5-8287-82eb39848c9f` | `/tmp/pytest-of-willis/pytest-4552/phase2-output0/d8649952-bba5-4bc5-8287-82eb39848c9f` | `6ed3db8cc7b578d796361be3d62abc1fc204b9b59641d568b4d9c35d8233cb9a` | 19.713515 s | 7.374521 s |
-| aborted from durable RUNNING | `e8e6c620-ffa5-44a8-aa23-e46c874a5c5a` | `/tmp/pytest-of-willis/pytest-4552/phase2-output0/e8e6c620-ffa5-44a8-aa23-e46c874a5c5a` | `b7304f85fabaaea788304cf33540ce53864ca6798c8b90b38328df2b4da7799c` | 24.487924 s | 8.165164 s |
+| Terminal | Run ID | Bundle | Manifest SHA-256 | Wall duration |
+| --- | --- | --- | --- | ---: |
+| completed, zero delay | `638d540f-5b34-4d4e-8696-933cd10501b6` | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/638d540f-5b34-4d4e-8696-933cd10501b6` | `c8cd458ccb9a4d4e545f5ba9fe133a0dd6862fda85e611337d1e96bd22deea25` | 37.339534 s |
+| completed, 17 ms delay | `dd0ae4cf-89b1-4c90-82aa-8da8fa0894e2` | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/dd0ae4cf-89b1-4c90-82aa-8da8fa0894e2` | `d274addacf526af576efdfe140cbfa57ae7026bf09848e2c9d74ad7f0f3d9fa1` | 26.285879 s |
+| failed, observer fault | `2d2741fc-5487-4783-8669-ca3f293ccedc` | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/2d2741fc-5487-4783-8669-ca3f293ccedc` | `82bb40e40122eb3436b7030cb8a8591baaa53d8f87c524e92df4ac179a9dd1d6` | 17.145711 s |
+| aborted from durable RUNNING | `c713c2d1-878b-43a4-84b5-2cfa4ee2e453` | `/tmp/pytest-of-willis/pytest-4558/phase2-output0/c713c2d1-878b-43a4-84b5-2cfa4ee2e453` | `864687131bac9a53dab274242a43f5a77a22d07c563e0598c7191dbcefe8df06` | 20.086726 s |
 
-The completed manifest records `0.0 / 0.0`; its scoring checksum is `5b227e82e9217c34c342e37d6ce2872edc28c63cded78e38d3698c673ddefedb`, exactly the SHA-256 of `tests/phase2/scoring.json` declared by the synthetic score result.
+All four manifests record synthetic fixture scoring `0.0 / 0.0`. Their strict lowercase declared scoring checksum is `5b227e82e9217c34c342e37d6ce2872edc28c63cded78e38d3698c673ddefedb`, independently equal to the SHA-256 of `tests/phase2/scoring.json`.
 
-## Completed semantic facts
+## Artifact and terminal facts
 
-The read-only inspector ran inside `drone-sim-artifacts-runtime:phase2`. Both MP4s contain exactly one video stream: H.264, `yuv420p`, 320×240, `20/1`, 40 frames. FFprobe succeeded, full decode succeeded, and 40 decoded-frame SHA-256 values were emitted per stream. The zero-delay files were:
+The read-only inspector ran inside `drone-sim-artifacts-runtime:phase2`. Each completed video had recorder-local frame count 40, exactly one H.264/yuv420p 320×240 `20/1` stream, a successful probe, a strict successful full decode, and 40 decoded-frame SHA-256 values. The zero-delay onboard and observer files were respectively 5,036 and 5,330 bytes with SHA-256 `8f5eab5c28ebb345719c7bf4d31a90f7fb13cb3ae74f3a23135aeb1271967481` and `3e514d5b4bf655b6e5364af229c84c619af959e5092b4e67b3aea2eefa4b4bbf`. The MCAP tree was 18,511,320 bytes with SHA-256 `b3c9b579f188f8e02b15239f772b549648617b03a9b67c7c19a61018321a887b`.
 
-- onboard: 5,036 bytes, SHA-256 `8f5eab5c28ebb345719c7bf4d31a90f7fb13cb3ae74f3a23135aeb1271967481`;
-- observer: 5,330 bytes, SHA-256 `3e514d5b4bf655b6e5364af229c84c619af959e5092b4e67b3aea2eefa4b4bbf`;
-- MCAP tree: 18,513,153 bytes, SHA-256 `f1685021dc1ba7168867b65e9a0423be914818bf0707c489762f31948989ce54`.
+The completed MCAP inventory was exact: `/clock` 41; run state 4; artifact status 1; ground truth 40; scenario 1; score 1; and image plus metadata 40 for both streams. Types, lifecycle, IDs, simulation stamps, image payloads, custom events, and decoded video hashes passed the frozen contract and were normalized-identical across wall delays. Simulation time remained 0–2,000,000,000 ns and did not derive from wall time.
 
-The MCAP inventory was exact: `/clock` 41; `/simulation/run_state` 4; `/simulation/artifact_status` 1; ground truth 40; scenario 1; score 1; and image plus metadata 40 for each onboard/observer stream. Types matched the frozen ten-topic contract. Lifecycle was `STARTING, READY, RUNNING, FINALIZING`; artifact-ready was serialized at record index 1 and the first clock at index 3. Frame IDs were 0–39, image/metadata stamps were paired at 50 ms intervals, and normalized image payload, custom-event, simulation-stamp, ID, and decoded-frame hashes were identical across the two wall delays.
+The failed run's bag structurally deserialized and its strict semantics correctly remained invalid. Recorder-local onboard/observer counts were 6/5; both probes and strict full decodes succeeded and produced exactly 6/5 decoded hashes. The observer required record remained explicitly invalid. The aborted run likewise retained a structurally readable bag and two positive 10-frame videos, each fully validated and producing exactly ten hashes. The acceptance predicate comes from `.status/artifacts-final.json`, never from the decoded-hash count itself; zero or absent counts require explicit missing/invalid recorder and manifest records. A corrupt-positive negative regression proves a positive recorder count cannot skip those assertions.
 
-All seven module JSONL logs were nonempty and reparsed. Zero-delay line counts were orchestration 7, artifacts 282, companion 3, `ardupilot_sitl` 3, gazebo 83, electromagnet 3, and scorekeeper 3. Every manifest file/tree size and SHA-256, including raw Docker logs and the three allowed recorder partials, was recomputed independently. No `.control` or `.status` path was inventoried.
+Every terminal bundle contained exactly the three inventoried frozen recorder diagnostics and no other partial: `logs/docker/ffmpeg-onboard.log.partial`, `logs/docker/ffmpeg-observer.log.partial`, and `logs/docker/rosbag2.log.partial`. The gate separately proves failed/aborted bundles may retain only the two explicit recorder recovery outputs, while rejecting manifest candidates, DockerLogCapture publication candidates, host publication sources after successful capture, structured/raw capture candidates, and unknown partials. All seven raw logs were nonempty. All seven structured logs reparsed; completed line counts were orchestration 7, artifacts 282, companion 3, `ardupilot_sitl` 3, gazebo 83, electromagnet 3, and scorekeeper 3.
 
-## Failed, aborted, immutability, and cleanup facts
+Repeated public `abort`, `collect-results`, and `status` commands returned exit 0 and the exact canonical committed facts for `c713c2d1-878b-43a4-84b5-2cfa4ee2e453`: state `ABORTED`, reason `operator_abort`, and `manifest_path` `manifest.json`. The manifest SHA-256 stayed `864687131bac9a53dab274242a43f5a77a22d07c563e0598c7191dbcefe8df06`; the automated gate also compared every immutable non-control/status byte, size, and mtime.
 
-The injected observer failure exited 1. Its bag was structurally readable with seven clocks, six ground-truth/image/metadata samples per stream, and no scenario or score sample; strict bag semantics therefore correctly remained invalid. The onboard video fully decoded with six frames. The observer diagnostic record was explicitly invalid while its five-frame retained video decoded, and the inventoried observer FFmpeg partial remained present.
-
-The concurrent abort observed exact durable `RUNNING`, exited 130, and committed `ABORTED`. Its retained bag structurally deserialized all messages; both videos fully decoded (seven onboard, six observer frames). A second abort, one status, and repeated `collect-results` calls returned consistent terminal facts. For all terminal cases, the tests compared every non-control/status output byte, size, and mtime around read-only result commands; no committed output changed.
-
-For each representative project, Docker reported 0 labeled containers and 0 `<project>_default` networks after exit. Cleanup assertions also ran in `finally` paths.
+After every case, no project-labeled container remained and every exact `<project>_default` network inspection exited 1. Cleanup also remained in `finally` paths.
 
 ## Exact non-claims
 
-Phase 2 uses synthetic Gazebo and scoring fixtures. This evidence does not claim Gazebo Harmonic physics, a Gazebo-authoritative clock, native Gazebo state, ArduPilot lockstep, companion behavior, electromagnet physics, mission scoring, or maximum-score acceptance. The `0.0 / 0.0` fixture proves infrastructure provenance only; it is not the eventual maximum-score goal.
+Phase 2 uses synthetic Gazebo and scoring fixtures. This evidence does not claim Gazebo Harmonic physics, a Gazebo-authoritative clock, native Gazebo state, real ArduPilot or lockstep, companion behavior, electromagnet physics, mission execution/scoring, or maximum-score acceptance. The `0.0 / 0.0` fixture proves infrastructure provenance only; it is not the eventual maximum-score goal.
