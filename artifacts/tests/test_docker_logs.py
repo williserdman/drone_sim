@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 import json
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -72,14 +73,17 @@ def _capture(
     *,
     ownership=OWNERSHIP,
     project="phase2-run",
+    host_events=False,
 ):
     runner = FakeRunner(_valid_results() if results is None else results)
+    options = {"host_events": True} if host_events else {}
     capture = DockerLogCapture(
         run_directory=tmp_path,
         project_name=project,
         ownership=ownership,
         run_id=RUN_ID,
         command_runner=runner,
+        **options,
     )
     return capture, runner
 
@@ -216,6 +220,9 @@ def test_capture_accepts_finite_fractional_numbers_nested_in_fields(tmp_path):
         (_event("orchestration").replace(b'"sim_timestamp":1.25', b'"sim_timestamp":NaN'), "finite"),
         (_event("orchestration").replace(b'"sim_timestamp":1.25', b'"sim_timestamp":Infinity'), "finite"),
         (_event("orchestration", wall_timestamp="2026-08-24T09:30:00"), "timezone-aware"),
+        (_event("orchestration", wall_timestamp="2026-08-24x09:30:00+00:00"), "profile"),
+        (_event("orchestration", wall_timestamp="2026-08-24T09:30:00.1234567Z"), "profile"),
+        (_event("orchestration", wall_timestamp="2026-08-24T09:30:00+00:00:30"), "profile"),
         (_event("orchestration", wall_timestamp="not-a-time"), "wall_timestamp"),
         (_event("orchestration", fields=[]), "fields"),
         (_event("orchestration", fields={"nested": [float("inf")]}), "finite"),
@@ -269,6 +276,58 @@ def test_event_from_wrong_owning_service_fails_closed(tmp_path):
         capture.capture()
 
     assert any("ownership" in item.detail for item in raised.value.result.diagnostics)
+
+
+@pytest.mark.parametrize(
+    ("resource_line", "detail"),
+    [
+        (
+            b'{"run_id":"'
+            + RUN_ID.encode()
+            + b'","module":"orchestration","severity":"INFO","event":"deep","sim_timestamp":0,"wall_timestamp":"2026-08-24T09:30:00Z","fields":{"nested":'
+            + b"[" * 1_100
+            + b"0"
+            + b"]" * 1_100
+            + b"}}",
+            "resource",
+        ),
+        (
+            b'{"run_id":"'
+            + RUN_ID.encode()
+            + b'","module":"orchestration","severity":"INFO","event":"huge","sim_timestamp":0,"wall_timestamp":"2026-08-24T09:30:00Z","fields":{"integer":'
+            + b"9" * 5_000
+            + b"}}",
+            "integer",
+        ),
+    ],
+    ids=("deep-nesting", "huge-integer"),
+)
+def test_json_resource_failures_are_typed_and_publish_every_raw_stream(
+    tmp_path, resource_line, detail
+):
+    """Parser resource limits must not escape before recoverable raw publication."""
+    service, module = OWNERSHIP[0]
+    results = _valid_results()
+    results[service] = DockerLogCommandResult(
+        0,
+        _event(module) + b"\n" + resource_line + b"\n",
+    )
+    capture, runner = _capture(tmp_path, results)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    assert len(runner.calls) == 7
+    assert any(detail in item.detail for item in raised.value.result.diagnostics)
+    assert raised.value.result.raw_paths == tuple(
+        f"logs/docker/{captured_service}.log"
+        for captured_service, _captured_module in OWNERSHIP
+    )
+    for captured_service, _captured_module in OWNERSHIP:
+        assert (tmp_path / f"logs/docker/{captured_service}.log").read_bytes() == results[
+            captured_service
+        ].output
+    assert not any((tmp_path / f"logs/{name}.jsonl").exists() for name in MODULES)
 
 
 def test_missing_required_module_stream_fails_with_sorted_explicit_modules(tmp_path):
@@ -326,6 +385,56 @@ def test_runner_exception_is_typed_and_does_not_stop_later_captures(tmp_path):
     assert calls[-1][-1] == later_service
     assert raised.value.result.command_failures == (OWNERSHIP[0][0],)
     assert (tmp_path / f"logs/docker/{OWNERSHIP[0][0]}.log").read_bytes() == b""
+
+
+@pytest.mark.parametrize(
+    ("exception", "expected"),
+    [
+        (
+            subprocess.CalledProcessError(7, ["docker"], stderr=b"stderr-only"),
+            b"stderr-only",
+        ),
+        (
+            subprocess.CalledProcessError(
+                7,
+                ["docker"],
+                output=b"stdout",
+                stderr=b"stderr",
+            ),
+            b"stdoutstderr",
+        ),
+        (
+            subprocess.CalledProcessError(
+                7,
+                ["docker"],
+                output="snowman: ☃\n",
+                stderr="error: é",
+            ),
+            "snowman: ☃\nerror: é".encode(),
+        ),
+    ],
+)
+def test_runner_exception_preserves_normalized_stdout_and_stderr_once(
+    tmp_path, exception, expected
+):
+    """Discarding stderr or duplicating stdout would corrupt command evidence."""
+    service = OWNERSHIP[0][0]
+    calls = []
+
+    def runner(command):
+        calls.append(command)
+        if command[-1] == service:
+            raise exception
+        module = dict(OWNERSHIP)[command[-1]]
+        return DockerLogCommandResult(0, _event(module) + b"\n")
+
+    capture = DockerLogCapture(tmp_path, "phase2-run", OWNERSHIP, RUN_ID, runner)
+
+    with pytest.raises(DockerLogCaptureError):
+        capture.capture()
+
+    assert len(calls) == 7
+    assert (tmp_path / f"logs/docker/{service}.log").read_bytes() == expected
 
 
 @pytest.mark.parametrize(
@@ -468,6 +577,146 @@ def test_preexisting_structured_target_is_rejected_before_capture(tmp_path):
     assert runner.calls == []
 
 
+def _write_host_events(tmp_path: Path, contents: bytes) -> Path:
+    path = tmp_path / "logs/orchestration-host.jsonl.partial"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(contents)
+    return path
+
+
+def test_requested_host_events_merge_chronologically_with_stable_source_ties(tmp_path):
+    """Nondeterministic host/Compose merge order would make orchestration evidence unstable."""
+    service, module = OWNERSHIP[0]
+    results = _valid_results()
+    results[service] = DockerLogCommandResult(
+        0,
+        _event(
+            module,
+            event="compose-late",
+            wall_timestamp="2026-08-24T09:30:02Z",
+        )
+        + b"\n"
+        + _event(
+            module,
+            event="compose-early",
+            wall_timestamp="2026-08-24T09:30:00Z",
+        )
+        + b"\n",
+    )
+    host_contents = (
+        _event(
+            "orchestration",
+            event="host-tie",
+            wall_timestamp="2026-08-24T11:30:02+02:00",
+        )
+        + b"\n"
+        + _event(
+            "orchestration",
+            event="host-middle",
+            wall_timestamp="2026-08-24T09:30:01Z",
+        )
+        + b"\n"
+    )
+    host_path = _write_host_events(tmp_path, host_contents)
+    before = host_path.stat()
+    capture, _runner = _capture(tmp_path, results, host_events=True)
+
+    result = capture.capture()
+
+    events = [
+        json.loads(line)["event"]
+        for line in (tmp_path / "logs/orchestration.jsonl").read_text().splitlines()
+    ]
+    assert events == ["compose-early", "host-middle", "compose-late", "host-tie"]
+    assert result.recovery_paths == ("logs/orchestration-host.jsonl.partial",)
+    assert host_path.read_bytes() == host_contents
+    after = host_path.stat()
+    assert (before.st_dev, before.st_ino, before.st_mode, before.st_nlink) == (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_nlink,
+    )
+
+
+def test_requested_host_stream_can_supply_orchestration_module_coverage(tmp_path):
+    """Host-owned orchestration events must count without weakening service ownership."""
+    service, _module = OWNERSHIP[0]
+    results = _valid_results()
+    results[service] = DockerLogCommandResult(0, b"Compose progress only\n")
+    _write_host_events(tmp_path, _event("orchestration", event="operator-start") + b"\n")
+    capture, _runner = _capture(tmp_path, results, host_events=True)
+
+    result = capture.capture()
+
+    assert result.missing_modules == ()
+    assert json.loads((tmp_path / "logs/orchestration.jsonl").read_text())["event"] == "operator-start"
+
+
+@pytest.mark.parametrize(
+    "host_contents",
+    [
+        b"plain host text\n",
+        b'{"message":"unclaimed host JSON"}\n',
+        _event("artifacts") + b"\n",
+        _event("orchestration").replace(RUN_ID.encode(), b"wrong-run") + b"\n",
+        b'{"run_id":"' + RUN_ID.encode() + b'"}\n',
+    ],
+)
+def test_requested_host_stream_is_structured_only_and_preserved_on_failure(
+    tmp_path, host_contents
+):
+    """Unclaimed or misattributed host lines must fail without becoming Docker raw output."""
+    host_path = _write_host_events(tmp_path, host_contents)
+    capture, runner = _capture(tmp_path, host_events=True)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    assert len(runner.calls) == 7
+    assert raised.value.result.recovery_paths == (
+        "logs/orchestration-host.jsonl.partial",
+    )
+    assert host_path.read_bytes() == host_contents
+    assert all((tmp_path / path).is_file() for path in raised.value.result.raw_paths)
+    assert not any((tmp_path / f"logs/{module}.jsonl").exists() for module in MODULES)
+
+
+@pytest.mark.parametrize("unsafe", ["missing", "symlink", "hardlink"])
+def test_requested_missing_or_unsafe_host_stream_is_typed_after_raw_capture(
+    tmp_path, unsafe
+):
+    """A requested host source must be an existing single-link regular file."""
+    host_path = tmp_path / "logs/orchestration-host.jsonl.partial"
+    host_path.parent.mkdir(parents=True)
+    outside = tmp_path / "outside-host"
+    if unsafe == "symlink":
+        outside.write_bytes(_event("orchestration") + b"\n")
+        host_path.symlink_to(outside)
+    elif unsafe == "hardlink":
+        outside.write_bytes(_event("orchestration") + b"\n")
+        os.link(outside, host_path)
+    capture, runner = _capture(tmp_path, host_events=True)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    assert len(runner.calls) == 7
+    assert len(raised.value.result.raw_paths) == 7
+    assert any("host" in item.detail for item in raised.value.result.diagnostics)
+    assert not any((tmp_path / f"logs/{module}.jsonl").exists() for module in MODULES)
+
+
+def test_unrequested_host_stream_is_not_required(tmp_path):
+    """Callers that do not request host events retain the original capture contract."""
+    capture, _runner = _capture(tmp_path, host_events=False)
+
+    result = capture.capture()
+
+    assert result.succeeded is True
+    assert result.recovery_paths == ()
+
+
 def test_candidates_are_file_fsynced_then_published_no_clobber_and_directory_fsynced(
     tmp_path, monkeypatch
 ):
@@ -596,3 +845,111 @@ def test_result_diagnostics_and_command_results_are_immutable(tmp_path):
         result.succeeded = False
     with pytest.raises(FrozenInstanceError):
         DockerLogCommandResult(0, b"").returncode = 1
+
+
+def test_partial_cleanup_unlink_failure_is_reported_with_exact_leftover(
+    tmp_path, monkeypatch
+):
+    """Suppressing cleanup unlink failure would falsely claim no partial remains."""
+    real_link = os.link
+    real_unlink = os.unlink
+
+    def fail_companion_publication(source, target, **kwargs):
+        if target == "companion.jsonl":
+            raise OSError("injected publication failure")
+        return real_link(source, target, **kwargs)
+
+    def fail_gazebo_partial_cleanup(path, **kwargs):
+        if path == "gazebo.jsonl.partial":
+            raise OSError("injected cleanup unlink failure")
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "link", fail_companion_publication)
+    monkeypatch.setattr(os, "unlink", fail_gazebo_partial_cleanup)
+    capture, _runner = _capture(tmp_path)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    assert "logs/gazebo.jsonl.partial" in raised.value.result.leftover_partials
+    assert any("cleanup unlink" in item.detail for item in raised.value.result.diagnostics)
+    assert (tmp_path / "logs/gazebo.jsonl.partial").is_file()
+
+
+def test_partial_cleanup_directory_fsync_failure_is_reported(tmp_path, monkeypatch):
+    """A removed name is not durably cleaned until its parent directory fsync succeeds."""
+    real_link = os.link
+    real_unlink = os.unlink
+    real_fsync = os.fsync
+    cleanup_started = False
+    injected = False
+
+    def fail_companion_publication(source, target, **kwargs):
+        if target == "companion.jsonl":
+            raise OSError("injected publication failure")
+        return real_link(source, target, **kwargs)
+
+    def mark_cleanup(path, **kwargs):
+        nonlocal cleanup_started
+        result = real_unlink(path, **kwargs)
+        if path == "gazebo.jsonl.partial":
+            cleanup_started = True
+        return result
+
+    def fail_cleanup_fsync(fd):
+        nonlocal injected
+        if cleanup_started and not injected:
+            injected = True
+            raise OSError("injected cleanup fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "link", fail_companion_publication)
+    monkeypatch.setattr(os, "unlink", mark_cleanup)
+    monkeypatch.setattr(os, "fsync", fail_cleanup_fsync)
+    capture, _runner = _capture(tmp_path)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    assert any("cleanup fsync" in item.detail for item in raised.value.result.diagnostics)
+
+
+def test_final_candidate_descriptor_close_failure_downgrades_success(
+    tmp_path, monkeypatch
+):
+    """A final result cannot be successful while an owned descriptor failed to close."""
+    real_open = os.open
+    real_close = os.close
+    target_fd = None
+    injected = False
+
+    def record_orchestration_candidate(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal target_fd
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "orchestration.jsonl.partial":
+            target_fd = fd
+        return fd
+
+    def fail_target_close(fd):
+        nonlocal injected
+        if fd == target_fd and not injected:
+            injected = True
+            raise OSError("injected candidate close failure")
+        return real_close(fd)
+
+    monkeypatch.setattr(os, "open", record_orchestration_candidate)
+    monkeypatch.setattr(os, "close", fail_target_close)
+    capture, _runner = _capture(tmp_path)
+    try:
+        with pytest.raises(DockerLogCaptureError) as raised:
+            capture.capture()
+
+        assert raised.value.result.succeeded is False
+        assert any("cleanup close" in item.detail for item in raised.value.result.diagnostics)
+        assert raised.value.result.leftover_partials == ()
+    finally:
+        if target_fd is not None:
+            try:
+                real_close(target_fd)
+            except OSError:
+                pass

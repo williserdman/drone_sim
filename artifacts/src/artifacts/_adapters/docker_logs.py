@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import os
@@ -26,10 +26,16 @@ REQUIRED_MODULES = (
     "electromagnet",
     "scorekeeper",
 )
+HOST_EVENT_PATH = "logs/orchestration-host.jsonl.partial"
 
 _EVENT_KEYS = COMMON_FIELDS | {"fields"}
 _PROJECT_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _SERVICE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+_WALL_TIMESTAMP_PATTERN = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})"
+)
+_TIMEZONE_MARKER_PATTERN = re.compile(r"(?:Z|[+-]\d{2}:\d{2})")
 _DIRECTORY_FLAGS = (
     os.O_RDONLY
     | getattr(os, "O_CLOEXEC", 0)
@@ -42,6 +48,21 @@ _CANDIDATE_FLAGS = (
     | os.O_EXCL
     | getattr(os, "O_CLOEXEC", 0)
     | getattr(os, "O_NOFOLLOW", 0)
+)
+_HOST_FILE_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
+_FILE_SNAPSHOT_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_nlink",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
 )
 
 
@@ -80,6 +101,8 @@ class DockerLogCaptureResult:
     diagnostics: tuple[DockerLogDiagnostic, ...]
     command_failures: tuple[str, ...]
     missing_modules: tuple[str, ...]
+    recovery_paths: tuple[str, ...] = ()
+    leftover_partials: tuple[str, ...] = ()
 
 
 class DockerLogCaptureError(RuntimeError):
@@ -114,6 +137,13 @@ def _same_entry(first: os.stat_result, second: os.stat_result) -> bool:
         first.st_dev == second.st_dev
         and first.st_ino == second.st_ino
         and first.st_mode == second.st_mode
+    )
+
+
+def _same_file_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
+    return all(
+        getattr(first, field) == getattr(second, field)
+        for field in _FILE_SNAPSHOT_FIELDS
     )
 
 
@@ -234,7 +264,11 @@ class _Candidate:
         os.fsync(self.directory_fd)
         self.published = True
 
-    def close_and_clean(self) -> None:
+    def close_and_clean(
+        self,
+    ) -> tuple[tuple[DockerLogDiagnostic, ...], tuple[str, ...]]:
+        diagnostics: list[DockerLogDiagnostic] = []
+        partial_path = f"{self.relative_path}.partial"
         if not self.published:
             try:
                 named = os.stat(
@@ -243,9 +277,15 @@ class _Candidate:
                     follow_symlinks=False,
                 )
                 opened = os.fstat(self.descriptor)
-            except OSError:
+            except OSError as exc:
                 named = None
                 opened = None
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "cleanup",
+                        f"candidate cleanup ownership inspection failed: {exc}",
+                    )
+                )
             if (
                 named is not None
                 and opened is not None
@@ -254,13 +294,54 @@ class _Candidate:
             ):
                 try:
                     os.unlink(self.partial_name, dir_fd=self.directory_fd)
-                    os.fsync(self.directory_fd)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    diagnostics.append(
+                        DockerLogDiagnostic(
+                            "cleanup",
+                            f"candidate cleanup unlink failed for {partial_path}: {exc}",
+                        )
+                    )
+                else:
+                    try:
+                        os.fsync(self.directory_fd)
+                    except OSError as exc:
+                        diagnostics.append(
+                            DockerLogDiagnostic(
+                                "cleanup",
+                                f"candidate cleanup fsync failed for {partial_path}: {exc}",
+                            )
+                        )
         try:
             os.close(self.descriptor)
-        except OSError:
-            pass
+        except OSError as exc:
+            diagnostics.append(
+                DockerLogDiagnostic(
+                    "cleanup",
+                    f"candidate cleanup close failed for {self.relative_path}: {exc}",
+                )
+            )
+
+        leftover: tuple[str, ...] = ()
+        if not self.published:
+            try:
+                os.stat(
+                    self.partial_name,
+                    dir_fd=self.directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "cleanup",
+                        f"candidate cleanup leftover inspection failed for {partial_path}: {exc}",
+                    )
+                )
+                leftover = (partial_path,)
+            else:
+                leftover = (partial_path,)
+        return tuple(diagnostics), leftover
 
     def final_is_linked(self) -> bool:
         """Return whether the final name already identifies this candidate."""
@@ -302,6 +383,10 @@ def _parse_attempted_object(line: bytes) -> tuple[Mapping[str, Any] | None, str 
         )
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None, None
+    except (MemoryError, RecursionError) as exc:
+        return None, f"JSON parser resource failure: {exc}"
+    except (OverflowError, ValueError) as exc:
+        return None, f"JSON parser integer/resource failure: {exc}"
     if not isinstance(parsed, _ObjectPairs):
         return None, None
     claimed = any(key in COMMON_FIELDS for key, _value in parsed)
@@ -309,6 +394,8 @@ def _parse_attempted_object(line: bytes) -> tuple[Mapping[str, Any] | None, str 
         return None, None
     try:
         converted = _convert_pairs(parsed)
+    except (MemoryError, RecursionError) as exc:
+        return None, f"JSON normalization resource failure: {exc}"
     except ValueError as exc:
         return None, str(exc)
     return converted, None
@@ -348,6 +435,10 @@ def _event_from_payload(
     wall_value = payload["wall_timestamp"]
     if not isinstance(wall_value, str):
         raise ValueError("attempted event wall_timestamp must be an ISO-8601 string")
+    if _WALL_TIMESTAMP_PATTERN.fullmatch(wall_value) is None:
+        if _TIMEZONE_MARKER_PATTERN.search(wall_value) is None:
+            raise ValueError("attempted event wall_timestamp must be timezone-aware")
+        raise ValueError("attempted event wall_timestamp does not match the required profile")
     try:
         wall_timestamp = datetime.fromisoformat(wall_value)
     except ValueError as exc:
@@ -366,6 +457,14 @@ def _event_from_payload(
     )
 
 
+@dataclass(frozen=True)
+class _CapturedEvent:
+    event: StructuredEvent
+    encoded: bytes
+    source_rank: int
+    source_order: int
+
+
 class DockerLogCapture:
     """Capture each service once, retain raw bytes, and publish valid events."""
 
@@ -376,6 +475,8 @@ class DockerLogCapture:
         ownership: Mapping[str, str] | Iterable[tuple[str, str]],
         run_id: str,
         command_runner: CommandRunner | None = None,
+        *,
+        host_events: bool = False,
     ) -> None:
         self.run_directory = Path(run_directory)
         self.project_name = project_name
@@ -386,6 +487,7 @@ class DockerLogCapture:
         )
         self.run_id = run_id
         self.command_runner = command_runner or _run_compose_logs
+        self.host_events = host_events
 
     def _validate_inputs(self) -> None:
         if not self.run_directory.is_absolute():
@@ -397,6 +499,8 @@ class DockerLogCapture:
             raise ValueError("project identifier is unsafe")
         if not isinstance(self.run_id, str) or not self.run_id:
             raise ValueError("run_id must be a nonempty string")
+        if not isinstance(self.host_events, bool):
+            raise ValueError("host_events must be a boolean")
         services: list[str] = []
         modules: list[str] = []
         for item in self.ownership:
@@ -523,12 +627,20 @@ class DockerLogCapture:
             self._require_absent(logs_fd, f"{final}.partial")
 
     @staticmethod
-    def _exception_output(exc: BaseException) -> bytes:
-        for name in ("output", "stdout"):
-            value = getattr(exc, name, None)
-            if isinstance(value, bytes):
-                return value
+    def _diagnostic_bytes(value: object) -> bytes:
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, str):
+            return value.encode("utf-8", errors="surrogateescape")
         return b""
+
+    @classmethod
+    def _exception_output(cls, exc: BaseException) -> bytes:
+        output = getattr(exc, "output", None)
+        if output is None:
+            output = getattr(exc, "stdout", None)
+        stderr = getattr(exc, "stderr", None)
+        return cls._diagnostic_bytes(output) + cls._diagnostic_bytes(stderr)
 
     def _collect_commands(
         self,
@@ -576,48 +688,240 @@ class DockerLogCapture:
                 failed.append(service)
         return outputs, diagnostics, tuple(failed)
 
+    @staticmethod
+    def _read_host_events(
+        logs_fd: int,
+    ) -> tuple[bytes | None, list[DockerLogDiagnostic], tuple[str, ...]]:
+        name = Path(HOST_EVENT_PATH).name
+        descriptor: int | None = None
+        diagnostics: list[DockerLogDiagnostic] = []
+        try:
+            try:
+                named_before = os.stat(
+                    name,
+                    dir_fd=logs_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        f"requested host event source is missing: {HOST_EVENT_PATH}",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, ()
+            except OSError as exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        f"requested host event source could not be inspected: {exc}",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            if stat.S_ISLNK(named_before.st_mode) or not stat.S_ISREG(
+                named_before.st_mode
+            ):
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        "requested host event source must be a regular non-symlink file",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            if named_before.st_nlink != 1:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        "requested host event source must have exactly one hard link",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            try:
+                descriptor = os.open(name, _HOST_FILE_FLAGS, dir_fd=logs_fd)
+            except OSError as exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        f"requested host event source could not be opened: {exc}",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            try:
+                opened_before = os.fstat(descriptor)
+            except OSError as exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        f"requested host event source could not be verified: {exc}",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            if not _same_file_snapshot(named_before, opened_before):
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        "requested host event source changed while opening",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            chunks: list[bytes] = []
+            try:
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    chunks.append(chunk)
+            except OSError as exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        f"requested host event source could not be read: {exc}",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            try:
+                opened_after = os.fstat(descriptor)
+            except OSError as exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        f"requested host event source could not be reverified: {exc}",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            try:
+                named_after = os.stat(
+                    name,
+                    dir_fd=logs_fd,
+                    follow_symlinks=False,
+                )
+            except OSError:
+                named_after = None
+            if (
+                named_after is None
+                or not _same_file_snapshot(opened_before, opened_after)
+                or not _same_file_snapshot(opened_after, named_after)
+            ):
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "host_event",
+                        "requested host event source changed during capture",
+                        module="orchestration",
+                    )
+                )
+                return None, diagnostics, (HOST_EVENT_PATH,)
+            return b"".join(chunks), diagnostics, (HOST_EVENT_PATH,)
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    diagnostics.append(
+                        DockerLogDiagnostic(
+                            "cleanup",
+                            f"host event descriptor cleanup close failed: {exc}",
+                            module="orchestration",
+                        )
+                    )
+
+    def _validated_line(
+        self,
+        line: bytes,
+        *,
+        service: str | None,
+        owning_module: str,
+        line_number: int,
+        source_rank: int,
+        strict: bool,
+    ) -> tuple[_CapturedEvent | None, DockerLogDiagnostic | None]:
+        payload, parse_error = _parse_attempted_object(line)
+        if parse_error is not None:
+            return None, DockerLogDiagnostic(
+                "host_event" if strict else "event",
+                parse_error,
+                service,
+                owning_module,
+                line_number,
+            )
+        if payload is None:
+            if strict:
+                return None, DockerLogDiagnostic(
+                    "host_event",
+                    "host event source contains a blank, non-JSON, or unclaimed line",
+                    module=owning_module,
+                    line_number=line_number,
+                )
+            return None, None
+        try:
+            event = _event_from_payload(
+                payload,
+                run_id=self.run_id,
+                owning_module=owning_module,
+            )
+            encoded = event.to_json_line().encode("utf-8")
+        except (TypeError, ValueError, OverflowError) as exc:
+            return None, DockerLogDiagnostic(
+                "host_event" if strict else "event",
+                str(exc),
+                service,
+                owning_module,
+                line_number,
+            )
+        return (
+            _CapturedEvent(event, encoded, source_rank, line_number),
+            None,
+        )
+
     def _partition(
-        self, outputs: Mapping[str, bytes]
+        self,
+        outputs: Mapping[str, bytes],
+        host_output: bytes | None,
     ) -> tuple[dict[str, bytes], list[DockerLogDiagnostic], tuple[str, ...]]:
-        routed: dict[str, list[bytes]] = {module: [] for module in REQUIRED_MODULES}
+        routed: dict[str, list[_CapturedEvent]] = {
+            module: [] for module in REQUIRED_MODULES
+        }
         diagnostics: list[DockerLogDiagnostic] = []
         for service, owning_module in self.ownership:
             for line_number, line in enumerate(outputs[service].split(b"\n"), start=1):
                 if line == b"":
                     continue
-                payload, parse_error = _parse_attempted_object(line)
-                if parse_error is not None:
-                    diagnostics.append(
-                        DockerLogDiagnostic(
-                            "event",
-                            parse_error,
-                            service,
-                            owning_module,
-                            line_number,
-                        )
-                    )
-                    continue
-                if payload is None:
-                    continue
-                try:
-                    event = _event_from_payload(
-                        payload,
-                        run_id=self.run_id,
-                        owning_module=owning_module,
-                    )
-                    encoded = event.to_json_line().encode("utf-8")
-                except (TypeError, ValueError, OverflowError) as exc:
-                    diagnostics.append(
-                        DockerLogDiagnostic(
-                            "event",
-                            str(exc),
-                            service,
-                            owning_module,
-                            line_number,
-                        )
-                    )
-                    continue
-                routed[event.module].append(encoded)
+                captured, diagnostic = self._validated_line(
+                    line,
+                    service=service,
+                    owning_module=owning_module,
+                    line_number=line_number,
+                    source_rank=0,
+                    strict=False,
+                )
+                if diagnostic is not None:
+                    diagnostics.append(diagnostic)
+                if captured is not None:
+                    routed[captured.event.module].append(captured)
+
+        if host_output is not None:
+            host_lines = [] if host_output == b"" else host_output.split(b"\n")
+            if host_lines and host_lines[-1] == b"":
+                host_lines.pop()
+            for line_number, line in enumerate(host_lines, start=1):
+                captured, diagnostic = self._validated_line(
+                    line,
+                    service=None,
+                    owning_module="orchestration",
+                    line_number=line_number,
+                    source_rank=1,
+                    strict=True,
+                )
+                if diagnostic is not None:
+                    diagnostics.append(diagnostic)
+                if captured is not None:
+                    routed["orchestration"].append(captured)
+
         missing = tuple(module for module in REQUIRED_MODULES if not routed[module])
         if missing:
             diagnostics.append(
@@ -626,8 +930,19 @@ class DockerLogCapture:
                     f"missing required structured module streams: {', '.join(missing)}",
                 )
             )
+        if host_output is not None:
+            routed["orchestration"].sort(
+                key=lambda captured: (
+                    captured.event.wall_timestamp.astimezone(timezone.utc),
+                    captured.source_rank,
+                    captured.source_order,
+                )
+            )
         return (
-            {module: b"".join(lines) for module, lines in routed.items()},
+            {
+                module: b"".join(captured.encoded for captured in events)
+                for module, events in routed.items()
+            },
             diagnostics,
             missing,
         )
@@ -640,6 +955,8 @@ class DockerLogCapture:
         diagnostics: Sequence[DockerLogDiagnostic],
         command_failures: Sequence[str],
         missing_modules: Sequence[str],
+        recovery_paths: Sequence[str] = (),
+        leftover_partials: Sequence[str] = (),
     ) -> DockerLogCaptureResult:
         return DockerLogCaptureResult(
             succeeded,
@@ -648,6 +965,8 @@ class DockerLogCapture:
             tuple(diagnostics),
             tuple(command_failures),
             tuple(missing_modules),
+            tuple(recovery_paths),
+            tuple(leftover_partials),
         )
 
     def capture(self) -> DockerLogCaptureResult:
@@ -660,6 +979,11 @@ class DockerLogCapture:
         diagnostics: list[DockerLogDiagnostic] = []
         command_failures: tuple[str, ...] = ()
         missing_modules: tuple[str, ...] = ()
+        recovery_paths: tuple[str, ...] = ()
+        result: DockerLogCaptureResult | None = None
+        capture_error: DockerLogCaptureError | None = None
+        cleanup_diagnostics: list[DockerLogDiagnostic] = []
+        leftover_partials: list[str] = []
         try:
             try:
                 self._preflight_targets(logs_fd, docker_fd)
@@ -701,7 +1025,18 @@ class DockerLogCapture:
                     ) from exc
                 candidates.append(candidate)
 
-            routed, event_diagnostics, missing_modules = self._partition(outputs)
+            host_output: bytes | None = None
+            host_diagnostics: list[DockerLogDiagnostic] = []
+            if self.host_events:
+                host_output, host_diagnostics, recovery_paths = self._read_host_events(
+                    logs_fd
+                )
+                diagnostics.extend(host_diagnostics)
+
+            routed, event_diagnostics, missing_modules = self._partition(
+                outputs,
+                host_output,
+            )
             diagnostics.extend(event_diagnostics)
 
             raw_publication_failed = False
@@ -728,6 +1063,7 @@ class DockerLogCapture:
 
             if (
                 command_failures
+                or host_diagnostics
                 or event_diagnostics
                 or missing_modules
                 or raw_publication_failed
@@ -741,6 +1077,7 @@ class DockerLogCapture:
                         diagnostics,
                         command_failures,
                         missing_modules,
+                        recovery_paths,
                     )
                 )
 
@@ -770,6 +1107,7 @@ class DockerLogCapture:
                             diagnostics,
                             command_failures,
                             missing_modules,
+                            recovery_paths,
                         )
                     ) from exc
                 candidates.append(candidate)
@@ -801,23 +1139,57 @@ class DockerLogCapture:
                             diagnostics,
                             command_failures,
                             missing_modules,
+                            recovery_paths,
                         )
                     ) from exc
 
-            return self._result(
+            result = self._result(
                 True,
                 raw_paths,
                 structured_paths,
                 diagnostics,
                 command_failures,
                 missing_modules,
+                recovery_paths,
             )
+        except DockerLogCaptureError as exc:
+            capture_error = exc
+            result = exc.result
         finally:
             for candidate in candidates:
-                candidate.close_and_clean()
-            os.close(docker_fd)
-            os.close(logs_fd)
-            os.close(root_fd)
+                candidate_diagnostics, candidate_leftovers = (
+                    candidate.close_and_clean()
+                )
+                cleanup_diagnostics.extend(candidate_diagnostics)
+                leftover_partials.extend(candidate_leftovers)
+            for descriptor, label in (
+                (docker_fd, "Docker log directory"),
+                (logs_fd, "logs directory"),
+                (root_fd, "run directory"),
+            ):
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    cleanup_diagnostics.append(
+                        DockerLogDiagnostic(
+                            "cleanup",
+                            f"{label} cleanup close failed: {exc}",
+                        )
+                    )
+
+        if result is None:
+            raise RuntimeError("capture produced no result")
+        if cleanup_diagnostics or leftover_partials:
+            result = replace(
+                result,
+                succeeded=False,
+                diagnostics=result.diagnostics + tuple(cleanup_diagnostics),
+                leftover_partials=tuple(dict.fromkeys(leftover_partials)),
+            )
+            raise DockerLogCaptureError(result) from capture_error
+        if capture_error is not None:
+            raise DockerLogCaptureError(result) from capture_error
+        return result
 
 
 __all__ = [

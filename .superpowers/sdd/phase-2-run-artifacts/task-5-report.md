@@ -3,10 +3,11 @@
 ## Scope and baseline
 
 - Baseline: `637b18a649fc9d24cf5fe1ac65ad32d35b03f7a1`
-- Verification audit: `2026-08-24T00:33:16Z`
+- Verification audit: `2026-08-24T01:05:00Z`
 - Scope: host-side, per-service Compose log capture; exact raw byte evidence;
-  strict common-event classification; seven owned JSONL streams; and durable,
-  no-clobber publication diagnostics.
+  strict common-event classification; an explicit host-orchestration merge
+  seam; seven owned JSONL streams; and durable, no-clobber publication and
+  cleanup diagnostics.
 - Out of scope remained untouched: Docker/Compose definitions, controller/CLI,
   ROS, video, rosbag, Gazebo, ArduPilot, mission/scoring code, machine
   configuration, and `companion/comp2026`.
@@ -55,6 +56,17 @@ The corresponding focused RED runs each collected one test and failed for the
 expected reason before the minimal production correction. The final surface is
 51 Docker-log behavioral cases.
 
+The review-fix regression surface was also persisted before its production
+changes. Its first aggregate RED run reported `71 failed, 2 passed`: the
+missing keyword-only host-event input stopped the legacy helper calls at the
+new interface boundary. After narrowing the helper to pass that keyword only
+when the seam was requested, the behavior-specific REDs exposed the parser
+resource exceptions, permissive timestamp parsing, discarded runner stderr,
+missing host merge, and suppressed cleanup failures. During GREEN, the strict
+timestamp diagnostic classifier itself produced one further focused RED
+(`72 passed, 1 failed`) for an attempted offset with seconds. The final
+focused run reports 73 passing Docker-log cases.
+
 ## Implementation and files
 
 - `artifacts/src/artifacts/_adapters/docker_logs.py`
@@ -69,26 +81,43 @@ expected reason before the minimal production correction. The final surface is
   - byte-for-byte raw capture, including invalid UTF-8, blank lines, and final
     lines without newline;
   - duplicate-key-preserving JSON classification, including nested duplicate
-    rejection only for objects that claim a top-level common field;
+    rejection only for objects that claim a top-level common field, with
+    recursion and oversized-integer parser failures converted to typed
+    malformed-attempt diagnostics;
   - strict run/module/ownership, top-level schema, severity/event, finite
-    timestamp, timezone-aware ISO-8601, fields-object, collision, nonfinite,
-    and invalid-Unicode validation;
+    timestamp, the explicit
+    `YYYY-MM-DDTHH:MM:SS[.1-6](Z|+/-HH:MM)` wall-time profile, fields-object,
+    collision, nonfinite, and invalid-Unicode validation;
   - every accepted event is constructed and serialized through the existing
     `StructuredEvent` domain seam, preserving service and line order and UTC
     `Z` canonicalization;
+  - optional, fixed-path `logs/orchestration-host.jsonl.partial` input opened
+    relative to the retained `logs/` descriptor with no-follow, single-link,
+    regular-file, and before/after snapshot checks; every host line is
+    structured-only and passes through the same attempted-event and
+    `StructuredEvent` seam with fixed `module=orchestration` and matching
+    `run_id`;
+  - deterministic orchestration merge ordered by parsed UTC wall timestamp,
+    then Compose before host for equal instants, then original source line
+    order; the unchanged host source is returned as a recovery path;
   - retained no-follow run/log directory descriptors; exclusive fixed
     `.partial` candidates; complete writes; file `fsync`; mode `0444`; exact
     inode checks; no-clobber hard-link publication; one-link finals; directory
     `fsync`; and owned-candidate-only cleanup;
   - raw publication on command/event/coverage failures, structured
     all-validation-before-publication, and explicit partial-set diagnostics
-    where POSIX cannot provide seven-file transactionality.
+    where POSIX cannot provide seven-file transactionality;
+  - cleanup unlink, cleanup directory-`fsync`, candidate close, and retained
+    directory close failures amend the final immutable result, downgrade
+    success, and report exact still-named `.partial` paths.
 - `artifacts/tests/test_docker_logs.py`
-  - 51 cases covering exact commands/order, raw byte preservation, canonical
+  - 73 cases covering exact commands/order, raw byte preservation, canonical
     routing, all malformed attempted-event classes, explicit ownership and
-    seven-module coverage, command failures/exceptions, identifier/path and
-    target safety, durability ordering, cleanup, late publication failures,
-    partial-set reporting, and immutable results.
+    seven-module coverage, deep/oversized JSON failures, runner exception byte
+    normalization, strict timestamps, descriptor-safe host merge and recovery,
+    command failures/exceptions, identifier/path and target safety, durability
+    ordering, cleanup failure truth, late publication failures, partial-set
+    reporting, and immutable results.
 - `artifacts/src/artifacts/__init__.py`
   - exports `DockerLogCapture` and its immutable command/result/diagnostic and
     typed error surfaces.
@@ -109,8 +138,28 @@ expected reason before the minimal production correction. The final surface is
 - Publication errors never report success. If a final name became visible
   before a later failure, the immutable result inventories that partial
   publication so manifest validation can fail closed.
+- Requested host input is never listed as Docker raw output. Missing, symlink,
+  hard-linked, changed, raw, unclaimed, wrong-run, or wrong-module host input
+  becomes a typed failure only after all seven Docker byte streams are
+  published. Its source path remains unchanged for recovery.
+- Parser recursion and integer-limit failures cannot escape generically or
+  delete raw candidates. Cleanup errors cannot be suppressed after a success
+  result has been constructed; the result is replaced immutably before the
+  typed error is raised.
 - The adapter never accesses a Docker socket and adds no second structured-log
   schema.
+
+## Task 6 consumability
+
+Task 6 can request the host seam with `host_events=True` after appending its
+structured host lifecycle events to
+`logs/orchestration-host.jsonl.partial`. It does not need to modify this
+adapter or claim that file as a Compose service stream. The source must remain
+a single-link regular file at the fixed contained path until capture finishes;
+on success its events are validated and deterministically merged into
+`logs/orchestration.jsonl`, while the source remains named as recovery
+evidence. Omitting the option preserves Task 5's Compose-only behavior and
+does not require the host source to exist.
 
 ## Artifact-image decision
 
@@ -126,13 +175,13 @@ repository verification exercise the complete implementation.
 
 ```text
 uv run pytest artifacts/tests/test_docker_logs.py artifacts/tests/test_structured_log.py -v
-67 passed
+89 passed
 
 uv run pytest artifacts/tests -v
-286 passed, 10 skipped
+308 passed, 10 skipped
 
 uv run pytest -v
-340 passed, 10 skipped
+362 passed, 10 skipped
 
 uv run python -m compileall -q artifacts/src artifacts/tests
 exit 0
