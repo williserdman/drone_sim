@@ -53,6 +53,10 @@ ENV CMAKE_PREFIX_PATH="/ros_ws/install/simulation_interfaces:/opt/ros/jazzy"
 ENV LD_LIBRARY_PATH="/ros_ws/install/simulation_interfaces/lib:/opt/ros/jazzy/lib"
 ENV PYTHONPATH="/ros_ws/install/simulation_interfaces/lib/python3.12/site-packages"
 
+# Source the ROS and interface workspaces before replacing PID 1 with the
+# caller's argv.  This keeps Compose shutdown and signal handling deterministic.
+ENTRYPOINT ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && source /ros_ws/install/setup.bash && exec \"$@\"", "--"]
+
 FROM runtime AS test
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/drone_sim/venv

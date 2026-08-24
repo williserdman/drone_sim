@@ -1,3 +1,23 @@
+x-phase2-defaults: &phase2-defaults
+  profiles: [phase2]
+  init: true
+  restart: "no"
+  environment: &phase2-environment
+    SIM_RUN_ID: ${SIM_RUN_ID:-00000000-0000-4000-8000-000000000001}
+    SIM_RUN_DIRECTORY: ${SIM_RUN_DIRECTORY:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001}
+    SIM_CONFIG_PATH: ${SIM_CONFIG_PATH:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001/configuration/run.json}
+    SIM_PHASE2_FAULT: ${SIM_PHASE2_FAULT:-}
+    SIM_SYNTHETIC_WALL_DELAY_MS: ${SIM_SYNTHETIC_WALL_DELAY_MS:-0}
+  volumes:
+    - type: bind
+      source: ${SIM_RUN_DIRECTORY:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001}
+      target: ${SIM_RUN_DIRECTORY:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001}
+      read_only: false
+    - type: bind
+      source: ${SIM_CONFIG_PATH:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001/configuration/run.json}
+      target: ${SIM_CONFIG_PATH:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001/configuration/run.json}
+      read_only: true
+
 services:
   foundation:
     init: true
@@ -7,3 +27,80 @@ services:
     environment:
       SIM_RUN_ID: ${SIM_RUN_ID:-00000000-0000-4000-8000-000000000001}
       SIM_OUTPUT_ROOT: ${SIM_OUTPUT_ROOT:-/output}
+
+  orchestration-runtime:
+    <<: *phase2-defaults
+    build:
+      context: .
+      dockerfile: orchestration/Dockerfile
+      target: runtime
+    environment:
+      <<: *phase2-environment
+      SIM_MODULE: orchestration
+    command: ["python3", "-m", "orchestration.runtime_node"]
+
+  artifacts-runtime:
+    <<: *phase2-defaults
+    build:
+      context: .
+      dockerfile: artifacts/Dockerfile
+      target: runtime
+    environment:
+      <<: *phase2-environment
+      SIM_MODULE: artifacts
+    command: ["python3", "-m", "artifacts.runtime_node"]
+
+  synthetic-companion:
+    <<: *phase2-defaults
+    build:
+      context: .
+      dockerfile: tests/phase2/Dockerfile
+      target: runtime
+    environment:
+      <<: *phase2-environment
+      SIM_MODULE: companion
+    command: ["python3", "/opt/drone_sim/phase2/module_stub.py", "companion"]
+
+  synthetic-ardupilot-sitl:
+    <<: *phase2-defaults
+    build:
+      context: .
+      dockerfile: tests/phase2/Dockerfile
+      target: runtime
+    environment:
+      <<: *phase2-environment
+      SIM_MODULE: ardupilot_sitl
+    command: ["python3", "/opt/drone_sim/phase2/module_stub.py", "ardupilot_sitl"]
+
+  synthetic-gazebo:
+    <<: *phase2-defaults
+    build:
+      context: .
+      dockerfile: tests/phase2/Dockerfile
+      target: runtime
+    environment:
+      <<: *phase2-environment
+      SIM_MODULE: gazebo
+    command: ["python3", "/opt/drone_sim/phase2/synthetic_gazebo.py"]
+
+  synthetic-electromagnet:
+    <<: *phase2-defaults
+    build:
+      context: .
+      dockerfile: tests/phase2/Dockerfile
+      target: runtime
+    environment:
+      <<: *phase2-environment
+      SIM_MODULE: electromagnet
+    command: ["python3", "/opt/drone_sim/phase2/synthetic_electromagnet.py"]
+
+  synthetic-scorekeeper:
+    <<: *phase2-defaults
+    build:
+      context: .
+      dockerfile: tests/phase2/Dockerfile
+      target: runtime
+    environment:
+      <<: *phase2-environment
+      SIM_MODULE: scorekeeper
+    command: ["python3", "/opt/drone_sim/phase2/synthetic_scorekeeper.py"]
