@@ -17,19 +17,38 @@ from uuid import uuid4
 class OutputFacts:
     json_exchange: bool = False
     mavlink_listening: bool = False
-    peer_lost: bool = False
 
     @property
     def ready(self) -> bool:
-        return self.json_exchange and self.mavlink_listening and not self.peer_lost
+        return self.json_exchange and self.mavlink_listening
 
-    def observe(self, line: str) -> None:
+    def observe(self, line: str) -> bool:
         if "bind port 5760" in line:
             self.mavlink_listening = True
         if "JSON received:" in line:
             self.json_exchange = True
-        if self.json_exchange and "No JSON sensor message received, resending servos" in line:
-            self.peer_lost = True
+        return (
+            self.json_exchange
+            and "No JSON sensor message received, resending servos" in line
+        )
+
+
+@dataclass(frozen=True)
+class DurableLifecycle:
+    running: bool
+    source_finished: bool = False
+    finalize_started: bool = False
+
+
+def json_peer_loss_is_fatal(
+    *, missing_json_after_exchange: bool, lifecycle: DurableLifecycle
+) -> bool:
+    return (
+        missing_json_after_exchange
+        and lifecycle.running
+        and not lifecycle.source_finished
+        and not lifecycle.finalize_started
+    )
 
 
 class EventWriter:
