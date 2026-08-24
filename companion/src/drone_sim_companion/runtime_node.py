@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 
 from artifacts.runtime_protocol import RuntimeProtocol
 
-from .controller import MissionController
+from .controller import MissionController, process_telemetry
 from .lifecycle import CompanionLifecycle
 from .mavlink_adapter import MavlinkAdapter
 from .mission import MissionPhase, MissionState
@@ -155,6 +155,7 @@ def main() -> int:
     rclpy.init()
     node = Node("drone_sim_companion", parameter_overrides=[])
     latest_clock_ns: int | None = None
+    mission_running = False
     finalizing = False
     requested_stop = False
     failure: str | None = None
@@ -172,8 +173,12 @@ def main() -> int:
         latest_clock_ns = value
 
     def state_callback(message: Any) -> None:
-        nonlocal finalizing
-        if message.run_id == config.run_id and message.state == RunState.FINALIZING:
+        nonlocal finalizing, mission_running
+        if message.run_id != config.run_id:
+            return
+        if message.state == RunState.RUNNING:
+            mission_running = True
+        elif message.state == RunState.FINALIZING:
             finalizing = True
 
     node.create_subscription(
@@ -199,13 +204,19 @@ def main() -> int:
     try:
         while rclpy.ok() and not requested_stop and not finalizing:
             rclpy.spin_once(node, timeout_sec=0.02)
-            if latest_clock_ns is not None and failure is None:
+            if failure is None:
                 try:
                     for _ in range(100):
-                        telemetry = vehicle.poll(latest_clock_ns)
+                        telemetry = vehicle.poll(
+                            latest_clock_ns if latest_clock_ns is not None else 0
+                        )
                         if telemetry is None:
                             break
-                        controller.consume(telemetry)
+                        process_telemetry(
+                            controller,
+                            telemetry,
+                            mission_running=mission_running,
+                        )
                 except Exception as error:
                     failure = f"MAVLink processing failed: {error}"
             if controller.ready and not telemetry_requested and failure is None:

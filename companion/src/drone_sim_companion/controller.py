@@ -22,13 +22,17 @@ class MissionController:
         self.state = MissionState.initial()
         self.ready = False
 
+    def observe_readiness(self, telemetry: Telemetry) -> None:
+        """Latch the infrastructure heartbeat without advancing mission policy."""
+        if telemetry.heartbeat and not self.ready:
+            self.ready = True
+            self._emit("heartbeat_observed", telemetry.timestamp_ns, {})
+
     def consume(self, telemetry: Telemetry) -> None:
         previous = self.state
         if previous.phase in {MissionPhase.FAILED, MissionPhase.LANDED}:
             return
-        if telemetry.heartbeat and not self.ready:
-            self.ready = True
-            self._emit("heartbeat_observed", telemetry.timestamp_ns, {})
+        self.observe_readiness(telemetry)
         transition = advance(previous, telemetry)
         for command in transition.commands:
             self._vehicle.send(command.kind, command.altitude_m)
@@ -52,4 +56,17 @@ class MissionController:
             self._emit(event.name, event.timestamp_ns, dict(event.fields))
 
 
-__all__ = ["MissionController", "VehicleCommands"]
+def process_telemetry(
+    controller: MissionController,
+    telemetry: Telemetry,
+    *,
+    mission_running: bool,
+) -> None:
+    """Separate pre-clock readiness from RUNNING mission transitions."""
+    if mission_running:
+        controller.consume(telemetry)
+    else:
+        controller.observe_readiness(telemetry)
+
+
+__all__ = ["MissionController", "VehicleCommands", "process_telemetry"]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from drone_sim_companion.controller import MissionController
+from drone_sim_companion.controller import MissionController, process_telemetry
 from drone_sim_companion.mission import Ack, CommandKind, MissionPhase, Telemetry
 
 
@@ -12,6 +12,38 @@ class FakeVehicle:
 
     def send(self, command: CommandKind, altitude_m: float | None) -> None:
         self.sent.append((command, altitude_m))
+
+
+def test_pre_run_heartbeat_makes_runtime_ready_without_starting_mission() -> None:
+    vehicle = FakeVehicle()
+    records: list[tuple[str, int, dict[str, object]]] = []
+    controller = MissionController(
+        vehicle, lambda name, stamp, fields: records.append((name, stamp, fields))
+    )
+
+    process_telemetry(
+        controller,
+        Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False),
+        mission_running=False,
+    )
+
+    assert controller.ready
+    assert controller.state.phase is MissionPhase.WAIT_HEARTBEAT
+    assert vehicle.sent == []
+    assert records == [("heartbeat_observed", 0, {})]
+
+    process_telemetry(
+        controller,
+        Telemetry(50_000_000, heartbeat=True, mode="STABILIZE", armed=False),
+        mission_running=True,
+    )
+
+    assert controller.state.phase is MissionPhase.WAIT_GUIDED_ACK
+    assert vehicle.sent == [(CommandKind.SET_GUIDED, None)]
+    assert [name for name, _stamp, _fields in records] == [
+        "heartbeat_observed",
+        "command_issued",
+    ]
 
 
 def test_fake_vehicle_receives_the_complete_controlled_descent_sequence() -> None:
