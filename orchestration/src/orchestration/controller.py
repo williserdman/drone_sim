@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -289,6 +289,8 @@ class _HostEventLog:
             | getattr(os, "O_NOFOLLOW", 0),
         )
         try:
+            os.mkdir("docker", 0o755, dir_fd=self._logs_fd)
+            os.fsync(self._logs_fd)
             self._descriptor = os.open(
                 "orchestration-host.jsonl.partial",
                 os.O_WRONLY
@@ -486,10 +488,16 @@ class RunController:
             return TerminalCause("child_process", "compose_ps_failed")
         try:
             decoded = result.output.decode("utf-8")
+        except UnicodeDecodeError:
+            return TerminalCause("child_process", "compose_ps_invalid")
+        try:
             value = json.loads(decoded)
             rows = value if isinstance(value, list) else [value]
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return TerminalCause("child_process", "compose_ps_invalid")
+        except json.JSONDecodeError:
+            try:
+                rows = [json.loads(line) for line in decoded.splitlines() if line]
+            except json.JSONDecodeError:
+                return TerminalCause("child_process", "compose_ps_invalid")
         if not rows or any(
             not isinstance(row, dict)
             or not isinstance(row.get("Service"), str)
@@ -690,17 +698,39 @@ class RunController:
             return None, None, None, ()
         achieved = document.get("achieved_score")
         maximum = document.get("maximum_available_score")
-        if isinstance(achieved, bool) or not isinstance(achieved, (int, float)):
-            achieved = None
-        if isinstance(maximum, bool) or not isinstance(maximum, (int, float)):
-            maximum = None
+        if (
+            isinstance(achieved, bool)
+            or not isinstance(achieved, (int, float))
+            or not math.isfinite(achieved)
+            or isinstance(maximum, bool)
+            or not isinstance(maximum, (int, float))
+            or not math.isfinite(maximum)
+        ):
+            return None, None, None, ()
         evidence = document.get("evidence_paths", [])
-        if not isinstance(evidence, list) or any(not isinstance(item, str) for item in evidence):
-            evidence = []
+        scoring_checksum = document.get("scoring_checksum")
+        if (
+            not isinstance(scoring_checksum, str)
+            or _SHA256_PATTERN.fullmatch(scoring_checksum) is None
+            or not isinstance(evidence, list)
+            or any(not isinstance(item, str) for item in evidence)
+            or len(evidence) != len(set(evidence))
+        ):
+            return None, None, None, ()
+        for item in evidence:
+            relative_value = item.split("#", 1)[0]
+            relative = Path(relative_value)
+            if (
+                not relative_value
+                or relative.is_absolute()
+                or ".." in relative.parts
+                or relative.as_posix() != relative_value
+            ):
+                return None, None, None, ()
         return (
             achieved,
             maximum,
-            hashlib.sha256(payload).hexdigest(),
+            scoring_checksum,
             tuple(evidence),
         )
 
@@ -738,6 +768,49 @@ class RunController:
         if not isinstance(value, dict):
             raise ControllerError("manifest is not a JSON object")
         return value
+
+    @staticmethod
+    def _remove_captured_host_events(run_directory: Path) -> None:
+        """Remove the closed host source after its structured log is published."""
+        logs_fd = os.open(
+            run_directory / "logs",
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        descriptor: int | None = None
+        try:
+            name = "orchestration-host.jsonl.partial"
+            before = os.stat(name, dir_fd=logs_fd, follow_symlinks=False)
+            if (
+                stat.S_ISLNK(before.st_mode)
+                or not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+            ):
+                raise ControllerError("captured host event source is unsafe")
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=logs_fd,
+            )
+            opened = os.fstat(descriptor)
+            if (before.st_dev, before.st_ino, before.st_size) != (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+            ):
+                raise ControllerError("captured host event source changed while opening")
+            os.close(descriptor)
+            descriptor = None
+            os.unlink(name, dir_fd=logs_fd)
+            os.fsync(logs_fd)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(logs_fd)
 
     def start(self, config_path: Path | str) -> RunResult:
         try:
@@ -936,6 +1009,7 @@ class RunController:
                         deadline_check=work_deadline_check,
                     )
                     capture.capture()
+                    self._remove_captured_host_events(run_directory)
                 except KeyboardInterrupt:
                     requested = "ABORTED"
                     reason = "operator_interrupt"

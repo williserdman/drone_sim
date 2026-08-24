@@ -100,12 +100,22 @@ def _file_facts(path: Path) -> tuple[int, str]:
 
 
 def _complete_runtime_outputs(run_directory: Path, *, report_mutator=None) -> None:
+    scoring_checksum = "c" * 64
     payloads = {
         "gazebo/server.log": b"fixture gazebo log",
         "video/onboard.mp4": b"valid onboard h264 fixture",
         "video/observer.mp4": b"valid observer h264 fixture",
         "scoring/events.jsonl": b'{"event":"landed"}\n',
-        "scoring/result.json": b'{"achieved_score":100,"maximum_available_score":100}',
+        "scoring/result.json": json.dumps(
+            {
+                "achieved_score": 100,
+                "maximum_available_score": 100,
+                "scoring_checksum": scoring_checksum,
+                "evidence_paths": ["scoring/events.jsonl"],
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode(),
     }
     for relative_path, payload in payloads.items():
         target = run_directory / relative_path
@@ -140,6 +150,59 @@ def _complete_runtime_outputs(run_directory: Path, *, report_mutator=None) -> No
     if report_mutator is not None:
         report_mutator(report)
     _write_json(run_directory / ".status/artifacts-final.json", report)
+
+
+def test_score_metadata_consumes_declared_checksum_and_safe_evidence_paths(tmp_path):
+    run_directory = tmp_path / "run"
+    result = run_directory / "scoring/result.json"
+    result.parent.mkdir(parents=True)
+    result.write_text(
+        json.dumps(
+            {
+                "achieved_score": 0.0,
+                "maximum_available_score": 0.0,
+                "scoring_checksum": "d" * 64,
+                "evidence_paths": ["scoring/events.jsonl#event-0"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert RunController()._score_metadata(run_directory) == (
+        0.0,
+        0.0,
+        "d" * 64,
+        ("scoring/events.jsonl#event-0",),
+    )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"scoring_checksum": "D" * 64},
+        {"scoring_checksum": "d" * 63},
+        {"evidence_paths": ["../outside"]},
+        {"evidence_paths": ["/absolute"]},
+        {"evidence_paths": ["scoring/events.jsonl", "scoring/events.jsonl"]},
+        {"evidence_paths": [{}]},
+        {"achieved_score": None},
+        {"maximum_available_score": float("inf")},
+    ],
+)
+def test_score_metadata_rejects_invalid_provenance_document(tmp_path, updates):
+    run_directory = tmp_path / "run"
+    result = run_directory / "scoring/result.json"
+    result.parent.mkdir(parents=True)
+    document = {
+        "achieved_score": 0.0,
+        "maximum_available_score": 0.0,
+        "scoring_checksum": "d" * 64,
+        "evidence_paths": ["scoring/events.jsonl"],
+    }
+    document.update(updates)
+    result.write_text(json.dumps(document), encoding="utf-8")
+
+    assert RunController()._score_metadata(run_directory) == (None, None, None, ())
 
 
 class FakeClock:
@@ -477,6 +540,17 @@ def test_compose_health_requires_exact_seven_unique_running_services(rows, reaso
     assert cause.reason == reason
 
 
+def test_compose_health_accepts_real_compose_ndjson_ps_output():
+    output = b"\n".join(
+        json.dumps(
+            {"Service": service, "State": "running", "Health": "healthy"}
+        ).encode()
+        for service in SERVICES
+    )
+
+    assert RunController._ps_cause(ComposeCommandResult(0, output)) is None
+
+
 def test_compose_log_runner_validates_frozen_command_and_augments_project_directory(tmp_path):
     calls = []
 
@@ -681,7 +755,8 @@ def test_completed_controller_executes_frozen_order_commits_manifest_then_tears_
     assert manifest["image_digests"] == [{"name": "phase2", "digest": SHA_A}]
     assert holder["value"].down_timeouts[0] > 0
 
-    host_lines = (run_directory / "logs/orchestration-host.jsonl.partial").read_text().splitlines()
+    assert not (run_directory / "logs/orchestration-host.jsonl.partial").exists()
+    host_lines = (run_directory / "logs/orchestration.jsonl").read_text().splitlines()
     assert host_lines
     assert all(
         set(json.loads(line))
@@ -1353,7 +1428,7 @@ def test_host_event_descriptor_close_failure_does_not_skip_remaining_cleanup(
         if target.startswith(run_directory):
             leaked.append(target)
     assert leaked == [
-        f"{run_directory}/logs/orchestration-host.jsonl.partial"
+        f"{run_directory}/logs/orchestration-host.jsonl.partial (deleted)"
     ]
 
 
