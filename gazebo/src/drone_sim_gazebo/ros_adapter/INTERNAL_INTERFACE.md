@@ -17,6 +17,14 @@ each stream and at most one aligned camera pair awaits ground truth. A second
 sample that would require queue growth raises `AdapterFault`; ground truth is
 never buffered as an independent pose stream.
 
+Every `AdapterFault` raised while accepting a native frame or ground-truth
+sample irreversibly latches the relevant sequence and adapter. All later
+acceptance and freeze attempts raise the same deterministic first-fault
+diagnostic. Cross-stream candidates are validated and compared with the
+unmatched peer before sequence counts or slots advance, so a rejected mismatch
+is not represented as accepted state. Constructor and pair-query validation do
+not mutate an existing adapter.
+
 `freeze()` succeeds only after exactly `expected_frames` aligned triples. It is
 idempotent, returns the same frozen `AdapterSummary`, and makes every later
 sample unacceptable. All returned collections and payloads are immutable

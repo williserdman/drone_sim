@@ -138,7 +138,7 @@ def _validate_vector(value: object, *, field: str, length: int) -> tuple:
         if (
             not isinstance(component, (int, float))
             or isinstance(component, bool)
-            or not math.isfinite(component)
+            or (isinstance(component, float) and not math.isfinite(component))
         ):
             raise AdapterFault(f"{field} values must be finite numbers")
     return value
@@ -178,6 +178,7 @@ class CameraSequence:
         self._accepted_frames = 0
         self._first_sim_timestamp_ns: int | None = None
         self._last_sim_timestamp_ns: int | None = None
+        self._fault_reason: str | None = None
 
     @property
     def accepted_frames(self) -> int:
@@ -185,19 +186,41 @@ class CameraSequence:
 
     @property
     def complete(self) -> bool:
-        return self._accepted_frames == self._expected_frames
+        return (
+            self._fault_reason is None
+            and self._accepted_frames == self._expected_frames
+        )
+
+    def _raise_if_faulted(self) -> None:
+        if self._fault_reason is not None:
+            raise AdapterFault(self._fault_reason)
+
+    def _latch(self, error: AdapterFault) -> None:
+        if self._fault_reason is None:
+            self._fault_reason = (
+                f"{self._stream} camera sequence faulted: {error}"
+            )
+        raise AdapterFault(self._fault_reason) from error
+
+    def _preflight(self, sample: NativeImage) -> NativeImage:
+        self._raise_if_faulted()
+        try:
+            sample = _validate_native_image(sample)
+            if self._accepted_frames == self._expected_frames:
+                raise AdapterFault(f"{self._stream} camera frame overrun")
+            if self._last_sim_timestamp_ns is not None:
+                delta_ns = sample.sim_timestamp_ns - self._last_sim_timestamp_ns
+                if delta_ns != _FRAME_INTERVAL_NS:
+                    raise AdapterFault(
+                        f"{self._stream} camera timestamps must advance by exactly "
+                        f"{_FRAME_INTERVAL_NS} ns"
+                    )
+        except AdapterFault as error:
+            self._latch(error)
+        return sample
 
     def accept(self, sample: NativeImage) -> PublicFrame:
-        sample = _validate_native_image(sample)
-        if self.complete:
-            raise AdapterFault(f"{self._stream} camera frame overrun")
-        if self._last_sim_timestamp_ns is not None:
-            delta_ns = sample.sim_timestamp_ns - self._last_sim_timestamp_ns
-            if delta_ns != _FRAME_INTERVAL_NS:
-                raise AdapterFault(
-                    f"{self._stream} camera timestamps must advance by exactly "
-                    f"{_FRAME_INTERVAL_NS} ns"
-                )
+        sample = self._preflight(sample)
 
         frame_id = self._accepted_frames
         if self._first_sim_timestamp_ns is None:
@@ -245,43 +268,63 @@ class AdapterModel:
         self._last_sim_timestamp_ns: int | None = None
         self._last_ground_truth_timestamp_ns: int | None = None
         self._summary: AdapterSummary | None = None
+        self._fault_reason: str | None = None
 
     @property
     def complete(self) -> bool:
         return (
-            all(sequence.complete for sequence in self._sequences.values())
+            self._fault_reason is None
+            and all(sequence.complete for sequence in self._sequences.values())
             and self._paired_frames == self._expected_frames
             and self._ground_truth_samples == self._expected_frames
             and self._pending_pair is None
             and all(frame is None for frame in self._unmatched_frames.values())
         )
 
+    def _raise_if_faulted(self) -> None:
+        if self._fault_reason is not None:
+            raise AdapterFault(self._fault_reason)
+
+    def _latch(self, error: AdapterFault) -> None:
+        if self._fault_reason is None:
+            self._fault_reason = f"adapter processing fault: {error}"
+        raise AdapterFault(self._fault_reason) from error
+
     def _require_open(self) -> None:
+        self._raise_if_faulted()
         if self._summary is not None:
             raise AdapterFault("adapter is frozen")
 
     def accept_frame(self, stream: str, sample: NativeImage) -> PublicFrame:
         self._require_open()
+        try:
+            return self._accept_frame(stream, sample)
+        except AdapterFault as error:
+            self._latch(error)
+
+    def _accept_frame(self, stream: str, sample: NativeImage) -> PublicFrame:
         stream = _validate_stream(stream)
         if self._pending_pair is not None:
             raise AdapterFault("aligned camera pair still awaits ground truth")
         if self._unmatched_frames[stream] is not None:
             raise AdapterFault(f"{stream} camera already has one unmatched frame")
 
-        frame = self._sequences[stream].accept(sample)
-        self._unmatched_frames[stream] = frame
+        sequence = self._sequences[stream]
+        sample = sequence._preflight(sample)
         other_stream = "observer" if stream == "onboard" else "onboard"
         other = self._unmatched_frames[other_stream]
-        if other is None:
-            return frame
-        if other.frame_id != frame.frame_id:
-            raise AdapterFault("camera pair IDs do not match")
-        if other.sim_timestamp_ns != frame.sim_timestamp_ns:
-            raise AdapterFault("camera pair timestamps do not match")
+        if other is not None:
+            if other.frame_id != sequence.accepted_frames:
+                raise AdapterFault("camera pair IDs do not match")
+            if other.sim_timestamp_ns != sample.sim_timestamp_ns:
+                raise AdapterFault("camera pair timestamps do not match")
 
-        self._pending_pair = (frame.frame_id, frame.sim_timestamp_ns)
-        self._unmatched_frames["onboard"] = None
-        self._unmatched_frames["observer"] = None
+        frame = sequence.accept(sample)
+        self._unmatched_frames[stream] = frame
+        if other is not None:
+            self._pending_pair = (frame.frame_id, frame.sim_timestamp_ns)
+            self._unmatched_frames["onboard"] = None
+            self._unmatched_frames["observer"] = None
         return frame
 
     def camera_pair_complete(self, frame_id: int, stamp_ns: int) -> bool:
@@ -294,6 +337,15 @@ class AdapterModel:
         sample: NativeGroundTruth,
     ) -> PublicGroundTruth:
         self._require_open()
+        try:
+            return self._accept_ground_truth(sample)
+        except AdapterFault as error:
+            self._latch(error)
+
+    def _accept_ground_truth(
+        self,
+        sample: NativeGroundTruth,
+    ) -> PublicGroundTruth:
         sample = _validate_native_ground_truth(sample)
         if (
             self._last_ground_truth_timestamp_ns is not None
@@ -328,6 +380,7 @@ class AdapterModel:
     def freeze(self) -> AdapterSummary:
         if self._summary is not None:
             return self._summary
+        self._raise_if_faulted()
         if not self.complete:
             raise AdapterFault(
                 "adapter completion requires exactly the expected aligned pairs"

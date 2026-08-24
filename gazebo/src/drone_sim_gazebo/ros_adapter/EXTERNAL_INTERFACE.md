@@ -19,5 +19,9 @@ ENU linear and angular velocity, and contact state pass through unchanged.
 There is no unrelated pose-rate public stream.
 
 Any malformed, duplicate, regressing, off-grid, overrun, misaligned, or
-post-freeze sample raises `AdapterFault`. Successful completion contains
-exactly the configured number of aligned camera/ground-truth pairs.
+post-freeze sample raises `AdapterFault`. Before freeze, the first native
+sample-processing fault permanently faults that sequence and the containing
+adapter: a later valid sample cannot replace the rejected input, and freeze
+cannot report success. Repeated attempts report the same first-fault
+diagnostic. Successful completion contains exactly the configured number of
+aligned camera/ground-truth pairs.

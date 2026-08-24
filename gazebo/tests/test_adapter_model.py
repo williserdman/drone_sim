@@ -154,6 +154,48 @@ def test_camera_sequence_rejects_frame_overrun():
         adapter.accept(native_image(stamp_ns=100_000_000))
 
 
+def test_camera_sequence_latches_timing_fault_and_rejects_valid_replacement():
+    adapter = CameraSequence(run_id=RUN_ID, stream="onboard", expected_frames=2)
+    adapter.accept(native_image(stamp_ns=50_000_000))
+
+    with pytest.raises(AdapterFault) as rejected:
+        adapter.accept(native_image(stamp_ns=50_000_000))
+    with pytest.raises(AdapterFault) as replacement:
+        adapter.accept(native_image(stamp_ns=100_000_000))
+
+    assert str(replacement.value) == str(rejected.value)
+    assert adapter.accepted_frames == 1
+    assert not adapter.complete
+
+
+def test_camera_sequence_latches_malformed_sample_before_advancing_count():
+    adapter = CameraSequence(run_id=RUN_ID, stream="observer", expected_frames=1)
+
+    with pytest.raises(AdapterFault) as rejected:
+        adapter.accept(native_image(width=319))
+    with pytest.raises(AdapterFault) as replacement:
+        adapter.accept(native_image())
+
+    assert str(replacement.value) == str(rejected.value)
+    assert adapter.accepted_frames == 0
+    assert not adapter.complete
+
+
+def test_camera_sequence_overrun_fault_revokes_complete_state_irreversibly():
+    adapter = CameraSequence(run_id=RUN_ID, stream="onboard", expected_frames=1)
+    adapter.accept(native_image(stamp_ns=50_000_000))
+    assert adapter.complete
+
+    with pytest.raises(AdapterFault) as rejected:
+        adapter.accept(native_image(stamp_ns=100_000_000))
+    with pytest.raises(AdapterFault) as replacement:
+        adapter.accept(native_image(stamp_ns=100_000_000))
+
+    assert str(replacement.value) == str(rejected.value)
+    assert adapter.accepted_frames == 1
+    assert not adapter.complete
+
+
 def test_public_frames_are_frozen_and_contain_only_immutable_payloads():
     adapter = CameraSequence(run_id=RUN_ID, stream="observer", expected_frames=1)
 
@@ -191,6 +233,37 @@ def test_adapter_rejects_mismatched_pair_timestamps():
 
     with pytest.raises(AdapterFault):
         adapter.accept_frame("observer", native_image(stamp_ns=100_000_000))
+
+
+def test_adapter_latches_pair_mismatch_without_accepting_valid_replacement():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=1)
+    onboard = adapter.accept_frame("onboard", native_image(stamp_ns=50_000_000))
+
+    with pytest.raises(AdapterFault) as rejected:
+        adapter.accept_frame("observer", native_image(stamp_ns=100_000_000))
+    with pytest.raises(AdapterFault) as replacement:
+        adapter.accept_frame("observer", native_image(stamp_ns=50_000_000))
+    with pytest.raises(AdapterFault) as frozen:
+        adapter.freeze()
+
+    assert onboard.frame_id == 0
+    assert not adapter.complete
+    assert not adapter.camera_pair_complete(0, 50_000_000)
+    assert str(replacement.value) == str(rejected.value) == str(frozen.value)
+
+
+def test_adapter_latches_malformed_frame_before_any_public_output():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=1)
+
+    with pytest.raises(AdapterFault) as rejected:
+        adapter.accept_frame("onboard", native_image(data=RGB_PAYLOAD[:-1]))
+    with pytest.raises(AdapterFault) as replacement:
+        adapter.accept_frame("onboard", native_image())
+    with pytest.raises(AdapterFault) as frozen:
+        adapter.freeze()
+
+    assert not adapter.complete
+    assert str(replacement.value) == str(rejected.value) == str(frozen.value)
 
 
 def test_adapter_bounds_each_unmatched_stream_to_one_frame():
@@ -233,6 +306,22 @@ def test_ground_truth_maps_world_enu_values_unchanged_once_pair_is_ready():
         in_contact=True,
     )
     assert adapter.complete
+
+
+def test_ground_truth_accepts_huge_finite_integers_without_validation_overflow():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=1)
+    accept_pair(adapter, 50_000_000)
+    huge = 10**1000
+
+    public = adapter.accept_ground_truth(
+        native_ground_truth(
+            position_xyz=(huge, -huge, 0),
+            linear_velocity_xyz=(0, huge, -huge),
+        )
+    )
+
+    assert public.position_xyz == (huge, -huge, 0)
+    assert public.linear_velocity_xyz == (0, huge, -huge)
 
 
 @pytest.mark.parametrize(
@@ -319,6 +408,23 @@ def test_ground_truth_rejects_duplicate_or_regressing_native_time(
         adapter.accept_ground_truth(native_ground_truth(second_truth_stamp))
 
 
+def test_adapter_latches_invalid_truth_and_rejects_valid_replacement():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=1)
+    accept_pair(adapter, 50_000_000)
+
+    with pytest.raises(AdapterFault) as rejected:
+        adapter.accept_ground_truth(
+            native_ground_truth(position_xyz=(math.nan, 2.0, 3.0))
+        )
+    with pytest.raises(AdapterFault) as replacement:
+        adapter.accept_ground_truth(native_ground_truth())
+    with pytest.raises(AdapterFault) as frozen:
+        adapter.freeze()
+
+    assert not adapter.complete
+    assert str(replacement.value) == str(rejected.value) == str(frozen.value)
+
+
 def test_ground_truth_requires_an_aligned_camera_pair_and_never_forms_pose_stream():
     adapter = AdapterModel(run_id=RUN_ID, expected_frames=1)
 
@@ -332,6 +438,21 @@ def test_adapter_freeze_requires_exact_expected_aligned_pairs():
 
     with pytest.raises(AdapterFault):
         adapter.freeze()
+
+
+def test_adapter_overrun_fault_prevents_successful_freeze():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=1)
+    accept_pair(adapter, 50_000_000)
+    adapter.accept_ground_truth(native_ground_truth())
+    assert adapter.complete
+
+    with pytest.raises(AdapterFault) as rejected:
+        adapter.accept_frame("onboard", native_image(100_000_000))
+    with pytest.raises(AdapterFault) as frozen:
+        adapter.freeze()
+
+    assert not adapter.complete
+    assert str(frozen.value) == str(rejected.value)
 
 
 def test_adapter_freeze_is_idempotent_and_returns_frozen_exact_summary():
