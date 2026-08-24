@@ -18,12 +18,16 @@
   depth: 10
   reliability: best_effort
   durability: volatile
-/simulation/scenario_events: &event_qos
+/simulation/scenario_events:
   history: keep_last
   depth: 100
   reliability: reliable
   durability: transient_local
-/simulation/score_events: *event_qos
+/simulation/score_events:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
 /camera/onboard/image_raw: &image_qos
   history: keep_last
   depth: 5
