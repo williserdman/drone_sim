@@ -37,6 +37,43 @@ def test_transport_discovers_actual_phase3_topics_and_control_service():
     assert all(call[1]["env"] == {"GZ_PARTITION": "p"} for call in calls)
 
 
+def test_flight_transport_discovers_and_controls_the_flight_world():
+    """Using the passive world endpoint would falsely report the flight server ready."""
+    contact = (
+        "/world/vertical_descent/model/ground_plane/link/ground_link/sensor/"
+        "iris_ground_contact/contact"
+    )
+    outputs = {
+        ("gz", "topic", "-l"): "\n".join(
+            (
+                "/clock",
+                "/gazebo/private/camera/onboard/image",
+                "/gazebo/private/camera/observer/image",
+                "/gazebo/private/iris/odometry",
+                contact,
+            )
+        ),
+        ("gz", "service", "-l"): "/world/vertical_descent/control\n",
+    }
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((tuple(argv), kwargs))
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": outputs.get(tuple(argv), "data: true"), "stderr": ""},
+        )()
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+    transport.assert_ready()
+    transport.request_steps(1)
+
+    assert "/world/vertical_descent/control" in calls[-1][0]
+
+
 def test_transport_names_missing_actual_endpoint():
     def run(argv, **_kwargs):
         output = "/clock\n" if argv[1] == "topic" else "/world/phase3_foundation/control\n"

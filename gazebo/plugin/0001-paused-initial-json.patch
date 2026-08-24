@@ -1,0 +1,80 @@
+diff --git a/src/ArduPilotPlugin.cc b/src/ArduPilotPlugin.cc
+index 8309c37..d6cdd12 100755
+--- a/src/ArduPilotPlugin.cc
++++ b/src/ArduPilotPlugin.cc
+@@ -368,6 +368,9 @@ class gz::sim::systems::ArduPilotPluginPrivate
+   /// \brief Last sent JSON string, so we can resend if needed.
+   public: std::string json_str;
+ 
++  /// \brief True after the paused startup state has been sent once.
++  public: bool initialStateSent{false};
++
+   /// \brief A copy of the most recently received signal.
+   public: int signal{0};
+ 
+@@ -1197,6 +1200,14 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
+     }
+     else
+     {
++        // Bootstrap the JSON peer without advancing simulation physics. Gazebo
++        // continues system updates while paused, so accept only the initial
++        // servo datagram here; motor forces remain in the unpaused path below.
++        if (_info.paused)
++        {
++            this->ReceiveServoPacket();
++        }
++
+         // Update the control surfaces.
+         if (!_info.paused && _info.simTime >
+             this->dataPtr->lastControllerUpdateTime)
+@@ -1238,16 +1249,25 @@ void gz::sim::systems::ArduPilotPlugin::PostUpdate(
+ {
+     std::lock_guard<std::mutex> lock(this->dataPtr->mutex);
+ 
+-    // Publish the new state.
+-    if (!_info.paused && _info.simTime > this->dataPtr->lastControllerUpdateTime
+-        && this->dataPtr->arduPilotOnline)
++    const bool initialPausedState = _info.paused &&
++        this->dataPtr->arduPilotOnline && !this->dataPtr->initialStateSent;
++    const bool runningState = !_info.paused &&
++        _info.simTime > this->dataPtr->lastControllerUpdateTime &&
++        this->dataPtr->arduPilotOnline;
++
++    // Publish once at t=0 for peer readiness, then only after running updates.
++    if (initialPausedState || runningState)
+     {
+         double t =
+             std::chrono::duration_cast<std::chrono::duration<double>>(
+                 _info.simTime).count();
+-        this->CreateStateJSON(t, _ecm);
++        this->CreateStateJSON(initialPausedState ? 0.0 : t, _ecm);
+         this->SendState();
+-        this->dataPtr->lastControllerUpdateTime = _info.simTime;
++        this->dataPtr->initialStateSent = true;
++        if (!_info.paused)
++        {
++            this->dataPtr->lastControllerUpdateTime = _info.simTime;
++        }
+     }
+ }
+ 
+@@ -1721,12 +1741,16 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+     gz::msgs::IMU imuMsg;
+     {
+         std::lock_guard<std::mutex> lock(this->dataPtr->imuMsgMutex);
+-        // Wait until we've received a valid message.
+-        if (!this->dataPtr->imuMsgValid)
++        // A paused world has no IMU sample yet. Permit a single all-zero IMU
++        // bootstrap packet at t=0; running updates still require real sensor data.
++        if (!this->dataPtr->imuMsgValid && _simTime != 0.0)
+         {
+             return;
+         }
+-        imuMsg = this->dataPtr->imuMsg;
++        if (this->dataPtr->imuMsgValid)
++        {
++            imuMsg = this->dataPtr->imuMsg;
++        }
+     }
+ 
+     // it is assumed that the imu orientation conforms to the

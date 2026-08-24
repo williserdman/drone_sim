@@ -7,6 +7,7 @@ ARG ROS_GZ_INTERFACES_PACKAGE=ros-jazzy-ros-gz-interfaces=1.0.22-1noble.20260615
 ARG ROS_GZ_SIM_PACKAGE=ros-jazzy-ros-gz-sim=1.0.22-1noble.20260615.173223
 ARG GZ_SIM_VENDOR_PACKAGE=ros-jazzy-gz-sim-vendor=0.0.10-1noble.20260604.111001
 ARG SDFORMAT_VENDOR_PACKAGE=ros-jazzy-sdformat-vendor=0.0.11-1noble.20260604.104102
+ARG ARDUPILOT_GAZEBO_COMMIT=082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5
 
 COPY gazebo/harmonic-packages.lock /etc/drone_sim/harmonic-packages.lock
 RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
@@ -42,11 +43,37 @@ RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
         /tmp/harmonic-expected-delta \
     && rm -rf /var/lib/apt/lists/*
 
+COPY gazebo/plugin/CMakeLists.txt /tmp/ardupilot_gazebo-build/CMakeLists.txt
+COPY gazebo/plugin/0001-paused-initial-json.patch /tmp/ardupilot_gazebo-build/0001-paused-initial-json.patch
+RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5" \
+    && git init /tmp/ardupilot_gazebo \
+    && git -C /tmp/ardupilot_gazebo remote add origin https://github.com/ArduPilot/ardupilot_gazebo.git \
+    && git -C /tmp/ardupilot_gazebo fetch --depth=1 origin "${ARDUPILOT_GAZEBO_COMMIT}" \
+    && git -C /tmp/ardupilot_gazebo checkout --detach FETCH_HEAD \
+    && test "$(git -C /tmp/ardupilot_gazebo rev-parse HEAD)" = "${ARDUPILOT_GAZEBO_COMMIT}" \
+    && git -C /tmp/ardupilot_gazebo apply \
+        /tmp/ardupilot_gazebo-build/0001-paused-initial-json.patch \
+    && bash -lc 'source /opt/ros/jazzy/setup.bash \
+        && export GZ_VERSION=harmonic \
+        && cmake -S /tmp/ardupilot_gazebo-build \
+            -B /tmp/ardupilot_gazebo/build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DARDUPILOT_GAZEBO_SOURCE=/tmp/ardupilot_gazebo \
+        && cmake --build /tmp/ardupilot_gazebo/build \
+            --target ArduPilotPlugin --parallel 2' \
+    && mkdir -p /opt/drone_sim/gazebo/plugins \
+    && cp /tmp/ardupilot_gazebo/build/libArduPilotPlugin.so \
+        /opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so \
+    && printf '%s\n' "${ARDUPILOT_GAZEBO_COMMIT}" \
+        > /opt/drone_sim/gazebo/plugins/ardupilot_gazebo-revision.txt \
+    && rm -rf /tmp/ardupilot_gazebo
+
 COPY artifacts orchestration gazebo ros_ws/src/simulation_interfaces /opt/drone_sim/source/
 RUN mkdir -p /opt/drone_sim/gazebo /etc/drone_sim \
     && cp -a /opt/drone_sim/source/resources /opt/drone_sim/gazebo/resources \
     && cp -a /opt/drone_sim/source/provenance /opt/drone_sim/gazebo/provenance \
     && cp /opt/drone_sim/source/config/bridge.yaml /etc/drone_sim/gazebo-bridge.yaml \
+    && cp /opt/drone_sim/source/config/bridge-flight.yaml /etc/drone_sim/gazebo-bridge-flight.yaml \
     && python3 -m venv --system-site-packages /opt/drone_sim/venv \
     && /opt/drone_sim/venv/bin/pip install \
         --no-cache-dir \
@@ -70,10 +97,13 @@ ENV VIRTUAL_ENV=/opt/drone_sim/venv \
     LD_LIBRARY_PATH="/opt/drone_sim/ros_ws/install/simulation_interfaces/lib:/opt/ros/jazzy/lib" \
     PYTHONPATH="/opt/drone_sim/ros_ws/install/simulation_interfaces/lib/python3.12/site-packages"
 
+LABEL org.opencontainers.image.ardupilot_gazebo.revision="082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5"
+
 # Source ROS before replacing PID 1 with the caller's argv. Runtime code is
 # added in Task 5; this stage already owns the immutable runtime supply chain.
 ENTRYPOINT ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && source /opt/drone_sim/ros_ws/install/simulation_interfaces/share/simulation_interfaces/local_setup.bash && export PYTHONPATH=/opt/drone_sim/ros_ws/install/simulation_interfaces/lib/python3.12/site-packages:${PYTHONPATH} && export LD_LIBRARY_PATH=/opt/drone_sim/ros_ws/install/simulation_interfaces/lib:${LD_LIBRARY_PATH} && exec \"$@\"", "--"]
 
 FROM runtime AS test
 
-CMD ["/opt/drone_sim/source/tests/test_gazebo_image"]
+COPY gazebo/tests/test_gazebo_image /opt/drone_sim/image-tests/test_gazebo_image
+CMD ["/opt/drone_sim/image-tests/test_gazebo_image"]

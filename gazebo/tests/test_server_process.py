@@ -55,6 +55,27 @@ def _resolved_world(tmp_path: Path) -> ResolvedWorld:
     )
 
 
+def _resolved_flight_world(tmp_path: Path) -> ResolvedWorld:
+    resources = tmp_path / "flight image resources"
+    models = resources / "models"
+    worlds = resources / "worlds"
+    models.mkdir(parents=True)
+    worlds.mkdir()
+    world = worlds / "vertical_descent.sdf"
+    world.write_text("<sdf version='1.10'/>", encoding="utf-8")
+    return ResolvedWorld(
+        path=world.resolve(),
+        world_name="vertical_descent",
+        vehicle_id="iris_flight",
+        resource_path=models.resolve(),
+        world_sha256=WORLD_DIGEST,
+        resource_sha256s=(
+            ("models/iris_flight/model.sdf", MODEL_DIGEST),
+            ("worlds/vertical_descent.sdf", WORLD_DIGEST),
+        ),
+    )
+
+
 def _spec(tmp_path: Path, *, seed: int = 9) -> ServerSpec:
     return server_spec(
         run_id=RUN_ID,
@@ -259,6 +280,21 @@ def test_server_spec_is_paused_local_partitioned_and_records_native_state(tmp_pa
         spec.environment["GZ_PARTITION"] = "hostile"  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         spec.argv = ()  # type: ignore[misc]
+
+
+def test_flight_server_spec_adds_only_the_pinned_plugin_directory(tmp_path: Path):
+    """Omitting the image-owned plugin path would make the flight world load passively."""
+    spec = server_spec(
+        run_id=RUN_ID,
+        run_directory=_run_directory(tmp_path),
+        resolved_world=_resolved_flight_world(tmp_path),
+        config=SimulationConfig(9, 2_000_000_000, 0.1),
+    )
+
+    assert spec.argv[-1].endswith("/worlds/vertical_descent.sdf")
+    assert spec.environment["GZ_SIM_SYSTEM_PLUGIN_PATH"] == (
+        "/opt/drone_sim/gazebo/plugins"
+    )
 
 
 def test_server_spec_ignores_hostile_ambient_environment(tmp_path: Path, monkeypatch):

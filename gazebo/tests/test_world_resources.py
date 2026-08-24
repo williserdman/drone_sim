@@ -19,6 +19,8 @@ MODEL = MODEL_RESOURCES / "iris_phase3/model.sdf"
 WORLD = RESOURCES / "worlds/phase3_foundation.sdf"
 
 EXPECTED_RESOURCE_PATHS = (
+    "models/iris_flight/model.config",
+    "models/iris_flight/model.sdf",
     "models/iris_phase3/meshes/iris.dae",
     "models/iris_phase3/meshes/iris_collision.stl",
     "models/iris_phase3/meshes/iris_prop_ccw.dae",
@@ -26,6 +28,7 @@ EXPECTED_RESOURCE_PATHS = (
     "models/iris_phase3/model.config",
     "models/iris_phase3/model.sdf",
     "worlds/phase3_foundation.sdf",
+    "worlds/vertical_descent.sdf",
 )
 
 

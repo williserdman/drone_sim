@@ -1,0 +1,14 @@
+{
+  "build_target": "ArduPilotPlugin",
+  "downstream_patches": [
+    {
+      "path": "gazebo/plugin/0001-paused-initial-json.patch",
+      "purpose": "exchange initial sensor JSON while simulation stays paused"
+    }
+  ],
+  "gazebo_release": "harmonic",
+  "installed_library": "/opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so",
+  "license": "LGPL-3.0-only",
+  "origin": "https://github.com/ArduPilot/ardupilot_gazebo.git",
+  "revision": "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5"
+}

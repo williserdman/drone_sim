@@ -42,15 +42,11 @@ ros2 pkg prefix simulation_interfaces
 python3 -c 'import drone_sim_gazebo.runtime.runtime_node; from simulation_interfaces.msg import FrameMetadata, GroundTruth, RunState'
 test -x /opt/drone_sim/venv/bin/drone-sim-gazebo-runtime
 test -s /etc/drone_sim/gazebo-bridge.yaml
-python3 -m pytest -q /opt/drone_sim/source/tests/test_adapter_node.py
-
-# Phase 3 must not contain an ArduPilotPlugin shared library.
-plugin_path="$(
-    find /lib /opt /usr -type f -iname '*ardupilot*plugin*.so*' -print -quit \
-        2>/dev/null
-)"
-if [[ -n "$plugin_path" ]]; then
-    printf 'forbidden ArduPilot plugin library: %s\n' "$plugin_path" >&2
-    exit 1
+test -s /etc/drone_sim/gazebo-bridge-flight.yaml
+test -s /opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so
+test "$(cat /opt/drone_sim/gazebo/plugins/ardupilot_gazebo-revision.txt)" = \
+  082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5
+if ldd /opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so | grep -q 'not found'; then
+  exit 1
 fi
-printf 'verified no ArduPilot plugin library\n'
+python3 -m pytest -q /opt/drone_sim/source/tests/test_adapter_node.py

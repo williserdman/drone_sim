@@ -360,9 +360,24 @@ def _sha256_regular(
 def resolve_world(
     config: WorldConfig, *, package_root: Path | None = None
 ) -> ResolvedWorld:
-    """Resolve the fixed local Phase 3 fixture and its stable resource hashes."""
-    if config != WorldConfig("phase3_foundation", "iris"):
-        raise ValueError("Phase 3 supports only phase3_foundation/iris")
+    """Resolve an approved local fixture and its stable resource hashes."""
+    supported_worlds = {
+        WorldConfig("phase3_foundation", "iris"): (
+            "phase3_foundation",
+            "iris",
+        ),
+        WorldConfig("vertical_descent", "iris_flight"): (
+            "vertical_descent",
+            "iris_flight",
+        ),
+    }
+    try:
+        world_name, vehicle_id = supported_worlds[config]
+    except KeyError:
+        raise ValueError(
+            "Phase 3 supports only phase3_foundation/iris or "
+            "vertical_descent/iris_flight"
+        )
 
     requested_root = (
         Path(package_root)
@@ -381,7 +396,8 @@ def resolve_world(
         raise ValueError("Gazebo resource root is not a directory")
 
     root = requested_root.resolve(strict=True)
-    world_path = (root / "worlds/phase3_foundation.sdf").resolve(strict=True)
+    world_relative_path = f"worlds/{world_name}.sdf"
+    world_path = (root / world_relative_path).resolve(strict=True)
     if not world_path.is_relative_to(root):
         raise ValueError("world path escapes the Gazebo resource root")
 
@@ -400,7 +416,7 @@ def resolve_world(
         )
         resource_hashes = dict(resource_sha256s)
         try:
-            world_sha256 = resource_hashes["worlds/phase3_foundation.sdf"]
+            world_sha256 = resource_hashes[world_relative_path]
         except KeyError as exc:
             raise ValueError("Phase 3 world is missing from resource snapshot") from exc
         if "models" not in {
@@ -410,8 +426,8 @@ def resolve_world(
         snapshot.verify()
         return ResolvedWorld(
             path=world_path,
-            world_name="phase3_foundation",
-            vehicle_id="iris",
+            world_name=world_name,
+            vehicle_id=vehicle_id,
             resource_path=root / "models",
             world_sha256=world_sha256,
             resource_sha256s=resource_sha256s,

@@ -25,14 +25,12 @@ from .model import (
 )
 
 
-_TOPICS = (
+_STATIC_TOPICS = (
     "/clock",
     "/gazebo/private/camera/onboard/image",
     "/gazebo/private/camera/observer/image",
     "/gazebo/private/iris/odometry",
-    "/world/phase3_foundation/model/ground_plane/link/ground_link/sensor/iris_ground_contact/contact",
 )
-_CONTROL = "/world/phase3_foundation/control"
 
 
 class TransportError(RuntimeError):
@@ -92,9 +90,17 @@ class GazeboTransport:
         self,
         *,
         environment: Mapping[str, str],
+        world_name: str = "phase3_foundation",
         run: Callable[..., object] = subprocess.run,
     ) -> None:
+        if world_name not in {"phase3_foundation", "vertical_descent"}:
+            raise ValueError("world_name must identify an approved local world")
         self._environment = dict(environment)
+        self._topics = _STATIC_TOPICS + (
+            f"/world/{world_name}/model/ground_plane/link/ground_link/sensor/"
+            "iris_ground_contact/contact",
+        )
+        self._control_service = f"/world/{world_name}/control"
         self._run = run
 
     def _command(self, argv: tuple[str, ...], *, timeout: float = 5.0):
@@ -117,12 +123,14 @@ class GazeboTransport:
 
     def assert_ready(self) -> None:
         topics = set(self._command(("gz", "topic", "-l")).stdout.splitlines())
-        for topic in _TOPICS:
+        for topic in self._topics:
             if topic not in topics:
                 raise TransportError(f"required Gazebo topic is missing: {topic}")
         services = set(self._command(("gz", "service", "-l")).stdout.splitlines())
-        if _CONTROL not in services:
-            raise TransportError(f"required Gazebo service is missing: {_CONTROL}")
+        if self._control_service not in services:
+            raise TransportError(
+                f"required Gazebo service is missing: {self._control_service}"
+            )
 
     def _control(self, request: str) -> None:
         result = self._command(
@@ -130,7 +138,7 @@ class GazeboTransport:
                 "gz",
                 "service",
                 "-s",
-                _CONTROL,
+                self._control_service,
                 "--reqtype",
                 "gz.msgs.WorldControl",
                 "--reptype",

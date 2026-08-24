@@ -7,12 +7,7 @@ from collections.abc import Callable
 from .aggregation import AggregationFault, NativeOdometry
 from .live import LiveAdapter
 from .model import AdapterFault, AdapterSummary, NativeImage, PublicFrame, PublicGroundTruth
-
-
-_CONTACT_TOPIC = (
-    "/world/phase3_foundation/model/ground_plane/link/ground_link/sensor/"
-    "iris_ground_contact/contact"
-)
+from .topics import contact_topic_for_world
 
 
 def _nanoseconds(stamp) -> int:
@@ -59,6 +54,7 @@ class GazeboAdapterNode(_node_base()):
         *,
         run_id: str,
         expected_frames: int,
+        world_name: str = "phase3_foundation",
         on_completed: Callable[[AdapterSummary], None] | None = None,
         on_fault: Callable[[str], None] | None = None,
     ) -> None:
@@ -70,6 +66,7 @@ class GazeboAdapterNode(_node_base()):
 
         super().__init__("drone_sim_gazebo_adapter")
         self._run_id = run_id
+        self._contact_topic = contact_topic_for_world(world_name)
         self._live = LiveAdapter(run_id=run_id, expected_frames=expected_frames)
         self._on_completed = on_completed or (lambda _summary: None)
         self._on_fault = on_fault or (lambda _reason: None)
@@ -119,7 +116,7 @@ class GazeboAdapterNode(_node_base()):
         )
         self.create_subscription(
             Contacts,
-            _CONTACT_TOPIC,
+            self._contact_topic,
             self._accept_contacts,
             _qos(10, reliable=False),
         )
@@ -131,7 +128,7 @@ class GazeboAdapterNode(_node_base()):
             "/gazebo/private/camera/onboard/image",
             "/gazebo/private/camera/observer/image",
             "/gazebo/private/iris/odometry",
-            _CONTACT_TOPIC,
+            self._contact_topic,
         )
         return all(self.count_publishers(topic) == 1 for topic in topics)
 

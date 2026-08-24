@@ -71,31 +71,35 @@ def test_complete_added_package_delta_is_compared_with_the_lock():
     assert "diff --unified" in dockerfile
 
 
-def test_runtime_copies_only_repository_local_gazebo_resources():
-    """Omitting the local resource root would force runtime model lookup elsewhere."""
+def test_runtime_copies_local_resources_and_only_fetches_the_pinned_plugin_source():
+    """Runtime resources stay local while the build fetch has one immutable origin."""
     dockerfile = _dockerfile().lower()
 
     assert "copy artifacts orchestration gazebo ros_ws/src/simulation_interfaces /opt/drone_sim/source/" in dockerfile
     assert "cp -a /opt/drone_sim/source/resources /opt/drone_sim/gazebo/resources" in dockerfile
     assert "gz_sim_resource_path=/opt/drone_sim/gazebo/resources" in dockerfile
     assert "http://" not in dockerfile
-    assert "https://" not in dockerfile
+    assert dockerfile.count("https://") == 1
+    assert "https://github.com/ardupilot/ardupilot_gazebo.git" in dockerfile
+    assert "fetch --depth=1 origin \"${ardupilot_gazebo_commit}\"" in dockerfile
+    assert "git -c /tmp/ardupilot_gazebo apply" in dockerfile
+    assert "0001-paused-initial-json.patch" in dockerfile
     assert "display=" not in dockerfile
 
 
-def test_test_target_proves_harmonic_bridge_and_plugin_absence_offline():
-    """A build that cannot self-identify Sim 8 or excludes the ROS bridge is unusable."""
+def test_test_target_proves_harmonic_bridge_and_pinned_plugin_offline():
+    """The image must self-identify Sim 8 and its pinned flight plugin offline."""
     dockerfile = _dockerfile()
     assert IMAGE_TEST.is_file(), "the offline image test executable is missing"
     image_test = IMAGE_TEST.read_text(encoding="utf-8")
 
     assert "FROM runtime AS test" in dockerfile
-    assert "/opt/drone_sim/source/tests/test_gazebo_image" in dockerfile
+    assert "/opt/drone_sim/image-tests/test_gazebo_image" in dockerfile
     assert "RUN <<" not in dockerfile
     assert "gz sim --versions" in image_test
     assert "ros2 pkg prefix ros_gz_bridge" in image_test
     assert "ArduPilotPlugin" in image_test
-    assert 'CMD ["/opt/drone_sim/source/tests/test_gazebo_image"]' in dockerfile
+    assert 'CMD ["/opt/drone_sim/image-tests/test_gazebo_image"]' in dockerfile
 
 
 def test_entrypoint_sources_the_cmake_installed_interface_package():

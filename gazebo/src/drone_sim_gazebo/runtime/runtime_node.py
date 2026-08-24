@@ -34,6 +34,7 @@ from .model import (
     RuntimeModel,
     ServerStopFailed,
 )
+from .paths import bridge_config_for_world
 
 
 _RUN_STATE_NAMES = (
@@ -158,7 +159,9 @@ def main() -> int:
         config=config.simulation,
     )
     server = GazeboServer(spec)
-    transport = GazeboTransport(environment=spec.environment)
+    transport = GazeboTransport(
+        environment=spec.environment, world_name=resolved.world_name
+    )
     startup_deadline = time.monotonic() + config.startup_wall_seconds
     _start_server_ready(
         server,
@@ -177,6 +180,7 @@ def main() -> int:
     adapter = GazeboAdapterNode(
         run_id=run_id,
         expected_frames=config.expected_camera_frames,
+        world_name=resolved.world_name,
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
         on_fault=lambda _reason: inbox.append(ChildExited(run_id, "adapter", 1)),
     )
@@ -188,7 +192,7 @@ def main() -> int:
     child_environment.update(spec.environment)
     children.start(
         gazebo_child_specs(
-            bridge_config=Path("/etc/drone_sim/gazebo-bridge.yaml"),
+            bridge_config=bridge_config_for_world(resolved.world_name),
             environment=child_environment,
         )
     )

@@ -99,7 +99,7 @@ _STATIC_ENVIRONMENT = MappingProxyType(
         "HOME": "/tmp",
     }
 )
-_ENVIRONMENT_KEYS = frozenset(
+_PASSIVE_ENVIRONMENT_KEYS = frozenset(
     {
         "PATH",
         "GZ_CONFIG_PATH",
@@ -109,6 +109,10 @@ _ENVIRONMENT_KEYS = frozenset(
         "GZ_SIM_RESOURCE_PATH",
     }
 )
+_FLIGHT_ENVIRONMENT_KEYS = _PASSIVE_ENVIRONMENT_KEYS | {
+    "GZ_SIM_SYSTEM_PLUGIN_PATH"
+}
+_FLIGHT_PLUGIN_PATH = "/opt/drone_sim/gazebo/plugins"
 _GROUP_POLL_SECONDS = 0.01
 
 
@@ -305,15 +309,19 @@ def _validate_config(config: object) -> SimulationConfig:
 def _validate_world(value: object) -> ResolvedWorld:
     if not isinstance(value, ResolvedWorld):
         raise TypeError("resolved_world must be a ResolvedWorld")
-    if (value.world_name, value.vehicle_id) != ("phase3_foundation", "iris"):
-        raise ValueError("server supports only phase3_foundation/iris")
+    if (value.world_name, value.vehicle_id) not in {
+        ("phase3_foundation", "iris"),
+        ("vertical_descent", "iris_flight"),
+    }:
+        raise ValueError("server supports only approved local Iris worlds")
     path = _safe_existing_path(value.path, field="world path", directory=False)
-    if path.name != "phase3_foundation.sdf":
-        raise ValueError("world path must identify phase3_foundation.sdf")
+    expected_filename = f"{value.world_name}.sdf"
+    if path.name != expected_filename:
+        raise ValueError(f"world path must identify {expected_filename}")
     _safe_existing_path(value.resource_path, field="resource path", directory=True)
     world_digest = _digest(value.world_sha256, field="world_sha256")
     resources = _validate_resource_hashes(value.resource_sha256s)
-    if dict(resources).get("worlds/phase3_foundation.sdf") != world_digest:
+    if dict(resources).get(f"worlds/{expected_filename}") != world_digest:
         raise ValueError("world checksum must match the immutable resource inventory")
     return value
 
@@ -346,11 +354,17 @@ class ServerSpec:
             raise TypeError("environment must be an immutable mapping")
         environment = MappingProxyType(dict(self.environment))
         object.__setattr__(self, "environment", environment)
-        if set(environment) != _ENVIRONMENT_KEYS:
+        flight = bool(self.argv) and self.argv[-1].endswith("/vertical_descent.sdf")
+        expected_environment_keys = (
+            _FLIGHT_ENVIRONMENT_KEYS if flight else _PASSIVE_ENVIRONMENT_KEYS
+        )
+        if set(environment) != expected_environment_keys:
             raise ValueError("environment must contain only authoritative Gazebo keys")
         for key, expected in _STATIC_ENVIRONMENT.items():
             if environment[key] != expected:
                 raise ValueError(f"{key} must match the pinned runtime image")
+        if flight and environment["GZ_SIM_SYSTEM_PLUGIN_PATH"] != _FLIGHT_PLUGIN_PATH:
+            raise ValueError("flight plugin path must match the pinned runtime image")
         for field, value in (
             ("partial_log_path", self.partial_log_path),
             ("final_log_path", self.final_log_path),
@@ -394,7 +408,7 @@ class ServerSpec:
         if self.argv != expected_argv:
             raise ValueError("argv must be the exact paused Gazebo server command")
         if (
-            world_path.name != "phase3_foundation.sdf"
+            world_path.name not in {"phase3_foundation.sdf", "vertical_descent.sdf"}
             or world_path.parent.name != "worlds"
             or world_path.parent.parent != resource_path.parent
         ):
@@ -448,13 +462,14 @@ def server_spec(
     config = _validate_config(config)
     gazebo_directory = run_directory / "gazebo"
     state_directory = gazebo_directory / "state"
-    environment = MappingProxyType(
-        {
-            **_STATIC_ENVIRONMENT,
-            "GZ_PARTITION": "drone_sim_" + canonical_run_id.replace("-", "_"),
-            "GZ_SIM_RESOURCE_PATH": str(resolved_world.resource_path),
-        }
-    )
+    environment_values = {
+        **_STATIC_ENVIRONMENT,
+        "GZ_PARTITION": "drone_sim_" + canonical_run_id.replace("-", "_"),
+        "GZ_SIM_RESOURCE_PATH": str(resolved_world.resource_path),
+    }
+    if resolved_world.world_name == "vertical_descent":
+        environment_values["GZ_SIM_SYSTEM_PLUGIN_PATH"] = _FLIGHT_PLUGIN_PATH
+    environment = MappingProxyType(environment_values)
     return ServerSpec(
         run_id=canonical_run_id,
         seed=config.seed,
