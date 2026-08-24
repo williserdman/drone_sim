@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 import pytest
 
+import orchestration.runtime_node as runtime_node
+
 from orchestration.runtime_node import (
     OrchestrationRuntime,
     RunStateSubscriber,
@@ -108,10 +110,11 @@ def test_phase3_transport_barrier_requires_only_real_ros_consumers_and_recorder(
     required_nodes = {
         "artifacts_runtime",
         "drone_sim_companion",
-        "gazebo_runtime",
+        "drone_sim_gazebo_lifecycle",
         "drone_sim_electromagnet",
         "drone_sim_scorekeeper",
     }
+    assert required_nodes == runtime_node._PHASE3_RUN_STATE_NODES
     barrier = RunStateTransportBarrier(
         deadline=10.0,
         failure=failures.append,

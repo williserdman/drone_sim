@@ -38,7 +38,7 @@ _PHASE3_RUN_STATE_NODES = frozenset(
     {
         "artifacts_runtime",
         "drone_sim_companion",
-        "gazebo_runtime",
+        "drone_sim_gazebo_lifecycle",
         "drone_sim_electromagnet",
         "drone_sim_scorekeeper",
     }
