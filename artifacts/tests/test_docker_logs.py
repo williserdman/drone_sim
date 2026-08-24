@@ -847,6 +847,144 @@ def test_result_diagnostics_and_command_results_are_immutable(tmp_path):
         DockerLogCommandResult(0, b"").returncode = 1
 
 
+def test_raw_creation_failure_reports_cleanup_unlink_leftover_before_tracking(
+    tmp_path, monkeypatch
+):
+    """A factory-owned partial must remain visible in the immutable failure result."""
+    service = OWNERSHIP[0][0]
+    partial_name = f"{service}.log.partial"
+    real_open = os.open
+    real_fsync = os.fsync
+    real_unlink = os.unlink
+    target_fd = None
+    injected_create_failure = False
+
+    def record_target(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal target_fd
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == partial_name:
+            target_fd = fd
+        return fd
+
+    def fail_target_file_fsync(fd):
+        nonlocal injected_create_failure
+        if fd == target_fd and not injected_create_failure:
+            injected_create_failure = True
+            raise OSError("injected raw candidate creation failure")
+        return real_fsync(fd)
+
+    def fail_target_cleanup_unlink(path, **kwargs):
+        if path == partial_name:
+            raise OSError("injected raw creation cleanup unlink failure")
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "open", record_target)
+    monkeypatch.setattr(os, "fsync", fail_target_file_fsync)
+    monkeypatch.setattr(os, "unlink", fail_target_cleanup_unlink)
+    capture, _runner = _capture(tmp_path)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    result = raised.value.result
+    expected = f"logs/docker/{partial_name}"
+    assert result.leftover_partials == (expected,)
+    assert any("cleanup unlink" in item.detail for item in result.diagnostics)
+    assert (tmp_path / expected).is_file()
+
+
+def test_structured_creation_cleanup_directory_fsync_failure_is_reported(
+    tmp_path, monkeypatch
+):
+    """Factory cleanup is not durable until its parent directory is fsynced."""
+    partial_name = "orchestration.jsonl.partial"
+    real_open = os.open
+    real_fchmod = os.fchmod
+    real_fsync = os.fsync
+    real_unlink = os.unlink
+    target_fd = None
+    cleanup_unlinked = False
+    injected_cleanup_fsync = False
+
+    def record_target(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal target_fd
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == partial_name:
+            target_fd = fd
+        return fd
+
+    def fail_target_fchmod(fd, mode):
+        if fd == target_fd:
+            raise OSError("injected structured candidate creation failure")
+        return real_fchmod(fd, mode)
+
+    def mark_cleanup_unlink(path, **kwargs):
+        nonlocal cleanup_unlinked
+        result = real_unlink(path, **kwargs)
+        if path == partial_name:
+            cleanup_unlinked = True
+        return result
+
+    def fail_cleanup_fsync(fd):
+        nonlocal injected_cleanup_fsync
+        if cleanup_unlinked and not injected_cleanup_fsync:
+            injected_cleanup_fsync = True
+            raise OSError("injected structured creation cleanup fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", record_target)
+    monkeypatch.setattr(os, "fchmod", fail_target_fchmod)
+    monkeypatch.setattr(os, "unlink", mark_cleanup_unlink)
+    monkeypatch.setattr(os, "fsync", fail_cleanup_fsync)
+    capture, _runner = _capture(tmp_path)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    result = raised.value.result
+    assert any("cleanup fsync" in item.detail for item in result.diagnostics)
+    assert result.leftover_partials == ()
+    assert not (tmp_path / f"logs/{partial_name}").exists()
+
+
+def test_publish_fsync_failure_after_partial_unlink_has_no_false_missing_diagnostic(
+    tmp_path, monkeypatch
+):
+    """An absent partial after successful unlink is already clean, not an inspection error."""
+    service = OWNERSHIP[0][0]
+    partial_name = f"{service}.log.partial"
+    real_fsync = os.fsync
+    real_unlink = os.unlink
+    published_partial_removed = False
+    injected_publish_fsync = False
+
+    def mark_publish_unlink(path, **kwargs):
+        nonlocal published_partial_removed
+        result = real_unlink(path, **kwargs)
+        if path == partial_name:
+            published_partial_removed = True
+        return result
+
+    def fail_publish_fsync(fd):
+        nonlocal injected_publish_fsync
+        if published_partial_removed and not injected_publish_fsync:
+            injected_publish_fsync = True
+            raise OSError("injected post-unlink publication fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "unlink", mark_publish_unlink)
+    monkeypatch.setattr(os, "fsync", fail_publish_fsync)
+    capture, _runner = _capture(tmp_path)
+
+    with pytest.raises(DockerLogCaptureError) as raised:
+        capture.capture()
+
+    result = raised.value.result
+    assert f"logs/docker/{service}.log" in result.raw_paths
+    assert not any("ownership inspection" in item.detail for item in result.diagnostics)
+    assert result.leftover_partials == ()
+
+
 def test_partial_cleanup_unlink_failure_is_reported_with_exact_leftover(
     tmp_path, monkeypatch
 ):

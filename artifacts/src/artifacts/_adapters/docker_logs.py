@@ -147,6 +147,21 @@ def _same_file_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
     )
 
 
+class _CandidateCreationError(OSError):
+    """Candidate creation failure plus cleanup facts from before ownership transfer."""
+
+    def __init__(
+        self,
+        cause: BaseException,
+        diagnostics: Sequence[DockerLogDiagnostic],
+        leftover_partials: Sequence[str],
+    ) -> None:
+        self.cause = cause
+        self.diagnostics = tuple(diagnostics)
+        self.leftover_partials = tuple(leftover_partials)
+        super().__init__(str(cause))
+
+
 @dataclass
 class _Candidate:
     directory_fd: int
@@ -201,19 +216,35 @@ class _Candidate:
                 identity,
                 relative_path,
             )
-        except BaseException:
+        except BaseException as exc:
+            diagnostics: list[DockerLogDiagnostic] = []
+            partial_path = f"{relative_path}.partial"
             try:
                 current = os.stat(
                     partial_name,
                     dir_fd=directory_fd,
                     follow_symlinks=False,
                 )
-            except OSError:
+            except FileNotFoundError:
                 current = None
+            except OSError as cleanup_exc:
+                current = None
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "cleanup",
+                        f"candidate creation cleanup ownership inspection failed: {cleanup_exc}",
+                    )
+                )
             try:
                 opened = os.fstat(descriptor)
-            except OSError:
+            except OSError as cleanup_exc:
                 opened = None
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "cleanup",
+                        f"candidate creation cleanup descriptor inspection failed: {cleanup_exc}",
+                    )
+                )
             if (
                 current is not None
                 and opened is not None
@@ -221,10 +252,60 @@ class _Candidate:
             ):
                 try:
                     os.unlink(partial_name, dir_fd=directory_fd)
-                except OSError:
-                    pass
-            os.close(descriptor)
-            raise
+                except OSError as cleanup_exc:
+                    diagnostics.append(
+                        DockerLogDiagnostic(
+                            "cleanup",
+                            f"candidate creation cleanup unlink failed for {partial_path}: {cleanup_exc}",
+                        )
+                    )
+                else:
+                    try:
+                        os.fsync(directory_fd)
+                    except OSError as cleanup_exc:
+                        diagnostics.append(
+                            DockerLogDiagnostic(
+                                "cleanup",
+                                f"candidate creation cleanup fsync failed for {partial_path}: {cleanup_exc}",
+                            )
+                        )
+            elif current is not None:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "cleanup",
+                        f"candidate creation cleanup ownership changed for {partial_path}",
+                    )
+                )
+            try:
+                os.close(descriptor)
+            except OSError as cleanup_exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "cleanup",
+                        f"candidate creation cleanup close failed for {relative_path}: {cleanup_exc}",
+                    )
+                )
+
+            leftovers: tuple[str, ...] = ()
+            try:
+                os.stat(
+                    partial_name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_exc:
+                diagnostics.append(
+                    DockerLogDiagnostic(
+                        "cleanup",
+                        f"candidate creation cleanup leftover inspection failed for {partial_path}: {cleanup_exc}",
+                    )
+                )
+                leftovers = (partial_path,)
+            else:
+                leftovers = (partial_path,)
+            raise _CandidateCreationError(exc, diagnostics, leftovers) from exc
 
     def publish(self) -> None:
         opened = os.fstat(self.descriptor)
@@ -277,6 +358,9 @@ class _Candidate:
                     follow_symlinks=False,
                 )
                 opened = os.fstat(self.descriptor)
+            except FileNotFoundError:
+                named = None
+                opened = None
             except OSError as exc:
                 named = None
                 opened = None
@@ -1013,6 +1097,9 @@ class DockerLogCapture:
                             service,
                         )
                     )
+                    if isinstance(exc, _CandidateCreationError):
+                        diagnostics.extend(exc.diagnostics)
+                        leftover_partials.extend(exc.leftover_partials)
                     raise DockerLogCaptureError(
                         self._result(
                             False,
@@ -1099,6 +1186,9 @@ class DockerLogCapture:
                             module=module,
                         )
                     )
+                    if isinstance(exc, _CandidateCreationError):
+                        diagnostics.extend(exc.diagnostics)
+                        leftover_partials.extend(exc.leftover_partials)
                     raise DockerLogCaptureError(
                         self._result(
                             False,
@@ -1184,7 +1274,9 @@ class DockerLogCapture:
                 result,
                 succeeded=False,
                 diagnostics=result.diagnostics + tuple(cleanup_diagnostics),
-                leftover_partials=tuple(dict.fromkeys(leftover_partials)),
+                leftover_partials=tuple(
+                    dict.fromkeys((*result.leftover_partials, *leftover_partials))
+                ),
             )
             raise DockerLogCaptureError(result) from capture_error
         if capture_error is not None:
