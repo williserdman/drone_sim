@@ -55,6 +55,10 @@ callback for required/optional validation and the second for canonical manifest
 validation and no-clobber publication. Existing callers may omit both. A work
 timeout marks the current and remaining required records invalid without
 continuing discovery or hashing; requested `ABORTED` is never upgraded.
+`finalize_with_result(...)` returns a frozen `FinalizationResult` containing
+the published path and exact committed run ID, terminal status, and reason.
+That return is the authority boundary; `finalize(...)` remains the compatible
+path-only wrapper.
 
 After `.control/terminal-committed.json`, artifacts publishes the final
 `/simulation/artifact_status` with `manifest_path` set to `manifest.json`, then

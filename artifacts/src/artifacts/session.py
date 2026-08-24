@@ -51,6 +51,26 @@ class FinalizationInput:
     evidence_paths: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class FinalizationResult:
+    """Authoritative terminal facts returned only after manifest publication."""
+
+    path: Path
+    run_id: str
+    terminal_status: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, Path):
+            raise TypeError("path must be a Path")
+        if not isinstance(self.run_id, str) or not self.run_id:
+            raise ValueError("run_id must be nonempty")
+        if self.terminal_status not in {"COMPLETED", "FAILED", "ABORTED"}:
+            raise ValueError("terminal_status is invalid")
+        if not isinstance(self.reason, str):
+            raise TypeError("reason must be a string")
+
+
 class ArtifactSession:
     """Validate one quiescent run directory and commit its manifest once."""
 
@@ -206,8 +226,8 @@ class ArtifactSession:
             duration = float("nan")
         return WallTiming(request.wall_started_at, request.wall_ended_at, duration)
 
-    def finalize(self, request: FinalizationInput) -> Path:
-        """Validate the bundle and durably commit the canonical manifest."""
+    def finalize_with_result(self, request: FinalizationInput) -> FinalizationResult:
+        """Commit the manifest and return its immutable authoritative facts."""
         required_records = self._required_records()
         incomplete_paths = tuple(
             record.relative_path
@@ -236,11 +256,26 @@ class ArtifactSession:
             evidence_paths=tuple(request.evidence_paths),
         )
         validate_manifest(manifest, deadline_check=self._commit_deadline_check)
-        return write_manifest_atomic(
+        path = write_manifest_atomic(
             self.run_directory,
             manifest,
             deadline_check=self._commit_deadline_check,
         )
+        return FinalizationResult(
+            path,
+            manifest.run_id,
+            manifest.terminal_status,
+            manifest.reason,
+        )
+
+    def finalize(self, request: FinalizationInput) -> Path:
+        """Backward-compatible path-only finalization wrapper."""
+        return self.finalize_with_result(request).path
 
 
-__all__ = ["ArtifactSession", "FinalizationConflict", "FinalizationInput"]
+__all__ = [
+    "ArtifactSession",
+    "FinalizationConflict",
+    "FinalizationInput",
+    "FinalizationResult",
+]

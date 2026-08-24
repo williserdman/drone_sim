@@ -303,7 +303,7 @@ git commit -m "feat: freeze phase 2 runtime contracts"
 
 **Interfaces:**
 - Consumes: immutable resolved configuration, required bundle paths, terminal request, validator results, source revisions, image digests, and timing summaries
-- Produces: `ValidationStatus`, `ValidationResult`, `validate_regular_file`, `validate_tree`, `FinalizationInput`, `ArtifactSession.finalize`, expanded `RunManifest`, and durable idempotent manifest commit
+- Produces: `ValidationStatus`, `ValidationResult`, `validate_regular_file`, `validate_tree`, `FinalizationInput`, `FinalizationResult`, `ArtifactSession.finalize_with_result` plus the compatible path-only `finalize` wrapper, expanded `RunManifest`, and durable idempotent manifest commit
 
 - [ ] **Step 1: Write failing filesystem validation tests**
 
@@ -656,7 +656,7 @@ Use one shared monotonic deadline for each startup/finalization phase so retries
 
 Parse the runtime-owned `artifacts-final.json` as a strict report with exactly three records: `video/onboard.mp4`, `video/observer.mp4`, and `rosbag`. Each record contains `relative_path`, `status`, `detail`, `size_bytes`, `sha256`, and nonempty `semantic` facts. Inject `ArtifactSession` validators that recompute host-safe size/tree checksum and require exact agreement with the report; absent/malformed records, corrupt media/bag evidence, stale digests, or status mismatches downgrade requested completion. The controller does not need host FFmpeg or ROS dependencies and must not fall back to presence-only validation.
 
-Before manifest commit, record source revision/dirty state with read-only Git commands and image digests with `docker image inspect`. Cooperative callbacks bound protocol parsing, log routing/publication, provenance/scoring reads, file/tree validation, optional discovery, manifest encoding, and commit steps. After a validated commit, the manifest's terminal status/reason are authoritative: `terminal-committed.json`, terminal notification, observability, and teardown failures append diagnostics only. Never rewrite required artifacts. Always run Compose teardown in a bounded `finally` block.
+Before manifest commit, record source revision/dirty state with read-only Git commands and image digests with `docker image inspect`. Cooperative callbacks bound protocol parsing, log routing/publication, provenance/scoring reads, file/tree validation, optional discovery, manifest encoding, and commit steps. The frozen result returned by `ArtifactSession.finalize_with_result` is the immediate manifest-publication authority for path, run ID, terminal status, and reason; later path/read/deadline verification cannot replace it. `terminal-committed.json`, terminal notification, observability, and teardown failures append diagnostics only. Runtime-status waits check the applicable cooperative deadline before and after every read and pass it into the store; quiescence/report waits use the work slice and post-commit notification uses the pre-teardown manifest slice. Never rewrite required artifacts. Always run Compose teardown in a bounded `finally` block.
 
 Add `artifacts` and `orchestration` as uv workspace members in the root `pyproject.toml`, make the root development project depend on both workspace packages, make orchestration depend on the artifacts package, and register `drone-sim = "orchestration.cli:main"` under `[project.scripts]` in `orchestration/pyproject.toml`. Regenerate `uv.lock`; do not rely on pytest-only `pythonpath` for the executable.
 

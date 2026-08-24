@@ -52,6 +52,12 @@ check the supplied budget. Work-time exhaustion stops further validation and
 records unfinished required paths as timeout-invalid before the reserved
 manifest commit is attempted.
 
+`ArtifactSession.finalize_with_result(FinalizationInput)` returns the immutable
+published path, run ID, terminal status, and reason in a `FinalizationResult`.
+Consumers that make terminal decisions use that typed result so a later read
+failure cannot contradict an already committed manifest. The existing
+`finalize(FinalizationInput) -> Path` call remains supported.
+
 Artifacts does not begin draining until `.status/runtime-frozen.json` proves
 all publishers are permanently quiescent. It closes both video pipelines and
 the bag before writing `artifacts-final.json`. That report has exact top-level

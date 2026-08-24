@@ -176,7 +176,8 @@ The fix preserves all public call forms and adds:
   running/restarting services and `COMPOSE_PROFILES=phase2` on every command;
 - descriptor-relative, no-follow output-root construction that rejects an
   existing symlink ancestor before creating any target-side component;
-- immutable manifest authority after validation: terminal-control,
+- immutable manifest authority at the typed publication return: later
+  path/read/deadline verification, terminal-control,
   notification, observability, and teardown failures append diagnostics only;
 - fail-once stdout/file host-event handling so append, stream, and close errors
   cannot recursively bypass log capture, manifest finalization, or teardown.
@@ -214,6 +215,73 @@ exit 0
 
 uv lock --check
 Resolved 15 packages in 70ms
+
+git diff --check
+exit 0
+```
+
+## Review fix round 2 of 5
+
+Independent re-review found two remaining authority/deadline gaps. The new
+REDs first produced three `AttributeError` failures for the absent typed
+finalization seam and three controller failures: a post-commit read could
+replace an already committed COMPLETED result, `_wait_for` accepted no
+cooperative checker, and a terminal-notification read crossing expiry could
+replace manifest authority. Final self-review added one more RED for the only
+remaining direct post-manifest runtime-failure read, which lacked that checker
+and could otherwise consume teardown reserve.
+
+The fix adds frozen `FinalizationResult(path, run_id, terminal_status, reason)`
+and `ArtifactSession.finalize_with_result`. Production uses that method; its
+return is the exact manifest-publication authority, while the original
+`finalize(...) -> Path` remains a backward-compatible wrapper. A subsequent
+manifest path/read/deadline failure or mismatch is diagnostic only. Coverage
+exercises COMPLETED, completion-to-FAILED downgrade, ABORTED, immutable typed
+facts, and idempotent existing-manifest publication.
+
+`_wait_for` now passes the applicable cooperative check into every
+runtime-status read and brackets each read with checks, so a success document
+that returns after expiry is rejected. The `runtime-frozen` and
+`artifacts-final` waits use the work check; `terminal-notified` uses the
+pre-teardown manifest check and cannot consume teardown reserve. A timeout
+after typed manifest return remains diagnostic-only. The final diagnostic
+runtime-failure observation uses the same pre-teardown check and is skipped
+with a retained diagnostic once that slice is exhausted.
+
+Fresh round-2 verification:
+
+```text
+uv run pytest artifacts/tests/test_session.py -k finalize_with_result -q
+3 passed, 22 deselected in 0.41s
+
+uv run pytest orchestration/tests/test_controller.py \
+  -k 'post_commit_manifest_reread or wait_rejects_runtime_status or terminal_notification_crossing' -q
+3 passed, 44 deselected in 0.81s
+
+uv run pytest artifacts/tests/test_session.py orchestration/tests/test_controller.py -q
+72 passed in 8.02s
+
+uv run pytest orchestration/tests -q
+131 passed in 9.05s
+
+uv run pytest artifacts/tests -q
+319 passed, 10 skipped in 17.31s
+
+uv run pytest artifacts/tests orchestration/tests tests/contracts -q
+457 passed, 10 skipped in 26.26s
+
+uv run pytest -q
+460 passed, 10 skipped in 43.33s
+
+uv run drone-sim --help
+usage: drone-sim [-h] {start,status,abort,collect-results} ...
+
+uv run python -m compileall -q artifacts/src artifacts/tests \
+  orchestration/src orchestration/tests
+exit 0
+
+uv lock --check
+Resolved 15 packages in 4ms
 
 git diff --check
 exit 0

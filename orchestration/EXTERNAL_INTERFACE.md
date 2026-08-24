@@ -52,7 +52,9 @@ teardown, with separate bounded manifest and teardown reserves.
 ## Failure behavior
 
 Startup fails closed. Partial outputs are preserved. A manifest is produced for completed, failed, and aborted runs.
-Once that manifest validates, its terminal status and reason are authoritative;
+Once `ArtifactSession` returns its typed committed result, that manifest's
+terminal status and reason are authoritative; a subsequent manifest read or
+deadline failure is diagnostic only.
 control acknowledgment, terminal-notification, observability, and teardown
 failures are retained as diagnostics and cannot rewrite the terminal result.
 

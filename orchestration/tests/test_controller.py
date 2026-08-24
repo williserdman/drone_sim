@@ -20,7 +20,7 @@ from artifacts import (
 )
 from artifacts.manifest import REQUIRED_ARTIFACT_PATHS
 from orchestration._adapters.compose import ComposeCommandResult, ComposeRuntime
-from orchestration.controller import RunController
+from orchestration.controller import RunController, TerminalCause
 from orchestration.status_store import OperatorStatus, StatusStore
 
 
@@ -347,9 +347,9 @@ def _controller(
 
             self.delegate = ArtifactSession(*args, **kwargs)
 
-        def finalize(self, request):
+        def finalize_with_result(self, request):
             trace.append("validate")
-            result = self.delegate.finalize(request)
+            result = self.delegate.finalize_with_result(request)
             trace.append("commit manifest")
             return result
 
@@ -940,7 +940,7 @@ def test_validation_exception_still_runs_bounded_teardown_without_false_manifest
         def __init__(self, *args, **kwargs):
             pass
 
-        def finalize(self, request):
+        def finalize_with_result(self, request):
             raise ValueError("semantic validation exploded")
 
     controller, trace, _clock, holder = _controller(
@@ -1073,6 +1073,96 @@ def test_terminal_notification_read_failure_cannot_override_committed_manifest(t
         (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
     )
     assert any(item["kind"] == "terminal_notification" for item in status["diagnostics"])
+
+
+def test_post_commit_manifest_reread_failure_cannot_override_typed_authority(tmp_path):
+    class FailingPostCommitReadStore(TraceStore):
+        def validated_manifest_path(self, run_id, deadline_check=None):
+            raise TimeoutError("post_commit_deadline")
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path, store_type=FailingPostCommitReadStore
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    manifest = json.loads((tmp_path / "runs" / RUN_ID / "manifest.json").read_text())
+    status = json.loads(
+        (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
+    )
+    assert result.state == manifest["terminal_status"] == status["state"] == "COMPLETED"
+    assert result.reason == manifest["reason"] == "mission_complete"
+    assert any(item["kind"] == "manifest_verification" for item in status["diagnostics"])
+
+
+def test_wait_rejects_runtime_status_that_crosses_deadline_and_passes_checker():
+    clock = FakeClock()
+    received = []
+
+    class CrossingStore:
+        def read_runtime_status(self, run_id, name, deadline_check=None):
+            received.append(deadline_check)
+            clock.value += 10
+            return {"run_id": run_id, "frozen": True}
+
+    controller = RunController(
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        event_stream=io.StringIO(),
+    )
+    deadline = clock.monotonic() + 5
+    checker = controller._deadline_check(deadline)
+
+    document, cause = controller._wait_for(
+        CrossingStore(),
+        RUN_ID,
+        FakeCompose(Path("/tmp/unused"), []),
+        "runtime-frozen",
+        deadline,
+        TerminalCause("finalization_deadline", "finalization_deadline"),
+        observe_causes=False,
+        deadline_check=checker,
+    )
+
+    assert document is None
+    assert cause is not None and cause.reason == "finalization_deadline"
+    assert received == [checker]
+
+
+def test_terminal_notification_crossing_manifest_deadline_is_diagnostic_only(tmp_path):
+    clock = FakeClock()
+    received = []
+    runtime_failure_checks = []
+
+    class CrossingNotificationStore(TraceStore):
+        def read_runtime_status(self, run_id, name, deadline_check=None):
+            if name == "terminal-notified":
+                received.append(deadline_check)
+                clock.value += 100
+                return {"run_id": run_id, "notified": True}
+            if name == "runtime-failure":
+                runtime_failure_checks.append(deadline_check)
+            return super().read_runtime_status(run_id, name, deadline_check)
+
+    controller, _trace, _clock, holder = _controller(
+        tmp_path,
+        clock=clock,
+        store_type=CrossingNotificationStore,
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    assert result.state == "COMPLETED"
+    assert received and callable(received[0])
+    assert runtime_failure_checks and all(callable(item) for item in runtime_failure_checks)
+    assert holder["value"].down_timeouts == [0.0]
+    status = json.loads(
+        (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
+    )
+    assert any(
+        item["reason"] == "terminal_notification_deadline"
+        for item in status["diagnostics"]
+    )
 
 
 def test_broken_stdout_during_second_event_preserves_manifest_and_teardown(tmp_path):
@@ -1210,7 +1300,7 @@ def test_session_deadline_exhaustion_cannot_return_completed(tmp_path):
         def __init__(self, *args, deadline_check=None, **kwargs):
             self.deadline_check = deadline_check
 
-        def finalize(self, request):
+        def finalize_with_result(self, request):
             clock.value += 1000
             if self.deadline_check is None:
                 raise RuntimeError("deadline seam missing")

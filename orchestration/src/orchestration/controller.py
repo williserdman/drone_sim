@@ -23,6 +23,7 @@ from artifacts import (
     DockerLogCapture,
     DockerLogCaptureError,
     FinalizationInput,
+    FinalizationResult,
     ImageDigest,
     SourceRevision,
     StructuredEvent,
@@ -514,11 +515,18 @@ class RunController:
         run_id: str,
         compose: Any,
         deadline: float,
+        deadline_check: Callable[[], None],
     ) -> TerminalCause | None:
         request = store.read_finalize_request(run_id)
         if request is not None:
             return self._cause_for_request(request)
-        failure = store.read_runtime_status(run_id, "runtime-failure")
+        deadline_check()
+        failure = store.read_runtime_status(
+            run_id,
+            "runtime-failure",
+            deadline_check=deadline_check,
+        )
+        deadline_check()
         if failure is not None:
             reason = failure.get("reason")
             module = failure.get("module")
@@ -531,7 +539,12 @@ class RunController:
             )
         remaining = self._remaining(deadline, self.monotonic)
         try:
-            return self._ps_cause(compose.ps(remaining))
+            deadline_check()
+            result = compose.ps(remaining)
+            deadline_check()
+            return self._ps_cause(result)
+        except TimeoutError:
+            raise
         except Exception as exc:
             return TerminalCause("child_process", f"compose_ps_exception:{type(exc).__name__}")
 
@@ -545,13 +558,31 @@ class RunController:
         deadline_cause: TerminalCause,
         *,
         observe_causes: bool = True,
+        deadline_check: Callable[[], None] | None = None,
     ) -> tuple[dict[str, Any] | None, TerminalCause | None]:
+        checker = deadline_check or self._deadline_check(deadline)
         while True:
-            if observe_causes:
-                cause = self._observed_cause(store, run_id, compose, deadline)
-                if cause is not None:
-                    return None, cause
-            document = store.read_runtime_status(run_id, name)
+            try:
+                checker()
+                if observe_causes:
+                    cause = self._observed_cause(
+                        store,
+                        run_id,
+                        compose,
+                        deadline,
+                        checker,
+                    )
+                    if cause is not None:
+                        return None, cause
+                checker()
+                document = store.read_runtime_status(
+                    run_id,
+                    name,
+                    deadline_check=checker,
+                )
+                checker()
+            except TimeoutError:
+                return None, deadline_cause
             if document is not None:
                 return document, None
             remaining = self._remaining(deadline, self.monotonic)
@@ -874,6 +905,7 @@ class RunController:
                                 work_deadline,
                                 TerminalCause("finalization_deadline", "finalization_deadline"),
                                 observe_causes=False,
+                                deadline_check=work_deadline_check,
                             )
                         except KeyboardInterrupt:
                             document = None
@@ -1040,6 +1072,7 @@ class RunController:
                     scoring_checksum=scoring_checksum,
                     evidence_paths=evidence,
                 )
+                committed: FinalizationResult | None = None
                 try:
                     session = self.artifact_session_factory(
                         run_directory,
@@ -1047,7 +1080,12 @@ class RunController:
                         deadline_check=work_deadline_check,
                         commit_deadline_check=manifest_deadline_check,
                     )
-                    manifest_path = session.finalize(request)
+                    committed = session.finalize_with_result(request)
+                    if not isinstance(committed, FinalizationResult):
+                        raise TypeError("finalize_with_result returned an invalid result")
+                    if committed.run_id != config.run_id:
+                        raise ControllerError("committed manifest run_id mismatch")
+                    manifest_path = committed.path
                 except Exception as exc:
                     requested = "FAILED"
                     reason = f"artifact_finalization_failed:{exc}"
@@ -1055,7 +1093,23 @@ class RunController:
                     manifest_path = None
 
                 effective = requested
-                if manifest_path is not None:
+                if committed is not None:
+                    # Returning from finalize_with_result is the publication boundary.
+                    # These frozen facts are authoritative even when every subsequent
+                    # observability or notification operation fails.
+                    effective = committed.terminal_status
+                    reason = committed.reason
+                    if (
+                        effective == "FAILED"
+                        and lifecycle.pending_terminal is LifecycleState.COMPLETED
+                    ):
+                        lifecycle = lifecycle.apply(
+                            LifecycleEvent.FINALIZATION_FAILED,
+                            reason=reason,
+                        )
+                    else:
+                        lifecycle = lifecycle.apply(LifecycleEvent.ARTIFACTS_FINALIZED)
+
                     try:
                         validated = store.validated_manifest_path(
                             config.run_id,
@@ -1065,69 +1119,64 @@ class RunController:
                             validated,
                             manifest_deadline_check,
                         )
-                        effective = manifest_document["terminal_status"]
-                        reason = manifest_document["reason"]
                         if (
-                            effective == "FAILED"
-                            and lifecycle.pending_terminal is LifecycleState.COMPLETED
+                            validated != committed.path
+                            or manifest_document.get("run_id") != committed.run_id
+                            or manifest_document.get("terminal_status")
+                            != committed.terminal_status
+                            or manifest_document.get("reason") != committed.reason
                         ):
-                            lifecycle = lifecycle.apply(
-                                LifecycleEvent.FINALIZATION_FAILED,
-                                reason=reason,
-                            )
-                        else:
-                            lifecycle = lifecycle.apply(LifecycleEvent.ARTIFACTS_FINALIZED)
+                            raise ControllerError("committed manifest verification mismatch")
                     except Exception as exc:
-                        effective = "FAILED"
-                        reason = f"manifest_commit_failed:{exc}"
-                        primary = primary or TerminalCause("manifest", reason)
-                        lifecycle = replace(
-                            lifecycle,
-                            state=LifecycleState.FAILED,
-                            pending_terminal=None,
-                            reason=reason,
-                        )
-                    else:
-                        try:
-                            store.write_terminal_committed(
-                                config.run_id,
-                                {
-                                    "run_id": config.run_id,
-                                    "terminal_status": effective,
-                                    "reason": reason,
-                                    "manifest_path": "manifest.json",
-                                },
+                        diagnostics.append(
+                            TerminalCause(
+                                "manifest_verification",
+                                "post_commit_manifest_verification_failed:"
+                                f"{type(exc).__name__}",
                             )
+                        )
+
+                    try:
+                        store.write_terminal_committed(
+                            config.run_id,
+                            {
+                                "run_id": config.run_id,
+                                "terminal_status": effective,
+                                "reason": reason,
+                                "manifest_path": "manifest.json",
+                            },
+                        )
+                    except Exception as exc:
+                        diagnostics.append(
+                            TerminalCause(
+                                "terminal_notification",
+                                f"terminal_commit_write_failed:{type(exc).__name__}",
+                            )
+                        )
+                    if compose_started:
+                        try:
+                            _notified, notify_cause = self._wait_for(
+                                store,
+                                config.run_id,
+                                compose,
+                                "terminal-notified",
+                                manifest_deadline,
+                                TerminalCause(
+                                    "finalization_deadline",
+                                    "terminal_notification_deadline",
+                                ),
+                                observe_causes=False,
+                                deadline_check=manifest_deadline_check,
+                            )
+                            if notify_cause is not None:
+                                diagnostics.append(notify_cause)
                         except Exception as exc:
                             diagnostics.append(
                                 TerminalCause(
                                     "terminal_notification",
-                                    f"terminal_commit_write_failed:{type(exc).__name__}",
+                                    f"terminal_notification_failed:{type(exc).__name__}",
                                 )
                             )
-                        if compose_started:
-                            try:
-                                _notified, notify_cause = self._wait_for(
-                                    store,
-                                    config.run_id,
-                                    compose,
-                                    "terminal-notified",
-                                    manifest_deadline,
-                                    TerminalCause(
-                                        "finalization_deadline",
-                                        "terminal_notification_deadline",
-                                    ),
-                                    observe_causes=False,
-                                )
-                                if notify_cause is not None:
-                                    diagnostics.append(notify_cause)
-                            except Exception as exc:
-                                diagnostics.append(
-                                    TerminalCause(
-                                        "terminal_notification",
-                                        f"terminal_notification_failed:{type(exc).__name__}",
-                                    )
-                                )
                 else:
                     effective = "FAILED"
                     lifecycle = replace(
@@ -1137,7 +1186,29 @@ class RunController:
                         reason=reason,
                     )
 
-                later = store.read_runtime_status(config.run_id, "runtime-failure")
+                later = None
+                try:
+                    manifest_deadline_check()
+                    later = store.read_runtime_status(
+                        config.run_id,
+                        "runtime-failure",
+                        deadline_check=manifest_deadline_check,
+                    )
+                    manifest_deadline_check()
+                except TimeoutError:
+                    diagnostics.append(
+                        TerminalCause(
+                            "runtime_failure_observation",
+                            "post_commit_runtime_failure_deadline",
+                        )
+                    )
+                except Exception as exc:
+                    diagnostics.append(
+                        TerminalCause(
+                            "runtime_failure_observation",
+                            f"post_commit_runtime_failure_failed:{type(exc).__name__}",
+                        )
+                    )
                 if later is not None:
                     later_reason = later.get("reason")
                     if isinstance(later_reason, str) and later_reason:

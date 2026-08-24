@@ -123,6 +123,35 @@ def test_requested_completion_downgrades_to_failed_when_required_path_is_missing
     assert manifest["incomplete_paths"] == ["video/observer.mp4"]
 
 
+@pytest.mark.parametrize(
+    ("requested_terminal", "remove_path", "expected_terminal"),
+    [
+        ("COMPLETED", None, "COMPLETED"),
+        ("COMPLETED", "video/observer.mp4", "FAILED"),
+        ("ABORTED", None, "ABORTED"),
+    ],
+)
+def test_finalize_with_result_returns_immutable_committed_authority_and_is_idempotent(
+    tmp_path, requested_terminal, remove_path, expected_terminal
+):
+    _complete_run_directory(tmp_path)
+    if remove_path is not None:
+        (tmp_path / remove_path).unlink()
+    session = ArtifactSession(tmp_path)
+    request = _finalization_input(requested_terminal=requested_terminal)
+
+    first = session.finalize_with_result(request)
+    second = session.finalize_with_result(request)
+
+    assert first == second
+    assert first.path == tmp_path / "manifest.json"
+    assert first.run_id == "run-7"
+    assert first.terminal_status == expected_terminal
+    assert first.reason == "mission_complete"
+    with pytest.raises(AttributeError):
+        first.terminal_status = "FAILED"
+
+
 def test_validator_registry_uses_required_path_override_for_semantic_validation(tmp_path):
     _complete_run_directory(tmp_path)
 

@@ -46,6 +46,10 @@ manifest serialization, and publication consume cooperative deadline callbacks.
 `ArtifactSession` accepts separate backward-compatible work and commit checks;
 work exhaustion stops validation and emits explicit timeout-invalid records,
 while manifest publication uses only the reserved commit slice.
+Runtime-status waits pass the applicable cooperative check into every read and
+check both before and after it. Quiescence/report waits use the work slice;
+post-commit terminal notification uses the pre-teardown manifest slice and
+cannot consume teardown reserve.
 
 `ComposeRuntime` activates only the `phase2` profile with
 `COMPOSE_PROFILES=phase2`. Health observation runs exact
@@ -53,7 +57,10 @@ while manifest publication uses only the reserved commit slice.
 be present and running/restarting; missing, extra, duplicate, malformed,
 exited, or unhealthy rows fail closed.
 
-After a validated manifest commit, its status and reason are immutable.
+Returning a typed `FinalizationResult` from `ArtifactSession` marks the manifest
+publication boundary; its status and reason are immediately immutable.
+Post-publication path/read/deadline verification can add diagnostics but cannot
+replace those terminal facts.
 `terminal-committed`, terminal-notification, host-event output/close, and
 teardown failures append diagnostics only. Host-event output is fail-once so a
 broken stream cannot recursively prevent file evidence or finalization.

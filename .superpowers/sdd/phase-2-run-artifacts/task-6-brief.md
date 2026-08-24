@@ -115,13 +115,15 @@ Reserve two equal bounded slices of `min(5 seconds, finalization_wall_seconds / 
 
 Append each host operator event both to stdout and descriptor-safely to fixed `logs/orchestration-host.jsonl.partial` using the existing `StructuredEvent` six-field schema and exact run/module ownership (`module="orchestration"`). Use timezone-aware UTC wall timestamps and simulation timestamp `null` when no authoritative simulation stamp is available. Do not invent another logging schema.
 
-Stdout, host-partial append, and close failures become retained observability diagnostics and never bypass finalization after Compose starts. Disable only the failed output side so repeated logging cannot recursively fail. After a manifest validates, its terminal status/reason are authoritative; terminal-control write, notification, observability, and teardown failures are diagnostics only.
+Stdout, host-partial append, and close failures become retained observability diagnostics and never bypass finalization after Compose starts. Disable only the failed output side so repeated logging cannot recursively fail. The typed result returned at the manifest-publication boundary makes its terminal status/reason immediately authoritative; post-return path/read/deadline verification, terminal-control write, notification, observability, and teardown failures are diagnostics only.
 
 Invoke `DockerLogCapture(..., host_events=True)` before manifest finalization. Its frozen behavior validates the host partial and merges orchestration events by normalized UTC wall timestamp, Compose-before-host tie, then source line order. On `DockerLogCaptureError`, consume its immutable result and downgrade requested completion even if all final filenames exist. Preserve Docker raw streams exactly; never append host bytes to them.
 
 ## Manifest/provenance
 
-Use only `ArtifactSession.finalize(FinalizationInput)` for production finalization. Remove `build_manifest` from the artifacts public export surface while retaining internal compatibility only if existing tests require it.
+Use only `ArtifactSession.finalize_with_result(FinalizationInput)` for production finalization and take its frozen path/run ID/terminal status/reason as the exact committed authority. Retain `ArtifactSession.finalize(FinalizationInput) -> Path` as a backward-compatible wrapper. Remove `build_manifest` from the artifacts public export surface while retaining internal compatibility only if existing tests require it.
+
+Every runtime-status wait passes its applicable cooperative deadline check into the status read and invokes it before and after the read, rejecting even a success document returned after expiry. `runtime-frozen` and `artifacts-final` waits use the work check; the post-manifest `terminal-notified` wait uses the pre-teardown manifest check so it cannot consume teardown reserve. A post-commit timeout is diagnostic and cannot alter typed manifest authority.
 
 Before manifest commit, gather source revision/dirty state using read-only Git commands, Compose image digests using `docker image inspect` behind the adapter, configuration checksum records from the resolved snapshot, timing, scoring fields if present, and evidence paths. Missing/invalid provenance must fail closed or be represented explicitly according to the existing manifest types; do not fabricate revisions/digests/scores. Ensure a FAILED/ABORTED bundle remains diagnosable.
 

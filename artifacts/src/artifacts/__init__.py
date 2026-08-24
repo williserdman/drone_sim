@@ -32,7 +32,12 @@ from ._adapters.video import (
     VideoValidator,
 )
 from .recorder_node import VideoRecorderNode
-from .session import ArtifactSession, FinalizationConflict, FinalizationInput
+from .session import (
+    ArtifactSession,
+    FinalizationConflict,
+    FinalizationInput,
+    FinalizationResult,
+)
 from .structured_log import StructuredEvent, write_event
 from .validation import ValidationResult, ValidationStatus, validate_regular_file, validate_tree
 
@@ -47,6 +52,7 @@ __all__ = [
     "DockerLogDiagnostic",
     "FinalizationConflict",
     "FinalizationInput",
+    "FinalizationResult",
     "FIXED_TOPIC_TYPES",
     "FIXED_TOPICS",
     "ImageDigest",
