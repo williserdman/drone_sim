@@ -14,6 +14,7 @@ _FRAME_INTERVAL_NS = 50_000_000
 class RecordingRuntimeConfig:
     expected_camera_frames: int
     synthetic_camera_ack: bool
+    physical_run: bool = False
 
 
 def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRuntimeConfig:
@@ -29,7 +30,11 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
 
     profile = document.get("runtime_profile", "phase2")
     if profile == "phase2":
-        return RecordingRuntimeConfig(expected_camera_frames=40, synthetic_camera_ack=True)
+        return RecordingRuntimeConfig(
+            expected_camera_frames=40,
+            synthetic_camera_ack=True,
+            physical_run=False,
+        )
 
     simulation = document.get("simulation")
     if not isinstance(simulation, Mapping):
@@ -53,6 +58,7 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
     return RecordingRuntimeConfig(
         expected_camera_frames=duration_ns // _FRAME_INTERVAL_NS,
         synthetic_camera_ack=False,
+        physical_run=True,
     )
 
 

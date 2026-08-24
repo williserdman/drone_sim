@@ -708,6 +708,7 @@ def main() -> None:
         bag_validator=RosbagValidator(
             run_id,
             expected_camera_frames=recording_contract.expected_camera_frames,
+            physical_run=recording_contract.physical_run,
         ),
         publish=publish,
         fault=fault,

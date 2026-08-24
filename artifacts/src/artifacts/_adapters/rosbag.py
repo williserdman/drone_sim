@@ -535,6 +535,7 @@ class RosbagValidator:
         *,
         backend: BagBackend | None = None,
         expected_camera_frames: int | None = None,
+        physical_run: bool = False,
     ) -> None:
         if not run_id:
             raise ValueError("run_id must not be empty")
@@ -544,9 +545,12 @@ class RosbagValidator:
             or expected_camera_frames <= 0
         ):
             raise ValueError("expected_camera_frames must be a positive integer or None")
+        if not isinstance(physical_run, bool):
+            raise TypeError("physical_run must be a boolean")
         self.run_id = run_id
         self._backend = backend or _Rosbag2Backend()
         self.expected_camera_frames = expected_camera_frames
+        self.physical_run = physical_run
 
     @staticmethod
     def _result(
@@ -647,6 +651,8 @@ class RosbagValidator:
         timestamps: dict[str, list[int]] = {topic: [] for topic in FIXED_TOPICS}
         frame_ids: dict[str, list[int]] = {"onboard": [], "observer": []}
         artifact_statuses: list[tuple[int, Any]] = []
+        scenario_events: list[Any] = []
+        score_events: list[Any] = []
         first_clock_index: int | None = None
         try:
             for record_index, record in enumerate(
@@ -703,6 +709,10 @@ class RosbagValidator:
                         frame_ids[stream].append(message.frame_id)
                     elif record.topic == "/simulation/artifact_status":
                         artifact_statuses.append((record_index, message))
+                    elif record.topic == "/simulation/scenario_events":
+                        scenario_events.append(message)
+                    elif record.topic == "/simulation/score_events":
+                        score_events.append(message)
                 timestamps[record.topic].append(sim_timestamp_ns)
         except Exception as error:
             return self._result(
@@ -786,6 +796,65 @@ class RosbagValidator:
                     filesystem,
                     ValidationStatus.INVALID,
                     f"{stream} frame timestamps are not exactly 50 ms apart",
+                )
+
+        if self.physical_run:
+            clock_timestamps = timestamps["/clock"]
+            if any(
+                current < previous
+                for previous, current in zip(clock_timestamps, clock_timestamps[1:])
+            ):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag physical clock timestamps are nonmonotonic",
+                )
+            frame_timestamps = set(timestamps["/camera/onboard/frame_metadata"])
+            frame_timestamps.update(timestamps["/camera/observer/frame_metadata"])
+            if not frame_timestamps.issubset(set(clock_timestamps)):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag physical clock does not cover every frame timestamp",
+                )
+
+            if len(scenario_events) != 1:
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag physical scenario initialization is incomplete",
+                )
+            scenario = scenario_events[0]
+            if (
+                scenario.event_id != 0
+                or scenario.magnet_id != "descent-v1-magnet"
+                or scenario.state != "INACTIVE"
+            ):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag physical scenario initialization is not truthful INACTIVE",
+                )
+
+            expected_event_types = (
+                "descent.airborne_then_contact",
+                "descent.touchdown_precision",
+                "descent.safe_preimpact_speed",
+                "descent.stable_contact",
+                "score.finalized",
+            )
+            if len(score_events) != len(expected_event_types) or any(
+                event.event_id != index
+                or event.event_type != event_type
+                or event.evidence_ref != f"scoring/events.jsonl#event-{index}"
+                for index, (event, event_type) in enumerate(
+                    zip(score_events, expected_event_types, strict=True)
+                )
+            ):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag physical score events are not exactly ordered and contiguous",
                 )
 
         if self.expected_camera_frames is not None:

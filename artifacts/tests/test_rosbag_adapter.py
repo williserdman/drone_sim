@@ -479,6 +479,56 @@ def _valid_messages():
     ]
 
 
+def _valid_physical_messages():
+    messages = _valid_messages()
+    messages[5] = replace(
+        messages[5],
+        message=_custom_message(
+            0,
+            event_id=0,
+            magnet_id="descent-v1-magnet",
+            state="INACTIVE",
+        ),
+    )
+    rule_ids = (
+        "airborne_then_contact",
+        "touchdown_precision",
+        "safe_preimpact_speed",
+        "stable_contact",
+    )
+    score_events = [
+        BagMessage(
+            "/simulation/score_events",
+            _custom_message(
+                0,
+                event_id=index,
+                event_type=f"descent.{rule_id}",
+                value=value,
+                evidence_ref=f"scoring/events.jsonl#event-{index}",
+            ),
+            106 + index,
+        )
+        for index, (rule_id, value) in enumerate(
+            zip(rule_ids, (20.0, 40.0, 0.0, 0.0), strict=True)
+        )
+    ]
+    score_events.append(
+        BagMessage(
+            "/simulation/score_events",
+            _custom_message(
+                0,
+                event_id=4,
+                event_type="score.finalized",
+                value=60.0,
+                evidence_ref="scoring/events.jsonl#event-4",
+            ),
+            110,
+        )
+    )
+    messages[6:7] = score_events
+    return messages
+
+
 def _metadata_for(messages, *, storage_id="mcap", type_overrides=None):
     type_overrides = type_overrides or {}
     return BagMetadata(
@@ -555,10 +605,11 @@ def test_valid_bag_returns_immutable_topic_count_type_and_timestamp_diagnostics(
 def test_physical_bag_requires_configured_camera_and_ground_truth_count(tmp_path):
     """A short but contiguous bag must not satisfy a longer production run."""
     _bag_directory(tmp_path)
-    backend = FakeBagBackend()
+    messages = _valid_physical_messages()
+    backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
 
     result = RosbagValidator(
-        RUN_ID, backend=backend, expected_camera_frames=2
+        RUN_ID, backend=backend, expected_camera_frames=2, physical_run=True
     ).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.INVALID
@@ -568,20 +619,124 @@ def test_physical_bag_requires_configured_camera_and_ground_truth_count(tmp_path
 def test_physical_bag_requires_ground_truth_aligned_to_both_cameras(tmp_path):
     """Matching only one camera could hide cross-stream physical evidence loss."""
     _bag_directory(tmp_path)
-    messages = _valid_messages()
-    messages[9] = replace(messages[9], message=_image(50_000_000))
-    messages[10] = replace(
-        messages[10],
+    messages = _valid_physical_messages()
+    image_index = next(
+        index for index, item in enumerate(messages)
+        if item.topic == "/camera/observer/image_raw"
+    )
+    metadata_index = next(
+        index for index, item in enumerate(messages)
+        if item.topic == "/camera/observer/frame_metadata"
+    )
+    messages[image_index] = replace(
+        messages[image_index], message=_image(50_000_000)
+    )
+    messages[metadata_index] = replace(
+        messages[metadata_index],
         message=_custom_message(50_000_000, frame_id=0, stream="observer"),
+    )
+    messages.append(
+        BagMessage("/clock", SimpleNamespace(clock=_stamp(50_000_000)), 200)
     )
     backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
 
     result = RosbagValidator(
-        RUN_ID, backend=backend, expected_camera_frames=1
+        RUN_ID, backend=backend, expected_camera_frames=1, physical_run=True
     ).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.INVALID
     assert "aligned" in result.detail
+
+
+def test_physical_bag_accepts_explicit_production_evidence_contract(tmp_path):
+    _bag_directory(tmp_path)
+    messages = _valid_physical_messages()
+    backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=backend,
+        expected_camera_frames=1,
+        physical_run=True,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+
+
+def _validate_physical_messages(tmp_path, messages):
+    _bag_directory(tmp_path)
+    return RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
+        expected_camera_frames=1,
+        physical_run=True,
+    ).validate(tmp_path, "rosbag")
+
+
+def test_physical_bag_requires_monotonic_clock_covering_frame_stamps(tmp_path):
+    messages = _valid_physical_messages()
+    clock_index = next(index for index, item in enumerate(messages) if item.topic == "/clock")
+    messages[clock_index] = replace(
+        messages[clock_index], message=SimpleNamespace(clock=_stamp(50_000_000))
+    )
+    messages.insert(
+        clock_index + 1,
+        BagMessage("/clock", SimpleNamespace(clock=_stamp(0)), 103),
+    )
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "clock" in result.detail
+
+
+def test_physical_bag_requires_truthful_inactive_scenario_initialization(tmp_path):
+    messages = _valid_physical_messages()
+    scenario = next(
+        index for index, item in enumerate(messages)
+        if item.topic == "/simulation/scenario_events"
+    )
+    messages[scenario] = replace(
+        messages[scenario],
+        message=_custom_message(
+            0,
+            event_id=0,
+            magnet_id="descent-v1-magnet",
+            state="ACTIVE",
+        ),
+    )
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "scenario" in result.detail
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda events: events.pop(),
+        lambda events: setattr(events[1].message, "event_id", 8),
+        lambda events: setattr(events[1].message, "event_type", "score.unknown"),
+    ],
+    ids=("missing", "noncontiguous", "wrong-order"),
+)
+def test_physical_bag_requires_exact_ordered_descent_score_events(
+    tmp_path, mutation
+):
+    messages = _valid_physical_messages()
+    score_events = [
+        item for item in messages if item.topic == "/simulation/score_events"
+    ]
+    mutation(score_events)
+    messages = [
+        item for item in messages if item.topic != "/simulation/score_events"
+    ] + score_events
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "score events" in result.detail
 
 
 def test_validation_rejects_bag_mutated_during_semantic_read(tmp_path):

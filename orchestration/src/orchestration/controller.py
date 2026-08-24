@@ -33,6 +33,10 @@ from artifacts import (
     validate_regular_file,
     validate_tree,
 )
+from artifacts.score_validation import (
+    ScoreValidationError,
+    validate_descent_score_outputs,
+)
 from ._adapters.compose import ComposeCommandResult, ComposeRuntime
 from .config import (
     RunConfig,
@@ -1227,16 +1231,33 @@ class RunController:
                         )
                         primary = primary or TerminalCause("provenance", reason)
                 try:
-                    achieved, maximum, scoring_checksum, evidence = self._score_metadata(
-                        run_directory,
-                        work_deadline_check,
-                    )
+                    if requested == "COMPLETED" and config.runtime_profile == "phase3":
+                        score = validate_descent_score_outputs(
+                            run_directory,
+                            run_id=config.run_id,
+                            rules_path=(
+                                self.project_directory
+                                / "scorekeeper/rules/descent_v1.json"
+                            ),
+                            deadline_check=work_deadline_check,
+                        )
+                        achieved = score.achieved_score
+                        maximum = score.maximum_available_score
+                        scoring_checksum = score.scoring_checksum
+                        evidence = score.evidence_paths
+                    else:
+                        achieved, maximum, scoring_checksum, evidence = self._score_metadata(
+                            run_directory,
+                            work_deadline_check,
+                        )
                 except TimeoutError:
                     achieved, maximum, scoring_checksum, evidence = (None, None, None, ())
                     if requested == "COMPLETED":
                         requested = "FAILED"
                         reason = "finalization_deadline"
                         primary = primary or TerminalCause("provenance", reason)
+                except ScoreValidationError:
+                    achieved, maximum, scoring_checksum, evidence = (None, None, None, ())
                 if (
                     requested == "COMPLETED"
                     and (
@@ -1276,6 +1297,7 @@ class RunController:
                         validators=validators,
                         deadline_check=work_deadline_check,
                         commit_deadline_check=manifest_deadline_check,
+                        physical_gazebo=config.runtime_profile == "phase3",
                     )
                     committed = session.finalize_with_result(request)
                     if not isinstance(committed, FinalizationResult):

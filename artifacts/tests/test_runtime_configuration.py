@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from artifacts.runtime_configuration import resolve_recording_runtime_config
+from artifacts.runtime_configuration import (
+    RecordingRuntimeConfig,
+    resolve_recording_runtime_config,
+)
+
+
+def test_legacy_phase2_contract_constructor_defaults_to_nonphysical_validation():
+    assert RecordingRuntimeConfig(40, True).physical_run is False
 
 
 def test_omitted_profile_preserves_phase2_forty_frame_ack_contract():
@@ -13,6 +20,7 @@ def test_omitted_profile_preserves_phase2_forty_frame_ack_contract():
 
     assert contract.expected_camera_frames == 40
     assert contract.synthetic_camera_ack is True
+    assert contract.physical_run is False
 
 
 def test_physical_profile_derives_frame_count_and_never_requires_camera_ack():
@@ -27,6 +35,7 @@ def test_physical_profile_derives_frame_count_and_never_requires_camera_ack():
 
     assert contract.expected_camera_frames == 3
     assert contract.synthetic_camera_ack is False
+    assert contract.physical_run is True
 
 
 @pytest.mark.parametrize("duration", [0, 0.075, True, float("nan")])

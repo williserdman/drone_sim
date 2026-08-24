@@ -119,18 +119,74 @@ def _file_facts(path: Path) -> tuple[int, str]:
 def _complete_runtime_outputs(
     run_directory: Path, *, report_mutator=None, score_mutator=None
 ) -> None:
-    scoring_checksum = "c" * 64
+    scoring_checksum = hashlib.sha256(
+        (Path(__file__).parents[2] / "scorekeeper/rules/descent_v1.json").read_bytes()
+    ).hexdigest()
+    rule_ids = (
+        "airborne_then_contact",
+        "touchdown_precision",
+        "safe_preimpact_speed",
+        "stable_contact",
+    )
+    available_points = (20.0, 40.0, 20.0, 20.0)
+    awarded_points = (20.0, 40.0, 0.0, 0.0)
+    events = [
+        {
+            "run_id": RUN_ID,
+            "sim_timestamp_ns": 2_000_000_000,
+            "event_id": index,
+            "event_type": f"descent.{rule_id}",
+            "value": awarded,
+            "evidence_ref": f"scoring/events.jsonl#event-{index}",
+        }
+        for index, (rule_id, awarded) in enumerate(
+            zip(rule_ids, awarded_points, strict=True)
+        )
+    ]
+    events.append(
+        {
+            "run_id": RUN_ID,
+            "sim_timestamp_ns": 2_000_000_000,
+            "event_id": 4,
+            "event_type": "score.finalized",
+            "value": 60.0,
+            "evidence_ref": "scoring/events.jsonl#event-4",
+        }
+    )
     payloads = {
         "gazebo/server.log": b"fixture gazebo log",
         "video/onboard.mp4": b"valid onboard h264 fixture",
         "video/observer.mp4": b"valid observer h264 fixture",
-        "scoring/events.jsonl": b'{"event":"landed"}\n',
+        "scoring/events.jsonl": "".join(
+            json.dumps(event, sort_keys=True) + "\n" for event in events
+        ).encode(),
         "scoring/result.json": json.dumps(
             {
-                "achieved_score": 100,
-                "maximum_available_score": 100,
+                "run_id": RUN_ID,
+                "ruleset_id": "descent_v1",
+                "complete": True,
+                "achieved_score": 60.0,
+                "maximum_available_score": 100.0,
                 "scoring_checksum": scoring_checksum,
-                "evidence_paths": ["scoring/events.jsonl"],
+                "evidence_paths": [
+                    *(f"scoring/events.jsonl#event-{index}" for index in range(5)),
+                    "rosbag#/simulation/ground_truth",
+                ],
+                "rule_results": [
+                    {
+                        "rule_id": rule_id,
+                        "passed": awarded > 0,
+                        "awarded_points": awarded,
+                        "available_points": available,
+                        "evidence_ref": (
+                            f"rosbag#/simulation/ground_truth:{rule_id}"
+                        ),
+                    }
+                    for rule_id, awarded, available in zip(
+                        rule_ids, awarded_points, available_points, strict=True
+                    )
+                ],
+                "diagnostic": None,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -143,7 +199,7 @@ def _complete_runtime_outputs(
     if score_mutator is not None:
         score_mutator(run_directory / "scoring/result.json")
     (run_directory / "gazebo/state").mkdir(parents=True, exist_ok=True)
-    (run_directory / "gazebo/state/state.json").write_bytes(b"{}")
+    (run_directory / "gazebo/state/state.tlog").write_bytes(b"native state")
     (run_directory / "rosbag").mkdir(parents=True, exist_ok=True)
     (run_directory / "rosbag/metadata.yaml").write_bytes(b"storage_identifier: mcap")
     (run_directory / "rosbag/data.mcap").write_bytes(b"valid synthetic mcap")
@@ -327,6 +383,7 @@ class FakeCompose:
         ),
         report_mutator=None,
         score_mutator=None,
+        runtime_mutator=None,
         up_error: Exception | None = None,
         down_error: Exception | None = None,
         interrupt_sleep=None,
@@ -337,6 +394,7 @@ class FakeCompose:
         self.statuses = statuses
         self.report_mutator = report_mutator
         self.score_mutator = score_mutator
+        self.runtime_mutator = runtime_mutator
         self.up_error = up_error
         self.down_error = down_error
         self.down_timeouts: list[float] = []
@@ -352,6 +410,8 @@ class FakeCompose:
             report_mutator=self.report_mutator,
             score_mutator=self.score_mutator,
         )
+        if self.runtime_mutator is not None:
+            self.runtime_mutator(self.run_directory)
         documents = {
             "artifacts-ready": {"run_id": RUN_ID, "ready": True},
             "gazebo-ready": {"run_id": RUN_ID, "ready": True},
@@ -461,6 +521,7 @@ def _controller(
     statuses=None,
     report_mutator=None,
     score_mutator=None,
+    runtime_mutator=None,
     capture_failure=False,
     up_error=None,
     down_error=None,
@@ -484,6 +545,7 @@ def _controller(
             statuses=FakeCompose.__init__.__kwdefaults__["statuses"] if statuses is None else statuses,
             report_mutator=report_mutator,
             score_mutator=score_mutator,
+            runtime_mutator=runtime_mutator,
             up_error=up_error,
             down_error=down_error,
             services=(PHASE3_SERVICES if config.runtime_profile == "phase3" else SERVICES),
@@ -902,6 +964,121 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
     assert trace.index("wait score-finished") < trace.index("request FINALIZING")
     assert holder["value"].services == PHASE3_SERVICES
     assert holder["log_ownership"] == _topology("phase3").ownership
+
+
+def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
+    def replace_score_run_id(path: Path) -> None:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["run_id"] = "11111111-1111-4111-8111-111111111111"
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        score_mutator=replace_score_run_id,
+        statuses=(
+            "artifacts-ready",
+            "gazebo-ready",
+            "runtime-running",
+            "ardupilot-ready",
+            "companion-ready",
+            "source-finished",
+            "mission-finished",
+            "score-finished",
+            "runtime-frozen",
+            "terminal-notified",
+        ),
+    )
+
+    result = controller.start(
+        _template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "target_real_time_factor": 0.1,
+            },
+        )
+    )
+
+    assert result.state == "FAILED"
+    assert result.reason == "scoring_provenance_invalid"
+
+
+def test_phase3_completed_run_requires_native_state_tlog(tmp_path):
+    def remove_native_state(run: Path) -> None:
+        (run / "gazebo/state/state.tlog").unlink()
+        (run / "gazebo/state/state.json").write_bytes(b"{}")
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        runtime_mutator=remove_native_state,
+        statuses=(
+            "artifacts-ready",
+            "gazebo-ready",
+            "runtime-running",
+            "ardupilot-ready",
+            "companion-ready",
+            "source-finished",
+            "mission-finished",
+            "score-finished",
+            "runtime-frozen",
+            "terminal-notified",
+        ),
+    )
+
+    result = controller.start(
+        _template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "target_real_time_factor": 0.1,
+            },
+        )
+    )
+
+    assert result.state == "FAILED"
+    manifest = json.loads(
+        (tmp_path / "runs" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    )
+    state = next(
+        record for record in manifest["artifacts"]
+        if record["relative_path"] == "gazebo/state"
+    )
+    assert state["validation"] == "invalid"
+    assert state["detail"] == "gazebo state requires nonempty state.tlog"
+
+
+def test_phase2_preserves_synthetic_state_and_score_completion_contract(tmp_path):
+    def restore_synthetic_state(run: Path) -> None:
+        (run / "gazebo/state/state.tlog").unlink()
+        (run / "gazebo/state/state.json").write_bytes(b"{}")
+
+    def restore_synthetic_score(path: Path) -> None:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(
+            json.dumps(
+                {
+                    "achieved_score": document["achieved_score"],
+                    "maximum_available_score": document["maximum_available_score"],
+                    "scoring_checksum": document["scoring_checksum"],
+                    "evidence_paths": document["evidence_paths"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        runtime_mutator=restore_synthetic_state,
+        score_mutator=restore_synthetic_score,
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    assert result.state == "COMPLETED"
 
 
 def test_git_provenance_commands_consume_one_shared_remaining_deadline(tmp_path):
