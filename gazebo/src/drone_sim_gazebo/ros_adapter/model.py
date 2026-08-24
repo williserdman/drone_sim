@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import math
 from uuid import UUID
@@ -261,7 +262,7 @@ class AdapterModel:
         self._unmatched_frames: dict[str, PublicFrame | None] = {
             stream: None for stream in _STREAMS
         }
-        self._pending_pair: tuple[int, int] | None = None
+        self._pending_pairs: deque[tuple[int, int]] = deque()
         self._paired_frames = 0
         self._ground_truth_samples = 0
         self._first_sim_timestamp_ns: int | None = None
@@ -277,7 +278,7 @@ class AdapterModel:
             and all(sequence.complete for sequence in self._sequences.values())
             and self._paired_frames == self._expected_frames
             and self._ground_truth_samples == self._expected_frames
-            and self._pending_pair is None
+            and not self._pending_pairs
             and all(frame is None for frame in self._unmatched_frames.values())
         )
 
@@ -304,8 +305,8 @@ class AdapterModel:
 
     def _accept_frame(self, stream: str, sample: NativeImage) -> PublicFrame:
         stream = _validate_stream(stream)
-        if self._pending_pair is not None:
-            raise AdapterFault("aligned camera pair still awaits ground truth")
+        if len(self._pending_pairs) == 2:
+            raise AdapterFault("camera-pair lookahead buffer is full")
         if self._unmatched_frames[stream] is not None:
             raise AdapterFault(f"{stream} camera already has one unmatched frame")
 
@@ -322,7 +323,7 @@ class AdapterModel:
         frame = sequence.accept(sample)
         self._unmatched_frames[stream] = frame
         if other is not None:
-            self._pending_pair = (frame.frame_id, frame.sim_timestamp_ns)
+            self._pending_pairs.append((frame.frame_id, frame.sim_timestamp_ns))
             self._unmatched_frames["onboard"] = None
             self._unmatched_frames["observer"] = None
         return frame
@@ -330,7 +331,7 @@ class AdapterModel:
     def camera_pair_complete(self, frame_id: int, stamp_ns: int) -> bool:
         frame_id = _nonnegative_integer(frame_id, field="frame_id")
         stamp_ns = _positive_integer(stamp_ns, field="stamp_ns")
-        return self._pending_pair == (frame_id, stamp_ns)
+        return (frame_id, stamp_ns) in self._pending_pairs
 
     def accept_ground_truth(
         self,
@@ -352,9 +353,9 @@ class AdapterModel:
             and sample.sim_timestamp_ns <= self._last_ground_truth_timestamp_ns
         ):
             raise AdapterFault("ground-truth timestamps must increase")
-        if self._pending_pair is None:
+        if not self._pending_pairs:
             raise AdapterFault("ground truth requires one aligned camera pair")
-        _, pair_stamp_ns = self._pending_pair
+        _, pair_stamp_ns = self._pending_pairs[0]
         if sample.sim_timestamp_ns != pair_stamp_ns:
             raise AdapterFault("ground truth timestamp does not match camera pair")
 
@@ -368,7 +369,7 @@ class AdapterModel:
             angular_velocity_xyz=sample.angular_velocity_xyz,
             in_contact=sample.in_contact,
         )
-        self._pending_pair = None
+        self._pending_pairs.popleft()
         self._paired_frames += 1
         self._ground_truth_samples += 1
         self._last_ground_truth_timestamp_ns = sample.sim_timestamp_ns

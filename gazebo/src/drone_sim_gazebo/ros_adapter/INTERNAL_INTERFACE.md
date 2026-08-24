@@ -13,9 +13,11 @@ camera samples with that exact ID and native timestamp form the current pair.
 `PublicGroundTruth` with unchanged world-frame ENU values.
 
 Buffering is fail-closed and constant: at most one unmatched frame is held for
-each stream and at most one aligned camera pair awaits ground truth. A second
-sample that would require queue growth raises `AdapterFault`; ground truth is
-never buffered as an independent pose stream.
+each stream and at most two aligned camera pairs await ground truth. The single
+lookahead pair is required because Gazebo's no-contact truth for one stamp is
+closed by odometry from the next stamp, while independent ROS subscriptions may
+deliver that next camera pair first. A third pair raises `AdapterFault`;
+ground truth is never buffered as an independent pose stream.
 
 Every `AdapterFault` raised while accepting a native frame or ground-truth
 sample irreversibly latches the relevant sequence and adapter. All later

@@ -67,6 +67,22 @@ def test_live_adapter_treats_no_contact_event_before_next_odometry_as_false():
     assert adapter.complete is True
 
 
+def test_live_adapter_accepts_next_camera_pair_before_odometry_closes_prior_truth():
+    adapter = LiveAdapter(run_id=RUN_ID, expected_frames=2)
+    adapter.accept_image("onboard", _image(50_000_000))
+    adapter.accept_image("observer", _image(50_000_000))
+    assert adapter.accept_odometry(_odom(50_000_000)) == ()
+
+    adapter.accept_image("onboard", _image(100_000_000))
+    adapter.accept_image("observer", _image(100_000_000))
+    first_truth = adapter.accept_odometry(_odom(100_000_000))
+    second_truth = adapter.accept_odometry(_odom(150_000_000))
+
+    assert [value.sim_timestamp_ns for value in first_truth] == [50_000_000]
+    assert [value.sim_timestamp_ns for value in second_truth] == [100_000_000]
+    assert adapter.complete is True
+
+
 def test_live_adapter_retains_exact_twenty_hz_native_timestamps():
     adapter = LiveAdapter(run_id=RUN_ID, expected_frames=2)
     observed = []

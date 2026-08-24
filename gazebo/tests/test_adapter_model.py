@@ -274,12 +274,26 @@ def test_adapter_bounds_each_unmatched_stream_to_one_frame():
         adapter.accept_frame("onboard", native_image(stamp_ns=100_000_000))
 
 
-def test_adapter_rejects_a_later_frame_while_aligned_pair_awaits_truth():
+def test_adapter_buffers_one_lookahead_pair_while_prior_pair_awaits_truth():
     adapter = AdapterModel(run_id=RUN_ID, expected_frames=2)
     accept_pair(adapter, 50_000_000)
+    accept_pair(adapter, 100_000_000)
 
-    with pytest.raises(AdapterFault):
-        adapter.accept_frame("onboard", native_image(stamp_ns=100_000_000))
+    first = adapter.accept_ground_truth(native_ground_truth(50_000_000))
+    second = adapter.accept_ground_truth(native_ground_truth(100_000_000))
+
+    assert first.sim_timestamp_ns == 50_000_000
+    assert second.sim_timestamp_ns == 100_000_000
+    assert adapter.complete
+
+
+def test_adapter_rejects_a_third_pair_while_two_pairs_await_truth():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=3)
+    accept_pair(adapter, 50_000_000)
+    accept_pair(adapter, 100_000_000)
+
+    with pytest.raises(AdapterFault, match="lookahead"):
+        adapter.accept_frame("onboard", native_image(stamp_ns=150_000_000))
 
 
 def test_ground_truth_maps_world_enu_values_unchanged_once_pair_is_ready():

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 from .aggregation import PrivateTruthAggregator
 from .model import (
     AdapterModel,
@@ -18,20 +20,20 @@ class LiveAdapter:
     def __init__(self, *, run_id: str, expected_frames: int) -> None:
         self._adapter = AdapterModel(run_id=run_id, expected_frames=expected_frames)
         self._truth = PrivateTruthAggregator()
-        self._pending_pair_stamp: int | None = None
+        self._pending_pair_stamps: deque[int] = deque()
 
     @property
     def complete(self) -> bool:
         return self._adapter.complete
 
     def _release_truth(self) -> tuple[PublicGroundTruth, ...]:
-        if self._pending_pair_stamp is None:
+        if not self._pending_pair_stamps:
             return ()
-        native = self._truth.take(self._pending_pair_stamp)
+        native = self._truth.take(self._pending_pair_stamps[0])
         if native is None:
             return ()
         public = self._adapter.accept_ground_truth(native)
-        self._pending_pair_stamp = None
+        self._pending_pair_stamps.popleft()
         return (public,)
 
     def accept_image(
@@ -39,7 +41,7 @@ class LiveAdapter:
     ) -> tuple[PublicFrame | PublicGroundTruth, ...]:
         frame = self._adapter.accept_frame(stream, sample)
         if self._adapter.camera_pair_complete(frame.frame_id, frame.sim_timestamp_ns):
-            self._pending_pair_stamp = frame.sim_timestamp_ns
+            self._pending_pair_stamps.append(frame.sim_timestamp_ns)
         return (frame, *self._release_truth())
 
     def accept_odometry(self, sample: object) -> tuple[PublicGroundTruth, ...]:
