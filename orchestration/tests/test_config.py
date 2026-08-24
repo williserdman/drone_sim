@@ -268,6 +268,18 @@ def test_config_schemas_are_valid_and_accept_phase_3_default(schema_name):
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_config_schemas_accept_exact_three_frame_duration(schema_name):
+    document = (
+        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
+        if schema_name == "run-template.schema.json"
+        else _resolved_document()
+    )
+    document["simulation"]["duration_sim_seconds"] = 0.15
+
+    _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
 def test_config_schemas_accept_omitted_phase_2_profile(schema_name):
     document = _phase2_document()
     if schema_name == "run.schema.json":

@@ -71,6 +71,10 @@ The topic and type inventory remains fixed. Phase 2 test doubles and the Phase
 | `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
 | `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
 
+`GroundTruth` binds pose, linear velocity, and angular velocity to the Gazebo
+world frame using ENU axes. Its contact flag describes the Iris carrier's
+current-epoch contact with a non-vehicle entity.
+
 The Phase 2 synthetic camera publisher, video subscriptions, and rosbag
 overrides use the reliable depth-5 archival contract so exact recording does
 not depend on lossy delivery. A later mission consumer may request compatible

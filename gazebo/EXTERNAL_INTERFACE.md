@@ -25,6 +25,10 @@ camera pair has one ground-truth sample at the same native timestamp. The
 onboard public image is the exact stream later consumed by companion vision and
 artifacts.
 
+`GroundTruth.pose` and its linear and angular velocity are expressed in the
+Gazebo world frame using ENU axes. `GroundTruth.in_contact` is true when the
+Iris carrier has current-epoch contact with a non-vehicle entity.
+
 ## Lifecycle inputs
 
 The runtime consumes the current run's resolved configuration, lifecycle state,
