@@ -22,8 +22,20 @@
     "max_wall_seconds": {"type": "integer", "minimum": 1},
     "startup_wall_seconds": {"type": "integer", "minimum": 1},
     "finalization_wall_seconds": {"type": "integer", "minimum": 1},
-    "recording": {"$ref": "#/$defs/recording"}
+    "recording": {"$ref": "#/$defs/recording"},
+    "runtime_profile": {"enum": ["phase2", "phase3"]},
+    "simulation": {"$ref": "#/$defs/simulation"}
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["runtime_profile"],
+        "properties": {"runtime_profile": {"const": "phase3"}}
+      },
+      "then": {"required": ["simulation"]},
+      "else": {"not": {"required": ["simulation"]}}
+    }
+  ],
   "$defs": {
     "recording": {
       "type": "object",
@@ -34,6 +46,20 @@
         "height_px": {"const": 240},
         "fps": {"const": 20},
         "encoding": {"const": "rgb8"}
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed", "duration_sim_seconds", "target_real_time_factor"],
+      "properties": {
+        "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "duration_sim_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "multipleOf": 0.05
+        },
+        "target_real_time_factor": {"const": 0.1}
       }
     }
   }

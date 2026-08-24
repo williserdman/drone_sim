@@ -12,8 +12,8 @@ Define relationships among the repository's immediate child modules. Top-level c
 | Artifacts | Orchestration | ROS 2 `/simulation/artifact_status` and run-directory status files | Recorder readiness and artifact completeness |
 | Companion | ArduPilot SITL | MAVLink | Mission and flight commands |
 | ArduPilot SITL | Companion | MAVLink | Telemetry, modes, acknowledgements |
-| ArduPilot SITL | Gazebo | ArduPilot-Gazebo adapter | Actuator outputs |
-| Gazebo | ArduPilot SITL | ArduPilot-Gazebo adapter | Simulated sensors and dynamics |
+| ArduPilot SITL | Gazebo | Reserved Phase 4 ArduPilot-Gazebo adapter | Actuator outputs; inactive in Phase 3 |
+| Gazebo | ArduPilot SITL | Reserved Phase 4 ArduPilot-Gazebo adapter | Simulated sensors and dynamics; inactive in Phase 3 |
 | Gazebo | Companion | ROS 2 image transport | Camera frames |
 | Gazebo | Scorekeeper | ROS 2 | Ground truth |
 | Electromagnet | Gazebo | ROS 2 | Physical-effect requests |
@@ -26,6 +26,12 @@ Define relationships among the repository's immediate child modules. Top-level c
 ## Allowed dependencies
 
 Nested same-process siblings may import one another only through the interface documented by the module they consume.
+
+Gazebo Transport is private to the Gazebo module. Repository siblings consume
+only Gazebo's documented ROS 2 and durable-file interfaces. Within
+`drone_sim_gazebo`, the `worlds`, `models`, `server`, `ros_adapter`, and
+`runtime` sibling packages communicate through their documented directory
+APIs; callers do not import private implementation files across those seams.
 
 ## Forbidden dependencies
 
@@ -64,10 +70,15 @@ a diagnostic `FAILED`/`ABORTED` manifest can still be attempted in its reserve.
 
 All control and status JSON is committed through a collision-safe temporary
 sibling, file flush and `fsync`, atomic replacement, and directory `fsync`.
-The complete status set is `operator-state.json`, `artifacts-ready.json`,
-`runtime-running.json`, `source-finished.json`, `runtime-failure.json`,
-`runtime-frozen.json`, `artifacts-final.json`, and `terminal-notified.json`
-under `.status/`. The ROS orchestration runtime writes `runtime-running.json`
+The complete status set is `operator-state.json`, `artifacts-ready.json`, the
+Phase 3 `gazebo-ready.json`, `runtime-running.json`, `source-finished.json`,
+`runtime-failure.json`, `runtime-frozen.json`, `artifacts-final.json`, and
+`terminal-notified.json` under `.status/`. The ROS orchestration runtime writes `runtime-running.json`
 immediately after publishing `RUNNING` for the first valid clock; the host uses
 that durable signal to update operator state without treating wall time as
 simulation progress.
+
+For Phase 3, the Gazebo runtime first pauses the world, stops and drains its
+public adapter, stops bridges and the server, freezes native state and the raw
+server log, and writes only its module quiescence marker. Aggregate freeze and
+manifest authority remain with orchestration and artifacts respectively.

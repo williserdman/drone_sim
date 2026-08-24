@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from artifacts import DockerLogCommandResult, ImageDigest
+from orchestration.config import RuntimeTopology
 
 
 _SERVICE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -76,10 +77,13 @@ class ComposeRuntime:
         run_id: str,
         run_directory: Path | str,
         config_path: Path | str,
+        topology: RuntimeTopology,
         runner: Runner = _production_runner,
         base_environment: Mapping[str, str] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
+        if not isinstance(topology, RuntimeTopology):
+            raise TypeError("topology must be a RuntimeTopology")
         try:
             parsed = UUID(run_id)
         except (TypeError, ValueError, AttributeError) as exc:
@@ -98,6 +102,8 @@ class ComposeRuntime:
             raise ValueError("config_path must be the run's resolved configuration")
         self.run_id = run_id
         self.project_name = f"drone-sim-{run_id.replace('-', '')}"
+        self.topology = topology
+        self._services = frozenset(service for service, _module in topology.ownership)
         self._runner = runner
         self._monotonic = monotonic
         environment = dict(os.environ if base_environment is None else base_environment)
@@ -106,12 +112,13 @@ class ComposeRuntime:
         self.environment = {
             **environment,
             "COMPOSE_DISABLE_ENV_FILE": "1",
-            "COMPOSE_PROFILES": "phase2",
+            "COMPOSE_PROFILES": topology.profile,
             "SIM_RUN_ID": run_id,
             "SIM_RUN_DIRECTORY": str(self.run_directory),
             "SIM_CONFIG_PATH": str(self.config_path),
-            "SIM_PHASE2_PROFILE": "1",
         }
+        if topology.profile == "phase2":
+            self.environment["SIM_PHASE2_PROFILE"] = "1"
         self._base = [
             "docker",
             "compose",
@@ -163,7 +170,11 @@ class ComposeRuntime:
             "--no-log-prefix",
         ]
         service = command[-1]
-        if command[:-1] != expected_prefix or _SERVICE_PATTERN.fullmatch(service) is None:
+        if (
+            command[:-1] != expected_prefix
+            or _SERVICE_PATTERN.fullmatch(service) is None
+            or service not in self._services
+        ):
             raise ValueError("log command does not match the frozen Task 5 contract")
         result = self._compose(command[4:], timeout)
         return DockerLogCommandResult(result.returncode, result.output)
@@ -177,6 +188,8 @@ class ComposeRuntime:
             for name in names
         ):
             raise ValueError("stop_services requires safe service names")
+        if any(name not in self._services for name in names):
+            raise ValueError("stop_services requires services from the selected topology")
         return self._compose(["stop", *names], timeout)
 
     def down(self, timeout: float) -> ComposeCommandResult:

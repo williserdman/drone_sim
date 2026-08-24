@@ -21,12 +21,20 @@ the same absolute path explicitly.
 
 - An operator template without `run_id`; orchestration generates the unique ID
 - World, vehicle, mission, and scenario configuration
+- Optional `runtime_profile`, restricted to `phase2` or `phase3`. Omission is
+  reserved for the Phase 2 infrastructure regression template; the repository
+  default selects `phase3`.
+- Phase 3 `simulation` fields: unsigned 32-bit `seed`, positive finite
+  `duration_sim_seconds` on the fixed 50,000,000 ns camera grid, and frozen
+  `target_real_time_factor=0.1`.
 - ROS 2 discovery and network configuration
 - Result and log destinations
 
-Phase 2 recording geometry is exactly `320x240` at 20 FPS with `rgb8`
-encoding. Template and resolved-config validation reject any other dimensions
-before Compose construction; configurable simulator geometry remains deferred.
+Recording geometry is exactly `320x240` at 20 FPS with `rgb8` encoding.
+Template and resolved-config validation reject incompatible profile/simulation
+pairs, invalid timing, or other geometry before Compose construction. Phase 3
+derives the expected per-stream frame count from the exact integer-nanosecond
+duration; the default 2.0 simulated seconds yields 40 frames.
 
 Secret values must be supplied at runtime and must not be committed.
 
@@ -47,21 +55,21 @@ transient-local QoS depth 1.
 
 ## Fixed ROS 2 contracts
 
-The topic and type inventory remains fixed. Phase 2 uses these delivery
-contracts for its synthetic runtime and archival paths:
+The topic and type inventory remains fixed. Phase 2 test doubles and the Phase
+3 production Gazebo adapter use these public delivery contracts:
 
 | Topic | Message | QoS |
 | --- | --- | --- |
-| `/clock` | `rosgraph_msgs/msg/Clock` | Best effort, depth 1 |
+| `/clock` | `rosgraph_msgs/msg/Clock` | Best effort, volatile, depth 1 |
 | `/simulation/run_state` | `simulation_interfaces/msg/RunState` | Reliable, transient local, depth 1 |
 | `/simulation/artifact_status` | `simulation_interfaces/msg/ArtifactStatus` | Reliable, transient local, depth 1 |
-| `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Best effort, depth 10 |
-| `/simulation/scenario_events` | `simulation_interfaces/msg/ScenarioEvent` | Reliable, depth 100 |
-| `/simulation/score_events` | `simulation_interfaces/msg/ScoreEvent` | Reliable, depth 100 |
-| `/camera/onboard/image_raw` | ROS 2 image transport | Reliable archival offer/request, depth 5 |
-| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable archival offer/request, depth 5 |
-| `/camera/observer/image_raw` | ROS 2 image transport | Reliable archival offer/request, depth 5 |
-| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable archival offer/request, depth 5 |
+| `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Best effort, volatile, depth 10 |
+| `/simulation/scenario_events` | `simulation_interfaces/msg/ScenarioEvent` | Reliable, volatile, depth 100 |
+| `/simulation/score_events` | `simulation_interfaces/msg/ScoreEvent` | Reliable, volatile, depth 100 |
+| `/camera/onboard/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
+| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
+| `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
+| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
 
 The Phase 2 synthetic camera publisher, video subscriptions, and rosbag
 overrides use the reliable depth-5 archival contract so exact recording does
@@ -103,15 +111,29 @@ because `COMPLETED` depends on successful bag closure and artifact validation.
 
 A container is ready only when its required process and communication endpoints are ready. Bounded deadlines use a monotonic wall clock to identify a stalled host but never advance simulation state.
 
+Phase 3 starts a fresh headless Gazebo server paused. Readiness requires the
+server, private transport endpoints, bridges, public publishers, native
+recorder, and artifact recorders before `READY`. The first controlled world
+step establishes `/clock`; only after the current run reaches `RUNNING` may the
+server unpause. The production runtime never waits for or consumes
+`/simulation/camera_pair_ack`.
+
 ## Clock semantics
 
 Gazebo's ROS 2 `/clock` is authoritative. Simulation-aware nodes enable `use_sim_time`.
 
 ## Failure behavior
 
-Startup fails closed when required endpoints are unavailable. Loss of clock or lockstep progress pauses simulated decisions. Shutdown preserves available diagnostics and partial results.
+Startup fails closed when required endpoints are unavailable. Loss of clock or
+required physical progress pauses simulated decisions. Shutdown preserves
+available diagnostics and partial results.
 
-## Deferred decisions
+Reset is run-scoped replacement: destroy the container/server and start a fresh
+Compose project and Gazebo partition from immutable SDF. There is no public
+in-process reset endpoint.
 
-- Reset and readiness wire protocols
-- Production Docker Compose topology and health-check intervals
+## Phase 3 exclusions
+
+Phase 3 does not implement ArduPilot SITL integration, MAVLink, actuator or
+motor dynamics, NED conversion, ArduPilot-Gazebo lockstep, companion mission or
+vision behavior, electromagnet forces, course policy, or competition scoring.

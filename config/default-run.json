@@ -1,8 +1,8 @@
 {
-  "world": "competition",
+  "world": "phase3_foundation",
   "vehicle": "iris",
-  "mission": "descent",
-  "scenario": "maximum_score",
+  "mission": "physical_foundation",
+  "scenario": "passive_descent",
   "output_root": "runs",
   "max_wall_seconds": 3600,
   "startup_wall_seconds": 120,
@@ -12,5 +12,11 @@
     "height_px": 240,
     "fps": 20,
     "encoding": "rgb8"
+  },
+  "runtime_profile": "phase3",
+  "simulation": {
+    "seed": 1,
+    "duration_sim_seconds": 2.0,
+    "target_real_time_factor": 0.1
   }
 }

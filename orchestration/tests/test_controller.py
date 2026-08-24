@@ -12,6 +12,7 @@ from uuid import UUID
 
 import pytest
 
+import orchestration.config as config_module
 from artifacts import (
     DockerLogCaptureError,
     DockerLogCaptureResult,
@@ -45,6 +46,18 @@ SERVICES = (
     "synthetic-electromagnet",
     "synthetic-scorekeeper",
 )
+PHASE3_SERVICES = tuple(
+    "gazebo-runtime" if service == "synthetic-gazebo" else service
+    for service in SERVICES
+)
+
+
+def _topology(profile: str):
+    ownership = tuple(
+        ("gazebo-runtime", module) if profile == "phase3" and module == "gazebo" else (service, module)
+        for service, module in zip(SERVICES, MODULES, strict=True)
+    )
+    return config_module.RuntimeTopology(profile=profile, ownership=ownership)
 
 
 def _template(tmp_path: Path, **updates) -> Path:
@@ -307,6 +320,7 @@ class FakeCompose:
         up_error: Exception | None = None,
         down_error: Exception | None = None,
         interrupt_sleep=None,
+        services=SERVICES,
     ):
         self.run_directory = run_directory
         self.trace = trace
@@ -317,6 +331,7 @@ class FakeCompose:
         self.down_error = down_error
         self.down_timeouts: list[float] = []
         self.log_timeouts: list[float] = []
+        self.services = services
 
     def up(self, timeout):
         self.trace.append("compose up")
@@ -344,7 +359,7 @@ class FakeCompose:
             json.dumps(
                 [
                     {"Service": service, "State": "running", "Health": "healthy"}
-                    for service in SERVICES
+                    for service in self.services
                 ]
             ).encode(),
         )
@@ -437,11 +452,13 @@ def _controller(
             score_mutator=score_mutator,
             up_error=up_error,
             down_error=down_error,
+            services=(PHASE3_SERVICES if config.runtime_profile == "phase3" else SERVICES),
         )
         compose_holder["value"] = compose
         return compose
 
     def capture_factory(**kwargs):
+        compose_holder["log_ownership"] = kwargs["ownership"]
         return FakeCapture(
             **kwargs,
             trace=trace,
@@ -500,6 +517,7 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         run_id=RUN_ID,
         run_directory=run_directory,
         config_path=config_path,
+        topology=_topology("phase2"),
         runner=runner,
         base_environment={
             "PATH": "/bin",
@@ -596,6 +614,7 @@ def test_compose_profile_environment_and_exact_ps_argv_cover_every_operation(tmp
         run_id=RUN_ID,
         run_directory=(tmp_path / "run").resolve(),
         config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase3"),
         runner=runner,
         base_environment={},
     )
@@ -604,15 +623,18 @@ def test_compose_profile_environment_and_exact_ps_argv_cover_every_operation(tmp
     runtime.logs(
         [
             "docker", "compose", "-p", runtime.project_name, "logs",
-            "--no-color", "--no-log-prefix", "synthetic-gazebo",
+            "--no-color", "--no-log-prefix", "gazebo-runtime",
         ],
         3,
     )
     runtime.image_digests(3)
+    runtime.stop_services(PHASE3_SERVICES, 3)
     runtime.down(3)
 
-    assert all(environment["COMPOSE_PROFILES"] == "phase2" for _, environment in calls)
+    assert all(environment["COMPOSE_PROFILES"] == "phase3" for _, environment in calls)
     assert calls[1][0][-4:] == ["ps", "--all", "--format", "json"]
+    with pytest.raises(ValueError, match="selected topology"):
+        runtime.stop_services(["synthetic-gazebo"], 3)
 
 
 @pytest.mark.parametrize(
@@ -626,21 +648,31 @@ def test_compose_profile_environment_and_exact_ps_argv_cover_every_operation(tmp
     ],
 )
 def test_compose_health_requires_exact_seven_unique_running_services(rows, reason):
-    cause = RunController._ps_cause(ComposeCommandResult(0, json.dumps(rows).encode()))
+    cause = RunController._ps_cause(
+        ComposeCommandResult(0, json.dumps(rows).encode()),
+        _topology("phase2"),
+    )
 
     assert cause is not None
     assert cause.reason == reason
 
 
-def test_compose_health_accepts_real_compose_ndjson_ps_output():
+@pytest.mark.parametrize(
+    ("profile", "services"),
+    [("phase2", SERVICES), ("phase3", PHASE3_SERVICES)],
+)
+def test_compose_health_accepts_selected_topology_ndjson_ps_output(profile, services):
     output = b"\n".join(
         json.dumps(
             {"Service": service, "State": "running", "Health": "healthy"}
         ).encode()
-        for service in SERVICES
+        for service in services
     )
 
-    assert RunController._ps_cause(ComposeCommandResult(0, output)) is None
+    assert RunController._ps_cause(
+        ComposeCommandResult(0, output),
+        _topology(profile),
+    ) is None
 
 
 def test_compose_log_runner_validates_frozen_command_and_augments_project_directory(tmp_path):
@@ -655,6 +687,7 @@ def test_compose_log_runner_validates_frozen_command_and_augments_project_direct
         run_id=RUN_ID,
         run_directory=(tmp_path / "run").resolve(),
         config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase2"),
         runner=runner,
         base_environment={},
     )
@@ -716,6 +749,7 @@ def test_compose_image_digest_lookup_shares_one_decreasing_timeout(tmp_path):
         run_id=RUN_ID,
         run_directory=(tmp_path / "run").resolve(),
         config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase2"),
         runner=runner,
         base_environment={},
         monotonic=monotonic,
@@ -793,6 +827,26 @@ def test_log_capture_wrapper_recomputes_remaining_timeout_for_all_seven_services
     timeouts = captured_compose["value"].log_timeouts
     assert len(timeouts) == 7
     assert all(later < earlier for earlier, later in zip(timeouts, timeouts[1:]))
+
+
+def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_path):
+    controller, _trace, _clock, holder = _controller(tmp_path)
+
+    result = controller.start(
+        _template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "target_real_time_factor": 0.1,
+            },
+        )
+    )
+
+    assert result.state == "COMPLETED"
+    assert holder["value"].services == PHASE3_SERVICES
+    assert holder["log_ownership"] == _topology("phase3").ownership
 
 
 def test_git_provenance_commands_consume_one_shared_remaining_deadline(tmp_path):
@@ -1452,6 +1506,7 @@ def test_wait_rejects_runtime_status_that_crosses_deadline_and_passes_checker():
         CrossingStore(),
         RUN_ID,
         FakeCompose(Path("/tmp/unused"), []),
+        _topology("phase2"),
         "runtime-frozen",
         deadline,
         TerminalCause("finalization_deadline", "finalization_deadline"),

@@ -16,8 +16,14 @@ against the invoking process, and writes the immutable resolved snapshot with
 exclusive creation plus file and directory `fsync`.
 
 The Phase 2 template and resolved runtime boundary accept only exact recording
-geometry `320x240`, 20 FPS, `rgb8`. Nonmatching dimensions fail before Compose
-construction rather than generalizing the synthetic source/video contract.
+geometry `320x240`, 20 FPS, `rgb8`. An omitted `runtime_profile` normalizes to
+`phase2` and rejects `simulation`, preserving the synthetic regression seam.
+The repository default explicitly selects `phase3`, which requires an unsigned
+32-bit seed, a duration on the exact 50,000,000 ns camera grid, and
+`target_real_time_factor=0.1`. Duration conversion uses `Decimal(str(value))`
+before integer nanoseconds; no binary-float multiplication participates in
+frame-count or divisibility decisions. All invalid values fail before Compose
+construction.
 
 Run-directory allocation remains an operator-controller responsibility: it
 rejects any pre-existing run directory before calling `write_resolved_config`.
@@ -65,14 +71,21 @@ check both before and after it. Quiescence/report waits use the work slice;
 post-commit terminal notification uses the pre-teardown manifest slice and
 cannot consume teardown reserve.
 
+`RunConfig.topology` returns one immutable `RuntimeTopology` containing the
+validated profile and exact service-to-module ownership tuple. Phase 2 contains
+the original seven synthetic services. Phase 3 changes only
+`synthetic-gazebo` to `gazebo-runtime`. The controller passes that value to
+`ComposeRuntime` and uses the same ownership for health checks, log capture,
+image-digest discovery, service stopping, and exact-service validation.
+
 `ComposeRuntime` pins the absolute repository `compose.yaml`, disables implicit
 `.env` loading, removes ambient Compose file/env-file/profile/project
-selectors, and then activates only the `phase2` profile with
-`COMPOSE_PROFILES=phase2`. Docker host, TLS, certificate, and context variables
-remain available for daemon connectivity. Health observation runs exact
-`ps --all --format json` and requires the frozen seven unique service names to
-be present and running/restarting; missing, extra, duplicate, malformed,
-exited, or unhealthy rows fail closed.
+selectors, and sets `COMPOSE_PROFILES` only from the immutable topology. Docker
+host, TLS, certificate, and context variables remain available for daemon
+connectivity. Health observation runs exact `ps --all --format json` and
+requires the selected seven unique service names to be present and
+running/restarting; missing, extra, duplicate, malformed, exited, or unhealthy
+rows fail closed. No operation reads an ambient topology selector.
 
 All seven Phase 2 services have explicit stable `:phase2` tags, so the unique
 per-run project name and frozen `up --no-build` command resolve identical

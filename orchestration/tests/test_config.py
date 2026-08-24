@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
+import orchestration.config as config_module
 from orchestration.config import (
     RecordingConfig,
     RunConfig,
@@ -41,7 +42,32 @@ def _resolved_document() -> dict:
     return document
 
 
-def test_resolve_default_template_returns_frozen_phase_2_configuration():
+def _phase2_document() -> dict:
+    return {
+        "world": "competition",
+        "vehicle": "iris",
+        "mission": "descent",
+        "scenario": "maximum_score",
+        "output_root": "runs",
+        "max_wall_seconds": 3600,
+        "startup_wall_seconds": 120,
+        "finalization_wall_seconds": 120,
+        "recording": {
+            "width_px": 320,
+            "height_px": 240,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+    }
+
+
+def _write_template(tmp_path: Path, document: dict, name: str = "run.json") -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_resolve_default_template_returns_frozen_phase_3_configuration():
     calls = 0
 
     def fixed_uuid() -> UUID:
@@ -53,6 +79,13 @@ def test_resolve_default_template_returns_frozen_phase_2_configuration():
 
     assert isinstance(resolved, RunConfig)
     assert resolved.run_id == "00000000-0000-4000-8000-000000000222"
+    assert resolved.runtime_profile == "phase3"
+    assert resolved.simulation == config_module.SimulationConfig(
+        seed=1,
+        duration_ns=2_000_000_000,
+        target_real_time_factor=0.1,
+    )
+    assert resolved.expected_camera_frames == 40
     assert resolved.recording == RecordingConfig(
         width_px=320,
         height_px=240,
@@ -67,6 +100,139 @@ def test_resolve_default_template_returns_frozen_phase_2_configuration():
         resolved.world = "other"
 
 
+def test_omitted_runtime_profile_resolves_to_frozen_phase_2_compatibility(tmp_path):
+    resolved = resolve_run_config(
+        _write_template(tmp_path, _phase2_document()),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+
+    assert resolved.runtime_profile == "phase2"
+    assert resolved.simulation is None
+    assert resolved.expected_camera_frames == 40
+    assert resolved.topology == config_module.RuntimeTopology(
+        profile="phase2",
+        ownership=config_module.PHASE2_OWNERSHIP,
+    )
+    with pytest.raises(FrozenInstanceError):
+        resolved.topology.profile = "phase3"
+
+
+def test_phase3_simulation_config_derives_exact_frame_count(tmp_path):
+    value = _phase2_document()
+    value["runtime_profile"] = "phase3"
+    value["simulation"] = {
+        "seed": 7,
+        "duration_sim_seconds": 0.15,
+        "target_real_time_factor": 0.1,
+    }
+
+    config = resolve_run_config(
+        _write_template(tmp_path, value),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+
+    assert config.runtime_profile == "phase3"
+    assert config.simulation.seed == 7
+    assert config.simulation.duration_ns == 150_000_000
+    assert config.simulation.target_real_time_factor == 0.1
+    assert config.expected_camera_frames == 3
+    assert config.topology == config_module.RuntimeTopology(
+        profile="phase3",
+        ownership=config_module.PHASE3_OWNERSHIP,
+    )
+
+
+def test_large_finite_integral_duration_normalizes_without_float_overflow(tmp_path):
+    duration_seconds = 10**400
+    value = _phase2_document()
+    value.update(
+        runtime_profile="phase3",
+        simulation={
+            "seed": 1,
+            "duration_sim_seconds": duration_seconds,
+            "target_real_time_factor": 0.1,
+        },
+    )
+
+    config = resolve_run_config(
+        _write_template(tmp_path, value),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+
+    assert config.simulation.duration_ns == duration_seconds * 1_000_000_000
+
+
+@pytest.mark.parametrize(
+    ("profile", "ownership"),
+    [
+        ("phase3", config_module.PHASE2_OWNERSHIP),
+        ("phase2", config_module.PHASE3_OWNERSHIP),
+        ("ambient", config_module.PHASE2_OWNERSHIP),
+    ],
+)
+def test_runtime_topology_rejects_noncanonical_profile_ownership_pairs(
+    profile, ownership
+):
+    with pytest.raises(ValueError):
+        config_module.RuntimeTopology(profile, ownership)
+
+
+@pytest.mark.parametrize(
+    "simulation",
+    [
+        {"seed": -1, "duration_sim_seconds": 2.0, "target_real_time_factor": 0.1},
+        {"seed": 2**32, "duration_sim_seconds": 2.0, "target_real_time_factor": 0.1},
+        {"seed": 1, "duration_sim_seconds": 0, "target_real_time_factor": 0.1},
+        {"seed": 1, "duration_sim_seconds": 0.075, "target_real_time_factor": 0.1},
+        {"seed": 1, "duration_sim_seconds": 2.0, "target_real_time_factor": 0},
+        {"seed": 1, "duration_sim_seconds": 2.0, "target_real_time_factor": 1.0},
+        {"seed": True, "duration_sim_seconds": 2.0, "target_real_time_factor": 0.1},
+        {"seed": 1, "duration_sim_seconds": float("nan"), "target_real_time_factor": 0.1},
+    ],
+)
+def test_invalid_phase3_timing_is_rejected_before_compose(tmp_path, simulation):
+    value = _phase2_document()
+    value.update(runtime_profile="phase3", simulation=simulation)
+
+    with pytest.raises(ValueError):
+        resolve_run_config(
+            _write_template(tmp_path, value),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"runtime_profile": "phase3"},
+        {
+            "simulation": {
+                "seed": 1,
+                "duration_sim_seconds": 2.0,
+                "target_real_time_factor": 0.1,
+            }
+        },
+        {
+            "runtime_profile": "phase2",
+            "simulation": {
+                "seed": 1,
+                "duration_sim_seconds": 2.0,
+                "target_real_time_factor": 0.1,
+            },
+        },
+    ],
+)
+def test_profile_and_simulation_must_form_a_valid_pair(tmp_path, updates):
+    value = _phase2_document()
+    value.update(updates)
+
+    with pytest.raises(ValueError):
+        resolve_run_config(
+            _write_template(tmp_path, value),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+
+
 def test_run_template_and_recording_are_frozen():
     resolved = resolve_run_config(DEFAULT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
     template = RunTemplate(
@@ -79,6 +245,8 @@ def test_run_template_and_recording_are_frozen():
         startup_wall_seconds=resolved.startup_wall_seconds,
         finalization_wall_seconds=resolved.finalization_wall_seconds,
         recording=resolved.recording,
+        runtime_profile=resolved.runtime_profile,
+        simulation=resolved.simulation,
     )
 
     with pytest.raises(FrozenInstanceError):
@@ -88,7 +256,7 @@ def test_run_template_and_recording_are_frozen():
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
-def test_config_schemas_are_valid_and_accept_phase_2_documents(schema_name):
+def test_config_schemas_are_valid_and_accept_phase_3_default(schema_name):
     validator = _load_validator(schema_name)
     document = (
         json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
@@ -97,6 +265,58 @@ def test_config_schemas_are_valid_and_accept_phase_2_documents(schema_name):
     )
 
     validator.validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_config_schemas_accept_omitted_phase_2_profile(schema_name):
+    document = _phase2_document()
+    if schema_name == "run.schema.json":
+        document = {
+            "run_id": str(FIXED_RUN_ID),
+            **document,
+            "output_root": str((ROOT / "../runs").resolve()),
+            "config_sha256": "a" * 64,
+        }
+
+    _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+@pytest.mark.parametrize(
+    "updates",
+    [
+        pytest.param({"runtime_profile": "phase3"}, id="phase3-without-simulation"),
+        pytest.param(
+            {
+                "simulation": {
+                    "seed": 1,
+                    "duration_sim_seconds": 2.0,
+                    "target_real_time_factor": 0.1,
+                }
+            },
+            id="omitted-profile-with-simulation",
+        ),
+        pytest.param(
+            {
+                "runtime_profile": "phase2",
+                "simulation": {
+                    "seed": 1,
+                    "duration_sim_seconds": 2.0,
+                    "target_real_time_factor": 0.1,
+                },
+            },
+            id="phase2-with-simulation",
+        ),
+    ],
+)
+def test_config_schemas_reject_invalid_profile_simulation_pairs(schema_name, updates):
+    document = _phase2_document()
+    document.update(updates)
+    if schema_name == "run.schema.json":
+        document.update(run_id=str(FIXED_RUN_ID), config_sha256="a" * 64)
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
@@ -141,7 +361,7 @@ def test_config_schemas_are_valid_and_accept_phase_2_documents(schema_name):
         pytest.param(lambda value: value.update({"unexpected": 1}), id="unknown-key"),
     ],
 )
-def test_config_schemas_reject_invalid_phase_2_bindings(schema_name, mutate):
+def test_config_schemas_reject_invalid_phase_3_bindings(schema_name, mutate):
     validator = _load_validator(schema_name)
     document = (
         json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
@@ -235,7 +455,7 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
         "config_sha256": resolved.config_sha256,
         "finalization_wall_seconds": 120,
         "max_wall_seconds": 3600,
-        "mission": "descent",
+        "mission": "physical_foundation",
         "output_root": str((ROOT / "../runs").resolve()),
         "recording": {
             "encoding": "rgb8",
@@ -244,10 +464,16 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
             "width_px": 320,
         },
         "run_id": str(FIXED_RUN_ID),
-        "scenario": "maximum_score",
+        "runtime_profile": "phase3",
+        "scenario": "passive_descent",
+        "simulation": {
+            "duration_sim_seconds": 2.0,
+            "seed": 1,
+            "target_real_time_factor": 0.1,
+        },
         "startup_wall_seconds": 120,
         "vehicle": "iris",
-        "world": "competition",
+        "world": "phase3_foundation",
     }
     assert load_run_config(written) == resolved
 

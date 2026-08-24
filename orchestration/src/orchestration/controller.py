@@ -34,7 +34,12 @@ from artifacts import (
     validate_tree,
 )
 from ._adapters.compose import ComposeCommandResult, ComposeRuntime
-from .config import RunConfig, resolve_run_config, write_resolved_config
+from .config import (
+    RunConfig,
+    RuntimeTopology,
+    resolve_run_config,
+    write_resolved_config,
+)
 from .lifecycle import LifecycleEvent, LifecycleState, RunLifecycle
 from .status_store import (
     OperatorStatus,
@@ -54,18 +59,6 @@ _REPORT_KEYS = {
     "semantic",
 }
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
-_OWNERSHIP = (
-    ("orchestration-runtime", "orchestration"),
-    ("artifacts-runtime", "artifacts"),
-    ("synthetic-companion", "companion"),
-    ("synthetic-ardupilot-sitl", "ardupilot_sitl"),
-    ("synthetic-gazebo", "gazebo"),
-    ("synthetic-electromagnet", "electromagnet"),
-    ("synthetic-scorekeeper", "scorekeeper"),
-)
-_REQUIRED_SERVICES = frozenset(service for service, _module in _OWNERSHIP)
-
-
 class ControllerError(RuntimeError):
     """Controlled operator-facing failure."""
 
@@ -433,6 +426,7 @@ class RunController:
             run_id=config.run_id,
             run_directory=run_directory,
             config_path=run_directory / "configuration/run.json",
+            topology=config.topology,
             monotonic=self.monotonic,
         )
 
@@ -484,7 +478,9 @@ class RunController:
         return stamp
 
     @staticmethod
-    def _ps_cause(result: ComposeCommandResult) -> TerminalCause | None:
+    def _ps_cause(
+        result: ComposeCommandResult, topology: RuntimeTopology
+    ) -> TerminalCause | None:
         if result.returncode != 0:
             return TerminalCause("child_process", "compose_ps_failed")
         try:
@@ -514,7 +510,8 @@ class RunController:
         ):
             return TerminalCause("child_process", "compose_child_exited")
         services = [row["Service"] for row in rows]
-        if len(services) != len(set(services)) or set(services) != _REQUIRED_SERVICES:
+        required_services = {service for service, _module in topology.ownership}
+        if len(services) != len(set(services)) or set(services) != required_services:
             return TerminalCause("child_process", "compose_child_set_invalid")
         return None
 
@@ -523,6 +520,7 @@ class RunController:
         store: StatusStore,
         run_id: str,
         compose: Any,
+        topology: RuntimeTopology,
         deadline: float,
         deadline_check: Callable[[], None],
     ) -> TerminalCause | None:
@@ -551,7 +549,7 @@ class RunController:
             deadline_check()
             result = compose.ps(remaining)
             deadline_check()
-            return self._ps_cause(result)
+            return self._ps_cause(result, topology)
         except TimeoutError:
             raise
         except Exception as exc:
@@ -562,6 +560,7 @@ class RunController:
         store: StatusStore,
         run_id: str,
         compose: Any,
+        topology: RuntimeTopology,
         name: str,
         deadline: float,
         deadline_cause: TerminalCause,
@@ -578,6 +577,7 @@ class RunController:
                         store,
                         run_id,
                         compose,
+                        topology,
                         deadline,
                         checker,
                     )
@@ -791,6 +791,7 @@ class RunController:
             config = resolve_run_config(config_path, run_id_factory=self.uuid_factory)
         except (OSError, ValueError) as exc:
             raise ControllerError(str(exc)) from exc
+        topology = config.topology
         store = self.status_store_factory(config.output_root)
         run_directory = store.allocate(config.run_id)
         lifecycle = RunLifecycle.created(config.run_id)
@@ -870,6 +871,7 @@ class RunController:
                         store,
                         config.run_id,
                         compose,
+                        topology,
                         "artifacts-ready",
                         startup_deadline,
                         TerminalCause("startup_deadline", "startup_deadline"),
@@ -885,6 +887,7 @@ class RunController:
                             store,
                             config.run_id,
                             compose,
+                            topology,
                             "runtime-running",
                             overall_deadline,
                             TerminalCause("clock_stall", "clock_source_stall"),
@@ -898,6 +901,7 @@ class RunController:
                             store,
                             config.run_id,
                             compose,
+                            topology,
                             "source-finished",
                             overall_deadline,
                             TerminalCause("clock_stall", "clock_source_stall"),
@@ -948,6 +952,7 @@ class RunController:
                                 store,
                                 config.run_id,
                                 compose,
+                                topology,
                                 status_name,
                                 work_deadline,
                                 TerminalCause("finalization_deadline", "finalization_deadline"),
@@ -973,7 +978,7 @@ class RunController:
                     capture = self.log_capture_factory(
                         run_directory=run_directory,
                         project_name=compose.project_name,
-                        ownership=_OWNERSHIP,
+                        ownership=topology.ownership,
                         run_id=config.run_id,
                         command_runner=lambda command: compose.logs(
                             command,
@@ -1211,6 +1216,7 @@ class RunController:
                                 store,
                                 config.run_id,
                                 compose,
+                                topology,
                                 "terminal-notified",
                                 manifest_deadline,
                                 TerminalCause(

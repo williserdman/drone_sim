@@ -14,9 +14,35 @@ foreground Compose run. It exits `0` for `COMPLETED`, `1` for `FAILED`, and
 `130` for `ABORTED`. The other commands communicate only through the run
 directory and may run concurrently. `collect-results` is read-only.
 
+## Configuration
+
+`runtime_profile` is an optional repository-owned selector restricted to
+`phase2` and `phase3`. Omission resolves to `phase2` only for backward-compatible
+infrastructure regression templates; `config/default-run.json` explicitly
+selects `phase3`. Phase 2 rejects a `simulation` object. Phase 3 requires:
+
+- `seed`: integer `0` through `4294967295`.
+- `duration_sim_seconds`: positive finite duration whose nanoseconds divide
+  exactly by `50,000,000`.
+- `target_real_time_factor`: exactly `0.1`.
+
+The resolved snapshot normalizes the selector and simulation values, includes
+them in `config_sha256`, and derives the expected per-stream frame count before
+Compose construction. Recording remains fixed at `320x240`, `rgb8`, and 20 FPS.
+
 ## Module lifecycle
 
-Modules receive `run_id`, configuration, output paths, and lifecycle state. Required endpoints and artifact recorders report readiness before `RUNNING`. Every terminal cause enters `FINALIZING`, after which the artifacts module reports completeness.
+Modules receive `run_id`, configuration, output paths, and lifecycle state.
+Required endpoints and artifact recorders report readiness before `RUNNING`.
+Every terminal cause enters `FINALIZING`, after which the artifacts module
+reports completeness.
+
+Under `phase3`, startup also requires the current run's `gazebo-ready` fact.
+The production server remains paused through endpoint discovery, bridge and
+adapter startup, native-recorder startup, and artifact readiness. Orchestration
+publishes `READY`, allows exactly one first step, persists `RUNNING` from the
+first valid clock, and only then permits unpause. Production Gazebo does not
+consume `/simulation/camera_pair_ack`.
 
 Lifecycle states use the fixed order `CREATED`, `STARTING`, `READY`, `RUNNING`,
 `FINALIZING`, `COMPLETED`, `FAILED`, and `ABORTED`. The orchestrator publishes
@@ -36,7 +62,7 @@ invalid relative paths.
 
 The run directory also carries the durable wall-time control/status protocol:
 `.control/finalize-request.json`, `.control/terminal-committed.json`, and
-`.status/{operator-state,artifacts-ready,runtime-running,source-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
+`.status/{operator-state,artifacts-ready,gazebo-ready,runtime-running,source-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
 Each file is atomically replaced only after file and directory `fsync`.
 
 The six non-artifact publishers own exact
@@ -73,3 +99,11 @@ quiescence barrier before recorders drain and close. The bag ends at
 `FINALIZING`; `manifest.json` is authoritative for terminal status because the
 terminal state depends on successful close and validation. Terminal durable
 acknowledgement is intentionally silent on ROS/stdout after the marker boundary.
+
+Each `start` uses a fresh run-scoped Compose project. Phase 3 reset means
+destroying that server/container and starting a new server with a distinct run
+ID and Gazebo partition; orchestration exposes no in-process reset operation.
+
+Phase 3 makes no claim about ArduPilot SITL, MAVLink, motor dynamics,
+ArduPilot-Gazebo lockstep, companion mission behavior, electromagnet forces, or
+competition scoring.

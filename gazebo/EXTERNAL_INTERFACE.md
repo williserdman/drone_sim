@@ -1,56 +1,69 @@
 # Gazebo External Interface
 
-## ArduPilot adapter seam
+## Phase 3 scope
 
-- Input: actuator outputs from ArduPilot SITL
-- Output: simulated sensors and dynamics
-- Ordering: lockstep exchange controls physics advancement
+One run-scoped `gazebo-runtime` service owns the headless Gazebo Harmonic
+server, private Gazebo Transport endpoints, bridges, public ROS adapter, native
+state, and raw server log. Gazebo is the sole producer of physical truth and
+simulation time. Gazebo Transport is not a repository-wide interface.
 
 ## ROS 2 outputs
 
-- Authoritative `/clock` using best-effort QoS depth 1
-- Onboard `/camera/onboard/image_raw` and observer
-  `/camera/observer/image_raw` frames at 20 frames per simulated second, each
-  offered with reliable QoS depth 5. Best-effort mission consumers remain
-  compatible, while the archival recorder requests reliable delivery.
-- `/simulation/ground_truth` using
-  `simulation_interfaces/msg/GroundTruth` and best-effort QoS depth 10
-- Contact, collision, and diagnostic state as required
+| Topic | Type | QoS |
+| --- | --- | --- |
+| `/clock` | `rosgraph_msgs/msg/Clock` | Best effort, volatile, depth 1 |
+| `/camera/onboard/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
+| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
+| `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
+| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
+| `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Best effort, volatile, depth 10 |
 
-All run-scoped outputs carry `run_id`; camera images correlate with
-`simulation_interfaces/msg/FrameMetadata`, which carries stream-specific
-`frame_id` and simulation capture timestamp. The onboard stream is identical
-to the imagery supplied to companion vision.
+All run-scoped outputs carry `run_id`. Each image has matching metadata with a
+stream-local contiguous frame ID and an identical native simulation timestamp.
+Both streams are fixed at `320x240`, `rgb8`, and 20 simulated Hz. Each accepted
+camera pair has one ground-truth sample at the same native timestamp. The
+onboard public image is the exact stream later consumed by companion vision and
+artifacts.
 
-## ROS 2 inputs
+## Lifecycle inputs
 
-The electromagnet module submits idempotent physical-effect requests containing run identity, event identity, target magnet, desired state, and simulation timestamp. Gazebo validates and realizes them through physics.
+The runtime consumes the current run's resolved configuration, lifecycle state,
+artifact readiness, and finalization request. It starts the server paused and
+releases no simulation sample before its private endpoints, native recorder,
+bridges, public publishers, and artifact recorders are ready. After `READY`,
+one controlled step establishes the first `/clock`; the server unpauses only
+after observing the current run's `RUNNING` state.
 
-The Phase 2 synthetic source additionally consumes the transport-only
-`/simulation/camera_pair_ack` contract documented by artifacts. It ignores
-stale run IDs and exact duplicates, rejects wrong streams, timestamps, gaps,
-and future acknowledgements, and lets `FINALIZING` preempt an outstanding wait.
-This synthetic backpressure does not alter simulation timestamps or join the
-fixed rosbag inventory; it is not a production Gazebo physics interface.
-Before initial clock/frame output, the Phase 2 source also requires two matched
-subscriptions (artifact video and rosbag) on each of its four camera
-publishers. Each frame's six fixed publications are drained one per ROS
-executor turn in clock, onboard image/metadata, observer image/metadata, and
-ground-truth order. The queue is bounded to six and `FINALIZING` clears it
-immediately; neither discovery polling nor queue draining supplies simulation
-timestamps or modeled latency.
+The Phase 2 synthetic source consumes the transport-only
+`/simulation/camera_pair_ack` contract documented by artifacts. The production
+Phase 3 Gazebo runtime never subscribes to or waits for that topic. Recorder
+acknowledgement cannot govern production physics advancement.
 
-For Phase 2 synthetic finalization, Gazebo stops all publishers and stdout,
-writes its fixture files, then atomically writes only
-`.status/quiescence/gazebo.json={run_id,module:"gazebo",quiescent:true}`. It
-does not write the public aggregate freeze; orchestration publishes
-`runtime-frozen.json` only after all six module markers exist.
+## Completion and finalization
+
+At the configured integer-nanosecond duration, Gazebo pauses after both final
+camera/metadata streams and aligned ground truth are complete, then writes the
+current run's source-finished fact. On `FINALIZING`, it stops public samples,
+drains bounded adapter work, stops bridges and the server, freezes native state
+and `gazebo/server.log`, and writes only `.status/quiescence/gazebo.json`.
+Orchestration retains aggregate freeze authority; artifacts retains manifest
+authority.
 
 ## Reset, timing, and failure behavior
 
-Reset clears run-scoped world state before accepting the new `run_id`. Stale-run requests are rejected or ignored with diagnostics. When paused, `/clock` does not advance and simulated events do not occur. Loss of the ArduPilot lockstep peer prevents uncontrolled physics progress.
+Reset destroys the run-scoped container/server and starts a fresh server from
+immutable `phase3_foundation.sdf` under a new Compose project and Gazebo
+partition. There is no public in-process reset endpoint. Stale-run or foreign
+partition data cannot satisfy readiness or completion. When paused, `/clock`,
+images, metadata, pose, and ground truth do not advance.
 
-## Deferred decisions
+Malformed native data, missing endpoints, child exit, clock stall, camera
+discontinuity, or recorder failure emits durable run-failure evidence and
+preserves available native diagnostics.
 
-- Physical-effect request and reset endpoint contracts
-- World/plugin selection and adapter version
+## Excluded and reserved interfaces
+
+Phase 3 has no ArduPilot actuator/sensor seam and does not claim lockstep.
+ArduPilot SITL, MAVLink, motor dynamics, NED conversion, and ArduPilot-Gazebo
+lockstep are reserved for Phase 4. Electromagnet physical-effect requests,
+payload behavior, course policy, and competition scoring remain Phase 6 work.
