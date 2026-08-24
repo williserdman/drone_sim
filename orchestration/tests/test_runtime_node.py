@@ -14,6 +14,21 @@ from orchestration.runtime_node import (
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+GAZEBO_READY = {
+    "run_id": RUN_ID,
+    "ready": True,
+    "flight_exchange": {
+        "online": True,
+        "servo_packets_received": 2,
+        "motor_updates": 2,
+        "duplicate_servo_packets": 0,
+        "servo_frame_gaps": 0,
+        "json_states_sent": 2,
+        "json_send_errors": 0,
+        "last_servo_frame": 1,
+        "last_json_sim_time_ns": 0,
+    },
+}
 
 
 class FakeProtocol:
@@ -74,6 +89,7 @@ def _phase3_runtime():
         publish=published.append,
         diagnostic=diagnostics.append,
         required_durable_readiness=("ardupilot-ready", "companion-ready"),
+        require_gazebo_ready=True,
     )
     return runtime, protocol, published, diagnostics
 
@@ -258,10 +274,50 @@ def test_starting_ready_running_order_and_exact_first_clock_stamp():
     assert runtime.last_sim_timestamp_ns == 50_000_000
 
 
+def test_phase2_artifact_status_still_emits_ready_immediately():
+    runtime, _protocol, published, _ = _runtime()
+    runtime.start()
+
+    runtime.accept_artifact_status(RUN_ID, True)
+
+    assert [item.state for item in published] == ["STARTING", "READY"]
+
+
+def test_phase3_artifact_status_waits_for_durable_gazebo_readiness_exactly_once():
+    runtime, protocol, published, _ = _phase3_runtime()
+    runtime.start()
+
+    runtime.accept_artifact_status(RUN_ID, True)
+    assert runtime.poll() is False
+    assert [item.state for item in published] == ["STARTING"]
+
+    protocol.readable_statuses["gazebo-ready"] = GAZEBO_READY
+    assert runtime.poll() is False
+    runtime.accept_artifact_status(RUN_ID, True)
+    assert runtime.poll() is False
+
+    assert [item.state for item in published] == ["STARTING", "READY"]
+
+
+def test_phase3_gazebo_readiness_waits_for_artifact_status():
+    runtime, protocol, published, _ = _phase3_runtime()
+    protocol.readable_statuses["gazebo-ready"] = GAZEBO_READY
+    runtime.start()
+
+    assert runtime.poll() is False
+    assert [item.state for item in published] == ["STARTING"]
+
+    runtime.accept_artifact_status(RUN_ID, True)
+
+    assert [item.state for item in published] == ["STARTING", "READY"]
+
+
 def test_phase3_first_clock_remains_ready_until_durable_flight_peers_are_ready():
     runtime, protocol, published, _ = _phase3_runtime()
     runtime.start()
     runtime.accept_artifact_status(RUN_ID, True)
+    protocol.readable_statuses["gazebo-ready"] = GAZEBO_READY
+    assert runtime.poll() is False
     runtime.accept_clock(0)
 
     assert [item.state for item in published] == ["STARTING", "READY"]

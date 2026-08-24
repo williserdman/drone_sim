@@ -159,6 +159,7 @@ class OrchestrationRuntime:
         publish: Callable[[RuntimeStateEvent], None],
         diagnostic: Callable[[str], None] = lambda _message: None,
         required_durable_readiness: tuple[str, ...] = (),
+        require_gazebo_ready: bool = False,
     ) -> None:
         self.run_id = canonical_run_id(run_id)
         if (
@@ -177,7 +178,11 @@ class OrchestrationRuntime:
             or any(name not in allowed_readiness for name in required_durable_readiness)
         ):
             raise ValueError("durable readiness names are invalid")
+        if type(require_gazebo_ready) is not bool:
+            raise TypeError("require_gazebo_ready must be boolean")
         self._required_durable_readiness = required_durable_readiness
+        self._require_gazebo_ready = require_gazebo_ready
+        self._artifacts_ready = False
         self.state = "CREATED"
         self.last_sim_timestamp_ns = 0
         self._clock_observed = False
@@ -202,6 +207,16 @@ class OrchestrationRuntime:
             raise RuntimeError("runtime has already started")
         self._emit("STARTING")
 
+    def _maybe_ready(self) -> None:
+        if self.state != "STARTING" or not self._artifacts_ready:
+            return
+        if (
+            self._require_gazebo_ready
+            and self._protocol.read_status("gazebo-ready") is None
+        ):
+            return
+        self._emit("READY")
+
     def accept_artifact_status(self, run_id: str, ready: bool) -> None:
         if self.state != "STARTING":
             return
@@ -209,7 +224,8 @@ class OrchestrationRuntime:
             self._diagnostic("ignored stale artifact status")
             return
         if ready is True:
-            self._emit("READY")
+            self._artifacts_ready = True
+            self._maybe_ready()
 
     def accept_clock(self, sim_timestamp_ns: int) -> None:
         if isinstance(sim_timestamp_ns, bool) or not isinstance(sim_timestamp_ns, int):
@@ -250,6 +266,8 @@ class OrchestrationRuntime:
                 self._emit("FINALIZING", request["reason"])
                 self._protocol.write_quiescence("orchestration")
                 self._quiescence_written = True
+            elif self.state == "STARTING":
+                self._maybe_ready()
             elif self.state == "READY" and self._flight_peers_ready():
                 self._start_running()
         if self.state == "FINALIZING":
@@ -354,6 +372,7 @@ def main() -> None:
             if config.get("runtime_profile") == "phase3"
             else ()
         ),
+        require_gazebo_ready=config.get("runtime_profile") == "phase3",
     )
 
     def artifact_callback(message: Any) -> None:

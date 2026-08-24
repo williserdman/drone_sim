@@ -40,6 +40,19 @@ _STATUS_NAMES = frozenset(
         "terminal-notified",
     }
 )
+_FLIGHT_EXCHANGE_KEYS = frozenset(
+    {
+        "online",
+        "servo_packets_received",
+        "motor_updates",
+        "duplicate_servo_packets",
+        "servo_frame_gaps",
+        "json_states_sent",
+        "json_send_errors",
+        "last_servo_frame",
+        "last_json_sim_time_ns",
+    }
+)
 
 
 class ProtocolError(RuntimeError):
@@ -113,6 +126,23 @@ def _nonnegative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _valid_flight_exchange(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and set(value) == _FLIGHT_EXCHANGE_KEYS
+        and value["online"] is True
+        and all(
+            type(value[key]) is int and value[key] >= 0
+            for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
+        )
+        and value["servo_packets_received"] >= 1
+        and value["motor_updates"] >= 1
+        and value["json_states_sent"] >= 1
+        and value["servo_frame_gaps"] == 0
+        and value["json_send_errors"] == 0
+    )
+
+
 def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> None:
     if name not in _STATUS_NAMES:
         raise ValueError("runtime status name is not part of the frozen protocol")
@@ -121,7 +151,11 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
     if name == "artifacts-ready":
         valid = set(document) == {"run_id", "ready"} and document["ready"] is True
     elif name == "gazebo-ready":
-        valid = set(document) == {"run_id", "ready"} and document["ready"] is True
+        valid = (
+            set(document) == {"run_id", "ready", "flight_exchange"}
+            and document["ready"] is True
+            and _valid_flight_exchange(document["flight_exchange"])
+        )
     elif name == "ardupilot-ready":
         valid = (
             set(document)

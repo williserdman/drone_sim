@@ -9,6 +9,21 @@ from artifacts.runtime_protocol import ProtocolError, RuntimeProtocol
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+VALID_GAZEBO_READY = {
+    "run_id": RUN_ID,
+    "ready": True,
+    "flight_exchange": {
+        "online": True,
+        "servo_packets_received": 2,
+        "motor_updates": 2,
+        "duplicate_servo_packets": 0,
+        "servo_frame_gaps": 0,
+        "json_states_sent": 2,
+        "json_send_errors": 0,
+        "last_servo_frame": 1,
+        "last_json_sim_time_ns": 0,
+    },
+}
 
 
 @pytest.fixture
@@ -24,7 +39,7 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
     protocol = RuntimeProtocol(run_directory, RUN_ID)
     documents = {
         "artifacts-ready": {"run_id": RUN_ID, "ready": True},
-        "gazebo-ready": {"run_id": RUN_ID, "ready": True},
+        "gazebo-ready": VALID_GAZEBO_READY,
         "ardupilot-ready": {
             "run_id": RUN_ID,
             "ready": True,
@@ -91,6 +106,34 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
 def test_runtime_status_rejects_wrong_schema(run_directory, name, document):
     with pytest.raises((ProtocolError, ValueError)):
         RuntimeProtocol(run_directory, RUN_ID).write_status(name, document)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda document: document.pop("flight_exchange"),
+        lambda document: document.update(extra=True),
+        lambda document: document.update(ready=False),
+        lambda document: document["flight_exchange"].pop("json_states_sent"),
+        lambda document: document["flight_exchange"].update(extra=0),
+        lambda document: document["flight_exchange"].update(online=1),
+        lambda document: document["flight_exchange"].update(motor_updates=True),
+        lambda document: document["flight_exchange"].update(last_servo_frame=-1),
+        lambda document: document["flight_exchange"].update(servo_packets_received=0),
+        lambda document: document["flight_exchange"].update(motor_updates=0),
+        lambda document: document["flight_exchange"].update(json_states_sent=0),
+        lambda document: document["flight_exchange"].update(servo_frame_gaps=1),
+        lambda document: document["flight_exchange"].update(json_send_errors=1),
+    ],
+)
+def test_gazebo_ready_rejects_malformed_or_unready_flight_exchange(
+    run_directory, mutate
+):
+    document = json.loads(json.dumps(VALID_GAZEBO_READY))
+    mutate(document)
+
+    with pytest.raises(ProtocolError, match="invalid schema"):
+        RuntimeProtocol(run_directory, RUN_ID).write_status("gazebo-ready", document)
 
 
 def test_host_controls_are_exact_and_first_observation_is_immutable(run_directory):
