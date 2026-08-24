@@ -23,6 +23,7 @@ from artifacts.validation import ValidationStatus, validate_tree
 
 RECORDER_UUID = UUID("01234567-89ab-cdef-0123-456789abcdef")
 RUN_ID = "run-7"
+CONFIG_SHA256 = "a" * 64
 
 
 class FakeProcess:
@@ -430,8 +431,55 @@ def _custom_message(timestamp_ns, *, run_id=RUN_ID, **fields):
     return SimpleNamespace(run_id=run_id, sim_timestamp=_stamp(timestamp_ns), **fields)
 
 
-def _image(timestamp_ns, *, data=b"rgb"):
-    return SimpleNamespace(header=SimpleNamespace(stamp=_stamp(timestamp_ns)), data=data)
+def _image(
+    timestamp_ns,
+    *,
+    data=b"rgb",
+    height=None,
+    width=None,
+    encoding=None,
+    step=None,
+):
+    fields = {"header": SimpleNamespace(stamp=_stamp(timestamp_ns)), "data": data}
+    if height is not None:
+        fields.update(height=height, width=width, encoding=encoding, step=step)
+    return SimpleNamespace(**fields)
+
+
+def _physical_image(timestamp_ns):
+    return _image(
+        timestamp_ns,
+        data=b"\x00" * (320 * 240 * 3),
+        height=240,
+        width=320,
+        encoding="rgb8",
+        step=320 * 3,
+    )
+
+
+def _ground_truth(timestamp_ns, *, value=0.0, in_contact=False):
+    return _custom_message(
+        timestamp_ns,
+        vehicle_id="iris",
+        pose=SimpleNamespace(
+            position=SimpleNamespace(x=value, y=value, z=value),
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        ),
+        twist=SimpleNamespace(
+            linear=SimpleNamespace(x=value, y=value, z=value),
+            angular=SimpleNamespace(x=value, y=value, z=value),
+        ),
+        in_contact=in_contact,
+    )
+
+
+def _run_state(timestamp_ns, state, *, reason=""):
+    return _custom_message(
+        timestamp_ns,
+        state=state,
+        reason=reason,
+        config_sha256=CONFIG_SHA256,
+    )
 
 
 def _artifact_status(*, ready, missing):
@@ -480,16 +528,6 @@ def _valid_messages():
 
 
 def _valid_physical_messages():
-    messages = _valid_messages()
-    messages[5] = replace(
-        messages[5],
-        message=_custom_message(
-            0,
-            event_id=0,
-            magnet_id="descent-v1-magnet",
-            state="INACTIVE",
-        ),
-    )
     rule_ids = (
         "airborne_then_contact",
         "touchdown_precision",
@@ -525,8 +563,54 @@ def _valid_physical_messages():
             110,
         )
     )
-    messages[6:7] = score_events
-    return messages
+    return [
+        BagMessage(
+            "/simulation/artifact_status",
+            _artifact_status(
+                ready=False,
+                missing=["onboard", "observer", "rosbag"],
+            ),
+            100,
+        ),
+        BagMessage(
+            "/simulation/artifact_status",
+            _artifact_status(ready=True, missing=[]),
+            101,
+        ),
+        BagMessage("/simulation/run_state", _run_state(0, 1), 102),
+        BagMessage("/simulation/run_state", _run_state(0, 2), 103),
+        BagMessage("/clock", SimpleNamespace(clock=_stamp(0)), 104),
+        BagMessage("/simulation/run_state", _run_state(0, 3), 105),
+        BagMessage("/simulation/ground_truth", _ground_truth(0), 106),
+        BagMessage(
+            "/simulation/scenario_events",
+            _custom_message(
+                0,
+                event_id=0,
+                magnet_id="descent-v1-magnet",
+                state="INACTIVE",
+            ),
+            107,
+        ),
+        *score_events,
+        BagMessage("/camera/onboard/image_raw", _physical_image(0), 120),
+        BagMessage(
+            "/camera/onboard/frame_metadata",
+            _custom_message(0, frame_id=0, stream="onboard"),
+            121,
+        ),
+        BagMessage("/camera/observer/image_raw", _physical_image(0), 122),
+        BagMessage(
+            "/camera/observer/frame_metadata",
+            _custom_message(0, frame_id=0, stream="observer"),
+            123,
+        ),
+        BagMessage(
+            "/simulation/run_state",
+            _run_state(0, 4, reason="mission_complete"),
+            124,
+        ),
+    ]
 
 
 def _metadata_for(messages, *, storage_id="mcap", type_overrides=None):
@@ -609,7 +693,11 @@ def test_physical_bag_requires_configured_camera_and_ground_truth_count(tmp_path
     backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
 
     result = RosbagValidator(
-        RUN_ID, backend=backend, expected_camera_frames=2, physical_run=True
+        RUN_ID,
+        backend=backend,
+        expected_camera_frames=2,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
     ).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.INVALID
@@ -629,7 +717,7 @@ def test_physical_bag_requires_ground_truth_aligned_to_both_cameras(tmp_path):
         if item.topic == "/camera/observer/frame_metadata"
     )
     messages[image_index] = replace(
-        messages[image_index], message=_image(50_000_000)
+        messages[image_index], message=_physical_image(50_000_000)
     )
     messages[metadata_index] = replace(
         messages[metadata_index],
@@ -641,7 +729,11 @@ def test_physical_bag_requires_ground_truth_aligned_to_both_cameras(tmp_path):
     backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
 
     result = RosbagValidator(
-        RUN_ID, backend=backend, expected_camera_frames=1, physical_run=True
+        RUN_ID,
+        backend=backend,
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
     ).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.INVALID
@@ -658,9 +750,82 @@ def test_physical_bag_accepts_explicit_production_evidence_contract(tmp_path):
         backend=backend,
         expected_camera_frames=1,
         physical_run=True,
+        config_sha256=CONFIG_SHA256,
     ).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.VALID
+
+
+def test_physical_bag_returns_immutable_digest_bound_decoded_evidence(tmp_path):
+    _bag_directory(tmp_path)
+    messages = _valid_physical_messages()
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.physical_evidence.bag_sha256 == result.sha256
+    assert result.physical_evidence.config_sha256 == CONFIG_SHA256
+    assert result.physical_evidence.lifecycle_states == (
+        "STARTING",
+        "READY",
+        "RUNNING",
+        "FINALIZING",
+    )
+    assert len(result.physical_evidence.ground_truth) == 1
+    assert tuple(event.event_id for event in result.physical_evidence.score_events) == tuple(
+        range(5)
+    )
+    with pytest.raises(FrozenInstanceError):
+        result.physical_evidence.bag_sha256 = "0" * 64
+
+
+def test_physical_bag_requires_exact_current_config_lifecycle(tmp_path):
+    messages = _valid_physical_messages()
+    ready_index = [
+        index for index, item in enumerate(messages)
+        if item.topic == "/simulation/run_state"
+    ][1]
+    messages[ready_index] = replace(
+        messages[ready_index], message=_run_state(0, 3)
+    )
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "lifecycle" in result.detail
+
+
+def test_physical_bag_requires_fixed_rgb8_image_shape(tmp_path):
+    messages = _valid_physical_messages()
+    image_index = next(
+        index for index, item in enumerate(messages)
+        if item.topic == "/camera/onboard/image_raw"
+    )
+    messages[image_index].message.width = 319
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "image shape" in result.detail
+
+
+def test_physical_bag_rejects_nonfinite_ground_truth(tmp_path):
+    messages = _valid_physical_messages()
+    ground_truth = next(
+        item.message for item in messages
+        if item.topic == "/simulation/ground_truth"
+    )
+    ground_truth.pose.position.z = float("nan")
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "ground truth" in result.detail
 
 
 def _validate_physical_messages(tmp_path, messages):
@@ -670,6 +835,7 @@ def _validate_physical_messages(tmp_path, messages):
         backend=FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
         expected_camera_frames=1,
         physical_run=True,
+        config_sha256=CONFIG_SHA256,
     ).validate(tmp_path, "rosbag")
 
 

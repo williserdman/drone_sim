@@ -709,6 +709,7 @@ def main() -> None:
             run_id,
             expected_camera_frames=recording_contract.expected_camera_frames,
             physical_run=recording_contract.physical_run,
+            config_sha256=(config["config_sha256"] if recording_contract.physical_run else None),
         ),
         publish=publish,
         fault=fault,

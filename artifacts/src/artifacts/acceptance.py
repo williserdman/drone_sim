@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
 import math
@@ -13,9 +14,21 @@ import subprocess
 import time
 from typing import Any
 
-from ._adapters.rosbag import RosbagValidator
+from ._adapters.rosbag import PhysicalBagEvidence, RosbagValidator
 from ._adapters.video import VideoValidator
-from .manifest import MODULE_LOGS, REQUIRED_ARTIFACT_PATHS, REQUIRED_DIRECTORY_PATHS
+from .manifest import (
+    MODULE_LOGS,
+    REQUIRED_ARTIFACT_PATHS,
+    REQUIRED_DIRECTORY_PATHS,
+    ArtifactRecord,
+    ConfigurationRecord,
+    ImageDigest,
+    RunManifest,
+    SimulationTiming,
+    SourceRevision,
+    WallTiming,
+    validate_manifest,
+)
 from .runtime_configuration import resolve_recording_runtime_config
 from .score_validation import ScoreValidationError, validate_descent_score_outputs
 from .validation import (
@@ -37,6 +50,7 @@ _LOG_FIELDS = {
     "wall_timestamp",
     "fields",
 }
+_ARTIFACTS_RUNTIME_IMAGE = "drone-sim-artifacts-runtime:phase2"
 
 
 class BundleAcceptanceError(RuntimeError):
@@ -63,7 +77,112 @@ class BundleAcceptanceReport:
 
 
 ComposeResources = Callable[[str], Sequence[str]]
-SemanticCheck = Callable[[Path, str, int], None]
+SemanticCheck = Callable[[Path, str, int, str], PhysicalBagEvidence]
+
+
+def _exact_dict(value: object, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise BundleAcceptanceError(f"manifest domain {label} is invalid")
+    return value
+
+
+def _validate_manifest_domain(document: dict[str, Any]) -> RunManifest:
+    top = _exact_dict(
+        document,
+        {
+            "schema_version",
+            "run_id",
+            "terminal_status",
+            "reason",
+            "simulation_timing",
+            "wall_timing",
+            "source_revisions",
+            "image_digests",
+            "configurations",
+            "artifacts",
+            "incomplete_paths",
+            "scoring",
+        },
+        "document",
+    )
+    try:
+        simulation = _exact_dict(
+            top["simulation_timing"],
+            {"start_ns", "end_ns", "duration_ns"},
+            "simulation timing",
+        )
+        wall = _exact_dict(
+            top["wall_timing"],
+            {"started_at", "ended_at", "duration_seconds"},
+            "wall timing",
+        )
+        scoring = _exact_dict(
+            top["scoring"],
+            {
+                "achieved_score",
+                "maximum_available_score",
+                "scoring_checksum",
+                "evidence_paths",
+            },
+            "scoring",
+        )
+        source_revisions = tuple(
+            SourceRevision(**_exact_dict(row, {"name", "revision", "dirty"}, "source"))
+            for row in top["source_revisions"]
+        )
+        image_digests = tuple(
+            ImageDigest(**_exact_dict(row, {"name", "digest"}, "image digest"))
+            for row in top["image_digests"]
+        )
+        configurations = tuple(
+            ConfigurationRecord(
+                **_exact_dict(row, {"relative_path", "sha256"}, "configuration")
+            )
+            for row in top["configurations"]
+        )
+        artifacts = tuple(
+            ArtifactRecord(
+                **_exact_dict(
+                    row,
+                    {
+                        "relative_path",
+                        "size_bytes",
+                        "sha256",
+                        "validation",
+                        "detail",
+                    },
+                    "artifact",
+                )
+            )
+            for row in top["artifacts"]
+        )
+        manifest = RunManifest(
+            run_id=top["run_id"],
+            terminal_status=top["terminal_status"],
+            reason=top["reason"],
+            simulation_timing=SimulationTiming(**simulation),
+            wall_timing=WallTiming(
+                datetime.fromisoformat(wall["started_at"].replace("Z", "+00:00")),
+                datetime.fromisoformat(wall["ended_at"].replace("Z", "+00:00")),
+                wall["duration_seconds"],
+            ),
+            source_revisions=source_revisions,
+            image_digests=image_digests,
+            configurations=configurations,
+            artifacts=artifacts,
+            incomplete_paths=tuple(top["incomplete_paths"]),
+            achieved_score=scoring["achieved_score"],
+            maximum_available_score=scoring["maximum_available_score"],
+            scoring_checksum=scoring["scoring_checksum"],
+            evidence_paths=tuple(scoring["evidence_paths"]),
+            schema_version=top["schema_version"],
+        )
+        validate_manifest(manifest)
+    except BundleAcceptanceError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise BundleAcceptanceError(f"manifest domain is invalid: {error}") from error
+    return manifest
 
 
 def _read_json(run_directory: Path, relative_path: str) -> tuple[dict[str, Any], str]:
@@ -106,18 +225,36 @@ def _validate_manifest_inventory(run_directory: Path, manifest: dict[str, Any]) 
     if not isinstance(artifacts, list):
         raise BundleAcceptanceError("manifest artifact inventory is invalid")
     records: dict[str, dict[str, Any]] = {}
+    expected_keys = {
+        "relative_path",
+        "size_bytes",
+        "sha256",
+        "validation",
+        "detail",
+    }
     for record in artifacts:
-        if not isinstance(record, dict) or not isinstance(record.get("relative_path"), str):
+        if (
+            not isinstance(record, dict)
+            or set(record) != expected_keys
+            or not isinstance(record.get("relative_path"), str)
+        ):
             raise BundleAcceptanceError("manifest artifact record is invalid")
         relative_path = record["relative_path"]
+        path = Path(relative_path)
+        if (
+            not relative_path
+            or path.is_absolute()
+            or ".." in path.parts
+            or path.as_posix() != relative_path
+        ):
+            raise BundleAcceptanceError("manifest artifact path is unsafe")
         if relative_path in records:
             raise BundleAcceptanceError("manifest artifact paths are not unique")
         records[relative_path] = record
     if not set(REQUIRED_ARTIFACT_PATHS).issubset(records):
         raise BundleAcceptanceError("manifest omits required artifacts")
 
-    for relative_path in REQUIRED_ARTIFACT_PATHS:
-        record = records[relative_path]
+    for relative_path, record in records.items():
         validator = (
             validate_tree
             if relative_path in REQUIRED_DIRECTORY_PATHS
@@ -125,8 +262,7 @@ def _validate_manifest_inventory(run_directory: Path, manifest: dict[str, Any]) 
         )
         actual = validator(run_directory, relative_path)
         if (
-            record.get("validation") != ValidationStatus.VALID.value
-            or actual.status is not ValidationStatus.VALID
+            record.get("validation") != actual.status.value
             or record.get("size_bytes") != actual.size_bytes
             or record.get("sha256") != actual.sha256
         ):
@@ -144,6 +280,7 @@ def _validate_module_logs(run_directory: Path, run_id: str) -> None:
         raise BundleAcceptanceError("module logs could not be inventoried") from error
     if actual_names != expected_names:
         raise BundleAcceptanceError("bundle must contain exactly seven JSONL module logs")
+    documents_by_module: dict[str, list[dict[str, Any]]] = {}
     for relative_path in MODULE_LOGS:
         validation, payload = read_regular_file_bytes(run_directory, relative_path)
         if validation.status is not ValidationStatus.VALID or payload is None:
@@ -162,11 +299,90 @@ def _validate_module_logs(run_directory: Path, run_id: str) -> None:
             for document in documents
         ):
             raise BundleAcceptanceError(f"module log contract is invalid: {relative_path}")
+        documents_by_module[module] = documents
+    _validate_production_log_evidence(documents_by_module)
+
+
+def _validate_production_log_evidence(
+    documents_by_module: dict[str, list[dict[str, Any]]],
+) -> None:
+    companion = documents_by_module["companion"]
+    companion_events = {row["event"] for row in companion}
+    required_facts = {
+        "heartbeat_observed",
+        "descent_observed",
+        "touchdown_observed",
+        "vehicle_disarmed",
+        "mission_landed",
+        "mission_finished",
+    }
+    commands = {"SET_GUIDED", "ARM", "TAKEOFF", "LAND"}
+    issued = {
+        row["fields"].get("command")
+        for row in companion
+        if row["event"] == "command_issued" and isinstance(row["fields"], dict)
+    }
+    acknowledged = {
+        row["fields"].get("command")
+        for row in companion
+        if row["event"] == "command_acknowledged" and isinstance(row["fields"], dict)
+    }
+    mission_finished = any(
+        row["event"] == "mission_finished"
+        and row["fields"] == {"outcome": "LANDED"}
+        for row in companion
+    )
+    if (
+        not required_facts.issubset(companion_events)
+        or issued != commands
+        or acknowledged != commands
+        or not mission_finished
+    ):
+        raise BundleAcceptanceError("companion flight evidence is incomplete")
+
+    ardupilot = documents_by_module["ardupilot_sitl"]
+    if not (
+        any(row["event"] == "starting" for row in ardupilot)
+        and any(
+            row["event"] == "ready"
+            and isinstance(row["fields"], dict)
+            and row["fields"].get("json_exchange") is True
+            and row["fields"].get("mavlink_listening") is True
+            for row in ardupilot
+        )
+        and any(row["event"] == "stopped" for row in ardupilot)
+    ):
+        raise BundleAcceptanceError("ArduPilot JSON exchange evidence is incomplete")
+
+    gazebo = documents_by_module["gazebo"]
+    required_actions = {
+        "PublishGazeboReady",
+        "RequestSteps",
+        "SetPaused",
+        "WriteSourceFinished",
+        "BeginFinalization",
+        "StopServer",
+        "WriteQuiescence",
+    }
+    actions = {
+        row["fields"].get("action")
+        for row in gazebo
+        if row["event"] == "runtime_action" and isinstance(row["fields"], dict)
+    }
+    if not (
+        any(row["event"] == "runtime_started" for row in gazebo)
+        and required_actions.issubset(actions)
+        and any(row["event"] == "runtime_quiescent" for row in gazebo)
+    ):
+        raise BundleAcceptanceError("Gazebo runtime action evidence is incomplete")
 
 
 def _production_semantic_check(
-    run_directory: Path, run_id: str, expected_camera_frames: int
-) -> None:
+    run_directory: Path,
+    run_id: str,
+    expected_camera_frames: int,
+    config_sha256: str,
+) -> PhysicalBagEvidence:
     deadline = time.monotonic() + 120.0
     video_validator = VideoValidator()
     for stream in ("onboard", "observer"):
@@ -183,6 +399,7 @@ def _production_semantic_check(
         run_id,
         expected_camera_frames=expected_camera_frames,
         physical_run=True,
+        config_sha256=config_sha256,
     ).validate(run_directory, "rosbag")
     if bag.status is not ValidationStatus.VALID:
         raise BundleAcceptanceError(f"physical MCAP is invalid: {bag.detail}")
@@ -192,9 +409,116 @@ def _production_semantic_check(
         raise BundleAcceptanceError(f"Gazebo state is invalid: {state.detail}")
     if server_log.status is not ValidationStatus.VALID:
         raise BundleAcceptanceError(f"Gazebo log is invalid: {server_log.detail}")
+    if bag.physical_evidence is None:
+        raise BundleAcceptanceError("physical MCAP produced no decoded evidence")
+    return bag.physical_evidence
 
 
-def docker_compose_resources(project_name: str) -> tuple[str, ...]:
+def semantic_container_command(
+    run_directory: Path | str,
+    *,
+    rules_path: Path | str,
+    require_maximum_score: bool = False,
+) -> tuple[str, ...]:
+    command = (
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--mount",
+        f"type=bind,src={Path(run_directory).resolve()},dst=/bundle,readonly",
+        "--mount",
+        f"type=bind,src={Path(rules_path).resolve()},dst=/rules/descent_v1.json,readonly",
+        _ARTIFACTS_RUNTIME_IMAGE,
+        "python3",
+        "-m",
+        "artifacts.acceptance",
+        "/bundle",
+        "--rules-path",
+        "/rules/descent_v1.json",
+        "--semantic-only",
+    )
+    return command + (("--require-maximum-score",) if require_maximum_score else ())
+
+
+def inspect_phase3_via_container(
+    run_directory: Path | str,
+    *,
+    rules_path: Path | str,
+    require_maximum_score: bool = False,
+    runner: Callable[..., Any] = subprocess.run,
+    compose_resources: ComposeResources | None = None,
+) -> BundleAcceptanceReport:
+    result = runner(
+        list(
+            semantic_container_command(
+                run_directory,
+                rules_path=rules_path,
+                require_maximum_score=require_maximum_score,
+            )
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        shell=False,
+        check=False,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise BundleAcceptanceError(
+            "container semantic inspection failed: " + result.stdout.strip()
+        )
+    try:
+        payload = json.loads(next(line for line in reversed(result.stdout.splitlines()) if line))
+    except (StopIteration, json.JSONDecodeError) as error:
+        raise BundleAcceptanceError(
+            "container semantic inspection returned invalid JSON"
+        ) from error
+    expected_keys = {
+        "accepted",
+        "run_id",
+        "achieved_score",
+        "maximum_available_score",
+        "compose_project",
+        "manifest_sha256",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != expected_keys
+        or payload["accepted"] is not True
+    ):
+        raise BundleAcceptanceError("container semantic inspection did not accept the bundle")
+    run_id = payload["run_id"]
+    expected_project = (
+        "drone-sim-" + run_id.replace("-", "") if isinstance(run_id, str) else None
+    )
+    if payload["compose_project"] != expected_project:
+        raise BundleAcceptanceError("container semantic report has wrong Compose project")
+    inventory = compose_resources or docker_compose_resources
+    leftovers = tuple(inventory(payload["compose_project"]))
+    if leftovers:
+        raise BundleAcceptanceError(
+            "leftover Compose resources: " + ", ".join(leftovers)
+        )
+    try:
+        return BundleAcceptanceReport(
+            run_id,
+            float(payload["achieved_score"]),
+            float(payload["maximum_available_score"]),
+            payload["compose_project"],
+            payload["manifest_sha256"],
+        )
+    except (TypeError, ValueError) as error:
+        raise BundleAcceptanceError("container semantic report has invalid fields") from error
+
+
+def docker_compose_resources(
+    project_name: str,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> tuple[str, ...]:
     """Return project-labelled Docker resources without modifying them."""
     commands = (
         ("container", ["docker", "ps", "-a"], "{{.ID}}"),
@@ -203,7 +527,7 @@ def docker_compose_resources(project_name: str) -> tuple[str, ...]:
     )
     resources: list[str] = []
     for kind, command, output_format in commands:
-        result = subprocess.run(
+        result = runner(
             [
                 *command,
                 "--filter",
@@ -230,19 +554,19 @@ def docker_compose_resources(project_name: str) -> tuple[str, ...]:
     return tuple(resources)
 
 
-def inspect_phase3_bundle(
+def inspect_phase3_semantics(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
     require_maximum_score: bool = False,
-    compose_resources: ComposeResources = docker_compose_resources,
     semantic_check: SemanticCheck = _production_semantic_check,
 ) -> BundleAcceptanceReport:
-    """Assert final Phase 3 evidence without writing to the bundle or Docker."""
+    """Assert bundle semantics without accessing host Docker inventory."""
     if not isinstance(require_maximum_score, bool):
         raise TypeError("require_maximum_score must be a boolean")
     directory = Path(run_directory).resolve()
     manifest, manifest_sha256 = _read_json(directory, "manifest.json")
+    _validate_manifest_domain(manifest)
     run_id = manifest.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise BundleAcceptanceError("manifest run_id is invalid")
@@ -266,13 +590,21 @@ def inspect_phase3_bundle(
         raise BundleAcceptanceError("manifest configuration provenance is invalid")
     _validate_manifest_inventory(directory, manifest)
     _validate_module_logs(directory, run_id)
-    semantic_check(directory, run_id, expected_frames)
+    physical_evidence = semantic_check(
+        directory,
+        run_id,
+        expected_frames,
+        configuration["config_sha256"],
+    )
+    if not isinstance(physical_evidence, PhysicalBagEvidence):
+        raise BundleAcceptanceError("semantic inspection returned no physical evidence")
 
     try:
         score = validate_descent_score_outputs(
             directory,
             run_id=run_id,
             rules_path=rules_path,
+            physical_evidence=physical_evidence,
         )
     except ScoreValidationError as error:
         raise BundleAcceptanceError(f"score evidence is invalid: {error}") from error
@@ -291,11 +623,6 @@ def inspect_phase3_bundle(
         raise BundleAcceptanceError("bundle did not achieve the required 100/100 score")
 
     compose_project = "drone-sim-" + run_id.replace("-", "")
-    leftovers = tuple(compose_resources(compose_project))
-    if leftovers:
-        raise BundleAcceptanceError(
-            "leftover Compose resources: " + ", ".join(leftovers)
-        )
     return BundleAcceptanceReport(
         run_id,
         score.achieved_score,
@@ -305,14 +632,67 @@ def inspect_phase3_bundle(
     )
 
 
+def inspect_phase3_bundle(
+    run_directory: Path | str,
+    *,
+    rules_path: Path | str,
+    require_maximum_score: bool = False,
+    compose_resources: ComposeResources = docker_compose_resources,
+    semantic_check: SemanticCheck = _production_semantic_check,
+) -> BundleAcceptanceReport:
+    """Compatibility helper combining semantics with host Docker inventory."""
+    report = inspect_phase3_semantics(
+        run_directory,
+        rules_path=rules_path,
+        require_maximum_score=require_maximum_score,
+        semantic_check=semantic_check,
+    )
+    leftovers = tuple(compose_resources(report.compose_project))
+    if leftovers:
+        raise BundleAcceptanceError(
+            "leftover Compose resources: " + ", ".join(leftovers)
+        )
+    return report
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_directory", type=Path)
-    parser.add_argument("--rules-path", type=Path, required=True)
+    parser.add_argument("--rules-path", type=Path)
     parser.add_argument("--require-maximum-score", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--semantic-only", action="store_true")
+    modes.add_argument("--inventory-only", action="store_true")
     arguments = parser.parse_args(argv)
     try:
-        report = inspect_phase3_bundle(
+        if arguments.inventory_only:
+            manifest, _digest = _read_json(
+                arguments.run_directory.resolve(), "manifest.json"
+            )
+            run_id = manifest.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise BundleAcceptanceError("manifest run_id is invalid")
+            compose_project = "drone-sim-" + run_id.replace("-", "")
+            leftovers = docker_compose_resources(compose_project)
+            if leftovers:
+                raise BundleAcceptanceError(
+                    "leftover Compose resources: " + ", ".join(leftovers)
+                )
+            print(
+                json.dumps(
+                    {"accepted": True, "compose_project": compose_project},
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.rules_path is None:
+            parser.error("--rules-path is required for semantic acceptance")
+        inspector = (
+            inspect_phase3_semantics
+            if arguments.semantic_only
+            else inspect_phase3_via_container
+        )
+        report = inspector(
             arguments.run_directory,
             rules_path=arguments.rules_path,
             require_maximum_score=arguments.require_maximum_score,
@@ -333,5 +713,8 @@ __all__ = [
     "BundleAcceptanceReport",
     "docker_compose_resources",
     "inspect_phase3_bundle",
+    "inspect_phase3_semantics",
+    "inspect_phase3_via_container",
     "main",
+    "semantic_container_command",
 ]

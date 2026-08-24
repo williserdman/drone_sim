@@ -11,11 +11,14 @@ from .manifest import (
 from ._adapters.rosbag import (
     FIXED_TOPIC_TYPES,
     FIXED_TOPICS,
+    GroundTruthEvidence,
+    PhysicalBagEvidence,
     RecorderFinalization,
     RosbagRecorder,
     RosbagTopicDiagnostic,
     RosbagValidationResult,
     RosbagValidator,
+    ScoreEventEvidence,
 )
 from ._adapters.docker_logs import (
     DockerLogCapture,
@@ -67,7 +70,9 @@ __all__ = [
     "FinalizationResult",
     "FIXED_TOPIC_TYPES",
     "FIXED_TOPICS",
+    "GroundTruthEvidence",
     "ImageDigest",
+    "PhysicalBagEvidence",
     "RunManifest",
     "RecorderFinalization",
     "RecordingRuntimeConfig",
@@ -75,6 +80,7 @@ __all__ = [
     "RosbagTopicDiagnostic",
     "RosbagValidationResult",
     "RosbagValidator",
+    "ScoreEventEvidence",
     "SourceRevision",
     "StructuredEvent",
     "ValidationResult",

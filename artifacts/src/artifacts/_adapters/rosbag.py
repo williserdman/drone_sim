@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import math
 import os
 from pathlib import Path
 import signal
@@ -110,6 +111,35 @@ class BagMessage:
 
 
 @dataclass(frozen=True)
+class GroundTruthEvidence:
+    sim_timestamp_ns: int
+    vehicle_id: str
+    position_xyz: tuple[float, float, float]
+    orientation_xyzw: tuple[float, float, float, float]
+    linear_velocity_xyz: tuple[float, float, float]
+    angular_velocity_xyz: tuple[float, float, float]
+    in_contact: bool
+
+
+@dataclass(frozen=True)
+class ScoreEventEvidence:
+    sim_timestamp_ns: int
+    event_id: int
+    event_type: str
+    value: float
+    evidence_ref: str
+
+
+@dataclass(frozen=True)
+class PhysicalBagEvidence:
+    bag_sha256: str
+    config_sha256: str
+    lifecycle_states: tuple[str, ...]
+    ground_truth: tuple[GroundTruthEvidence, ...]
+    score_events: tuple[ScoreEventEvidence, ...]
+
+
+@dataclass(frozen=True)
 class RosbagTopicDiagnostic:
     name: str
     message_type: str
@@ -121,6 +151,7 @@ class RosbagTopicDiagnostic:
 @dataclass(frozen=True)
 class RosbagValidationResult(ValidationResult):
     topics: tuple[RosbagTopicDiagnostic, ...] = ()
+    physical_evidence: PhysicalBagEvidence | None = None
 
 
 class BagBackend(Protocol):
@@ -526,6 +557,50 @@ def _timestamp_ns(stamp: Any) -> int:
     return seconds * 1_000_000_000 + nanoseconds
 
 
+def _ground_truth_evidence(message: Any, timestamp_ns: int) -> GroundTruthEvidence:
+    position = message.pose.position
+    orientation = message.pose.orientation
+    linear = message.twist.linear
+    angular = message.twist.angular
+    values = (
+        position.x,
+        position.y,
+        position.z,
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w,
+        linear.x,
+        linear.y,
+        linear.z,
+        angular.x,
+        angular.y,
+        angular.z,
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in values
+    ):
+        raise ValueError("ground truth contains nonfinite vector fields")
+    if sum(float(value) ** 2 for value in values[3:7]) == 0.0:
+        raise ValueError("ground truth orientation has zero norm")
+    if not isinstance(message.vehicle_id, str) or not message.vehicle_id:
+        raise ValueError("ground truth vehicle_id is invalid")
+    if not isinstance(message.in_contact, bool):
+        raise ValueError("ground truth contact flag is invalid")
+    return GroundTruthEvidence(
+        timestamp_ns,
+        message.vehicle_id,
+        tuple(float(value) for value in values[:3]),
+        tuple(float(value) for value in values[3:7]),
+        tuple(float(value) for value in values[7:10]),
+        tuple(float(value) for value in values[10:13]),
+        message.in_contact,
+    )
+
+
 class RosbagValidator:
     """Validate a quiescent MCAP bag without changing it."""
 
@@ -536,6 +611,7 @@ class RosbagValidator:
         backend: BagBackend | None = None,
         expected_camera_frames: int | None = None,
         physical_run: bool = False,
+        config_sha256: str | None = None,
     ) -> None:
         if not run_id:
             raise ValueError("run_id must not be empty")
@@ -547,10 +623,17 @@ class RosbagValidator:
             raise ValueError("expected_camera_frames must be a positive integer or None")
         if not isinstance(physical_run, bool):
             raise TypeError("physical_run must be a boolean")
+        if physical_run and (
+            not isinstance(config_sha256, str)
+            or len(config_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in config_sha256)
+        ):
+            raise ValueError("physical_run requires a lowercase config SHA-256")
         self.run_id = run_id
         self._backend = backend or _Rosbag2Backend()
         self.expected_camera_frames = expected_camera_frames
         self.physical_run = physical_run
+        self.config_sha256 = config_sha256
 
     @staticmethod
     def _result(
@@ -558,6 +641,7 @@ class RosbagValidator:
         status: ValidationStatus,
         detail: str,
         topics: tuple[RosbagTopicDiagnostic, ...] = (),
+        physical_evidence: PhysicalBagEvidence | None = None,
     ) -> RosbagValidationResult:
         return RosbagValidationResult(
             status,
@@ -565,6 +649,7 @@ class RosbagValidator:
             filesystem.sha256,
             detail,
             topics,
+            physical_evidence,
         )
 
     def validate(
@@ -651,6 +736,8 @@ class RosbagValidator:
         timestamps: dict[str, list[int]] = {topic: [] for topic in FIXED_TOPICS}
         frame_ids: dict[str, list[int]] = {"onboard": [], "observer": []}
         artifact_statuses: list[tuple[int, Any]] = []
+        run_states: list[Any] = []
+        ground_truth_samples: list[GroundTruthEvidence] = []
         scenario_events: list[Any] = []
         score_events: list[Any] = []
         first_clock_index: int | None = None
@@ -678,6 +765,19 @@ class RosbagValidator:
                             filesystem,
                             ValidationStatus.INVALID,
                             f"rosbag topic {record.topic} contains a missing image payload",
+                        )
+                    if self.physical_run and (
+                        message.height != 240
+                        or message.width != 320
+                        or message.encoding != "rgb8"
+                        or message.step != 960
+                        or len(message.data) != 320 * 240 * 3
+                    ):
+                        return self._result(
+                            filesystem,
+                            ValidationStatus.INVALID,
+                            "rosbag topic "
+                            f"{record.topic} has invalid physical image shape or payload",
                         )
                     sim_timestamp_ns = _timestamp_ns(message.header.stamp)
                 else:
@@ -709,6 +809,12 @@ class RosbagValidator:
                         frame_ids[stream].append(message.frame_id)
                     elif record.topic == "/simulation/artifact_status":
                         artifact_statuses.append((record_index, message))
+                    elif record.topic == "/simulation/run_state":
+                        run_states.append(message)
+                    elif record.topic == "/simulation/ground_truth" and self.physical_run:
+                        ground_truth_samples.append(
+                            _ground_truth_evidence(message, sim_timestamp_ns)
+                        )
                     elif record.topic == "/simulation/scenario_events":
                         scenario_events.append(message)
                     elif record.topic == "/simulation/score_events":
@@ -799,6 +905,19 @@ class RosbagValidator:
                 )
 
         if self.physical_run:
+            expected_states = (1, 2, 3, 4)
+            if len(run_states) != len(expected_states) or any(
+                message.state != state
+                or message.config_sha256 != self.config_sha256
+                or (state != 4 and message.reason != "")
+                or (state == 4 and not message.reason)
+                for message, state in zip(run_states, expected_states, strict=True)
+            ):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag physical lifecycle is not exact or config-bound",
+                )
             clock_timestamps = timestamps["/clock"]
             if any(
                 current < previous
@@ -847,6 +966,9 @@ class RosbagValidator:
                 event.event_id != index
                 or event.event_type != event_type
                 or event.evidence_ref != f"scoring/events.jsonl#event-{index}"
+                or isinstance(event.value, bool)
+                or not isinstance(event.value, (int, float))
+                or not math.isfinite(event.value)
                 for index, (event, event_type) in enumerate(
                     zip(score_events, expected_event_types, strict=True)
                 )
@@ -894,11 +1016,32 @@ class RosbagValidator:
             )
             for topic in FIXED_TOPICS
         )
+        physical_evidence = None
+        if self.physical_run:
+            assert filesystem.sha256 is not None
+            assert self.config_sha256 is not None
+            physical_evidence = PhysicalBagEvidence(
+                filesystem.sha256,
+                self.config_sha256,
+                ("STARTING", "READY", "RUNNING", "FINALIZING"),
+                tuple(ground_truth_samples),
+                tuple(
+                    ScoreEventEvidence(
+                        _timestamp_ns(event.sim_timestamp),
+                        event.event_id,
+                        event.event_type,
+                        float(event.value),
+                        event.evidence_ref,
+                    )
+                    for event in score_events
+                ),
+            )
         return self._result(
             filesystem,
             ValidationStatus.VALID,
             "valid MCAP rosbag with frozen topic and frame correlation contracts",
             diagnostics,
+            physical_evidence,
         )
 
 
@@ -909,9 +1052,12 @@ __all__ = [
     "BagMessage",
     "BagMetadata",
     "BagTopicMetadata",
+    "GroundTruthEvidence",
+    "PhysicalBagEvidence",
     "RecorderFinalization",
     "RosbagRecorder",
     "RosbagTopicDiagnostic",
     "RosbagValidationResult",
     "RosbagValidator",
+    "ScoreEventEvidence",
 ]
