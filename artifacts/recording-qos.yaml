@@ -22,7 +22,7 @@
   history: keep_last
   depth: 100
   reliability: reliable
-  durability: volatile
+  durability: transient_local
 /simulation/score_events: *event_qos
 /camera/onboard/image_raw: &image_qos
   history: keep_last

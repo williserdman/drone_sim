@@ -314,7 +314,11 @@ def _create_ros_boundary(
         ScenarioEvent,
         "/simulation/scenario_events",
         accept_scenario,
-        QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
+        QoSProfile(
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        ),
     )
     node.create_subscription(
         Clock,

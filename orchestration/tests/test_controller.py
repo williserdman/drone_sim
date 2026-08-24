@@ -22,7 +22,7 @@ from artifacts import (
 from artifacts.manifest import REQUIRED_ARTIFACT_PATHS
 from orchestration._adapters.compose import ComposeCommandResult, ComposeRuntime
 from orchestration.controller import ControllerError, RunController, RunResult, TerminalCause
-from orchestration.status_store import OperatorStatus, StatusStore
+from orchestration.status_store import OperatorStatus, ProtocolFileError, StatusStore
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000606"
@@ -55,6 +55,56 @@ PHASE3_SERVICES = (
     "electromagnet-runtime",
     "scorekeeper-runtime",
 )
+FLIGHT_EXCHANGE = {
+    "online": True,
+    "servo_packets_received": 2,
+    "motor_updates": 2,
+    "duplicate_servo_packets": 0,
+    "servo_frame_gaps": 0,
+    "json_states_sent": 2,
+    "json_send_errors": 0,
+    "last_servo_frame": 1,
+    "last_json_sim_time_ns": 0,
+}
+
+
+def test_gazebo_ready_accepts_the_exact_live_flight_exchange_evidence():
+    RunController._validate_gazebo_ready(
+        {
+            "run_id": RUN_ID,
+            "ready": True,
+            "flight_exchange": dict(FLIGHT_EXCHANGE),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.pop("json_states_sent"),
+        lambda value: value.update(unexpected=0),
+        lambda value: value.update(online=1),
+        lambda value: value.update(servo_packets_received=True),
+        lambda value: value.update(last_servo_frame=-1),
+        lambda value: value.update(servo_packets_received=0),
+        lambda value: value.update(motor_updates=0),
+        lambda value: value.update(json_states_sent=0),
+        lambda value: value.update(servo_frame_gaps=1),
+        lambda value: value.update(json_send_errors=1),
+    ],
+)
+def test_gazebo_ready_rejects_malformed_or_unready_flight_exchange(mutate):
+    exchange = dict(FLIGHT_EXCHANGE)
+    mutate(exchange)
+
+    with pytest.raises(ProtocolFileError, match="gazebo-ready status is invalid"):
+        RunController._validate_gazebo_ready(
+            {
+                "run_id": RUN_ID,
+                "ready": True,
+                "flight_exchange": exchange,
+            }
+        )
 
 
 def _topology(profile: str):
@@ -414,7 +464,11 @@ class FakeCompose:
             self.runtime_mutator(self.run_directory)
         documents = {
             "artifacts-ready": {"run_id": RUN_ID, "ready": True},
-            "gazebo-ready": {"run_id": RUN_ID, "ready": True},
+            "gazebo-ready": {
+                "run_id": RUN_ID,
+                "ready": True,
+                "flight_exchange": dict(FLIGHT_EXCHANGE),
+            },
             "ardupilot-ready": {
                 "run_id": RUN_ID,
                 "ready": True,

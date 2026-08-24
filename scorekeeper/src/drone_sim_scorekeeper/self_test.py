@@ -76,13 +76,46 @@ def _runtime_check(rules_path: Path) -> None:
 
 
 def _ros_check() -> None:
+    import time
+
     import rclpy
-    from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from simulation_interfaces.msg import ScenarioEvent
+
+    class ScenarioCapture:
+        def __init__(self) -> None:
+            self.samples = []
+
+        def accept_scenario(self, sample) -> None:
+            self.samples.append(sample)
 
     rclpy.init()
-    boundary = _create_ros_boundary(RUN_ID, [], _StructuredLogger(RUN_ID))
+    publisher_node = rclpy.create_node("scorekeeper_scenario_history_publisher")
+    publisher = publisher_node.create_publisher(
+        ScenarioEvent,
+        "/simulation/scenario_events",
+        QoSProfile(
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        ),
+    )
+    message = ScenarioEvent()
+    message.run_id = RUN_ID
+    message.event_id = 0
+    message.magnet_id = "descent-v1-magnet"
+    message.state = "INACTIVE"
+    publisher.publish(message)
+    capture = ScenarioCapture()
+    boundary = _create_ros_boundary(RUN_ID, [capture], _StructuredLogger(RUN_ID))
     try:
-        rclpy.spin_once(boundary.node, timeout_sec=0.05)
+        deadline = time.monotonic() + 5.0
+        while not capture.samples and time.monotonic() < deadline:
+            rclpy.spin_once(publisher_node, timeout_sec=0.01)
+            rclpy.spin_once(boundary.node, timeout_sec=0.05)
+        assert len(capture.samples) == 1
+        assert capture.samples[0].event_id == 0
+        assert capture.samples[0].state == "INACTIVE"
         assert boundary.node.get_name() == "drone_sim_scorekeeper"
         publishers = boundary.node.get_publishers_info_by_topic(
             "/simulation/score_events"
@@ -93,7 +126,11 @@ def _ros_check() -> None:
         assert boundary.publisher.qos_profile.depth == 100
         expected = {
             "/simulation/ground_truth": (ReliabilityPolicy.BEST_EFFORT, 10, None),
-            "/simulation/scenario_events": (ReliabilityPolicy.RELIABLE, 100, None),
+            "/simulation/scenario_events": (
+                ReliabilityPolicy.RELIABLE,
+                100,
+                DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
             "/clock": (ReliabilityPolicy.BEST_EFFORT, 1, None),
             "/simulation/run_state": (
                 ReliabilityPolicy.RELIABLE,
@@ -113,6 +150,7 @@ def _ros_check() -> None:
                 assert endpoints[0].qos_profile.durability == durability
     finally:
         boundary.node.destroy_node()
+        publisher_node.destroy_node()
         rclpy.shutdown()
 
 

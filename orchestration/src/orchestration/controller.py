@@ -63,6 +63,21 @@ _REPORT_KEYS = {
     "semantic",
 }
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_FLIGHT_EXCHANGE_KEYS = frozenset(
+    {
+        "online",
+        "servo_packets_received",
+        "motor_updates",
+        "duplicate_servo_packets",
+        "servo_frame_gaps",
+        "json_states_sent",
+        "json_send_errors",
+        "last_servo_frame",
+        "last_json_sim_time_ns",
+    }
+)
+
+
 class ControllerError(RuntimeError):
     """Controlled operator-facing failure."""
 
@@ -460,7 +475,23 @@ class RunController:
 
     @staticmethod
     def _validate_gazebo_ready(document: Mapping[str, Any]) -> None:
-        if set(document) != {"run_id", "ready"} or document["ready"] is not True:
+        exchange = document.get("flight_exchange")
+        if (
+            set(document) != {"run_id", "ready", "flight_exchange"}
+            or document["ready"] is not True
+            or not isinstance(exchange, dict)
+            or set(exchange) != _FLIGHT_EXCHANGE_KEYS
+            or exchange["online"] is not True
+            or any(
+                type(exchange[key]) is not int or exchange[key] < 0
+                for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
+            )
+            or exchange["servo_packets_received"] < 1
+            or exchange["motor_updates"] < 1
+            or exchange["json_states_sent"] < 1
+            or exchange["servo_frame_gaps"] != 0
+            or exchange["json_send_errors"] != 0
+        ):
             raise ProtocolFileError("gazebo-ready status is invalid")
 
     @staticmethod

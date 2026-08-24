@@ -156,11 +156,16 @@ def test_private_recorder_qos_retains_both_artifact_startup_statuses():
     artifact_status = override.split("/simulation/artifact_status:", 1)[1].split(
         "/simulation/ground_truth:", 1
     )[0]
+    scenario_events = override.split("/simulation/scenario_events:", 1)[1].split(
+        "/simulation/score_events:", 1
+    )[0]
 
     assert "history: keep_last" in artifact_status
     assert "depth: 2" in artifact_status
     assert "reliability: reliable" in artifact_status
     assert "durability: transient_local" in artifact_status
+    assert "reliability: reliable" in scenario_events
+    assert "durability: transient_local" in scenario_events
     assert "depth: 1" in run_state
     assert (
         "COPY artifacts/recording-qos.yaml /etc/drone_sim/recording-qos.yaml"
