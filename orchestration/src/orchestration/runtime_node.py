@@ -37,11 +37,10 @@ _PHASE2_RUN_STATE_NODES = frozenset(
 _PHASE3_RUN_STATE_NODES = frozenset(
     {
         "artifacts_runtime",
-        "synthetic_companion",
-        "synthetic_ardupilot_sitl",
+        "drone_sim_companion",
         "gazebo_runtime",
-        "synthetic_electromagnet",
-        "synthetic_scorekeeper",
+        "drone_sim_electromagnet",
+        "drone_sim_scorekeeper",
     }
 )
 

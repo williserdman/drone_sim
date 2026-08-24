@@ -56,6 +56,12 @@ subscription, including exact type and compatible QoS; this bounded
 infrastructure barrier makes the full four-sample lifecycle archival record
 deterministic without advancing simulation time.
 
+The Phase 3 barrier instead requires the real `artifacts_runtime`,
+`drone_sim_companion`, `gazebo_runtime`, `drone_sim_electromagnet`, and
+`drone_sim_scorekeeper` subscriptions plus the rosbag recorder. ArduPilot SITL
+does not subscribe to RunState and is gated only by its truthful durable
+readiness fact.
+
 Artifact readiness and completeness use
 `simulation_interfaces/msg/ArtifactStatus` on
 `/simulation/artifact_status` with reliable, transient-local QoS depth 1. The

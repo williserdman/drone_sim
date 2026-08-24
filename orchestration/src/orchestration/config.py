@@ -47,9 +47,14 @@ PHASE2_OWNERSHIP = (
     ("synthetic-electromagnet", "electromagnet"),
     ("synthetic-scorekeeper", "scorekeeper"),
 )
-PHASE3_OWNERSHIP = tuple(
-    ("gazebo-runtime", module) if module == "gazebo" else (service, module)
-    for service, module in PHASE2_OWNERSHIP
+PHASE3_OWNERSHIP = (
+    ("orchestration-runtime", "orchestration"),
+    ("artifacts-runtime", "artifacts"),
+    ("companion-runtime", "companion"),
+    ("ardupilot-sitl", "ardupilot_sitl"),
+    ("gazebo-runtime", "gazebo"),
+    ("electromagnet-runtime", "electromagnet"),
+    ("scorekeeper-runtime", "scorekeeper"),
 )
 
 

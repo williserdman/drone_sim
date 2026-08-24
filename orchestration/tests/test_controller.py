@@ -46,16 +46,20 @@ SERVICES = (
     "synthetic-electromagnet",
     "synthetic-scorekeeper",
 )
-PHASE3_SERVICES = tuple(
-    "gazebo-runtime" if service == "synthetic-gazebo" else service
-    for service in SERVICES
+PHASE3_SERVICES = (
+    "orchestration-runtime",
+    "artifacts-runtime",
+    "companion-runtime",
+    "ardupilot-sitl",
+    "gazebo-runtime",
+    "electromagnet-runtime",
+    "scorekeeper-runtime",
 )
 
 
 def _topology(profile: str):
     ownership = tuple(
-        ("gazebo-runtime", module) if profile == "phase3" and module == "gazebo" else (service, module)
-        for service, module in zip(SERVICES, MODULES, strict=True)
+        zip(PHASE3_SERVICES if profile == "phase3" else SERVICES, MODULES, strict=True)
     )
     return config_module.RuntimeTopology(profile=profile, ownership=ownership)
 

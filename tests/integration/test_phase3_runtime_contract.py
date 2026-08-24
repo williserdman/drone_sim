@@ -1,4 +1,4 @@
-"""Static contract for the first Compose-launched Gazebo runtime milestone."""
+"""Static contract for the seven-service production Phase 3 topology."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ CONFIG_PATH = f"{RUN_DIRECTORY}/configuration/run.json"
 PHASE3_SERVICES = {
     "orchestration-runtime",
     "artifacts-runtime",
-    "synthetic-companion",
-    "synthetic-ardupilot-sitl",
+    "companion-runtime",
+    "ardupilot-sitl",
     "gazebo-runtime",
-    "synthetic-electromagnet",
-    "synthetic-scorekeeper",
+    "electromagnet-runtime",
+    "scorekeeper-runtime",
 }
 
 
@@ -46,10 +46,74 @@ def _phase3_document() -> dict:
     return json.loads(result.stdout)
 
 
-def test_phase3_profile_has_one_real_gazebo_and_six_retained_runtime_services() -> None:
+def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_roles() -> None:
     document = _phase3_document()
     assert set(document["services"]) == PHASE3_SERVICES
-    assert "synthetic-gazebo" not in document["services"]
+    assert not any(name.startswith("synthetic-") for name in document["services"])
+
+
+def test_phase3_production_images_builds_commands_and_modules_are_exact() -> None:
+    services = _phase3_document()["services"]
+    expected = {
+        "orchestration-runtime": (
+            "drone-sim-orchestration-runtime:phase2",
+            "orchestration/Dockerfile",
+            ["python3", "-m", "orchestration.runtime_node"],
+            "orchestration",
+        ),
+        "artifacts-runtime": (
+            "drone-sim-artifacts-runtime:phase2",
+            "artifacts/Dockerfile",
+            ["python3", "-m", "artifacts.runtime_node"],
+            "artifacts",
+        ),
+        "companion-runtime": (
+            "drone-sim-companion-runtime:phase3",
+            "companion/Dockerfile",
+            ["drone-sim-companion-runtime"],
+            "companion",
+        ),
+        "ardupilot-sitl": (
+            "drone-sim-ardupilot-runtime:phase3",
+            "ardupilot_sitl/Dockerfile",
+            None,
+            "ardupilot_sitl",
+        ),
+        "gazebo-runtime": (
+            "drone-sim-gazebo-runtime:phase3",
+            "gazebo/Dockerfile",
+            ["drone-sim-gazebo-runtime"],
+            "gazebo",
+        ),
+        "electromagnet-runtime": (
+            "drone-sim-electromagnet-runtime:phase3",
+            "electromagnet/Dockerfile",
+            ["drone-sim-electromagnet-runtime"],
+            "electromagnet",
+        ),
+        "scorekeeper-runtime": (
+            "drone-sim-scorekeeper-runtime:phase3",
+            "scorekeeper/Dockerfile",
+            ["drone-sim-scorekeeper-runtime"],
+            "scorekeeper",
+        ),
+    }
+    for name, (image, dockerfile, command, module) in expected.items():
+        service = services[name]
+        assert service["profiles"] == (
+            ["phase2", "phase3"]
+            if name in {"orchestration-runtime", "artifacts-runtime"}
+            else ["phase3"]
+        )
+        assert service["image"] == image
+        assert service["build"]["context"] == str(ROOT)
+        assert service["build"]["dockerfile"] == dockerfile
+        if command is None:
+            assert service["command"] is None
+            assert service["entrypoint"] is None
+        else:
+            assert service["command"] == command
+        assert service["environment"]["SIM_MODULE"] == module
 
 
 def test_gazebo_runtime_is_run_scoped_unprivileged_and_has_no_host_port() -> None:
@@ -86,6 +150,20 @@ def test_gazebo_runtime_is_run_scoped_unprivileged_and_has_no_host_port() -> Non
         "target": CONFIG_PATH,
         "read_only": True,
     }
+
+
+def test_phase3_internal_flight_endpoints_are_exact_and_never_published_to_host() -> None:
+    services = _phase3_document()["services"]
+    for service in services.values():
+        assert "ports" not in service
+        assert "network_mode" not in service
+    assert services["gazebo-runtime"]["expose"] == ["9002/udp"]
+    assert set(services["ardupilot-sitl"]["expose"]) == {"5760/tcp", "9003/udp"}
+    assert services["ardupilot-sitl"]["environment"]["SIM_GAZEBO_HOST"] == "gazebo-runtime"
+    assert (
+        services["companion-runtime"]["environment"]["SIM_MAVLINK_ENDPOINT"]
+        == "tcp:ardupilot-sitl:5760"
+    )
 
 
 def test_phase2_profile_remains_exactly_the_original_seven_services() -> None:

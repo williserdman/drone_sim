@@ -73,10 +73,17 @@ cannot consume teardown reserve.
 
 `RunConfig.topology` returns one immutable `RuntimeTopology` containing the
 validated profile and exact service-to-module ownership tuple. Phase 2 contains
-the original seven synthetic services. Phase 3 changes only
-`synthetic-gazebo` to `gazebo-runtime`. The controller passes that value to
-`ComposeRuntime` and uses the same ownership for health checks, log capture,
-image-digest discovery, service stopping, and exact-service validation.
+the original seven synthetic services. Phase 3 selects the production seven:
+orchestration, artifacts, companion, ArduPilot SITL, Gazebo, electromagnet, and
+scorekeeper. The controller passes that value to `ComposeRuntime` and uses the
+same ownership for health checks, log capture, image-digest discovery, service
+stopping, and exact-service validation.
+
+The production RunState discovery barrier requires only actual ROS consumers:
+artifacts, companion, Gazebo, electromagnet, scorekeeper, and the rosbag
+recorder. ArduPilot SITL has no RunState subscription and is deliberately not
+invented as a ROS node; `.status/ardupilot-ready.json` remains its durable
+startup gate.
 
 `ComposeRuntime` pins the absolute repository `compose.yaml`, disables implicit
 `.env` loading, removes ambient Compose file/env-file/profile/project

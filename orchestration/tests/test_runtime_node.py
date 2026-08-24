@@ -84,15 +84,14 @@ def test_run_state_transport_barrier_requires_all_seven_intended_subscribers():
     assert failures == []
 
 
-def test_phase3_transport_barrier_requires_real_gazebo_subscriber():
+def test_phase3_transport_barrier_requires_only_real_ros_consumers_and_recorder():
     failures = []
     required_nodes = {
         "artifacts_runtime",
-        "synthetic_companion",
-        "synthetic_ardupilot_sitl",
+        "drone_sim_companion",
         "gazebo_runtime",
-        "synthetic_electromagnet",
-        "synthetic_scorekeeper",
+        "drone_sim_electromagnet",
+        "drone_sim_scorekeeper",
     }
     barrier = RunStateTransportBarrier(
         deadline=10.0,
@@ -103,13 +102,18 @@ def test_phase3_transport_barrier_requires_real_gazebo_subscriber():
         _subscriber(name) for name in sorted(required_nodes)
     ] + [_subscriber("rosbag2_recorder_deadbeef")]
 
-    synthetic = [
-        _subscriber("synthetic_gazebo") if item.node_name == "gazebo_runtime" else item
+    missing_real_companion = [
+        _subscriber("synthetic_companion")
+        if item.node_name == "drone_sim_companion"
+        else item
         for item in subscribers
     ]
-    assert barrier.poll(synthetic, now=1.0, finalizing=False) is False
+    assert barrier.poll(missing_real_companion, now=1.0, finalizing=False) is False
     assert barrier.poll(subscribers, now=2.0, finalizing=False) is True
     assert failures == []
+
+    # ArduPilot is not a ROS node; durable ardupilot-ready remains its gate.
+    assert "ardupilot_sitl" not in required_nodes
 
 
 def test_run_state_transport_barrier_ignores_duplicates_stale_qos_type_and_extras():

@@ -92,11 +92,15 @@ def test_container_contract_compose_has_frozen_service_order(
         "orchestration-runtime",
         "artifacts-runtime",
         "synthetic-companion",
+        "companion-runtime",
         "synthetic-ardupilot-sitl",
+        "ardupilot-sitl",
         "synthetic-gazebo",
         "gazebo-runtime",
         "synthetic-electromagnet",
+        "electromagnet-runtime",
         "synthetic-scorekeeper",
+        "scorekeeper-runtime",
     ]
 
     services = compose_document["services"]
