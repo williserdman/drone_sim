@@ -280,7 +280,12 @@ class TraceStore(StatusStore):
         value = super().read_runtime_status(run_id, name, deadline_check)
         if value is not None and name in {
             "artifacts-ready",
+            "gazebo-ready",
+            "ardupilot-ready",
+            "companion-ready",
             "source-finished",
+            "mission-finished",
+            "score-finished",
             "runtime-frozen",
             "artifacts-final",
             "terminal-notified",
@@ -344,8 +349,32 @@ class FakeCompose:
         )
         documents = {
             "artifacts-ready": {"run_id": RUN_ID, "ready": True},
+            "gazebo-ready": {"run_id": RUN_ID, "ready": True},
+            "ardupilot-ready": {
+                "run_id": RUN_ID,
+                "ready": True,
+                "json_exchange": True,
+                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+            },
+            "companion-ready": {
+                "run_id": RUN_ID,
+                "ready": True,
+                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+                "heartbeat_sim_timestamp_ns": 0,
+            },
             "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
             "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},
+            "mission-finished": {
+                "run_id": RUN_ID,
+                "finished": True,
+                "sim_timestamp_ns": 1_500_000_000,
+                "outcome": "LANDED",
+            },
+            "score-finished": {
+                "run_id": RUN_ID,
+                "finished": True,
+                "sim_timestamp_ns": 2_000_000_000,
+            },
             "runtime-frozen": {"run_id": RUN_ID, "frozen": True},
             "terminal-notified": {"run_id": RUN_ID, "notified": True},
         }
@@ -830,7 +859,21 @@ def test_log_capture_wrapper_recomputes_remaining_timeout_for_all_seven_services
 
 
 def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_path):
-    controller, _trace, _clock, holder = _controller(tmp_path)
+    controller, trace, _clock, holder = _controller(
+        tmp_path,
+        statuses=(
+            "artifacts-ready",
+            "gazebo-ready",
+            "runtime-running",
+            "ardupilot-ready",
+            "companion-ready",
+            "source-finished",
+            "mission-finished",
+            "score-finished",
+            "runtime-frozen",
+            "terminal-notified",
+        ),
+    )
 
     result = controller.start(
         _template(
@@ -845,6 +888,12 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
     )
 
     assert result.state == "COMPLETED"
+    assert trace.index("wait artifacts-ready") < trace.index("wait gazebo-ready")
+    assert trace.index("wait gazebo-ready") < trace.index("wait ardupilot-ready")
+    assert trace.index("wait ardupilot-ready") < trace.index("wait companion-ready")
+    assert trace.index("wait source-finished") < trace.index("wait mission-finished")
+    assert trace.index("wait mission-finished") < trace.index("wait score-finished")
+    assert trace.index("wait score-finished") < trace.index("request FINALIZING")
     assert holder["value"].services == PHASE3_SERVICES
     assert holder["log_ownership"] == _topology("phase3").ownership
 

@@ -36,8 +36,13 @@ _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLO
 _RUNTIME_STATUS_NAMES = frozenset(
     {
         "artifacts-ready",
+        "gazebo-ready",
+        "ardupilot-ready",
+        "companion-ready",
         "runtime-running",
         "source-finished",
+        "mission-finished",
+        "score-finished",
         "runtime-failure",
         "runtime-frozen",
         "artifacts-final",

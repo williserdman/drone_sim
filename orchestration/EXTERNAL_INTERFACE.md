@@ -37,7 +37,10 @@ Required endpoints and artifact recorders report readiness before `RUNNING`.
 Every terminal cause enters `FINALIZING`, after which the artifacts module
 reports completeness.
 
-Under `phase3`, startup also requires the current run's `gazebo-ready` fact.
+Under `phase3`, startup also requires current-run `gazebo-ready`,
+`ardupilot-ready`, and `companion-ready` facts. The latter two prove live
+Gazebo JSON exchange, the fixed internal MAVLink endpoint, and a consumed
+heartbeat before the host accepts the production stack as ready.
 The production server remains paused through endpoint discovery, bridge and
 adapter startup, native-recorder startup, and artifact readiness. Orchestration
 publishes `READY`, allows exactly one first step, persists `RUNNING` from the
@@ -62,8 +65,13 @@ invalid relative paths.
 
 The run directory also carries the durable wall-time control/status protocol:
 `.control/finalize-request.json`, `.control/terminal-committed.json`, and
-`.status/{operator-state,artifacts-ready,gazebo-ready,runtime-running,source-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
+`.status/{operator-state,artifacts-ready,gazebo-ready,ardupilot-ready,companion-ready,runtime-running,source-finished,mission-finished,score-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
 Each file is atomically replaced only after file and directory `fsync`.
+
+For `phase3`, `source-finished` is not mission success. A completed run also
+requires `mission-finished` with `outcome="LANDED"` and `score-finished` at the
+same simulation timestamp as `source-finished`. The mission timestamp may be
+earlier than source completion but cannot be later.
 
 The six non-artifact publishers own exact
 `.status/quiescence/<module>.json={run_id,module,quiescent:true}` markers for

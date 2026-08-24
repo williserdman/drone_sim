@@ -455,6 +455,41 @@ class RunController:
             raise ProtocolFileError("artifacts-ready status is invalid")
 
     @staticmethod
+    def _validate_gazebo_ready(document: Mapping[str, Any]) -> None:
+        if set(document) != {"run_id", "ready"} or document["ready"] is not True:
+            raise ProtocolFileError("gazebo-ready status is invalid")
+
+    @staticmethod
+    def _validate_ardupilot_ready(document: Mapping[str, Any]) -> None:
+        if (
+            set(document)
+            != {"run_id", "ready", "json_exchange", "mavlink_endpoint"}
+            or document["ready"] is not True
+            or document["json_exchange"] is not True
+            or document["mavlink_endpoint"] != "tcp://ardupilot-sitl:5760"
+        ):
+            raise ProtocolFileError("ardupilot-ready status is invalid")
+
+    @staticmethod
+    def _validate_companion_ready(document: Mapping[str, Any]) -> None:
+        stamp = document.get("heartbeat_sim_timestamp_ns")
+        if (
+            set(document)
+            != {
+                "run_id",
+                "ready",
+                "mavlink_endpoint",
+                "heartbeat_sim_timestamp_ns",
+            }
+            or document["ready"] is not True
+            or document["mavlink_endpoint"] != "tcp://ardupilot-sitl:5760"
+            or isinstance(stamp, bool)
+            or not isinstance(stamp, int)
+            or stamp < 0
+        ):
+            raise ProtocolFileError("companion-ready status is invalid")
+
+    @staticmethod
     def _validate_running(document: Mapping[str, Any]) -> int:
         if set(document) != {"run_id", "state", "sim_timestamp_ns"}:
             raise ProtocolFileError("runtime-running status is invalid")
@@ -475,6 +510,35 @@ class RunController:
             return None
         if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0:
             raise ProtocolFileError("source-finished simulation timestamp is invalid")
+        return stamp
+
+    @staticmethod
+    def _mission_stamp(document: Mapping[str, Any]) -> int:
+        if set(document) != {"run_id", "finished", "sim_timestamp_ns", "outcome"}:
+            raise ProtocolFileError("mission-finished status is invalid")
+        stamp = document["sim_timestamp_ns"]
+        if (
+            document["finished"] is not True
+            or document["outcome"] != "LANDED"
+            or isinstance(stamp, bool)
+            or not isinstance(stamp, int)
+            or stamp < 0
+        ):
+            raise ProtocolFileError("mission-finished status is invalid")
+        return stamp
+
+    @staticmethod
+    def _score_stamp(document: Mapping[str, Any]) -> int:
+        if set(document) != {"run_id", "finished", "sim_timestamp_ns"}:
+            raise ProtocolFileError("score-finished status is invalid")
+        stamp = document["sim_timestamp_ns"]
+        if (
+            document["finished"] is not True
+            or isinstance(stamp, bool)
+            or not isinstance(stamp, int)
+            or stamp < 0
+        ):
+            raise ProtocolFileError("score-finished status is invalid")
         return stamp
 
     @staticmethod
@@ -878,6 +942,19 @@ class RunController:
                     )
                     if ready is not None:
                         self._validate_ready(ready)
+                    if primary is None and config.runtime_profile == "phase3":
+                        gazebo_ready, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "gazebo-ready",
+                            startup_deadline,
+                            TerminalCause("startup_deadline", "gazebo_readiness_stall"),
+                        )
+                        if gazebo_ready is not None:
+                            self._validate_gazebo_ready(gazebo_ready)
+                    if primary is None:
                         lifecycle = lifecycle.apply(LifecycleEvent.MODULES_READY)
                         store.write_operator_status(self._status(lifecycle))
 
@@ -896,6 +973,30 @@ class RunController:
                             sim_start_ns = self._validate_running(running)
                             lifecycle = lifecycle.apply(LifecycleEvent.CLOCK_STARTED)
                             store.write_operator_status(self._status(lifecycle))
+                    if primary is None and config.runtime_profile == "phase3":
+                        ardupilot_ready, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "ardupilot-ready",
+                            startup_deadline,
+                            TerminalCause("startup_deadline", "ardupilot_readiness_stall"),
+                        )
+                        if ardupilot_ready is not None:
+                            self._validate_ardupilot_ready(ardupilot_ready)
+                    if primary is None and config.runtime_profile == "phase3":
+                        companion_ready, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "companion-ready",
+                            startup_deadline,
+                            TerminalCause("startup_deadline", "companion_readiness_stall"),
+                        )
+                        if companion_ready is not None:
+                            self._validate_companion_ready(companion_ready)
                     if primary is None:
                         finished, primary = self._wait_for(
                             store,
@@ -908,6 +1009,38 @@ class RunController:
                         )
                         if finished is not None:
                             sim_end_ns = self._source_stamp(finished)
+                    if primary is None and config.runtime_profile == "phase3":
+                        mission_finished, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "mission-finished",
+                            overall_deadline,
+                            TerminalCause("mission_stall", "mission_completion_stall"),
+                        )
+                        if mission_finished is not None:
+                            mission_stamp = self._mission_stamp(mission_finished)
+                            if sim_end_ns is not None and mission_stamp > sim_end_ns:
+                                raise ProtocolFileError(
+                                    "mission-finished timestamp exceeds source-finished"
+                                )
+                    if primary is None and config.runtime_profile == "phase3":
+                        score_finished, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "score-finished",
+                            overall_deadline,
+                            TerminalCause("score_stall", "score_completion_stall"),
+                        )
+                        if score_finished is not None:
+                            score_stamp = self._score_stamp(score_finished)
+                            if sim_end_ns is None or score_stamp != sim_end_ns:
+                                raise ProtocolFileError(
+                                    "score-finished timestamp must equal source-finished"
+                                )
                 except KeyboardInterrupt:
                     primary = TerminalCause("operator_interrupt", "operator_interrupt")
                 except (ProtocolFileError, ControllerError) as exc:

@@ -27,8 +27,13 @@ _QUIESCENCE_MODULES = frozenset(
 _STATUS_NAMES = frozenset(
     {
         "artifacts-ready",
+        "gazebo-ready",
+        "ardupilot-ready",
+        "companion-ready",
         "runtime-running",
         "source-finished",
+        "mission-finished",
+        "score-finished",
         "runtime-failure",
         "runtime-frozen",
         "artifacts-final",
@@ -115,6 +120,29 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
         raise ProtocolError("runtime status has the wrong run_id")
     if name == "artifacts-ready":
         valid = set(document) == {"run_id", "ready"} and document["ready"] is True
+    elif name == "gazebo-ready":
+        valid = set(document) == {"run_id", "ready"} and document["ready"] is True
+    elif name == "ardupilot-ready":
+        valid = (
+            set(document)
+            == {"run_id", "ready", "json_exchange", "mavlink_endpoint"}
+            and document["ready"] is True
+            and document["json_exchange"] is True
+            and document["mavlink_endpoint"] == "tcp://ardupilot-sitl:5760"
+        )
+    elif name == "companion-ready":
+        valid = (
+            set(document)
+            == {
+                "run_id",
+                "ready",
+                "mavlink_endpoint",
+                "heartbeat_sim_timestamp_ns",
+            }
+            and document["ready"] is True
+            and document["mavlink_endpoint"] == "tcp://ardupilot-sitl:5760"
+            and _nonnegative_integer(document["heartbeat_sim_timestamp_ns"])
+        )
     elif name == "runtime-running":
         valid = (
             set(document) == {"run_id", "state", "sim_timestamp_ns"}
@@ -122,6 +150,24 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
             and _nonnegative_integer(document["sim_timestamp_ns"])
         )
     elif name == "source-finished":
+        valid = (
+            set(document) == {"run_id", "finished", "sim_timestamp_ns"}
+            and document["finished"] is True
+            and _nonnegative_integer(document["sim_timestamp_ns"])
+        )
+    elif name == "mission-finished":
+        valid = (
+            set(document) == {
+                "run_id",
+                "finished",
+                "sim_timestamp_ns",
+                "outcome",
+            }
+            and document["finished"] is True
+            and _nonnegative_integer(document["sim_timestamp_ns"])
+            and document["outcome"] == "LANDED"
+        )
+    elif name == "score-finished":
         valid = (
             set(document) == {"run_id", "finished", "sim_timestamp_ns"}
             and document["finished"] is True

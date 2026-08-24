@@ -24,8 +24,32 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
     protocol = RuntimeProtocol(run_directory, RUN_ID)
     documents = {
         "artifacts-ready": {"run_id": RUN_ID, "ready": True},
+        "gazebo-ready": {"run_id": RUN_ID, "ready": True},
+        "ardupilot-ready": {
+            "run_id": RUN_ID,
+            "ready": True,
+            "json_exchange": True,
+            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+        },
+        "companion-ready": {
+            "run_id": RUN_ID,
+            "ready": True,
+            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+            "heartbeat_sim_timestamp_ns": 0,
+        },
         "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
         "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},
+        "mission-finished": {
+            "run_id": RUN_ID,
+            "finished": True,
+            "sim_timestamp_ns": 1_500_000_000,
+            "outcome": "LANDED",
+        },
+        "score-finished": {
+            "run_id": RUN_ID,
+            "finished": True,
+            "sim_timestamp_ns": 2_000_000_000,
+        },
         "runtime-failure": {
             "run_id": RUN_ID,
             "module": "artifacts",
@@ -49,9 +73,14 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
     ("name", "document"),
     [
         ("artifacts-ready", {"run_id": RUN_ID, "ready": 1}),
+        ("gazebo-ready", {"run_id": RUN_ID, "ready": False}),
+        ("ardupilot-ready", {"run_id": RUN_ID, "ready": True, "json_exchange": False, "mavlink_endpoint": "tcp://ardupilot-sitl:5760"}),
+        ("companion-ready", {"run_id": RUN_ID, "ready": True, "mavlink_endpoint": "tcp://ardupilot-sitl:5760", "heartbeat_sim_timestamp_ns": -1}),
         ("runtime-running", {"run_id": RUN_ID, "state": "READY", "sim_timestamp_ns": 0}),
         ("runtime-running", {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": True}),
         ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": -1}),
+        ("mission-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 1, "outcome": "FAILED"}),
+        ("score-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": True}),
         ("runtime-failure", {"run_id": RUN_ID, "module": "", "reason": "bad", "diagnostic_paths": []}),
         ("runtime-failure", {"run_id": RUN_ID, "module": "x", "reason": "bad", "diagnostic_paths": ["../x"]}),
         ("runtime-failure", {"run_id": RUN_ID, "module": "x", "reason": "bad", "diagnostic_paths": ["a", "a"]}),
