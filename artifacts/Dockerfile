@@ -37,7 +37,7 @@ COPY ros_ws/src/simulation_interfaces src/simulation_interfaces
 RUN . /opt/ros/jazzy/setup.sh \
     && colcon build --packages-select simulation_interfaces
 
-COPY config/recording-qos.yaml /etc/drone_sim/recording-qos.yaml
+COPY artifacts/recording-qos.yaml /etc/drone_sim/recording-qos.yaml
 COPY artifacts/pyproject.toml /opt/drone_sim/artifacts/pyproject.toml
 COPY artifacts/src /opt/drone_sim/artifacts/src
 RUN python3 -m venv --system-site-packages /opt/drone_sim/venv \
@@ -80,5 +80,6 @@ RUN uv sync --frozen --inexact --no-install-workspace
 COPY conftest.py ./conftest.py
 COPY artifacts/tests artifacts/tests
 COPY artifacts/schemas artifacts/schemas
+COPY artifacts/Dockerfile artifacts/recording-qos.yaml artifacts/
 
 CMD ["uv", "run", "--no-sync", "pytest", "artifacts/tests", "-v"]

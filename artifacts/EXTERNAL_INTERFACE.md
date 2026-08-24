@@ -11,14 +11,17 @@
 
 The fixed ROS subscriptions are `/clock` at best-effort depth 1,
 `/simulation/run_state` at reliable transient-local depth 1,
-`/simulation/artifact_status` at reliable transient-local depth 1,
+`/simulation/artifact_status` at reliable transient-local depth 2,
 `/simulation/ground_truth` at best-effort depth 10,
 `/simulation/scenario_events` and `/simulation/score_events` at reliable depth
 100, and `/camera/{onboard,observer}/{image_raw,frame_metadata}` at reliable
 depth 5 for the archival Phase 2 runtime. The metadata topics are `/camera/onboard/frame_metadata` and
 `/camera/observer/frame_metadata`, both using
-`simulation_interfaces/msg/FrameMetadata`. The exact subscriber overrides are
-stored in `config/recording-qos.yaml`.
+`simulation_interfaces/msg/FrameMetadata`. The exact private rosbag subscriber
+overrides are stored in `artifacts/recording-qos.yaml`. The public
+`ArtifactStatus` publisher remains reliable transient-local depth 1; the
+private recorder requests depth 2 so its cache retains both startup samples
+until rosbag takes them.
 
 The archival reliability request is scoped to the recorder path. A reliable
 camera publisher remains compatible with later mission consumers that request
@@ -51,7 +54,9 @@ readiness and physics advancement are independent of that synthetic transport.
 Successful startup publishes two simulation-time-zero aggregate statuses before
 the first clock. The first is exactly not-ready with missing recorder names
 `onboard`, `observer`, and `rosbag`; the second is ready with an empty missing
-list. Both are archived in the bag. After the host commits the manifest and the
+list. The runtime waits for a matched-reader acknowledgment before the second
+publish, and the private recorder cache has depth 2 so both are archived even
+if rosbag takes them afterward. After the host commits the manifest and the
 bag is closed, the artifacts runtime publishes one live reliable
 transient-local final status derived through descriptor-safe manifest reading,
 then writes `terminal-notified`. The final live sample does not mutate the bag,

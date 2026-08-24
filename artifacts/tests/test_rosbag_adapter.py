@@ -145,6 +145,29 @@ def test_command_has_absolute_output_qos_node_and_frozen_topic_order(tmp_path):
     assert "--use-sim-time" not in recorder.command()
 
 
+def test_private_recorder_qos_retains_both_artifact_startup_statuses():
+    artifact_root = Path(__file__).parents[1]
+    override_path = artifact_root / "recording-qos.yaml"
+    dockerfile = (artifact_root / "Dockerfile").read_text(encoding="utf-8")
+    override = override_path.read_text(encoding="utf-8")
+    run_state = override.split("/simulation/run_state:", 1)[1].split(
+        "/simulation/artifact_status:", 1
+    )[0]
+    artifact_status = override.split("/simulation/artifact_status:", 1)[1].split(
+        "/simulation/ground_truth:", 1
+    )[0]
+
+    assert "history: keep_last" in artifact_status
+    assert "depth: 2" in artifact_status
+    assert "reliability: reliable" in artifact_status
+    assert "durability: transient_local" in artifact_status
+    assert "depth: 1" in run_state
+    assert (
+        "COPY artifacts/recording-qos.yaml /etc/drone_sim/recording-qos.yaml"
+        in dockerfile
+    )
+
+
 def test_start_uses_shell_free_process_and_appends_combined_recorder_log(tmp_path):
     log_path = tmp_path / "logs/docker/rosbag2.log.partial"
     log_path.parent.mkdir(parents=True)

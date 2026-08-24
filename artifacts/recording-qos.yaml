@@ -1,0 +1,34 @@
+/clock: &clock_qos
+  history: keep_last
+  depth: 1
+  reliability: best_effort
+  durability: volatile
+/simulation/run_state: &latched_state_qos
+  history: keep_last
+  depth: 1
+  reliability: reliable
+  durability: transient_local
+/simulation/artifact_status:
+  history: keep_last
+  depth: 2
+  reliability: reliable
+  durability: transient_local
+/simulation/ground_truth:
+  history: keep_last
+  depth: 10
+  reliability: best_effort
+  durability: volatile
+/simulation/scenario_events: &event_qos
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
+/simulation/score_events: *event_qos
+/camera/onboard/image_raw: &image_qos
+  history: keep_last
+  depth: 5
+  reliability: reliable
+  durability: volatile
+/camera/onboard/frame_metadata: *image_qos
+/camera/observer/image_raw: *image_qos
+/camera/observer/frame_metadata: *image_qos
