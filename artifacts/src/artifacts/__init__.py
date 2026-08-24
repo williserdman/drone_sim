@@ -18,6 +18,13 @@ from ._adapters.rosbag import (
     RosbagValidationResult,
     RosbagValidator,
 )
+from ._adapters.docker_logs import (
+    DockerLogCapture,
+    DockerLogCaptureError,
+    DockerLogCaptureResult,
+    DockerLogCommandResult,
+    DockerLogDiagnostic,
+)
 from ._adapters.video import (
     VideoDiagnostic,
     VideoFinalization,
@@ -34,6 +41,11 @@ __all__ = [
     "ArtifactRecord",
     "ArtifactSession",
     "ConfigurationRecord",
+    "DockerLogCapture",
+    "DockerLogCaptureError",
+    "DockerLogCaptureResult",
+    "DockerLogCommandResult",
+    "DockerLogDiagnostic",
     "FinalizationConflict",
     "FinalizationInput",
     "FIXED_TOPIC_TYPES",
