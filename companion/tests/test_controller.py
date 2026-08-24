@@ -33,7 +33,6 @@ def test_fake_vehicle_receives_the_complete_controlled_descent_sequence() -> Non
             armed=True,
             relative_altitude_m=1.0,
             vertical_speed_m_s=-0.3,
-            in_contact=False,
             landed=False,
         ),
         Telemetry(
@@ -42,7 +41,6 @@ def test_fake_vehicle_receives_the_complete_controlled_descent_sequence() -> Non
             armed=True,
             relative_altitude_m=0.0,
             vertical_speed_m_s=-0.05,
-            in_contact=True,
             landed=True,
         ),
         Telemetry(
@@ -51,7 +49,6 @@ def test_fake_vehicle_receives_the_complete_controlled_descent_sequence() -> Non
             armed=False,
             relative_altitude_m=0.0,
             vertical_speed_m_s=0.0,
-            in_contact=True,
             landed=True,
         ),
     )

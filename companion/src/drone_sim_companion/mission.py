@@ -44,7 +44,6 @@ class Telemetry:
     armed: bool | None = None
     relative_altitude_m: float | None = None
     vertical_speed_m_s: float | None = None
-    in_contact: bool | None = None
     landed: bool | None = None
     ack: Ack | None = None
 
@@ -70,7 +69,7 @@ class MissionState:
     expected_ack: CommandKind | None = None
     peak_altitude_m: float = 0.0
     descent_observed: bool = False
-    contact_observed: bool = False
+    landing_observed: bool = False
     failure_reason: str = ""
 
     @classmethod
@@ -207,19 +206,19 @@ def advance(state: MissionState, event: Telemetry) -> Transition:
         events: list[MissionEvent] = []
         if descending and not state.descent_observed:
             events.append(MissionEvent("descent_observed", stamp))
-        if event.in_contact:
+        if event.landed is True:
             if not descending:
-                return _fail(current, stamp, "contact preceded descent")
+                return _fail(current, stamp, "landing preceded descent")
             events.append(MissionEvent("touchdown_observed", stamp))
             return Transition(
-                replace(current, phase=MissionPhase.WAIT_DISARM, contact_observed=True),
+                replace(current, phase=MissionPhase.WAIT_DISARM, landing_observed=True),
                 events=tuple(events),
             )
         return Transition(current, events=tuple(events))
     if state.phase is MissionPhase.WAIT_DISARM:
-        if event.in_contact is False or event.landed is False:
-            return _fail(current, stamp, "landing state became inconsistent after contact")
-        if event.armed is not False or event.landed is not True or event.in_contact is not True:
+        if event.landed is False:
+            return _fail(current, stamp, "landing state became inconsistent after touchdown")
+        if event.armed is not False or event.landed is not True:
             return Transition(current)
         return Transition(
             replace(current, phase=MissionPhase.LANDED),

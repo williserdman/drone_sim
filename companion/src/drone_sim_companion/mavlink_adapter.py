@@ -103,25 +103,4 @@ class MavlinkAdapter:
             )
         return None
 
-    def ground_truth(
-        self,
-        *,
-        timestamp_ns: int,
-        altitude_m: float,
-        vertical_speed_m_s: float,
-        in_contact: bool,
-    ) -> Telemetry:
-        if in_contact and abs(vertical_speed_m_s) <= 0.1:
-            self._landed = True
-        return Telemetry(
-            timestamp_ns,
-            mode=self._mode,
-            armed=self._armed,
-            relative_altitude_m=altitude_m,
-            vertical_speed_m_s=vertical_speed_m_s,
-            in_contact=in_contact,
-            landed=self._landed,
-        )
-
-
 __all__ = ["MavlinkAdapter"]

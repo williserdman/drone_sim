@@ -133,29 +133,18 @@ def test_in_progress_ack_waits_and_negative_ack_is_exposed() -> None:
     assert not rejected.ack.accepted
 
 
-def test_ground_truth_contact_is_merged_with_latest_vehicle_state() -> None:
+def test_landed_state_is_preserved_across_later_heartbeat() -> None:
     connection = FakeConnection(
         [
-            Message("HEARTBEAT", custom_mode=9, base_mode=128),
+            Message("EXTENDED_SYS_STATE", landed_state=1),
             Message("HEARTBEAT", custom_mode=9, base_mode=0),
         ]
     )
     adapter = MavlinkAdapter(connection, mavutil())
-    adapter.poll(100)
 
-    truth = adapter.ground_truth(
-        timestamp_ns=150,
-        altitude_m=0.02,
-        vertical_speed_m_s=-0.04,
-        in_contact=True,
-    )
-    assert (truth.mode, truth.armed, truth.relative_altitude_m, truth.in_contact, truth.landed) == (
-        "LAND",
-        True,
-        0.02,
-        True,
-        True,
-    )
+    landed = adapter.poll(100)
     disarmed = adapter.poll(200)
+
+    assert landed is not None and landed.landed is True
     assert disarmed is not None
     assert disarmed.armed is False and disarmed.landed is True

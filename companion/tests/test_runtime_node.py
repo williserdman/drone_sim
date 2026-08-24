@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
 from drone_sim_companion.runtime_node import (
     RuntimeConfig,
     connect_mavlink,
-    stamp_ns,
-    vertical_truth,
 )
 
 
@@ -41,15 +39,15 @@ def test_runtime_config_rejects_invalid_infrastructure_configuration(
         RuntimeConfig.from_environment(environment)
 
 
-def test_ros_ground_truth_conversion_preserves_native_simulation_stamp() -> None:
-    message = SimpleNamespace(
-        sim_timestamp=SimpleNamespace(sec=2, nanosec=50_000_000),
-        pose=SimpleNamespace(position=SimpleNamespace(z=1.25)),
-        twist=SimpleNamespace(linear=SimpleNamespace(z=-0.2)),
-        in_contact=False,
-    )
-    assert stamp_ns(message.sim_timestamp) == 2_050_000_000
-    assert vertical_truth(message) == (2_050_000_000, 1.25, -0.2, False)
+def test_runtime_has_no_gazebo_ground_truth_dependency() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "src/drone_sim_companion/runtime_node.py"
+    ).read_text(encoding="utf-8")
+
+    assert "GroundTruth" not in source
+    assert '"/simulation/ground_truth"' not in source
+    assert "vertical_truth" not in source
 
 
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:

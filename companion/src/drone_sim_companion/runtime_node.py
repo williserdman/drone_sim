@@ -50,15 +50,6 @@ def stamp_ns(stamp: Any) -> int:
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
-def vertical_truth(message: Any) -> tuple[int, float, float, bool]:
-    return (
-        stamp_ns(message.sim_timestamp),
-        float(message.pose.position.z),
-        float(message.twist.linear.z),
-        bool(message.in_contact),
-    )
-
-
 def connect_mavlink(
     factory: Callable[..., Any],
     endpoint: str,
@@ -143,7 +134,7 @@ def main() -> int:
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from rosgraph_msgs.msg import Clock
-    from simulation_interfaces.msg import GroundTruth, RunState
+    from simulation_interfaces.msg import RunState
 
     started = time.monotonic()
     try:
@@ -180,23 +171,6 @@ def main() -> int:
             return
         latest_clock_ns = value
 
-    def truth_callback(message: Any) -> None:
-        nonlocal failure
-        if message.run_id != config.run_id or failure is not None:
-            return
-        timestamp, altitude, vertical_speed, contact = vertical_truth(message)
-        try:
-            controller.consume(
-                vehicle.ground_truth(
-                    timestamp_ns=timestamp,
-                    altitude_m=altitude,
-                    vertical_speed_m_s=vertical_speed,
-                    in_contact=contact,
-                )
-            )
-        except Exception as error:  # process boundary: preserve the first failure.
-            failure = f"ground-truth processing failed: {error}"
-
     def state_callback(message: Any) -> None:
         nonlocal finalizing
         if message.run_id == config.run_id and message.state == RunState.FINALIZING:
@@ -207,12 +181,6 @@ def main() -> int:
         "/clock",
         clock_callback,
         QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
-    )
-    node.create_subscription(
-        GroundTruth,
-        "/simulation/ground_truth",
-        truth_callback,
-        QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
     )
     node.create_subscription(
         RunState,
@@ -284,4 +252,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["RuntimeConfig", "connect_mavlink", "main", "stamp_ns", "vertical_truth"]
+__all__ = ["RuntimeConfig", "connect_mavlink", "main", "stamp_ns"]

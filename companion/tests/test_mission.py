@@ -22,7 +22,6 @@ def observation(
     armed: bool | None = None,
     altitude_m: float | None = None,
     vertical_speed_m_s: float | None = None,
-    contact: bool | None = None,
     landed: bool | None = None,
     ack: Ack | None = None,
 ) -> Telemetry:
@@ -33,7 +32,6 @@ def observation(
         armed=armed,
         relative_altitude_m=altitude_m,
         vertical_speed_m_s=vertical_speed_m_s,
-        in_contact=contact,
         landed=landed,
         ack=ack,
     )
@@ -81,7 +79,6 @@ def test_nominal_telemetry_drives_guided_arm_takeoff_land_and_landed() -> None:
             armed=True,
             altitude_m=1.10,
             vertical_speed_m_s=-0.30,
-            contact=False,
             landed=False,
         ),
     )
@@ -94,7 +91,6 @@ def test_nominal_telemetry_drives_guided_arm_takeoff_land_and_landed() -> None:
             armed=True,
             altitude_m=0.02,
             vertical_speed_m_s=-0.05,
-            contact=True,
             landed=True,
         ),
     )
@@ -107,7 +103,6 @@ def test_nominal_telemetry_drives_guided_arm_takeoff_land_and_landed() -> None:
             armed=False,
             altitude_m=0.0,
             vertical_speed_m_s=0.0,
-            contact=True,
             landed=True,
         ),
     )
@@ -198,7 +193,7 @@ def test_equal_simulation_timestamps_are_ordered_without_wall_time() -> None:
     assert acknowledged.state.last_timestamp_ns == 1_000_000_000
 
 
-def test_contact_before_observed_descent_fails_truthfully() -> None:
+def test_landed_state_before_observed_descent_fails_truthfully() -> None:
     state, _ = drive_to_descent()
     result = advance(
         state,
@@ -208,12 +203,11 @@ def test_contact_before_observed_descent_fails_truthfully() -> None:
             armed=True,
             altitude_m=1.39,
             vertical_speed_m_s=0.0,
-            contact=True,
             landed=True,
         ),
     )
     assert result.state.phase is MissionPhase.FAILED
-    assert "contact preceded descent" in result.state.failure_reason
+    assert "landing preceded descent" in result.state.failure_reason
 
 
 def test_state_is_immutable() -> None:
