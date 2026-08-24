@@ -16,6 +16,13 @@ completed `StopServer` observation. A bare `FINALIZING` state pauses and closes
 the normal path immediately, while the typed durable finalization request
 supplies terminal intent, reason, and the absolute stop deadline.
 
+A `COMPLETED` request is itself invalid until `_source_summary` contains the
+exact accepted `AdapterSummary`; the failure write and failed begin action are
+emitted before the one stop action. `FAILED` and `ABORTED` requests do not
+depend on source completion. Child-exit and server-stop-failure events are
+first-class typed facts, so Task 6 does not bypass the first-failure latch when
+a server, bridge, image bridge, adapter, or native validation fails.
+
 The first invalid processing fact closes normal progress before any accepted
 state can be repaired. Stale canonical run IDs are ignored as required by the
 repository lifecycle contract. Once quiescence is returned, only identical
@@ -25,4 +32,7 @@ idempotent; all other current-run use raises `RuntimeModelError`.
 The model validates that completion timestamps describe the fixed native
 cadence but never samples time or invents an output timestamp. Infrastructure
 timeout is an explicit caller fact. The process boundary alone consumes the
-deadline through an injected monotonic clock.
+deadline through an injected monotonic clock. The current durable finalization
+protocol does not store that deadline; Task 6/7 must hand one non-restarting
+absolute deadline from durable intent to `StopServer` rather than create a new
+budget in either layer.

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import PurePosixPath
+import re
 from typing import TypeAlias
 from uuid import UUID
 
@@ -28,10 +29,12 @@ _LIFECYCLE_STATES = frozenset(
 _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
 _MAX_REASON_BYTES = 1024
 _MAX_ENDPOINT_BYTES = 256
+_MAX_CHILD_NAME_BYTES = 64
 _MAX_DIAGNOSTIC_PATH_BYTES = 512
 _MAX_DIAGNOSTIC_PATHS = 8
 _SERVER_DIAGNOSTIC = ("gazebo/server.log.partial",)
 _SERVER_EXIT_DIAGNOSTICS = ("gazebo/server.log.partial", "gazebo/state")
+_CHILD_NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
 
 
 class RuntimeModelError(RuntimeError):
@@ -105,6 +108,19 @@ def _diagnostic_paths(value: object) -> tuple[str, ...]:
         path = PurePosixPath(item)
         if path.is_absolute() or ".." in path.parts or path.parts in ((), (".",)):
             raise ValueError("diagnostic paths must be bounded relative POSIX paths")
+    return value
+
+
+def _child_name(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value.encode("utf-8")) > _MAX_CHILD_NAME_BYTES
+        or _CHILD_NAME.fullmatch(value) is None
+    ):
+        raise ValueError(
+            "child_name must be canonical lowercase snake case and at most "
+            f"{_MAX_CHILD_NAME_BYTES} UTF-8 bytes"
+        )
     return value
 
 
@@ -228,10 +244,12 @@ class AdapterCompleted:
 @dataclass(frozen=True)
 class ChildExited:
     run_id: str
+    child_name: str
     returncode: int
 
     def __post_init__(self) -> None:
         _canonical_run_id(self.run_id)
+        _child_name(self.child_name)
         _integer(self.returncode, field="returncode")
 
 
@@ -274,6 +292,20 @@ class ServerStopped:
             raise TypeError("native_artifacts must be a NativeArtifactSummary")
 
 
+@dataclass(frozen=True)
+class ServerStopFailed:
+    run_id: str
+    reason: str
+    diagnostic_paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _canonical_run_id(self.run_id)
+        _bounded_text(self.reason, field="reason", maximum=_MAX_REASON_BYTES)
+        if not self.diagnostic_paths:
+            raise ValueError("server stop failure requires a named diagnostic path")
+        _diagnostic_paths(self.diagnostic_paths)
+
+
 RuntimeEvent: TypeAlias = (
     ArtifactsReady
     | GazeboReady
@@ -282,6 +314,7 @@ RuntimeEvent: TypeAlias = (
     | ChildExited
     | EndpointTimeout
     | FinalizationRequested
+    | ServerStopFailed
     | ServerStopped
 )
 
@@ -306,6 +339,7 @@ class RuntimeModel:
         self._begin_finalization_emitted = False
         self._stop_requested = False
         self._finalization_request: FinalizationRequested | None = None
+        self._server_stop_failed = False
         self._native_artifacts: NativeArtifactSummary | None = None
         self._frozen = False
 
@@ -438,11 +472,21 @@ class RuntimeModel:
     ) -> tuple[RuntimeAction, ...]:
         if self._stop_requested:
             return ()
+        actions: list[RuntimeAction] = []
+        if (
+            event.requested_terminal == "COMPLETED"
+            and self._source_summary is None
+            and self._failure_reason is None
+        ):
+            actions.extend(
+                self._failure(
+                    "COMPLETED finalization requested before exact source-finished"
+                )
+            )
         requested_terminal = (
             "FAILED" if self._failure_reason is not None else event.requested_terminal
         )
         reason = self._failure_reason or event.reason
-        actions: list[RuntimeAction] = []
         self._finalization_preempted = True
         self._lifecycle_state = "FINALIZING"
         if not self._paused:
@@ -463,6 +507,8 @@ class RuntimeModel:
             raise RuntimeModelError("native artifact summary changed after quiescence")
         if not self._stop_requested:
             return self._failure("Gazebo server stopped before finalization requested")
+        if self._server_stop_failed:
+            return ()
         run_root = event.native_artifacts.server_log_path.parent.parent
         if run_root.name != self._run_id:
             return self._failure("native artifact summary belongs to another run")
@@ -492,6 +538,7 @@ class RuntimeModel:
             ChildExited,
             EndpointTimeout,
             FinalizationRequested,
+            ServerStopFailed,
             ServerStopped,
         )
         if not isinstance(event, runtime_types):
@@ -506,13 +553,16 @@ class RuntimeModel:
             raise RuntimeModelError("runtime model is frozen")
         if isinstance(event, FinalizationRequested):
             return self._accept_finalization(event)
+        if isinstance(event, ServerStopFailed):
+            actions = self._failure(event.reason, event.diagnostic_paths)
+            self._server_stop_failed = True
+            return actions
         if isinstance(event, ServerStopped):
             return self._accept_stopped(event)
         if isinstance(event, ChildExited):
-            if self._stop_requested:
-                return ()
             return self._failure(
-                f"Gazebo server exited unexpectedly with return code {event.returncode}",
+                f"runtime child {event.child_name} exited unexpectedly "
+                f"with return code {event.returncode}",
                 _SERVER_EXIT_DIAGNOSTICS,
             )
         if isinstance(event, EndpointTimeout):
@@ -556,6 +606,7 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeModel",
     "RuntimeModelError",
+    "ServerStopFailed",
     "ServerStopped",
     "SetPaused",
     "StopServer",

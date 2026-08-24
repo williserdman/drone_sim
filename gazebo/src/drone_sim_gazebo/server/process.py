@@ -51,6 +51,65 @@ _SNAPSHOT_FIELDS = (
     "st_ctime_ns",
 )
 _HEX = frozenset("0123456789abcdef")
+_AUTHORITATIVE_PATH = (
+    "/opt/ros/jazzy/opt/gz_msgs_vendor/bin:"
+    "/opt/ros/jazzy/opt/gz_tools_vendor/bin:"
+    "/opt/ros/jazzy/opt/gz_ogre_next_vendor/bin:"
+    "/opt/ros/jazzy/bin:/opt/drone_sim/venv/bin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+_AUTHORITATIVE_GZ_CONFIG_PATH = (
+    "/opt/ros/jazzy/opt/gz_sim_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/sdformat_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/gz_gui_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/gz_transport_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/gz_rendering_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/gz_plugin_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/gz_fuel_tools_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/gz_msgs_vendor/share/gz:"
+    "/opt/ros/jazzy/opt/gz_common_vendor/share/gz"
+)
+_AUTHORITATIVE_LD_LIBRARY_PATH = (
+    "/opt/ros/jazzy/opt/gz_sim_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_sensors_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_physics_vendor/lib:"
+    "/opt/ros/jazzy/opt/sdformat_vendor/lib:"
+    "/opt/ros/jazzy/opt/rviz_ogre_vendor/lib:"
+    "/opt/ros/jazzy/lib/x86_64-linux-gnu:"
+    "/opt/ros/jazzy/opt/gz_gui_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_transport_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_rendering_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_plugin_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_fuel_tools_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_msgs_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_common_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_math_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_utils_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_tools_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_ogre_next_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_dartsim_vendor/lib:"
+    "/opt/ros/jazzy/opt/gz_cmake_vendor/lib:"
+    "/opt/ros/jazzy/lib"
+)
+_STATIC_ENVIRONMENT = MappingProxyType(
+    {
+        "PATH": _AUTHORITATIVE_PATH,
+        "GZ_CONFIG_PATH": _AUTHORITATIVE_GZ_CONFIG_PATH,
+        "LD_LIBRARY_PATH": _AUTHORITATIVE_LD_LIBRARY_PATH,
+        "HOME": "/tmp",
+    }
+)
+_ENVIRONMENT_KEYS = frozenset(
+    {
+        "PATH",
+        "GZ_CONFIG_PATH",
+        "LD_LIBRARY_PATH",
+        "HOME",
+        "GZ_PARTITION",
+        "GZ_SIM_RESOURCE_PATH",
+    }
+)
+_GROUP_POLL_SECONDS = 0.01
 
 
 class ServerProcessError(RuntimeError):
@@ -68,7 +127,43 @@ class _Process(Protocol):
 
 PopenFactory = Callable[..., _Process]
 Monotonic = Callable[[], float]
+Sleep = Callable[[float], None]
 SignalProcessGroup = Callable[[int, int], None]
+GetProcessGroup = Callable[[int], int]
+ProcessGroupExists = Callable[[int, int], bool]
+
+
+def _linux_process_group_exists(process_group_id: int, session_id: int) -> bool:
+    """Return whether the retained Linux session still has a live group member."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        raise OSError("safe process-group probing requires Linux /proc")
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "stat").read_text(encoding="ascii")
+        except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+            continue
+        closing = raw.rfind(")")
+        if closing < 0:
+            continue
+        fields = raw[closing + 2 :].split()
+        if len(fields) < 4:
+            continue
+        state = fields[0]
+        try:
+            member_group = int(fields[2])
+            member_session = int(fields[3])
+        except ValueError:
+            continue
+        if (
+            state not in {"Z", "X"}
+            and member_group == process_group_id
+            and member_session == session_id
+        ):
+            return True
+    return False
 
 
 def _canonical_run_id(value: object) -> str:
@@ -231,8 +326,13 @@ class ServerSpec:
             raise ValueError("Gazebo server must start paused")
         if not isinstance(self.environment, MappingProxyType):
             raise TypeError("environment must be an immutable mapping")
-        if set(self.environment) != {"GZ_PARTITION", "GZ_SIM_RESOURCE_PATH"}:
+        environment = MappingProxyType(dict(self.environment))
+        object.__setattr__(self, "environment", environment)
+        if set(environment) != _ENVIRONMENT_KEYS:
             raise ValueError("environment must contain only authoritative Gazebo keys")
+        for key, expected in _STATIC_ENVIRONMENT.items():
+            if environment[key] != expected:
+                raise ValueError(f"{key} must match the pinned runtime image")
         for field, value in (
             ("partial_log_path", self.partial_log_path),
             ("final_log_path", self.final_log_path),
@@ -248,10 +348,10 @@ class ServerSpec:
         ):
             raise ValueError("server paths must be canonical paths inside the current run")
         expected_partition = "drone_sim_" + self.run_id.replace("-", "_")
-        if self.environment["GZ_PARTITION"] != expected_partition:
+        if environment["GZ_PARTITION"] != expected_partition:
             raise ValueError("GZ_PARTITION must be derived from the current run_id")
         resource_path = _safe_existing_path(
-            Path(self.environment["GZ_SIM_RESOURCE_PATH"]),
+            Path(environment["GZ_SIM_RESOURCE_PATH"]),
             field="GZ_SIM_RESOURCE_PATH",
             directory=True,
         )
@@ -332,6 +432,7 @@ def server_spec(
     state_directory = gazebo_directory / "state"
     environment = MappingProxyType(
         {
+            **_STATIC_ENVIRONMENT,
             "GZ_PARTITION": "drone_sim_" + canonical_run_id.replace("-", "_"),
             "GZ_SIM_RESOURCE_PATH": str(resolved_world.resource_path),
         }
@@ -368,16 +469,25 @@ class GazeboServer:
         *,
         popen_factory: PopenFactory = subprocess.Popen,
         monotonic: Monotonic = time.monotonic,
+        sleep: Sleep = time.sleep,
+        get_process_group: GetProcessGroup = os.getpgid,
+        process_group_exists: ProcessGroupExists = _linux_process_group_exists,
         signal_process_group: SignalProcessGroup = os.killpg,
     ) -> None:
         if not isinstance(spec, ServerSpec):
             raise TypeError("spec must be a ServerSpec")
-        self.spec = spec
+        self._spec = spec
         self._popen_factory = popen_factory
         self._monotonic = monotonic
+        self._sleep = sleep
+        self._get_process_group = get_process_group
+        self._process_group_exists = process_group_exists
         self._signal_process_group = signal_process_group
         self._process: _Process | None = None
+        self._process_group_id: int | None = None
+        self._session_id: int | None = None
         self._log_stream: Any | None = None
+        self._log_identity: os.stat_result | None = None
         self._run_fd: int | None = None
         self._gazebo_fd: int | None = None
         self._state_fd: int | None = None
@@ -387,6 +497,11 @@ class GazeboServer:
         self._summary: NativeArtifactSummary | None = None
         self._failure: ServerProcessError | None = None
         self._started = False
+
+    @property
+    def spec(self) -> ServerSpec:
+        """Return the immutable launch authority; replacement is not supported."""
+        return self._spec
 
     def _latch(self, error: BaseException, *, context: str) -> ServerProcessError:
         if self._failure is None:
@@ -428,13 +543,8 @@ class GazeboServer:
             self._run_fd, "gazebo"
         )
         gazebo_entries = set(os.listdir(self._gazebo_fd))
-        if not gazebo_entries <= {"state"}:
+        if gazebo_entries:
             raise FileExistsError("unsafe Gazebo owned-path collision")
-        self._state_fd, self._state_identity = self._open_or_create_directory(
-            self._gazebo_fd, "state"
-        )
-        if os.listdir(self._state_fd):
-            raise FileExistsError("unsafe native state collision")
         for name in ("server.log.partial", "server.log"):
             try:
                 os.stat(name, dir_fd=self._gazebo_fd, follow_symlinks=False)
@@ -490,6 +600,7 @@ class GazeboServer:
             self._write_all(descriptor, self._preamble())
             os.fsync(descriptor)
             os.fsync(self._gazebo_fd)
+            self._log_identity = os.fstat(descriptor)
             self._log_stream = os.fdopen(descriptor, "ab", buffering=0)
             descriptor = None
             process = self._popen_factory(
@@ -504,6 +615,11 @@ class GazeboServer:
             if type(process.pid) is not int or process.pid <= 0:
                 raise TypeError("spawned process must expose a positive integer pid")
             self._process = process
+            # start_new_session=True makes the child's PID both its session and
+            # process-group identity before exec. Retain that identity rather
+            # than deriving it later from a possibly reaped / reused leader.
+            self._process_group_id = process.pid
+            self._session_id = process.pid
             self._started = True
         except BaseException as error:
             if descriptor is not None:
@@ -512,30 +628,26 @@ class GazeboServer:
                 except OSError:
                     pass
             try:
-                self._close_log()
+                self._close_log_handle()
             except OSError:
                 pass
             self._close_directories()
             raise self._latch(error, context="Gazebo server start failed") from error
 
-    def _close_log(self) -> None:
+    def _seal_log(self, deadline: float) -> None:
         stream = self._log_stream
         if stream is None:
-            return
+            raise OSError("startup log descriptor is unavailable")
+        self._check_deadline(deadline, operation="partial server log flush")
+        stream.flush()
+        self._check_deadline(deadline, operation="partial server log fsync")
+        os.fsync(stream.fileno())
+
+    def _close_log_handle(self) -> None:
+        stream = self._log_stream
         self._log_stream = None
-        first_error: OSError | None = None
-        try:
-            stream.flush()
-            os.fsync(stream.fileno())
-        except OSError as error:
-            first_error = error
-        try:
+        if stream is not None:
             stream.close()
-        except OSError as error:
-            if first_error is None:
-                first_error = error
-        if first_error is not None:
-            raise first_error
 
     def _abandon_log_after_failure(self) -> None:
         """Drop the parent handle without starting new work after a stop fault."""
@@ -573,41 +685,100 @@ class GazeboServer:
                 f"absolute monotonic deadline expired before {operation}"
             )
 
+    @staticmethod
+    def _returncode(value: object) -> int:
+        if type(value) is not int:
+            raise TypeError("child return code must be an integer")
+        return value
+
+    def _group_exists(self) -> bool:
+        process_group_id = self._process_group_id
+        session_id = self._session_id
+        if process_group_id is None or session_id is None:
+            raise OSError("safe process-group identity is unavailable")
+        exists = self._process_group_exists(process_group_id, session_id)
+        if type(exists) is not bool:
+            raise TypeError("process-group probe must return a boolean")
+        return exists
+
+    def _verify_live_leader_group(self, process: _Process) -> None:
+        if process.returncode is not None:
+            return
+        actual = self._get_process_group(process.pid)
+        if type(actual) is not int or actual != self._process_group_id:
+            raise OSError("Gazebo process-group identity changed before signaling")
+
+    def _wait_for_group_empty(self, phase_deadline: float) -> bool:
+        while True:
+            remaining = self._remaining(phase_deadline)
+            if remaining <= 0:
+                return False
+            if not self._group_exists():
+                return True
+            self._sleep(min(_GROUP_POLL_SECONDS, remaining))
+
     def _stop_process(self, deadline: float) -> tuple[int, bool]:
         process = self._process
         if process is None:
             raise ServerProcessError("Gazebo server has not been started")
+        self._check_deadline(deadline, operation="Gazebo process-group inspection")
         returncode = process.poll()
-        if returncode is not None:
-            if type(returncode) is not int:
-                raise TypeError("child return code must be an integer")
-            return returncode, False
+        self._check_deadline(deadline, operation="Gazebo process-group probe")
+        group_exists = self._group_exists()
+        if not group_exists:
+            if returncode is None:
+                raise OSError("live Gazebo leader has no retained process group")
+            return self._returncode(returncode), False
 
         signals_sent: list[int] = []
         for index, signum in enumerate((signal.SIGTERM, signal.SIGKILL)):
-            if process.poll() is not None:
+            self._check_deadline(deadline, operation="Gazebo process-group shutdown")
+            if not self._group_exists():
                 break
+            self._check_deadline(deadline, operation="process-group identity validation")
+            returncode = process.poll()
+            self._verify_live_leader_group(process)
+            self._check_deadline(deadline, operation=f"signal {signum}")
             try:
-                self._signal_process_group(process.pid, signum)
+                assert self._process_group_id is not None
+                self._signal_process_group(self._process_group_id, signum)
             except ProcessLookupError:
-                if process.poll() is not None:
+                self._check_deadline(deadline, operation="process-group disappearance probe")
+                if not self._group_exists():
                     break
                 raise
             signals_sent.append(signum)
             remaining = self._remaining(deadline)
+            if remaining <= 0:
+                raise TimeoutError(
+                    "absolute monotonic deadline expired before process-group wait"
+                )
             timeout = remaining / (2 - index)
-            try:
-                process.wait(timeout=timeout)
+            phase_deadline = deadline - remaining + timeout
+            if returncode is None:
+                self._check_deadline(deadline, operation="Gazebo leader wait")
+                try:
+                    returncode = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    returncode = None
+                    continue
+            if self._wait_for_group_empty(phase_deadline):
                 break
-            except subprocess.TimeoutExpired:
-                continue
+
+        self._check_deadline(deadline, operation="final process-group quiescence probe")
+        if self._group_exists():
+            raise subprocess.TimeoutExpired("Gazebo process-group shutdown", 0)
+        self._check_deadline(deadline, operation="Gazebo leader reap verification")
         returncode = process.poll()
         if returncode is None:
-            raise subprocess.TimeoutExpired("Gazebo process-group shutdown", 0)
-        if type(returncode) is not int:
-            raise TypeError("child return code must be an integer")
+            remaining = self._remaining(deadline)
+            if remaining <= 0:
+                raise TimeoutError(
+                    "absolute monotonic deadline expired before Gazebo leader reap"
+                )
+            returncode = process.wait(timeout=remaining)
         graceful = signals_sent == [signal.SIGTERM]
-        return returncode, graceful
+        return self._returncode(returncode), graceful
 
     def _verify_owned_directories(self) -> None:
         values = (
@@ -626,6 +797,24 @@ class GazeboServer:
             )
             if not _same_entry(identity, opened) or not _same_entry(identity, named):
                 raise OSError("owned Gazebo directory changed during lifecycle")
+
+    def _acquire_native_state_directory(self, deadline: float) -> None:
+        assert self._gazebo_fd is not None
+        self._check_deadline(deadline, operation="native state directory validation")
+        try:
+            named = os.stat("state", dir_fd=self._gazebo_fd, follow_symlinks=False)
+        except FileNotFoundError as error:
+            raise OSError("Gazebo did not create its native state directory") from error
+        if stat.S_ISLNK(named.st_mode) or not stat.S_ISDIR(named.st_mode):
+            raise OSError("Gazebo native state path is not a safe directory")
+        self._check_deadline(deadline, operation="native state directory open")
+        descriptor = os.open("state", _DIRECTORY_FLAGS, dir_fd=self._gazebo_fd)
+        opened = os.fstat(descriptor)
+        if not _same_entry(named, opened):
+            os.close(descriptor)
+            raise OSError("Gazebo native state directory changed while opening")
+        self._state_fd = descriptor
+        self._state_identity = opened
 
     def _validate_native_state(self, deadline: float) -> None:
         assert self._state_fd is not None
@@ -663,6 +852,10 @@ class GazeboServer:
 
     def _publish_log(self, deadline: float) -> None:
         assert self._gazebo_fd is not None
+        stream = self._log_stream
+        identity = self._log_identity
+        if stream is None or identity is None:
+            raise OSError("startup log descriptor identity is unavailable")
         self._check_deadline(deadline, operation="server log publication")
         try:
             final = os.stat("server.log", dir_fd=self._gazebo_fd, follow_symlinks=False)
@@ -673,46 +866,53 @@ class GazeboServer:
         before = os.stat(
             "server.log.partial", dir_fd=self._gazebo_fd, follow_symlinks=False
         )
+        opened = os.fstat(stream.fileno())
         if (
             stat.S_ISLNK(before.st_mode)
             or not stat.S_ISREG(before.st_mode)
             or before.st_nlink != 1
             or before.st_size <= 0
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_size <= 0
+            or not _same_entry(identity, opened)
+            or not _same_entry(opened, before)
         ):
-            raise OSError("server.log.partial must be a nonempty single-link regular file")
-        descriptor = os.open(
-            "server.log.partial", _READ_FILE_FLAGS, dir_fd=self._gazebo_fd
+            raise OSError(
+                "server.log.partial changed identity or is not the retained "
+                "nonempty single-link regular startup log"
+            )
+        self._check_deadline(deadline, operation="server log no-clobber link")
+        os.link(
+            "server.log.partial",
+            "server.log",
+            src_dir_fd=self._gazebo_fd,
+            dst_dir_fd=self._gazebo_fd,
+            follow_symlinks=False,
         )
-        try:
-            opened = os.fstat(descriptor)
-            if not _same_snapshot(before, opened):
-                raise OSError("server.log.partial changed while opening")
-            self._check_deadline(deadline, operation="partial server log fsync")
-            os.fsync(descriptor)
-            self._check_deadline(deadline, operation="server log no-clobber link")
-            os.link(
-                "server.log.partial",
-                "server.log",
-                src_dir_fd=self._gazebo_fd,
-                dst_dir_fd=self._gazebo_fd,
-                follow_symlinks=False,
-            )
-            linked = os.stat(
-                "server.log", dir_fd=self._gazebo_fd, follow_symlinks=False
-            )
-            if not _same_entry(opened, linked):
-                raise OSError("published server.log does not identify the partial log")
-            os.unlink("server.log.partial", dir_fd=self._gazebo_fd)
-            final = os.stat(
-                "server.log", dir_fd=self._gazebo_fd, follow_symlinks=False
-            )
-            if not _same_entry(opened, final) or final.st_nlink != 1:
-                raise OSError("published server.log has an invalid identity")
-            os.fsync(descriptor)
-            os.fsync(self._gazebo_fd)
-            self._check_deadline(deadline, operation="server log durability")
-        finally:
-            os.close(descriptor)
+        self._check_deadline(deadline, operation="linked server log validation")
+        retained = os.fstat(stream.fileno())
+        partial = os.stat(
+            "server.log.partial", dir_fd=self._gazebo_fd, follow_symlinks=False
+        )
+        linked = os.stat("server.log", dir_fd=self._gazebo_fd, follow_symlinks=False)
+        if (
+            retained.st_nlink != 2
+            or partial.st_nlink != 2
+            or linked.st_nlink != 2
+            or not _same_entry(identity, retained)
+            or not _same_entry(retained, partial)
+            or not _same_entry(retained, linked)
+        ):
+            raise OSError("temporary no-clobber server log link has an invalid identity")
+        self._check_deadline(deadline, operation="linked server log directory fsync")
+        os.fsync(self._gazebo_fd)
+        # Removing the partial name is the transaction commit point. All
+        # potentially blocking durability and identity checks precede it. Once
+        # this exact unlink succeeds, no later clock observation can reverse
+        # the already durable no-clobber publication.
+        self._check_deadline(deadline, operation="server log publication commit")
+        os.unlink("server.log.partial", dir_fd=self._gazebo_fd)
 
     def stop(self, deadline: float) -> NativeArtifactSummary:
         """Bound shutdown and no-clobber publication by one absolute deadline."""
@@ -723,13 +923,16 @@ class GazeboServer:
         if not self._started:
             raise ServerProcessError("Gazebo server has not been started")
         try:
+            self._check_deadline(deadline, operation="Gazebo shutdown")
             returncode, graceful = self._stop_process(deadline)
             self._check_deadline(deadline, operation="Gazebo artifact finalization")
-            self._close_log()
-            self._check_deadline(deadline, operation="partial server log closure")
+            self._seal_log(deadline)
+            self._acquire_native_state_directory(deadline)
+            self._check_deadline(deadline, operation="owned directory validation")
             self._verify_owned_directories()
             self._validate_native_state(deadline)
             self._publish_log(deadline)
+            self._close_log_handle()
             self._summary = NativeArtifactSummary(
                 self.spec.final_log_path,
                 self.spec.native_state_path,

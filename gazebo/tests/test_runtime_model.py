@@ -21,6 +21,7 @@ from drone_sim_gazebo.runtime import (
     RunStateEvent,
     RuntimeModel,
     RuntimeModelError,
+    ServerStopFailed,
     ServerStopped,
     SetPaused,
     StopServer,
@@ -158,21 +159,43 @@ def test_invalid_or_incomplete_adapter_summary_fails_closed(summary: AdapterSumm
 def test_child_exit_is_first_failure_and_later_timeout_cannot_replace_it():
     model = _running_model()
 
-    actions = model.accept(ChildExited(RUN_ID, 17))
+    actions = model.accept(ChildExited(RUN_ID, "server", 17))
 
     assert actions == (
         WriteRuntimeFailure(
-            "Gazebo server exited unexpectedly with return code 17",
+            "runtime child server exited unexpectedly with return code 17",
             ("gazebo/server.log.partial", "gazebo/state"),
         ),
         SetPaused(True),
         BeginFinalization(
             "FAILED",
-            "Gazebo server exited unexpectedly with return code 17",
+            "runtime child server exited unexpectedly with return code 17",
         ),
     )
     assert model.accept(EndpointTimeout(RUN_ID, "world-control")) == ()
-    assert model.accept(ChildExited(RUN_ID, 99)) == ()
+    assert model.accept(ChildExited(RUN_ID, "adapter", 99)) == ()
+
+
+@pytest.mark.parametrize("child_name", ["server", "bridge", "image_bridge", "adapter"])
+def test_each_canonical_child_identity_is_preserved_in_first_failure(child_name: str):
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+
+    actions = model.accept(ChildExited(RUN_ID, child_name, -9))
+
+    assert isinstance(actions[0], WriteRuntimeFailure)
+    assert actions[0].reason == (
+        f"runtime child {child_name} exited unexpectedly with return code -9"
+    )
+    assert isinstance(actions[-1], BeginFinalization)
+
+
+@pytest.mark.parametrize(
+    "child_name",
+    ["", "Bridge", "image-bridge", "_adapter", "a" * 65, "bridge/path"],
+)
+def test_child_identity_rejects_noncanonical_or_unbounded_names(child_name: str):
+    with pytest.raises(ValueError, match="child_name"):
+        ChildExited(RUN_ID, child_name, 1)
 
 
 def test_endpoint_timeout_is_an_infrastructure_fact_not_simulation_progress():
@@ -215,6 +238,95 @@ def test_direct_finalization_pauses_before_beginning_and_stopping_server():
     )
 
 
+def test_completed_finalization_fails_closed_before_exact_source_finished():
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+
+    actions = model.accept(
+        FinalizationRequested(RUN_ID, "COMPLETED", "controller complete", 50.0)
+    )
+
+    reason = "COMPLETED finalization requested before exact source-finished"
+    assert actions == (
+        WriteRuntimeFailure(reason, ("gazebo/server.log.partial",)),
+        BeginFinalization("FAILED", reason),
+        StopServer(50.0),
+    )
+    assert all(
+        not isinstance(action, BeginFinalization)
+        or action.requested_terminal != "COMPLETED"
+        for action in actions
+    )
+
+
+def test_completed_finalization_requires_exact_adapter_summary_then_succeeds():
+    model = _running_model()
+    assert model.accept(AdapterCompleted(RUN_ID, _summary())) == (
+        SetPaused(True),
+        WriteSourceFinished(100_000_000),
+    )
+
+    assert model.accept(
+        FinalizationRequested(RUN_ID, "COMPLETED", "complete", 50.0)
+    ) == (
+        BeginFinalization("COMPLETED", "complete"),
+        StopServer(50.0),
+    )
+
+
+def test_partial_adapter_failure_cannot_be_repaired_by_completed_finalization():
+    model = _running_model()
+    first = model.accept(AdapterCompleted(RUN_ID, _summary(1)))
+    assert isinstance(first[0], WriteRuntimeFailure)
+    assert first[-1].requested_terminal == "FAILED"  # type: ignore[union-attr]
+
+    assert model.accept(
+        FinalizationRequested(RUN_ID, "COMPLETED", "late success", 50.0)
+    ) == (StopServer(50.0),)
+
+
+def test_server_stop_failure_is_typed_first_failure_and_forbids_quiescence(
+    tmp_path: Path,
+):
+    model = _running_model()
+    assert model.accept(
+        FinalizationRequested(RUN_ID, "FAILED", "controller fault", 50.0)
+    ) == (
+        SetPaused(True),
+        BeginFinalization("FAILED", "controller fault"),
+        StopServer(50.0),
+    )
+
+    actions = model.accept(
+        ServerStopFailed(
+            RUN_ID,
+            "native state.tlog validation failed",
+            ("gazebo/server.log.partial", "gazebo/state"),
+        )
+    )
+
+    assert actions == (
+        WriteRuntimeFailure(
+            "native state.tlog validation failed",
+            ("gazebo/server.log.partial", "gazebo/state"),
+        ),
+    )
+    assert model.accept(ServerStopped(RUN_ID, _native_summary(tmp_path))) == ()
+    assert model.accept(
+        ServerStopFailed(RUN_ID, "later failure", ("gazebo/server.log",))
+    ) == ()
+
+
+def test_prior_runtime_failure_still_allows_valid_native_quiescence(tmp_path: Path):
+    model = _running_model()
+    model.accept(ChildExited(RUN_ID, "bridge", 17))
+    assert model.accept(
+        FinalizationRequested(RUN_ID, "FAILED", "child failed", 50.0)
+    ) == (StopServer(50.0),)
+    native = _native_summary(tmp_path)
+
+    assert model.accept(ServerStopped(RUN_ID, native)) == (WriteQuiescence(native),)
+
+
 def test_quiescence_requires_stop_request_and_valid_native_summary(tmp_path: Path):
     native = _native_summary(tmp_path, returncode=-9, graceful=False)
     model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
@@ -246,7 +358,8 @@ def test_post_quiescence_freeze_rejects_new_input_but_terminal_duplicates_are_id
         lambda: RuntimeModel(run_id="bad", expected_frames=2),
         lambda: RuntimeModel(run_id=RUN_ID, expected_frames=True),
         lambda: RuntimeModel(run_id=RUN_ID, expected_frames=0),
-        lambda: ChildExited(RUN_ID, True),
+        lambda: ChildExited(RUN_ID, "server", True),
+        lambda: ServerStopFailed(RUN_ID, "reason", ("/absolute",)),
         lambda: FinalizationRequested(RUN_ID, "FAILED", "reason", math.inf),
         lambda: FinalizationRequested(RUN_ID, "COMPLETED", "", 10.0),
         lambda: RequestSteps(True),

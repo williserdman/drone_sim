@@ -90,6 +90,30 @@ class FakeProcess:
         return outcome
 
 
+class FakeProcessGroup:
+    def __init__(
+        self,
+        process: FakeProcess,
+        *,
+        descendant_alive: bool = False,
+        ignore_sigterm: bool = False,
+    ) -> None:
+        self.process = process
+        self.descendant_alive = descendant_alive
+        self.ignore_sigterm = ignore_sigterm
+        self.signals: list[tuple[int, int]] = []
+        self.probes: list[tuple[int, int]] = []
+
+    def exists(self, process_group_id: int, session_id: int) -> bool:
+        self.probes.append((process_group_id, session_id))
+        return self.descendant_alive or self.process.returncode is None
+
+    def signal(self, process_group_id: int, signum: int) -> None:
+        self.signals.append((process_group_id, signum))
+        if signum == signal.SIGKILL or not self.ignore_sigterm:
+            self.descendant_alive = False
+
+
 class PopenFactory:
     def __init__(self, process: FakeProcess | None = None, error: Exception | None = None):
         self.process = process or FakeProcess()
@@ -110,17 +134,24 @@ def _start(
     *,
     process: FakeProcess | None = None,
     monotonic=lambda: 10.0,
+    sleep=lambda _seconds: None,
+    group: FakeProcessGroup | None = None,
 ):
+    process = process or FakeProcess()
     factory = PopenFactory(process)
-    signals: list[tuple[int, int]] = []
+    group = group or FakeProcessGroup(process)
     server = GazeboServer(
         spec,
         popen_factory=factory,
         monotonic=monotonic,
-        signal_process_group=lambda pid, signum: signals.append((pid, signum)),
+        sleep=sleep,
+        get_process_group=lambda pid: pid,
+        process_group_exists=group.exists,
+        signal_process_group=group.signal,
     )
     server.start()
-    return server, factory, signals
+    spec.native_state_path.parent.mkdir()
+    return server, factory, group.signals
 
 
 def test_server_spec_is_paused_local_partitioned_and_records_native_state(tmp_path: Path):
@@ -147,6 +178,47 @@ def test_server_spec_is_paused_local_partitioned_and_records_native_state(tmp_pa
     )
     assert "-r" not in spec.argv
     assert dict(spec.environment) == {
+        "PATH": (
+            "/opt/ros/jazzy/opt/gz_msgs_vendor/bin:"
+            "/opt/ros/jazzy/opt/gz_tools_vendor/bin:"
+            "/opt/ros/jazzy/opt/gz_ogre_next_vendor/bin:"
+            "/opt/ros/jazzy/bin:/opt/drone_sim/venv/bin:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ),
+        "GZ_CONFIG_PATH": (
+            "/opt/ros/jazzy/opt/gz_sim_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/sdformat_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/gz_gui_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/gz_transport_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/gz_rendering_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/gz_plugin_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/gz_fuel_tools_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/gz_msgs_vendor/share/gz:"
+            "/opt/ros/jazzy/opt/gz_common_vendor/share/gz"
+        ),
+        "LD_LIBRARY_PATH": (
+            "/opt/ros/jazzy/opt/gz_sim_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_sensors_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_physics_vendor/lib:"
+            "/opt/ros/jazzy/opt/sdformat_vendor/lib:"
+            "/opt/ros/jazzy/opt/rviz_ogre_vendor/lib:"
+            "/opt/ros/jazzy/lib/x86_64-linux-gnu:"
+            "/opt/ros/jazzy/opt/gz_gui_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_transport_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_rendering_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_plugin_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_fuel_tools_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_msgs_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_common_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_math_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_utils_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_tools_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_ogre_next_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_dartsim_vendor/lib:"
+            "/opt/ros/jazzy/opt/gz_cmake_vendor/lib:"
+            "/opt/ros/jazzy/lib"
+        ),
+        "HOME": "/tmp",
         "GZ_PARTITION": f"drone_sim_{RUN_ID.replace('-', '_')}",
         "GZ_SIM_RESOURCE_PATH": str(resolved.resource_path),
     }
@@ -165,15 +237,24 @@ def test_server_spec_ignores_hostile_ambient_environment(tmp_path: Path, monkeyp
     monkeypatch.setenv("GZ_SIM_RESOURCE_PATH", "/tmp/remote")
     monkeypatch.setenv("SDF_PATH", "/tmp/hostile")
     monkeypatch.setenv("LD_PRELOAD", "/tmp/injected.so")
+    monkeypatch.setenv("PATH", "/tmp/ambient-bin")
+    monkeypatch.setenv("GZ_CONFIG_PATH", "/tmp/ambient-gz")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/ambient-lib")
+    monkeypatch.setenv("HOME", "/tmp/ambient-home")
     spec = _spec(tmp_path)
 
     server, factory, _signals = _start(spec)
 
     assert factory.calls[0][1]["env"] == dict(spec.environment)
     assert set(factory.calls[0][1]["env"]) == {
+        "PATH",
+        "GZ_CONFIG_PATH",
+        "LD_LIBRARY_PATH",
+        "HOME",
         "GZ_PARTITION",
         "GZ_SIM_RESOURCE_PATH",
     }
+    assert factory.calls[0][1]["env"]["HOME"] == "/tmp"
     spec.native_state_path.write_bytes(b"native")
     server.stop(20.0)
 
@@ -182,7 +263,7 @@ def test_server_spec_ignores_hostile_ambient_environment(tmp_path: Path, monkeyp
     "change",
     [
         {"argv": ("sh", "-c", "echo compromised")},
-        {"environment": MappingProxyType({"GZ_PARTITION": "foreign", "GZ_SIM_RESOURCE_PATH": "/tmp"})},
+        {"environment": MappingProxyType({"GZ_PARTITION": "foreign"})},
     ],
     ids=["command", "authority-environment"],
 )
@@ -191,6 +272,21 @@ def test_server_spec_cannot_be_forged_around_exact_command_authority(tmp_path: P
 
     with pytest.raises((TypeError, ValueError)):
         replace(spec, **change)
+
+
+def test_server_spec_copies_environment_authority_and_server_spec_is_read_only(
+    tmp_path: Path,
+):
+    spec = _spec(tmp_path)
+    source = dict(spec.environment)
+    copied = replace(spec, environment=MappingProxyType(source))
+    source["PATH"] = "/tmp/hostile"
+    server = GazeboServer(copied)
+
+    assert copied.environment["PATH"] == spec.environment["PATH"]
+    with pytest.raises(AttributeError):
+        server.spec = spec  # type: ignore[misc]
+    assert server.spec is copied
 
 
 @pytest.mark.parametrize(
@@ -292,6 +388,30 @@ def test_start_uses_shell_free_new_session_and_one_shared_append_log(tmp_path: P
     spec.native_state_path.write_bytes(b"native")
     summary = server.stop(20.0)
     assert summary.server_log_path.read_bytes().endswith(b"child output\n")
+
+
+def test_start_leaves_record_path_absent_for_gazebo_to_create(tmp_path: Path):
+    spec = _spec(tmp_path)
+    process = FakeProcess()
+    factory = PopenFactory(process)
+    group = FakeProcessGroup(process)
+    server = GazeboServer(
+        spec,
+        popen_factory=factory,
+        monotonic=lambda: 10.0,
+        sleep=lambda _seconds: None,
+        get_process_group=lambda pid: pid,
+        process_group_exists=group.exists,
+        signal_process_group=group.signal,
+    )
+
+    server.start()
+
+    assert spec.final_log_path.parent.is_dir()
+    assert not spec.native_state_path.parent.exists()
+    spec.native_state_path.parent.mkdir()
+    spec.native_state_path.write_bytes(b"native")
+    server.stop(20.0)
 
 
 def test_start_preamble_is_one_escaped_data_only_json_record(tmp_path: Path):
@@ -406,14 +526,65 @@ def test_stop_of_already_exited_child_never_signals_reused_pid(tmp_path: Path):
     assert summary.graceful is False
 
 
-def test_stop_escalates_once_and_recomputes_remaining_absolute_deadline(tmp_path: Path):
+def test_stop_terminates_surviving_descendant_after_group_leader_exited(
+    tmp_path: Path,
+):
     spec = _spec(tmp_path)
-    process = FakeProcess(waits=["timeout", -signal.SIGKILL])
-    times = iter((10.0, 12.0, *([12.0] * 20)))
+    process = FakeProcess(returncode=0, waits=[])
+    group = FakeProcessGroup(process, descendant_alive=True)
+    server, _factory, signals = _start(spec, process=process, group=group)
+    spec.native_state_path.write_bytes(b"native state")
+
+    summary = server.stop(20.0)
+
+    assert signals == [(process.pid, signal.SIGTERM)]
+    assert group.descendant_alive is False
+    assert group.probes
+    assert all(identity == (process.pid, process.pid) for identity in group.probes)
+    assert summary.server_returncode == 0
+    assert summary.graceful is True
+
+
+def test_stop_escalates_when_surviving_descendant_ignores_sigterm(tmp_path: Path):
+    spec = _spec(tmp_path)
+    process = FakeProcess(returncode=0, waits=[])
+    group = FakeProcessGroup(
+        process,
+        descendant_alive=True,
+        ignore_sigterm=True,
+    )
+    clock = {"now": 10.0}
+
+    def advance(seconds: float) -> None:
+        clock["now"] += seconds
+
     server, _factory, signals = _start(
         spec,
         process=process,
-        monotonic=lambda: next(times),
+        monotonic=lambda: clock["now"],
+        sleep=advance,
+        group=group,
+    )
+    spec.native_state_path.write_bytes(b"native state")
+
+    summary = server.stop(10.2)
+
+    assert signals == [
+        (process.pid, signal.SIGTERM),
+        (process.pid, signal.SIGKILL),
+    ]
+    assert group.descendant_alive is False
+    assert summary.graceful is False
+
+
+def test_stop_escalates_once_and_recomputes_remaining_absolute_deadline(tmp_path: Path):
+    spec = _spec(tmp_path)
+    process = FakeProcess(waits=["timeout", -signal.SIGKILL])
+    times = iter((10.0, 12.0))
+    server, _factory, signals = _start(
+        spec,
+        process=process,
+        monotonic=lambda: next(times, 12.0),
     )
     spec.native_state_path.write_bytes(b"native state")
 
@@ -423,7 +594,7 @@ def test_stop_escalates_once_and_recomputes_remaining_absolute_deadline(tmp_path
         (process.pid, signal.SIGTERM),
         (process.pid, signal.SIGKILL),
     ]
-    assert process.wait_timeouts == [pytest.approx(5.0), pytest.approx(8.0)]
+    assert process.wait_timeouts == [pytest.approx(4.0), pytest.approx(8.0)]
     assert summary.server_returncode == -signal.SIGKILL
     assert summary.graceful is False
 
@@ -431,11 +602,10 @@ def test_stop_escalates_once_and_recomputes_remaining_absolute_deadline(tmp_path
 def test_expired_absolute_deadline_never_publishes_artifacts(tmp_path: Path, monkeypatch):
     spec = _spec(tmp_path)
     process = FakeProcess(waits=[0])
-    times = iter((10.0, 20.0))
     server, _factory, _signals = _start(
         spec,
         process=process,
-        monotonic=lambda: next(times),
+        monotonic=lambda: 20.0,
     )
     spec.native_state_path.write_bytes(b"native")
     fsync_calls: list[int] = []
@@ -447,6 +617,8 @@ def test_expired_absolute_deadline_never_publishes_artifacts(tmp_path: Path, mon
         server.stop(20.0)
 
     assert fsync_calls == []
+    assert _signals == []
+    assert process.wait_timeouts == []
     assert spec.partial_log_path.is_file()
     assert not spec.final_log_path.exists()
 
@@ -497,6 +669,77 @@ def test_stop_never_clobbers_a_late_final_log_collision(tmp_path: Path):
 
     assert spec.final_log_path.read_bytes() == b"attacker"
     assert spec.partial_log_path.is_file()
+
+
+def test_stop_rejects_replaced_partial_and_never_publishes_replacement_bytes(
+    tmp_path: Path,
+):
+    spec = _spec(tmp_path)
+    server, _factory, _signals = _start(spec)
+    spec.native_state_path.write_bytes(b"native")
+    retained = spec.partial_log_path.with_name("server.log.retained")
+    spec.partial_log_path.rename(retained)
+    replacement = b"attacker replacement\n"
+    spec.partial_log_path.write_bytes(replacement)
+
+    with pytest.raises(ServerProcessError, match="identity|changed"):
+        server.stop(20.0)
+
+    assert retained.is_file()
+    assert b'"event":"gazebo_server_start"' in retained.read_bytes()
+    assert spec.partial_log_path.read_bytes() == replacement
+    assert not spec.final_log_path.exists()
+
+
+def test_deadline_at_publication_commit_edge_preserves_both_named_diagnostics(
+    tmp_path: Path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    clock = {"now": 10.0}
+    server, _factory, _signals = _start(spec, monotonic=lambda: clock["now"])
+    spec.native_state_path.write_bytes(b"native")
+    from drone_sim_gazebo.server import process as process_module
+
+    real_link = process_module.os.link
+
+    def expiring_link(*args, **kwargs):
+        real_link(*args, **kwargs)
+        clock["now"] = 20.0
+
+    monkeypatch.setattr(process_module.os, "link", expiring_link)
+
+    with pytest.raises(ServerProcessError, match="deadline"):
+        server.stop(20.0)
+
+    assert spec.partial_log_path.is_file()
+    assert spec.final_log_path.is_file()
+    assert spec.partial_log_path.samefile(spec.final_log_path)
+
+
+def test_successful_no_clobber_commit_is_not_reversed_by_later_deadline(
+    tmp_path: Path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    clock = {"now": 10.0}
+    server, _factory, _signals = _start(spec, monotonic=lambda: clock["now"])
+    spec.native_state_path.write_bytes(b"native")
+    from drone_sim_gazebo.server import process as process_module
+
+    real_unlink = process_module.os.unlink
+
+    def expiring_unlink(*args, **kwargs):
+        real_unlink(*args, **kwargs)
+        clock["now"] = 20.0
+
+    monkeypatch.setattr(process_module.os, "unlink", expiring_unlink)
+
+    summary = server.stop(20.0)
+
+    assert summary.server_log_path == spec.final_log_path
+    assert spec.final_log_path.is_file()
+    assert not spec.partial_log_path.exists()
 
 
 def test_stop_fsyncs_files_and_directories_before_returning_summary(tmp_path: Path, monkeypatch):
