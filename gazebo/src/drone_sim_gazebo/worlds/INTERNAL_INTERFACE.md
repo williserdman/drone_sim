@@ -7,10 +7,15 @@ Gazebo resource path, the world SHA-256, and a sorted tuple of SHA-256 values
 for every regular file below the full `resources` root.
 
 Resolution fails closed on an escaping world, symlink, special file,
-multiply-linked regular file, or tree mutation. Hash reads reuse the artifact
-validator's retained, no-follow descriptors and pre/post identity checks. The
-optional `package_root` exists for controlled tests; production uses the
-image-owned `gazebo/resources` tree.
+multiply-linked regular file, or tree mutation. Resolution opens one
+identity-stable snapshot of the full resource inventory: no-follow descriptors
+for the root, every directory, and every single-link regular file remain open
+through hashing and final verification. Hashes are read only from those
+retained file descriptors. Before return, every path must still name the same
+device and inode with the same metadata, and every directory inventory must be
+unchanged. All descriptors close on success or failure. The optional
+`package_root` exists for controlled tests; production uses the image-owned
+`gazebo/resources` tree.
 
 The later server layer replaces any ambient `GZ_SIM_RESOURCE_PATH` with the
 returned absolute models directory. This makes `model://iris_phase3` local and

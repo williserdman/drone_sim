@@ -137,6 +137,162 @@ def test_resolver_rejects_special_files_without_blocking(tmp_path: Path):
         _resolved(resources)
 
 
+def test_resolver_rejects_identical_byte_inode_replacement_during_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A byte-identical replacement must not escape the retained tree identity."""
+    resources = _minimal_resources(tmp_path)
+    target = resources / "models/iris_phase3/model.sdf"
+    original_inode = target.stat().st_ino
+    replacement = tmp_path / "replacement-model.sdf"
+    replacement.write_bytes(target.read_bytes())
+    from drone_sim_gazebo.worlds import api
+
+    real_read = api.os.read
+    replaced = False
+
+    def replace_other_file_during_hash(descriptor: int, count: int) -> bytes:
+        nonlocal replaced
+        chunk = real_read(descriptor, count)
+        if not replaced and b"phase3_foundation" in chunk:
+            replaced = True
+            os.replace(replacement, target)
+        return chunk
+
+    monkeypatch.setattr(api.os, "read", replace_other_file_during_hash)
+
+    with pytest.raises(ValueError, match="changed during hashing"):
+        _resolved(resources)
+    assert replaced
+    assert target.stat().st_ino != original_inode
+
+
+def test_resolver_rejects_hash_substitution_restored_before_final_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A transient substitute must not contribute a hash to a restored tree."""
+    resources = _minimal_resources(tmp_path)
+    world = resources / "worlds/phase3_foundation.sdf"
+    original = world.read_bytes()
+    substitute = original.replace(b"phase3_foundation", b"phase3_foundatioX")
+    assert substitute != original and len(substitute) == len(original)
+    backup = tmp_path / "original-world.sdf"
+    from drone_sim_gazebo.worlds import api
+
+    real_hash = api._sha256_regular
+    substituted = False
+
+    def substitute_only_while_hashing(path: Path, **kwargs) -> str:
+        nonlocal substituted
+        if path == world and not substituted:
+            substituted = True
+            os.replace(world, backup)
+            world.write_bytes(substitute)
+            try:
+                return real_hash(path, **kwargs)
+            finally:
+                os.replace(backup, world)
+        return real_hash(path, **kwargs)
+
+    monkeypatch.setattr(api, "_sha256_regular", substitute_only_while_hashing)
+
+    with pytest.raises(ValueError, match="changed during hashing"):
+        _resolved(resources)
+    assert substituted
+    assert world.read_bytes() == original
+
+
+def test_resolver_closes_all_descriptors_on_success_and_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A resolver call must not retain descriptors beyond either terminal path."""
+    resources = _minimal_resources(tmp_path)
+    from drone_sim_gazebo.worlds import api
+
+    real_open = api.os.open
+    real_close = api.os.close
+    active: set[int] = set()
+
+    def tracked_open(*args, **kwargs) -> int:
+        descriptor = real_open(*args, **kwargs)
+        active.add(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        active.discard(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(api.os, "open", tracked_open)
+    monkeypatch.setattr(api.os, "close", tracked_close)
+
+    _resolved(resources)
+    assert not active
+
+    escape = resources / "models/iris_phase3/escape"
+    escape.symlink_to(tmp_path)
+    with pytest.raises(ValueError, match="symlinks are not allowed"):
+        _resolved(resources)
+    assert not active
+
+    escape.unlink()
+    world = resources / "worlds/phase3_foundation.sdf"
+    real_read = api.os.read
+    mutated = False
+
+    def mutate_during_late_hash(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = real_read(descriptor, count)
+        if not mutated and b"phase3_foundation" in chunk:
+            mutated = True
+            world.write_bytes(world.read_bytes() + b"\n")
+        return chunk
+
+    monkeypatch.setattr(api.os, "read", mutate_during_late_hash)
+    with pytest.raises(ValueError, match="changed during hashing"):
+        _resolved(resources)
+    assert mutated
+    assert not active
+
+
+def test_resolver_closes_a_child_descriptor_when_identity_capture_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A failure between child open and retention must close that child descriptor."""
+    resources = _minimal_resources(tmp_path)
+    from drone_sim_gazebo.worlds import api
+
+    real_open = api.os.open
+    real_close = api.os.close
+    real_fstat = api.os.fstat
+    active: set[int] = set()
+    failed = False
+
+    def tracked_open(*args, **kwargs) -> int:
+        descriptor = real_open(*args, **kwargs)
+        active.add(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        active.discard(descriptor)
+        real_close(descriptor)
+
+    def fail_first_child_identity(descriptor: int):
+        nonlocal failed
+        if not failed and len(active) > 1:
+            failed = True
+            raise OSError("simulated identity failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(api.os, "open", tracked_open)
+    monkeypatch.setattr(api.os, "close", tracked_close)
+    monkeypatch.setattr(api.os, "fstat", fail_first_child_identity)
+
+    with pytest.raises(ValueError, match="changed during hashing"):
+        _resolved(resources)
+    assert failed
+    assert not active
+
+
 def test_resolver_rejects_file_change_during_descriptor_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
