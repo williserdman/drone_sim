@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 members = [
     "drone-sim-artifacts",
     "drone-sim-dev",
+    "drone-sim-gazebo",
     "drone-sim-orchestration",
 ]
 
@@ -38,6 +39,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "drone-sim-artifacts" },
+    { name = "drone-sim-gazebo" },
     { name = "drone-sim-orchestration" },
     { name = "jsonschema" },
 ]
@@ -50,12 +52,24 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "drone-sim-artifacts", editable = "artifacts" },
+    { name = "drone-sim-gazebo", editable = "gazebo" },
     { name = "drone-sim-orchestration", editable = "orchestration" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
 ]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.3,<9" }]
+
+[[package]]
+name = "drone-sim-gazebo"
+version = "0.1.0"
+source = { editable = "gazebo" }
+dependencies = [
+    { name = "drone-sim-artifacts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "drone-sim-artifacts", editable = "artifacts" }]
 
 [[package]]
 name = "drone-sim-orchestration"

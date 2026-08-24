@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "drone-sim-artifacts",
+    "drone-sim-gazebo",
     "drone-sim-orchestration",
     "jsonschema>=4.23,<5",
 ]
@@ -15,11 +16,12 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
-pythonpath = ["orchestration/src", "artifacts/src"]
+pythonpath = ["orchestration/src", "artifacts/src", "gazebo/src"]
 
 [tool.uv.workspace]
-members = ["artifacts", "orchestration"]
+members = ["artifacts", "gazebo", "orchestration"]
 
 [tool.uv.sources]
 drone-sim-artifacts = { workspace = true }
+drone-sim-gazebo = { workspace = true }
 drone-sim-orchestration = { workspace = true }

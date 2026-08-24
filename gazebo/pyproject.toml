@@ -1,0 +1,20 @@
+[project]
+name = "drone-sim-gazebo"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "drone-sim-artifacts",
+]
+
+[project.scripts]
+drone-sim-gazebo-runtime = "drone_sim_gazebo.runtime.runtime_node:main"
+
+[tool.uv.sources]
+drone-sim-artifacts = { workspace = true }
+
+[tool.setuptools]
+packages = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

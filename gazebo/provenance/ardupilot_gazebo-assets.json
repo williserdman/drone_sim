@@ -1,0 +1,72 @@
+{
+  "origin": "https://github.com/ArduPilot/ardupilot_gazebo",
+  "revision": "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5",
+  "files": [
+    {
+      "source_path": "LICENSE.md",
+      "imported_path": "gazebo/provenance/LICENSE.ardupilot_gazebo.md",
+      "sha256": "1a45b1d0a8603dfe2cfc644f9dab970b1762f92babe2aac6eb2f5d4572c4a680",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/model.config",
+      "imported_path": "gazebo/provenance/upstream/iris_with_standoffs/model.config",
+      "sha256": "e419cc7681f730edf14398baa577a4f05cd34e2cebaa764c508119c4465b34b7",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/model.sdf",
+      "imported_path": "gazebo/provenance/upstream/iris_with_standoffs/model.sdf",
+      "sha256": "2c4e8ccf4385f329af905cce1cbceff96656da4ace9353c0ec6ca09df3c442d0",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris.dae",
+      "imported_path": "gazebo/provenance/upstream/iris_with_standoffs/meshes/iris.dae",
+      "sha256": "697956cfc0fe608afc52a0f688de50354b89e5201056451cf6bb767de8f46323",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris.dae",
+      "imported_path": "gazebo/resources/models/iris_phase3/meshes/iris.dae",
+      "sha256": "697956cfc0fe608afc52a0f688de50354b89e5201056451cf6bb767de8f46323",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris_collision.stl",
+      "imported_path": "gazebo/provenance/upstream/iris_with_standoffs/meshes/iris_collision.stl",
+      "sha256": "66b85caa021497ea73dbaed08c72da381a6157116244ea3860a1ba445f50102c",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris_collision.stl",
+      "imported_path": "gazebo/resources/models/iris_phase3/meshes/iris_collision.stl",
+      "sha256": "66b85caa021497ea73dbaed08c72da381a6157116244ea3860a1ba445f50102c",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris_prop_ccw.dae",
+      "imported_path": "gazebo/provenance/upstream/iris_with_standoffs/meshes/iris_prop_ccw.dae",
+      "sha256": "5f8b01668ee24a5b663ca8c4dd56e294fd6480db7eec1e5a7c11e45ba9004e99",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris_prop_ccw.dae",
+      "imported_path": "gazebo/resources/models/iris_phase3/meshes/iris_prop_ccw.dae",
+      "sha256": "5f8b01668ee24a5b663ca8c4dd56e294fd6480db7eec1e5a7c11e45ba9004e99",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris_prop_cw.dae",
+      "imported_path": "gazebo/provenance/upstream/iris_with_standoffs/meshes/iris_prop_cw.dae",
+      "sha256": "6cbc686772dccd46253fb65ece000e7ffa6a74b9c097bda349884bd1e78cd879",
+      "license": "LGPL-3.0-only"
+    },
+    {
+      "source_path": "models/iris_with_standoffs/meshes/iris_prop_cw.dae",
+      "imported_path": "gazebo/resources/models/iris_phase3/meshes/iris_prop_cw.dae",
+      "sha256": "6cbc686772dccd46253fb65ece000e7ffa6a74b9c097bda349884bd1e78cd879",
+      "license": "LGPL-3.0-only"
+    }
+  ]
+}
