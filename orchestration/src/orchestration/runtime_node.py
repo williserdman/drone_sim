@@ -105,6 +105,29 @@ class RunStateTransportBarrier:
         return False
 
 
+def start_runtime_after_transport_barrier(
+    *,
+    barrier: RunStateTransportBarrier,
+    subscribers: Callable[[], Iterable[RunStateSubscriber]],
+    finalize_requested: Callable[[], bool],
+    monotonic: Callable[[], float],
+    spin_once: Callable[[], None],
+    runtime_start: Callable[[], None],
+    runtime_ok: Callable[[], bool],
+) -> bool:
+    """Cross the infrastructure barrier before the first lifecycle publish."""
+    while runtime_ok():
+        if barrier.poll(
+            subscribers(), now=monotonic(), finalizing=finalize_requested()
+        ):
+            runtime_start()
+            return True
+        if barrier.failed or barrier.preempted:
+            return False
+        spin_once()
+    return False
+
+
 class OrchestrationRuntime:
     """Small deterministic lifecycle core; ROS and polling remain adapters."""
 
@@ -328,17 +351,18 @@ def main() -> None:
             },
         ),
     )
-    while rclpy.ok():
-        finalizing = protocol.read_finalize_request() is not None
-        if startup_barrier.poll(
-            run_state_subscribers(), now=time.monotonic(), finalizing=finalizing
-        ):
-            break
-        if startup_barrier.failed or startup_barrier.preempted:
-            break
-        rclpy.spin_once(node, timeout_sec=0.05)
-    runtime.start()
     try:
+        started = start_runtime_after_transport_barrier(
+            barrier=startup_barrier,
+            subscribers=run_state_subscribers,
+            finalize_requested=lambda: protocol.read_finalize_request() is not None,
+            monotonic=time.monotonic,
+            spin_once=lambda: rclpy.spin_once(node, timeout_sec=0.05),
+            runtime_start=runtime.start,
+            runtime_ok=rclpy.ok,
+        )
+        if not started:
+            return
         while rclpy.ok() and not runtime.poll():
             rclpy.spin_once(node, timeout_sec=0.05)
     finally:
@@ -356,5 +380,6 @@ __all__ = [
     "RunStateSubscriber",
     "RunStateTransportBarrier",
     "RuntimeStateEvent",
+    "start_runtime_after_transport_barrier",
     "main",
 ]

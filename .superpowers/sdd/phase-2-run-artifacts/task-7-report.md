@@ -130,6 +130,45 @@ orchestration
 and synthetic Phase 2
 `sha256:1a9449e8d53c6939bf25bc22741e6612f3907601f6e4d0a5c06422feb71fb138`.
 
+## Review fix round 2/5
+
+Re-review found two remaining races. First, a rosbag process could exit after
+`FINALIZING` was observed but before aggregate freeze, when the main loop had
+stopped health polling. The finalizer also treated an already-exited process as
+an ordinary successful stop. Second, timeout or finalize preemption at the
+pre-STARTING endpoint barrier still fell through to `runtime.start()`.
+
+TDD RED evidence:
+
+- the three orchestration adapter-path tests failed collection because the
+  barrier-owned start helper did not exist;
+- the five recorder regressions failed with missing shutdown-origin facts or
+  incorrectly returned `artifacts-final complete=true` after premature death.
+
+`RecorderFinalization.shutdown_requested` now distinguishes a process observed
+dead before host shutdown from a process whose shutdown sequence was actually
+entered, including the expected signal-delivery race. Aggregate health polling
+continues after a terminal request until recorder finalization starts. A bag
+death in that interval writes durable first-wins failure evidence; after freeze,
+surviving videos are finalized, bag validation/report publication is blocked,
+and the process follows the existing silent deadline/teardown path. The
+finalizer repeats the liveness/origin check at its own boundary, closing the
+last-check race without misclassifying expected SIGINT/TERM/KILL handling.
+
+The orchestration adapter now delegates endpoint waiting and the first lifecycle
+publication to `start_runtime_after_transport_barrier`. Timeout, durable failure,
+finalize/abort preemption, or runtime shutdown returns without publishing
+`STARTING`, while exact seven-endpoint readiness starts exactly once. Cleanup
+remains in the adapter `finally` block.
+
+Round-2 verification:
+
+- new regressions: `9 passed`;
+- focused recorder/orchestration suites: `70 passed, 4 skipped`;
+- combined host gate (`artifacts/tests orchestration/tests tests/contracts`
+  plus the Phase 2 runtime contract): `551 passed, 10 skipped`;
+- complete repository gate: `569 passed, 10 skipped`.
+
 ## Self-review and Task 8 concerns
 
 The runtime protocol remains policy-free below lifecycle modules; artifacts does

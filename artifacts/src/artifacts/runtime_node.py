@@ -199,6 +199,7 @@ class AggregateArtifactsRuntime:
         self._terminal = False
         self.finalization_started = False
         self.finalization_blocked = False
+        self._premature_bag_exit = False
 
     def report_failure(self, reason: str, diagnostic_paths: list[str]) -> None:
         if self._failure_written:
@@ -227,9 +228,8 @@ class AggregateArtifactsRuntime:
         if not self.started or self.finalization_blocked:
             return False
         if not self.bag_recorder.is_alive:
-            self.report_failure(
-                "rosbag recorder exited after recorder readiness",
-                ["logs/docker/rosbag2.log.partial"],
+            self._report_premature_bag_exit(
+                "rosbag recorder exited after recorder readiness"
             )
             return False
         for stream in ("onboard", "observer"):
@@ -240,6 +240,10 @@ class AggregateArtifactsRuntime:
                 )
                 return False
         return True
+
+    def _report_premature_bag_exit(self, reason: str) -> None:
+        self._premature_bag_exit = True
+        self.report_failure(reason, ["logs/docker/rosbag2.log.partial"])
 
     def start(self, *, deadline: float) -> bool:
         if self.started:
@@ -401,6 +405,10 @@ class AggregateArtifactsRuntime:
         if self.protocol.read_status("runtime-frozen") is None:
             return None
         self.finalization_started = True
+        if not self.bag_recorder.is_alive:
+            self._report_premature_bag_exit(
+                "rosbag recorder exited before shutdown was requested"
+            )
         for recorder in self.video_node.recorders.values():
             freeze = getattr(recorder, "freeze", None)
             if freeze is not None:
@@ -413,6 +421,9 @@ class AggregateArtifactsRuntime:
                     f"{stream} recorder finalization failed: {type(error).__name__}: {error}",
                     [f"logs/docker/ffmpeg-{stream}.log.partial"],
                 )
+        if self._premature_bag_exit:
+            self.finalization_blocked = True
+            return None
         try:
             bag_finalization = self.bag_recorder.finalize(deadline)
         except Exception as error:
@@ -426,6 +437,12 @@ class AggregateArtifactsRuntime:
             self.report_failure(
                 f"bag recorder finalization failed: {bag_finalization.detail}",
                 ["logs/docker/rosbag2.log.partial"],
+            )
+            self.finalization_blocked = True
+            return None
+        if not bag_finalization.shutdown_requested:
+            self._report_premature_bag_exit(
+                "bag recorder finalization failed: recorder exited before shutdown was requested"
             )
             self.finalization_blocked = True
             return None
@@ -660,7 +677,7 @@ def main() -> None:
                 runtime.check_ready(node)
                 if runtime.ready:
                     emit_log("ready")
-            elif requested_outcome is None:
+            elif not runtime.finalization_started:
                 runtime.check_health()
             if requested_outcome is not None and finalization_deadline is not None:
                 report = runtime.finalize(requested_outcome, deadline=finalization_deadline)

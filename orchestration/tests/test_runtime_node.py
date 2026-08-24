@@ -7,6 +7,7 @@ from orchestration.runtime_node import (
     RunStateSubscriber,
     RunStateTransportBarrier,
     RuntimeStateEvent,
+    start_runtime_after_transport_barrier,
 )
 
 
@@ -120,6 +121,63 @@ def test_run_state_transport_barrier_finalize_preempts_without_failure():
     assert barrier.preempted is True
     assert barrier.poll(_required_subscribers(), now=2.0, finalizing=False) is False
     assert failures == []
+
+
+def test_main_path_does_not_start_runtime_after_transport_timeout():
+    failures = []
+    started = []
+    barrier = RunStateTransportBarrier(deadline=1.0, failure=failures.append)
+
+    result = start_runtime_after_transport_barrier(
+        barrier=barrier,
+        subscribers=lambda: _required_subscribers()[:6],
+        finalize_requested=lambda: False,
+        monotonic=lambda: 1.0,
+        spin_once=lambda: None,
+        runtime_start=lambda: started.append("STARTING"),
+        runtime_ok=lambda: True,
+    )
+
+    assert result is False
+    assert started == []
+    assert failures == ["run-state transport discovery deadline expired"]
+
+
+def test_main_path_does_not_start_runtime_after_finalize_preemption():
+    started = []
+    barrier = RunStateTransportBarrier(deadline=10.0, failure=lambda _reason: None)
+
+    result = start_runtime_after_transport_barrier(
+        barrier=barrier,
+        subscribers=_required_subscribers,
+        finalize_requested=lambda: True,
+        monotonic=lambda: 1.0,
+        spin_once=lambda: None,
+        runtime_start=lambda: started.append("STARTING"),
+        runtime_ok=lambda: True,
+    )
+
+    assert result is False
+    assert started == []
+    assert barrier.preempted is True
+
+
+def test_main_path_starts_once_only_after_exact_transport_readiness():
+    started = []
+    barrier = RunStateTransportBarrier(deadline=10.0, failure=lambda _reason: None)
+
+    result = start_runtime_after_transport_barrier(
+        barrier=barrier,
+        subscribers=_required_subscribers,
+        finalize_requested=lambda: False,
+        monotonic=lambda: 1.0,
+        spin_once=lambda: None,
+        runtime_start=lambda: started.append("STARTING"),
+        runtime_ok=lambda: True,
+    )
+
+    assert result is True
+    assert started == ["STARTING"]
 
 
 def test_starting_ready_running_order_and_exact_first_clock_stamp():

@@ -86,6 +86,7 @@ class RecorderFinalization:
     signals: tuple[str, ...]
     escalated: bool
     detail: str
+    shutdown_requested: bool
 
 
 @dataclass(frozen=True)
@@ -421,12 +422,15 @@ class RosbagRecorder:
                 (),
                 False,
                 f"recorder already exited with return code {process.returncode}",
+                False,
             )
 
+        shutdown_requested = False
         shutdown_signals = (signal.SIGINT, signal.SIGTERM, signal.SIGKILL)
         for index, signum in enumerate(shutdown_signals):
             if process.poll() is not None:
                 break
+            shutdown_requested = True
             try:
                 self._signal_sender(process, signum)
             except ProcessLookupError:
@@ -457,6 +461,7 @@ class RosbagRecorder:
             tuple(signals_sent),
             len(signals_sent) > 1,
             detail,
+            shutdown_requested,
         )
 
 

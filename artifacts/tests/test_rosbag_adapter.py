@@ -174,6 +174,48 @@ def test_process_health_detects_premature_recorder_exit_without_graph_access(tmp
     assert recorder.is_alive is False
 
 
+def test_finalize_marks_a_recorder_that_already_exited_as_not_shutdown_requested(tmp_path):
+    process = FakeProcess()
+    recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(process))
+    recorder.start()
+    process.returncode = 0
+
+    result = recorder.finalize(deadline=10.0)
+
+    assert result.exited is True
+    assert result.returncode == 0
+    assert result.shutdown_requested is False
+
+
+def test_finalize_marks_exit_between_health_check_and_first_signal_as_premature(tmp_path):
+    class ExitBeforeSignalProcess(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.poll_count = 0
+
+        def poll(self):
+            self.poll_count += 1
+            if self.poll_count == 1:
+                return None
+            self.returncode = 0
+            return self.returncode
+
+    process = ExitBeforeSignalProcess()
+    signals = []
+    recorder = _recorder(
+        tmp_path,
+        process_factory=FakeProcessFactory(process),
+        signal_sender=lambda proc, signum: signals.append(signum),
+    )
+    recorder.start()
+
+    result = recorder.finalize(deadline=10.0)
+
+    assert result.exited is True
+    assert result.shutdown_requested is False
+    assert signals == []
+
+
 @pytest.mark.parametrize("symlink_component", ["logs", "docker", "log-file"])
 def test_start_rejects_symlinked_log_path_without_writing_outside_run(
     tmp_path,
@@ -326,6 +368,7 @@ def test_finalize_sends_only_sigint_when_recorder_exits_gracefully(tmp_path):
     assert result.exited is True
     assert result.returncode == 0
     assert result.signals == ("SIGINT",)
+    assert result.shutdown_requested is True
     assert result.escalated is False
     assert sum(process.wait_timeouts) <= 9.0
 
@@ -376,6 +419,7 @@ def test_finalize_reports_exit_when_process_ends_during_signal_race(tmp_path):
     assert result.exited is True
     assert result.returncode == 0
     assert result.signals == ()
+    assert result.shutdown_requested is True
 
 
 def _stamp(ns):

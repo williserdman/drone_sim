@@ -48,7 +48,10 @@ class FakeBag:
     def finalize(self, deadline):
         self.finalize_deadlines.append(deadline)
         return self.finalization or SimpleNamespace(
-            exited=True, returncode=0, detail="bag finalized"
+            exited=True,
+            returncode=0,
+            detail="bag finalized",
+            shutdown_requested=True,
         )
 
 
@@ -421,3 +424,65 @@ def test_stubborn_rosbag_never_publishes_final_report_or_runs_validators(tmp_pat
     assert not any(name == "artifacts-final" for name, _document in protocol.statuses)
     assert protocol.statuses[-1][0] == "runtime-failure"
     assert "did not exit" in protocol.statuses[-1][1]["reason"]
+
+
+def test_rosbag_death_after_finalizing_before_aggregate_freeze_blocks_success(tmp_path):
+    bag_validator = FakeBagValidator()
+    video_validators = {
+        "onboard": FakeVideoValidator("onboard"),
+        "observer": FakeVideoValidator("observer"),
+    }
+    runtime, protocol, bag, video, _ = _runtime(
+        tmp_path,
+        bag_validator=bag_validator,
+        video_validators=video_validators,
+    )
+    runtime.start(deadline=5.0)
+    assert runtime.check_ready("graph") is True
+
+    # FINALIZING has been requested, but orchestration has not yet published
+    # the aggregate freeze. The recorder dies in that exact wait window.
+    bag.ready = False
+    assert runtime.check_health() is False
+    assert protocol.statuses[-1] == (
+        "runtime-failure",
+        {
+            "run_id": RUN_ID,
+            "module": "artifacts",
+            "reason": "rosbag recorder exited after recorder readiness",
+            "diagnostic_paths": ["logs/docker/rosbag2.log.partial"],
+        },
+    )
+    assert runtime.finalize("COMPLETED", deadline=99.0) is None
+    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+    assert runtime.finalize("COMPLETED", deadline=99.0) is None
+
+    assert runtime.finalization_started is True
+    assert runtime.finalization_blocked is True
+    assert bag.finalize_deadlines == []
+    assert all(stream.finalize_calls == [(99.0, "COMPLETED")] for stream in video.recorders.values())
+    assert bag_validator.calls == []
+    assert all(validator.calls == [] for validator in video_validators.values())
+    assert not any(name == "artifacts-final" for name, _document in protocol.statuses)
+
+
+def test_rosbag_exit_racing_expected_shutdown_blocks_final_report(tmp_path):
+    premature = SimpleNamespace(
+        exited=True,
+        returncode=0,
+        detail="recorder already exited with return code 0",
+        shutdown_requested=False,
+    )
+    runtime, protocol, bag, _, _ = _runtime(
+        tmp_path, bag=FakeBag(finalization=premature)
+    )
+    runtime.start(deadline=5.0)
+    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+
+    assert runtime.finalize("COMPLETED", deadline=99.0) is None
+
+    assert bag.finalize_deadlines == [99.0]
+    assert runtime.finalization_blocked is True
+    assert protocol.statuses[-1][0] == "runtime-failure"
+    assert "before shutdown was requested" in protocol.statuses[-1][1]["reason"]
+    assert not any(name == "artifacts-final" for name, _document in protocol.statuses)
