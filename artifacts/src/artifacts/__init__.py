@@ -32,6 +32,10 @@ from ._adapters.video import (
     VideoValidator,
 )
 from .recorder_node import VideoRecorderNode
+from .runtime_configuration import (
+    RecordingRuntimeConfig,
+    resolve_recording_runtime_config,
+)
 from .session import (
     ArtifactSession,
     FinalizationConflict,
@@ -43,6 +47,8 @@ from .validation import (
     ValidationResult,
     ValidationStatus,
     read_regular_file_bytes,
+    validate_gazebo_state,
+    validate_nonempty_regular_file,
     validate_regular_file,
     validate_tree,
 )
@@ -64,6 +70,7 @@ __all__ = [
     "ImageDigest",
     "RunManifest",
     "RecorderFinalization",
+    "RecordingRuntimeConfig",
     "RosbagRecorder",
     "RosbagTopicDiagnostic",
     "RosbagValidationResult",
@@ -79,6 +86,9 @@ __all__ = [
     "VideoValidationResult",
     "VideoValidator",
     "read_regular_file_bytes",
+    "resolve_recording_runtime_config",
+    "validate_gazebo_state",
+    "validate_nonempty_regular_file",
     "validate_regular_file",
     "validate_tree",
     "write_event",

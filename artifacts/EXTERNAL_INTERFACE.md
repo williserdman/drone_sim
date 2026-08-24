@@ -33,6 +33,11 @@ current canonical `run_id`, `stream="aggregate"`, contiguous `frame_id=N`, and
 1. This acknowledgement is intentionally absent from the fixed ten-topic bag
 inventory and models neither camera latency nor simulation time.
 
+For every non-Phase-2 physical profile, the artifact runtime derives the exact
+camera count from `simulation.duration_sim_seconds * 20` on the 50 ms grid.
+It neither creates nor discovers `/simulation/camera_pair_ack`; recorder
+readiness and physics advancement are independent of that synthetic transport.
+
 ## Outputs
 
 - Aggregate recorder readiness and final completeness on
@@ -55,6 +60,11 @@ The required bundle inventory is fixed as `configuration/`,
 `video/observer.mp4`, `rosbag/`, one JSONL log for each of orchestration,
 artifacts, companion, ArduPilot SITL, Gazebo, electromagnet, and scorekeeper,
 plus `scoring/events.jsonl` and `scoring/result.json`.
+For a physical profile, the coordinator constructs `ArtifactSession` with
+`physical_gazebo=true`: `gazebo/server.log` must then be nonempty, and
+`gazebo/state/` must be a nonempty safe tree containing a nonempty regular
+`state.tlog`. The default preserves the Phase 2 synthetic-state contract;
+placeholders cannot satisfy completed physical-run validation.
 
 Every owned process log line has `run_id`, `module`, `severity`, `event`,
 `sim_timestamp`, and `wall_timestamp`; event-specific values are nested under

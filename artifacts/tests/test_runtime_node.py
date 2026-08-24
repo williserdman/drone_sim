@@ -167,9 +167,31 @@ def _runtime(tmp_path, **changes):
         bag_validator=FakeBagValidator(),
         publish=published.append,
         monotonic=lambda: 0.0,
+        expected_camera_frames=changes.pop("expected_camera_frames", 40),
     )
     values.update(changes)
     return AggregateArtifactsRuntime(**values), protocol, bag, video, published
+
+
+def test_physical_runtime_validates_configured_camera_count(tmp_path):
+    """Keeping the legacy 40 literal would reject a complete production recording."""
+    validators = {
+        "onboard": FakeVideoValidator("onboard"),
+        "observer": FakeVideoValidator("observer"),
+    }
+    runtime, protocol, _, _, _ = _runtime(
+        tmp_path,
+        expected_camera_frames=600,
+        video_validators=validators,
+    )
+    runtime.start(deadline=5.0)
+    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+
+    assert runtime.finalize("COMPLETED", deadline=99.0)["complete"] is True
+    assert all(
+        validator.calls[0][2]["expected_frame_count"] == 600
+        for validator in validators.values()
+    )
 
 
 def test_startup_claims_ready_only_when_every_recorder_and_graph_endpoint_is_ready(tmp_path):

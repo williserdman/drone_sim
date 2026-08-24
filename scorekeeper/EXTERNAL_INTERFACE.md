@@ -16,13 +16,25 @@ Inputs carry `run_id`, simulation timestamps, and stable state or event identiti
 The module emits run-scoped `simulation_interfaces/msg/ScoreEvent` messages on
 `/simulation/score_events` using reliable QoS depth 100, plus final results and
 incomplete-run diagnostics. The final result contains achieved score, maximum
-available score, scoring-configuration checksum, and evidence references. It
+available score, `ruleset_id=descent_v1`, scoring-configuration checksum, and
+safe evidence references. It
 is persisted as `scoring/result.json` and is read-only with respect to the
 simulated aircraft.
 
 ## Ordering and failure behavior
 
-Inputs are correlated by run and simulation time. Duplicate event identities are idempotently ignored. Late or out-of-order data follows a documented buffering policy before results are finalized. Missing required inputs mark a run incomplete rather than causing corrective control.
+Ground-truth samples are accepted in exact 50,000,000 ns order for one canonical
+run ID. The first duplicate, regression, or gap permanently marks the result
+incomplete; a later suffix cannot repair it. Missing required input likewise
+marks a run incomplete rather than causing corrective control.
+
+The committed `rules/descent_v1.json` has maximum 100 and freezes a safe
+pre-impact downward-speed threshold of 1.0 m/s. The scorekeeper emits exactly
+four ordered rule events (`descent.airborne_then_contact`,
+`descent.touchdown_precision`, `descent.safe_preimpact_speed`, and
+`descent.stable_contact`) followed by `score.finalized`. It persists the same
+five events as JSONL and exposes a narrow immutable finished-status document
+for the production ROS/lifecycle adapter.
 
 For Phase 2 synthetic finalization, the fixture publisher persists its scoring
 files, stops output, then writes `.status/quiescence/scorekeeper.json` with
@@ -36,5 +48,5 @@ The scorekeeper exposes no command, mode, actuator, force, constraint, pose, vel
 
 ## Deferred decisions
 
-- Event buffering and result-finalization window
-- Result fields beyond the fixed scoring summary
+- Broader competition or active-electromagnet rulesets
+- Optional diagnostic telemetry beyond authoritative ground truth

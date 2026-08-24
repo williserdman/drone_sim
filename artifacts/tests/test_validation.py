@@ -8,8 +8,43 @@ from artifacts.validation import (
     ValidationResult,
     ValidationStatus,
     validate_regular_file,
+    validate_nonempty_regular_file,
+    validate_gazebo_state,
     validate_tree,
 )
+
+
+def test_validate_nonempty_regular_file_rejects_empty_server_log(tmp_path):
+    """An empty Gazebo log cannot prove that the physical server started."""
+    path = tmp_path / "gazebo/server.log"
+    path.parent.mkdir()
+    path.write_bytes(b"")
+
+    assert validate_nonempty_regular_file(tmp_path, "gazebo/server.log") == ValidationResult(
+        ValidationStatus.INVALID, None, None, "regular file is empty"
+    )
+
+
+def test_validate_gazebo_state_requires_nonempty_native_state_tlog(tmp_path):
+    """An unrelated file must not satisfy the native Gazebo state requirement."""
+    state = tmp_path / "gazebo/state"
+    state.mkdir(parents=True)
+    (state / "metadata.txt").write_text("not native state", encoding="utf-8")
+
+    assert validate_gazebo_state(tmp_path, "gazebo/state") == ValidationResult(
+        ValidationStatus.INVALID, None, None, "gazebo state requires nonempty state.tlog"
+    )
+
+
+def test_validate_gazebo_state_returns_tree_inventory_for_native_state(tmp_path):
+    """A real state.tlog should retain the canonical whole-tree checksum contract."""
+    state = tmp_path / "gazebo/state"
+    state.mkdir(parents=True)
+    (state / "state.tlog").write_bytes(b"native gazebo state")
+
+    assert validate_gazebo_state(tmp_path, "gazebo/state") == validate_tree(
+        tmp_path, "gazebo/state"
+    )
 
 
 def test_validation_result_is_immutable():

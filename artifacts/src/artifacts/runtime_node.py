@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Protocol
 from ._adapters.rosbag import RosbagRecorder, RosbagValidator
 from ._adapters.video import VideoStreamRecorder, VideoValidator
 from .recorder_node import VideoRecorderNode
+from .runtime_configuration import resolve_recording_runtime_config
 from .runtime_protocol import RuntimeProtocol, canonical_run_id
 from .structured_log import StructuredEvent, write_event
 from .validation import ValidationStatus
@@ -177,6 +178,7 @@ class AggregateArtifactsRuntime:
         monotonic: Callable[[], float] = time.monotonic,
         backpressure_ready: Callable[[Any], bool] = lambda _graph: True,
         lifecycle_ready: Callable[[], bool] = lambda: True,
+        expected_camera_frames: int = 40,
     ) -> None:
         self.run_directory = Path(run_directory)
         self.run_id = canonical_run_id(run_id)
@@ -184,6 +186,12 @@ class AggregateArtifactsRuntime:
             raise ValueError("SIM_PHASE2_FAULT is not one of the accepted Phase 2 faults")
         if set(video_validators) != {"onboard", "observer"}:
             raise ValueError("video validators must contain onboard and observer")
+        if (
+            not isinstance(expected_camera_frames, int)
+            or isinstance(expected_camera_frames, bool)
+            or expected_camera_frames <= 0
+        ):
+            raise ValueError("expected_camera_frames must be a positive integer")
         self.protocol = protocol
         self.bag_recorder = bag_recorder
         self.video_node = video_node
@@ -194,6 +202,7 @@ class AggregateArtifactsRuntime:
         self.monotonic = monotonic
         self.backpressure_ready = backpressure_ready
         self.lifecycle_ready = lifecycle_ready
+        self.expected_camera_frames = expected_camera_frames
         self.started = False
         self.ready = False
         self._initial_status_published = False
@@ -379,7 +388,7 @@ class AggregateArtifactsRuntime:
             result = self.video_validators[stream].validate(
                 self.run_directory,
                 f"video/{stream}.mp4",
-                expected_frame_count=40,
+                expected_frame_count=self.expected_camera_frames,
                 outcome=outcome,
                 deadline=deadline,
             )
@@ -550,6 +559,7 @@ def main() -> None:
     run_id = os.environ["SIM_RUN_ID"]
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"])
     config = json.loads(Path(os.environ["SIM_CONFIG_PATH"]).read_text(encoding="utf-8"))
+    recording_contract = resolve_recording_runtime_config(config)
     fault = os.environ.get("SIM_PHASE2_FAULT", "")
     finalization_seconds = float(config["finalization_wall_seconds"])
     protocol = RuntimeProtocol(run_directory, run_id)
@@ -561,15 +571,17 @@ def main() -> None:
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
     )
     publisher = node.create_publisher(ArtifactStatus, "/simulation/artifact_status", qos)
-    pair_ack_publisher = node.create_publisher(
-        FrameMetadata,
-        "/simulation/camera_pair_ack",
-        QoSProfile(
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        ),
-    )
+    pair_ack_publisher = None
+    if recording_contract.synthetic_camera_ack:
+        pair_ack_publisher = node.create_publisher(
+            FrameMetadata,
+            "/simulation/camera_pair_ack",
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
 
     def camera_recorder_qos() -> QoSProfile:
         return QoSProfile(
@@ -621,6 +633,8 @@ def main() -> None:
             sim_timestamp_ns=timestamp_ns,
         )
         paired_frames[stream] = frame_id
+        if pair_ack_publisher is None:
+            return
         confirmed = min(paired_frames.values())
         if confirmed <= last_pair_ack:
             return
@@ -648,7 +662,7 @@ def main() -> None:
             run,
             run_id=configured_run_id,
             stream=stream,
-            expected_frame_count=40,
+            expected_frame_count=recording_contract.expected_camera_frames,
             diagnostic_sink=errors,
         )
         return FaultAwareRecorder(
@@ -656,7 +670,7 @@ def main() -> None:
             stream=stream,
             fault=fault,
             failure=report_failure,
-            pair_buffer_limit=40,
+            pair_buffer_limit=recording_contract.expected_camera_frames,
             paired=paired,
             received=lambda configured_stream, kind, message: emit_log(
                 "camera_message_received",
@@ -675,7 +689,7 @@ def main() -> None:
     video_node = VideoRecorderNode(
         run_directory,
         run_id,
-        expected_frame_count=40,
+        expected_frame_count=recording_contract.expected_camera_frames,
         node_backend=node,
         recorder_factory=recorder_factory,
         qos_factory=camera_recorder_qos,
@@ -691,14 +705,19 @@ def main() -> None:
         bag_recorder=RosbagRecorder(run_directory),
         video_node=video_node,
         video_validators={"onboard": VideoValidator(), "observer": VideoValidator()},
-        bag_validator=RosbagValidator(run_id),
+        bag_validator=RosbagValidator(
+            run_id,
+            expected_camera_frames=recording_contract.expected_camera_frames,
+        ),
         publish=publish,
         fault=fault,
-        backpressure_ready=lambda graph: graph.count_subscribers(
-            "/simulation/camera_pair_ack"
-        )
-        >= 1,
+        backpressure_ready=(
+            (lambda graph: graph.count_subscribers("/simulation/camera_pair_ack") >= 1)
+            if recording_contract.synthetic_camera_ack
+            else (lambda _graph: True)
+        ),
         lifecycle_ready=lambda: saw_current_run_starting,
+        expected_camera_frames=recording_contract.expected_camera_frames,
     )
     runtime_ref.append(runtime)
 

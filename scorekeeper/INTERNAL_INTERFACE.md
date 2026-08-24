@@ -1,6 +1,14 @@
 # Scorekeeper Internal Interface
 
-No same-process sibling interface exists initially.
+`drone_sim_scorekeeper.descent` is the pure same-process policy interface.
+`GroundTruthSample`, `DescentRules`, rule results, score events, and the final
+result are immutable. `DescentScorer.accept()` consumes one ordered sample and
+`finalize()` returns an idempotent result without any ROS, control, or physics
+dependency. Construction requires the config-derived expected ground-truth
+sample count; a contiguous but truncated sequence is incomplete just like a
+gap or overrun.
 
-Future scoring-policy submodules may expose pure language-native interfaces that accept immutable event and ground-truth values and return score changes without controlling external state.
-
+`load_descent_rules(path)` checksums the exact rules bytes.
+`persist_score_outputs(run_directory, result)` creates, never overwrites,
+`scoring/events.jsonl` and `scoring/result.json`. The result's
+`finished_status()` payload is the integration seam for a later runtime node.

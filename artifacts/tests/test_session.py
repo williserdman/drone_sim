@@ -32,10 +32,37 @@ def _write(run_dir, relative_path, contents=b"artifact"):
 
 def _complete_run_directory(run_dir):
     for relative_path in REQUIRED_ARTIFACT_PATHS:
-        if relative_path in {"configuration", "gazebo/state", "rosbag"}:
+        if relative_path == "gazebo/state":
+            _write(run_dir, "gazebo/state/state.tlog")
+        elif relative_path in {"configuration", "rosbag"}:
             _write(run_dir, f"{relative_path}/content.bin")
         else:
             _write(run_dir, relative_path)
+
+
+def test_completed_manifest_rejects_nonphysical_gazebo_evidence(tmp_path):
+    """Generic nonempty files must not allow a false completed physical bundle."""
+    _complete_run_directory(tmp_path)
+    (tmp_path / "gazebo/server.log").write_bytes(b"")
+    (tmp_path / "gazebo/state/state.tlog").unlink()
+    _write(tmp_path, "gazebo/state/unrelated.bin")
+
+    path = ArtifactSession(tmp_path, physical_gazebo=True).finalize(_finalization_input())
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+
+    assert manifest["terminal_status"] == "FAILED"
+    assert manifest["incomplete_paths"] == ["gazebo/server.log", "gazebo/state"]
+
+
+def test_default_session_preserves_phase2_synthetic_gazebo_evidence(tmp_path):
+    """Native state validation must not retroactively invalidate Phase 2 fixtures."""
+    _complete_run_directory(tmp_path)
+    (tmp_path / "gazebo/state/state.tlog").unlink()
+    _write(tmp_path, "gazebo/state/synthetic-state.json")
+
+    path = ArtifactSession(tmp_path).finalize(_finalization_input())
+
+    assert json.loads(path.read_text(encoding="utf-8"))["terminal_status"] == "COMPLETED"
 
 
 def _finalization_input(**changes):

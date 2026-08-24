@@ -24,6 +24,8 @@ from .manifest import (
 from .validation import (
     ValidationResult,
     ValidationStatus,
+    validate_gazebo_state,
+    validate_nonempty_regular_file,
     validate_regular_file,
     validate_tree,
 )
@@ -81,10 +83,14 @@ class ArtifactSession:
         *,
         deadline_check: DeadlineCheck | None = None,
         commit_deadline_check: DeadlineCheck | None = None,
+        physical_gazebo: bool = False,
     ) -> None:
+        if not isinstance(physical_gazebo, bool):
+            raise TypeError("physical_gazebo must be a boolean")
         self.run_directory = Path(run_directory)
         self._deadline_check = deadline_check
         self._commit_deadline_check = commit_deadline_check or deadline_check
+        self._physical_gazebo = physical_gazebo
         registry: dict[str, ArtifactValidator] = {
             relative_path: self._default_validator(relative_path)
             for relative_path in REQUIRED_ARTIFACT_PATHS
@@ -103,11 +109,16 @@ class ArtifactSession:
             self._deadline_check()
 
     def _default_validator(self, relative_path: str) -> ArtifactValidator:
-        validator = (
-            validate_tree
-            if relative_path in REQUIRED_DIRECTORY_PATHS
-            else validate_regular_file
-        )
+        if self._physical_gazebo and relative_path == "gazebo/server.log":
+            validator = validate_nonempty_regular_file
+        elif self._physical_gazebo and relative_path == "gazebo/state":
+            validator = validate_gazebo_state
+        else:
+            validator = (
+                validate_tree
+                if relative_path in REQUIRED_DIRECTORY_PATHS
+                else validate_regular_file
+            )
         return lambda root, path: validator(
             root, path, deadline_check=self._deadline_check
         )

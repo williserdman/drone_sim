@@ -1,0 +1,18 @@
+{
+  "ruleset_id": "descent_v1",
+  "schema_version": 1,
+  "sample_interval_ns": 50000000,
+  "marker_center_xy_m": [0.0, 0.0],
+  "rise_height_m": 0.5,
+  "touchdown_radius_m": 0.5,
+  "safe_preimpact_downward_speed_mps": 1.0,
+  "settled_duration_ns": 500000000,
+  "settled_linear_speed_mps": 0.1,
+  "settled_max_tilt_degrees": 10.0,
+  "rules": [
+    {"id": "airborne_then_contact", "points": 20.0},
+    {"id": "touchdown_precision", "points": 40.0},
+    {"id": "safe_preimpact_speed", "points": 20.0},
+    {"id": "stable_contact", "points": 20.0}
+  ]
+}

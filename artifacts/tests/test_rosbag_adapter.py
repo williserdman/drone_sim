@@ -552,6 +552,38 @@ def test_valid_bag_returns_immutable_topic_count_type_and_timestamp_diagnostics(
         result.topics[0].message_count = 2
 
 
+def test_physical_bag_requires_configured_camera_and_ground_truth_count(tmp_path):
+    """A short but contiguous bag must not satisfy a longer production run."""
+    _bag_directory(tmp_path)
+    backend = FakeBagBackend()
+
+    result = RosbagValidator(
+        RUN_ID, backend=backend, expected_camera_frames=2
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.INVALID
+    assert "configured frame count" in result.detail
+
+
+def test_physical_bag_requires_ground_truth_aligned_to_both_cameras(tmp_path):
+    """Matching only one camera could hide cross-stream physical evidence loss."""
+    _bag_directory(tmp_path)
+    messages = _valid_messages()
+    messages[9] = replace(messages[9], message=_image(50_000_000))
+    messages[10] = replace(
+        messages[10],
+        message=_custom_message(50_000_000, frame_id=0, stream="observer"),
+    )
+    backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
+
+    result = RosbagValidator(
+        RUN_ID, backend=backend, expected_camera_frames=1
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.INVALID
+    assert "aligned" in result.detail
+
+
 def test_validation_rejects_bag_mutated_during_semantic_read(tmp_path):
     bag = _bag_directory(tmp_path)
     before = validate_tree(tmp_path, "rosbag")

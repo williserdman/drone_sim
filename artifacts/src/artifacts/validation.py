@@ -327,6 +327,23 @@ def validate_regular_file(
             os.close(descriptor)
 
 
+def validate_nonempty_regular_file(
+    run_directory: Path | str,
+    relative_path: Path | str,
+    *,
+    deadline_check: DeadlineCheck | None = None,
+) -> ValidationResult:
+    """Validate a required evidence file and reject a zero-byte placeholder."""
+    result = validate_regular_file(
+        run_directory, relative_path, deadline_check=deadline_check
+    )
+    if result.status is ValidationStatus.VALID and result.size_bytes == 0:
+        return ValidationResult(
+            ValidationStatus.INVALID, None, None, "regular file is empty"
+        )
+    return result
+
+
 def read_regular_file_bytes(
     run_directory: Path | str,
     relative_path: Path | str,
@@ -489,3 +506,28 @@ def validate_tree(
     finally:
         for descriptor in reversed(held_descriptors):
             os.close(descriptor)
+
+
+def validate_gazebo_state(
+    run_directory: Path | str,
+    relative_path: Path | str,
+    *,
+    deadline_check: DeadlineCheck | None = None,
+) -> ValidationResult:
+    """Validate the native Gazebo state tree and its required state.tlog payload."""
+    tree = validate_tree(run_directory, relative_path, deadline_check=deadline_check)
+    if tree.status is not ValidationStatus.VALID:
+        return tree
+    state = validate_nonempty_regular_file(
+        run_directory,
+        Path(relative_path) / "state.tlog",
+        deadline_check=deadline_check,
+    )
+    if state.status is not ValidationStatus.VALID:
+        return ValidationResult(
+            ValidationStatus.INVALID,
+            None,
+            None,
+            "gazebo state requires nonempty state.tlog",
+        )
+    return tree

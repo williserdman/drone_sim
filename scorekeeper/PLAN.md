@@ -32,8 +32,14 @@ The scorekeeper consumes run configuration, ROS 2 `/clock`, Gazebo ground truth,
 - The module remains read-only with respect to flight control and physics.
 - The final result records achieved score, maximum available score, scoring-configuration checksum, and evidence for every awarded event.
 
+## Frozen vertical-slice policy
+
+`descent_v1` scores four rules for 100 points from exact contiguous 50 ms
+Gazebo ground truth. Any gap makes the result incomplete without repair. The
+rules bytes, checksum, five score events, result document, and evidence paths
+are preserved for manifest finalization.
+
 ## Deferred decisions
 
-- Scoring rules
-- Event buffering and result-finalization window
-- Result fields beyond the fixed scoring summary
+- Broader competition and active-magnet scoring rules
+- Optional diagnostic result fields beyond the frozen summary

@@ -529,11 +529,24 @@ def _timestamp_ns(stamp: Any) -> int:
 class RosbagValidator:
     """Validate a quiescent MCAP bag without changing it."""
 
-    def __init__(self, run_id: str, *, backend: BagBackend | None = None) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        *,
+        backend: BagBackend | None = None,
+        expected_camera_frames: int | None = None,
+    ) -> None:
         if not run_id:
             raise ValueError("run_id must not be empty")
+        if expected_camera_frames is not None and (
+            not isinstance(expected_camera_frames, int)
+            or isinstance(expected_camera_frames, bool)
+            or expected_camera_frames <= 0
+        ):
+            raise ValueError("expected_camera_frames must be a positive integer or None")
         self.run_id = run_id
         self._backend = backend or _Rosbag2Backend()
+        self.expected_camera_frames = expected_camera_frames
 
     @staticmethod
     def _result(
@@ -773,6 +786,33 @@ class RosbagValidator:
                     filesystem,
                     ValidationStatus.INVALID,
                     f"{stream} frame timestamps are not exactly 50 ms apart",
+                )
+
+        if self.expected_camera_frames is not None:
+            exact_topics = (
+                "/camera/onboard/image_raw",
+                "/camera/onboard/frame_metadata",
+                "/camera/observer/image_raw",
+                "/camera/observer/frame_metadata",
+                "/simulation/ground_truth",
+            )
+            if any(counts[topic] != self.expected_camera_frames for topic in exact_topics):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag camera or ground-truth count differs from configured frame count",
+                )
+            ground_truth_timestamps = timestamps["/simulation/ground_truth"]
+            if (
+                ground_truth_timestamps
+                != timestamps["/camera/onboard/frame_metadata"]
+                or ground_truth_timestamps
+                != timestamps["/camera/observer/frame_metadata"]
+            ):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag ground truth is not aligned to both configured camera streams",
                 )
 
         diagnostics = tuple(

@@ -56,6 +56,12 @@ camera-pair acknowledgement. Duplicate, malformed, missing, or excess buffered
 inputs fail closed; finalization freezes and clears the buffer without waiting
 for another acknowledgement.
 
+Physical profiles use a buffer bounded by the exact configured camera-frame
+count only to reorder the paired archival topics. They publish no pair
+acknowledgement, make no ACK discovery check, and exert no physics backpressure.
+The same configured count is passed to both video recorders and both final
+video validators.
+
 The recorder-local report has exactly three path-keyed records for the two
 videos and bag. A valid record carries the descriptor-stable byte count and
 SHA-256/tree SHA-256 returned by its semantic validator plus a nonempty
@@ -71,6 +77,9 @@ callback for required/optional validation and the second for canonical manifest
 validation and no-clobber publication. Existing callers may omit both. A work
 timeout marks the current and remaining required records invalid without
 continuing discovery or hashing; requested `ABORTED` is never upgraded.
+For physical profiles, orchestration also passes `physical_gazebo=True`; this
+selects nonempty server-log and native `state/state.tlog` validation. The
+default remains the Phase 2-compatible generic Gazebo evidence validator.
 `finalize_with_result(...)` returns a frozen `FinalizationResult` containing
 the published path and exact committed run ID, terminal status, and reason.
 That return is the authority boundary; `finalize(...)` remains the compatible
