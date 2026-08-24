@@ -90,6 +90,28 @@ def test_finalize_writes_expanded_schema_valid_manifest(tmp_path):
     assert all(record["detail"] for record in manifest["artifacts"])
 
 
+def test_finalize_deadline_check_stops_hashing_and_commits_timeout_inventory(tmp_path):
+    _complete_run_directory(tmp_path)
+    checks = 0
+
+    def deadline_check():
+        nonlocal checks
+        checks += 1
+        if checks == 5:
+            raise TimeoutError("finalization_deadline")
+
+    path = ArtifactSession(
+        tmp_path,
+        deadline_check=deadline_check,
+        commit_deadline_check=lambda: None,
+    ).finalize(_finalization_input())
+
+    assert checks == 5
+    manifest = json.loads(path.read_text())
+    assert manifest["terminal_status"] == "FAILED"
+    assert any("deadline" in record["detail"] for record in manifest["artifacts"])
+
+
 def test_requested_completion_downgrades_to_failed_when_required_path_is_missing(tmp_path):
     _complete_run_directory(tmp_path)
     (tmp_path / "video/observer.mp4").unlink()

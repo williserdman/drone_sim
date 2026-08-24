@@ -34,6 +34,26 @@ required artifacts.
 The controller converts resolved `finalization_wall_seconds` to one absolute
 deadline using a monotonic wall clock. Every finalization wait and adapter call
 receives the remaining time from that shared deadline; no step receives a fresh
-timeout. It reserves `min(5 seconds, finalization_wall_seconds / 5)` from that
-same deadline for `compose down`; earlier finalization work uses the deadline
-minus that reserve, and teardown receives the actual remaining total budget.
+timeout. It reserves two equal bounded slices of
+`min(5 seconds, finalization_wall_seconds / 5)` from that same deadline: one
+for a failure-manifest commit and one for `compose down`. Earlier validation
+and capture use the deadline minus both reserves. A work timeout marks unfinished
+artifacts invalid and attempts a `FAILED`/`ABORTED` manifest inside the manifest
+reserve; teardown receives the actual remaining total budget.
+
+Host-side log parsing, protocol reads, file/tree hashing, optional discovery,
+manifest serialization, and publication consume cooperative deadline callbacks.
+`ArtifactSession` accepts separate backward-compatible work and commit checks;
+work exhaustion stops validation and emits explicit timeout-invalid records,
+while manifest publication uses only the reserved commit slice.
+
+`ComposeRuntime` activates only the `phase2` profile with
+`COMPOSE_PROFILES=phase2`. Health observation runs exact
+`ps --all --format json` and requires the frozen seven unique service names to
+be present and running/restarting; missing, extra, duplicate, malformed,
+exited, or unhealthy rows fail closed.
+
+After a validated manifest commit, its status and reason are immutable.
+`terminal-committed`, terminal-notification, host-event output/close, and
+teardown failures append diagnostics only. Host-event output is fail-once so a
+broken stream cannot recursively prevent file evidence or finalization.

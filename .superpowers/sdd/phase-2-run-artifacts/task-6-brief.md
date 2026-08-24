@@ -75,9 +75,10 @@ SIM_RUN_ID=<uuid>
 SIM_RUN_DIRECTORY=<absolute run dir>
 SIM_CONFIG_PATH=<absolute configuration/run.json>
 SIM_PHASE2_PROFILE=1
+COMPOSE_PROFILES=phase2
 ```
 
-Implement `up`, `logs`, `stop_services`, `down`, `ps`, and `image_digests`. `up` is bounded detached startup with exact trailing arguments `up --detach --no-build`. Each operation consumes the remaining shared monotonic deadline/timeout supplied by the controller and preserves merged subprocess output. Do not use shell execution, ambient Compose discovery, host networking, privileged mode, or Docker-socket access. `logs` validates the frozen Task 5 per-service argv and augments the actual subprocess call with the explicit project directory and environment; the controller supplies a one-argument closure that recomputes remaining time before every one of the seven capture calls. Do not change raw-log bytes or ordering semantics.
+Implement `up`, `logs`, `stop_services`, `down`, `ps`, and `image_digests`. `up` is bounded detached startup with exact trailing arguments `up --detach --no-build`. `ps` is exact `ps --all --format json`; health requires all and only the seven frozen Task 7 services, uniquely named and running/restarting. Each operation consumes the remaining shared monotonic deadline/timeout supplied by the controller and preserves merged subprocess output. Do not use shell execution, ambient Compose discovery, host networking, privileged mode, or Docker-socket access. `logs` validates the frozen Task 5 per-service argv and augments the actual subprocess call with the explicit project directory/environment/profile; the controller supplies a one-argument closure that recomputes remaining time before every one of the seven capture calls. Do not change raw-log bytes or ordering semantics.
 
 ## Controller sequence and policy
 
@@ -108,11 +109,13 @@ Terminal semantics:
 - no required artifact may be modified after commit;
 - wait for `.status/terminal-notified.json`, then teardown in bounded `finally`.
 
-Reserve `min(5 seconds, finalization_wall_seconds / 5)` inside the single finalization deadline for teardown. All prior finalization work uses the shortened work deadline; `compose down` receives the actual remaining total budget. Test exhaustion before teardown and require the down attempt still occurs.
+Reserve two equal bounded slices of `min(5 seconds, finalization_wall_seconds / 5)` inside the single finalization deadline: one for a failure-manifest commit and one for teardown. Capture and validation use the deadline minus both reserves. On work-deadline exhaustion, stop further user-space parsing/hashing, mark the current and all unfinished required paths explicitly invalid/timeout, and attempt a `FAILED` manifest (or preserve requested `ABORTED`) inside the manifest reserve. `compose down` receives the actual remaining total budget. Only exhaustion/failure of the total manifest-commit deadline may leave `manifest_path` null. Test work exhaustion, manifest-commit exhaustion, and teardown exhaustion separately; down must always be attempted after Compose started.
 
 ## Host structured events and Task 5 seam
 
 Append each host operator event both to stdout and descriptor-safely to fixed `logs/orchestration-host.jsonl.partial` using the existing `StructuredEvent` six-field schema and exact run/module ownership (`module="orchestration"`). Use timezone-aware UTC wall timestamps and simulation timestamp `null` when no authoritative simulation stamp is available. Do not invent another logging schema.
+
+Stdout, host-partial append, and close failures become retained observability diagnostics and never bypass finalization after Compose starts. Disable only the failed output side so repeated logging cannot recursively fail. After a manifest validates, its terminal status/reason are authoritative; terminal-control write, notification, observability, and teardown failures are diagnostics only.
 
 Invoke `DockerLogCapture(..., host_events=True)` before manifest finalization. Its frozen behavior validates the host partial and merges orchestration events by normalized UTC wall timestamp, Compose-before-host tie, then source line order. On `DockerLogCaptureError`, consume its immutable result and downgrade requested completion even if all final filenames exist. Preserve Docker raw streams exactly; never append host bytes to them.
 

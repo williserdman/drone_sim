@@ -57,6 +57,10 @@ The host establishes one absolute finalization deadline from the resolved
 `finalization_wall_seconds` using a monotonic wall clock. Publisher quiescence,
 recorder drain and close, validation, manifest commit, terminal notification,
 and teardown share its remaining bounded budget; no stage restarts the clock.
+Equal bounded manifest and teardown reserves remain inside that deadline.
+Cooperative callbacks stop host parsing, traversal, and hashing at the earlier
+work boundary; unfinished records become explicit timeout-invalid evidence so
+a diagnostic `FAILED`/`ABORTED` manifest can still be attempted in its reserve.
 
 All control and status JSON is committed through a collision-safe temporary
 sibling, file flush and `fsync`, atomic replacement, and directory `fsync`.

@@ -34,6 +34,23 @@ def test_validate_regular_file_returns_size_and_streamed_sha256(tmp_path):
     )
 
 
+def test_validate_regular_file_checks_deadline_between_hash_chunks(tmp_path):
+    path = tmp_path / "large.bin"
+    path.write_bytes(b"x" * (3 * 1024 * 1024))
+    checks = 0
+
+    def deadline_check():
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            raise TimeoutError("finalization_deadline")
+
+    with pytest.raises(TimeoutError, match="finalization_deadline"):
+        validate_regular_file(tmp_path, "large.bin", deadline_check=deadline_check)
+
+    assert checks == 3
+
+
 def test_validate_regular_file_reports_missing_path(tmp_path):
     assert validate_regular_file(tmp_path, "missing.bin") == ValidationResult(
         ValidationStatus.MISSING, None, None, "path is missing"

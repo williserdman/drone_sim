@@ -65,6 +65,20 @@ def test_allocate_rejects_symlink_in_output_root_ancestor(tmp_path):
         StatusStore((alias / "runs").absolute()).allocate(RUN_ID)
 
 
+def test_allocate_does_not_create_outside_through_missing_path_below_symlink(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    (inside / "redirect").symlink_to(outside, target_is_directory=True)
+    store = StatusStore((inside / "redirect" / "new" / "runs").absolute())
+
+    with pytest.raises(ProtocolFileError, match="symlink"):
+        store.allocate(RUN_ID)
+
+    assert not (outside / "new").exists()
+
+
 def test_operator_state_is_atomic_valid_json_and_leaves_no_temp_sibling(tmp_path):
     store = _store(tmp_path)
     store.allocate(RUN_ID)
@@ -126,6 +140,29 @@ def test_read_rejects_corrupt_nonregular_and_hardlinked_protocol_files(tmp_path)
     with pytest.raises(ProtocolFileError, match="hard link"):
         store.read_operator_status(RUN_ID)
 
+
+def test_runtime_status_read_consumes_cooperative_deadline_callback(tmp_path):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    (run_directory / ".status/artifacts-final.json").write_text(
+        json.dumps({"run_id": RUN_ID, "payload": "x" * 200_000})
+    )
+    checks = 0
+
+    def deadline_check():
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            raise TimeoutError("finalization_deadline")
+
+    with pytest.raises(TimeoutError, match="finalization_deadline"):
+        store.read_runtime_status(
+            RUN_ID,
+            "artifacts-final",
+            deadline_check=deadline_check,
+        )
+
+    assert checks == 3
 
 def test_abort_request_is_atomic_idempotent_and_first_cause_wins(tmp_path):
     store = _store(tmp_path)

@@ -30,6 +30,7 @@ from .validation import (
 
 
 ArtifactValidator = Callable[[Path, str], ValidationResult]
+DeadlineCheck = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -57,14 +58,15 @@ class ArtifactSession:
         self,
         run_directory: Path | str,
         validators: Mapping[str, ArtifactValidator] | None = None,
+        *,
+        deadline_check: DeadlineCheck | None = None,
+        commit_deadline_check: DeadlineCheck | None = None,
     ) -> None:
         self.run_directory = Path(run_directory)
+        self._deadline_check = deadline_check
+        self._commit_deadline_check = commit_deadline_check or deadline_check
         registry: dict[str, ArtifactValidator] = {
-            relative_path: (
-                validate_tree
-                if relative_path in REQUIRED_DIRECTORY_PATHS
-                else validate_regular_file
-            )
+            relative_path: self._default_validator(relative_path)
             for relative_path in REQUIRED_ARTIFACT_PATHS
         }
         if validators is not None:
@@ -75,6 +77,20 @@ class ArtifactSession:
                 )
             registry.update(validators)
         self._validators = registry
+
+    def _check_deadline(self) -> None:
+        if self._deadline_check is not None:
+            self._deadline_check()
+
+    def _default_validator(self, relative_path: str) -> ArtifactValidator:
+        validator = (
+            validate_tree
+            if relative_path in REQUIRED_DIRECTORY_PATHS
+            else validate_regular_file
+        )
+        return lambda root, path: validator(
+            root, path, deadline_check=self._deadline_check
+        )
 
     @staticmethod
     def _artifact_record(relative_path: str, result: ValidationResult) -> ArtifactRecord:
@@ -89,13 +105,33 @@ class ArtifactSession:
         )
 
     def _required_records(self) -> tuple[ArtifactRecord, ...]:
-        return tuple(
-            self._artifact_record(
-                relative_path,
-                self._validators[relative_path](self.run_directory, relative_path),
-            )
-            for relative_path in REQUIRED_ARTIFACT_PATHS
-        )
+        records: list[ArtifactRecord] = []
+        exhausted = False
+        for relative_path in REQUIRED_ARTIFACT_PATHS:
+            if exhausted:
+                result = ValidationResult(
+                    ValidationStatus.INVALID,
+                    None,
+                    None,
+                    "finalization deadline exhausted before validation",
+                )
+            else:
+                try:
+                    self._check_deadline()
+                    result = self._validators[relative_path](
+                        self.run_directory, relative_path
+                    )
+                    self._check_deadline()
+                except TimeoutError:
+                    exhausted = True
+                    result = ValidationResult(
+                        ValidationStatus.INVALID,
+                        None,
+                        None,
+                        "finalization deadline exhausted during validation",
+                    )
+            records.append(self._artifact_record(relative_path, result))
+        return tuple(records)
 
     def _optional_paths(self) -> tuple[str, ...]:
         discovered: set[str] = set()
@@ -104,9 +140,11 @@ class ArtifactSession:
             for directory, directory_names, file_names in os.walk(
                 docker_logs, followlinks=False
             ):
+                self._check_deadline()
                 directory_path = Path(directory)
                 directory_names[:] = sorted(directory_names)
                 for name in sorted(file_names):
+                    self._check_deadline()
                     discovered.add(
                         (directory_path / name)
                         .relative_to(self.run_directory)
@@ -115,6 +153,7 @@ class ArtifactSession:
 
         if self.run_directory.exists():
             for candidate in self.run_directory.rglob("*.partial"):
+                self._check_deadline()
                 relative = candidate.relative_to(self.run_directory)
                 if relative.parts and relative.parts[0] in {".control", ".status"}:
                     continue
@@ -135,13 +174,20 @@ class ArtifactSession:
         )
 
     def _optional_records(self) -> tuple[ArtifactRecord, ...]:
-        return tuple(
-            self._artifact_record(
-                relative_path,
-                validate_regular_file(self.run_directory, relative_path),
-            )
-            for relative_path in self._optional_paths()
-        )
+        records: list[ArtifactRecord] = []
+        try:
+            paths = self._optional_paths()
+            for relative_path in paths:
+                self._check_deadline()
+                result = validate_regular_file(
+                    self.run_directory,
+                    relative_path,
+                    deadline_check=self._deadline_check,
+                )
+                records.append(self._artifact_record(relative_path, result))
+        except TimeoutError:
+            pass
+        return tuple(records)
 
     @staticmethod
     def _simulation_timing(request: FinalizationInput) -> SimulationTiming:
@@ -189,8 +235,12 @@ class ArtifactSession:
             scoring_checksum=request.scoring_checksum,
             evidence_paths=tuple(request.evidence_paths),
         )
-        validate_manifest(manifest)
-        return write_manifest_atomic(self.run_directory, manifest)
+        validate_manifest(manifest, deadline_check=self._commit_deadline_check)
+        return write_manifest_atomic(
+            self.run_directory,
+            manifest,
+            deadline_check=self._commit_deadline_check,
+        )
 
 
 __all__ = ["ArtifactSession", "FinalizationConflict", "FinalizationInput"]

@@ -48,6 +48,14 @@ bag storage/topic/message summary). The host controller recomputes safe
 size/checksum values and accepts semantic validity only when the report agrees;
 it never replaces semantic validation with presence-only checks.
 
+`DockerLogCapture(deadline_check=...)` checks before and after each command,
+line, payload chunk, candidate write, link, and durability boundary.
+`ArtifactSession(deadline_check=..., commit_deadline_check=...)` uses the first
+callback for required/optional validation and the second for canonical manifest
+validation and no-clobber publication. Existing callers may omit both. A work
+timeout marks the current and remaining required records invalid without
+continuing discovery or hashing; requested `ABORTED` is never upgraded.
+
 After `.control/terminal-committed.json`, artifacts publishes the final
 `/simulation/artifact_status` with `manifest_path` set to `manifest.json`, then
 exits without writing another required log or recording event.

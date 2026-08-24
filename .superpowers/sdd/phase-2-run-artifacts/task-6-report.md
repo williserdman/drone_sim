@@ -151,6 +151,74 @@ exit 0
 The ten skips are pre-existing environment-gated ROS/container/real-FFmpeg
 cases; no Task 6 case is skipped.
 
+## Review fix round 1 of 5
+
+Independent review found one critical shared-deadline gap and four important
+boundary gaps. The first focused RED run collected 180 affected cases and
+reported `14 failed, 166 passed`. Those failures independently reproduced
+missing cooperative deadline seams, permissive partial Compose health,
+post-manifest status replacement, a second-event `BrokenPipeError` escaping
+finalization, output-root creation through a symlink, and missing profile
+activation. A later runtime-status callback test produced one additional
+focused RED (`TypeError` for the missing keyword seam).
+
+The fix preserves all public call forms and adds:
+
+- optional cooperative deadline checks through Docker-log collection,
+  per-line parsing/routing, candidate writes/publication, protocol-file reads,
+  regular-file chunks, directory-tree entries, optional discovery, canonical
+  manifest encoding, validation, and no-clobber commit;
+- separate optional `ArtifactSession` work and commit checks within one total
+  deadline. Work exhaustion stops hashing, marks the current and unfinished
+  required records timeout-invalid, and attempts a FAILED or ABORTED manifest
+  inside the equal manifest reserve; teardown retains its equal reserve;
+- exact `ps --all --format json` validation for the frozen seven unique
+  running/restarting services and `COMPOSE_PROFILES=phase2` on every command;
+- descriptor-relative, no-follow output-root construction that rejects an
+  existing symlink ancestor before creating any target-side component;
+- immutable manifest authority after validation: terminal-control,
+  notification, observability, and teardown failures append diagnostics only;
+- fail-once stdout/file host-event handling so append, stream, and close errors
+  cannot recursively bypass log capture, manifest finalization, or teardown.
+
+The manifest-reserve ruling supersedes the initial teardown-only reserve. A
+fake that advances the monotonic clock beyond the total deadline inside session
+finalization returns FAILED, leaves no false manifest claim, and still attempts
+down. Ordinary work-deadline exhaustion instead commits an explicit timeout
+inventory under the manifest reserve. Additional coverage proves stdout,
+partial append, close, terminal-control, notification, COMPLETED, and ABORTED
+authority behavior.
+
+Fresh round-1 verification:
+
+```text
+uv run pytest orchestration/tests/test_status_store.py \
+  orchestration/tests/test_controller.py orchestration/tests/test_cli.py -q
+84 passed in 5.33s
+
+uv run pytest orchestration/tests -q
+128 passed in 7.19s
+
+uv run pytest artifacts/tests orchestration/tests tests/contracts -q
+451 passed, 10 skipped in 24.28s
+
+uv run pytest -q
+454 passed, 10 skipped in 21.73s
+
+uv run drone-sim --help
+usage: drone-sim [-h] {start,status,abort,collect-results} ...
+
+uv run python -m compileall -q artifacts/src artifacts/tests \
+  orchestration/src orchestration/tests
+exit 0
+
+uv lock --check
+Resolved 15 packages in 70ms
+
+git diff --check
+exit 0
+```
+
 ## Task 7 concerns
 
 - Task 7 must publish the exact `runtime-running`, `artifacts-ready`,
@@ -161,8 +229,8 @@ cases; no Task 6 case is skipped.
   nonempty semantic object even for missing/invalid evidence and size/hash
   values describing the stable finalized file/tree snapshot.
 - Compose service names and module ownership must match the frozen seven-entry
-  log mapping; the profile must accept the controller's explicit environment
-  and detached `--no-build` startup.
+  log mapping; the `phase2` profile must activate through
+  `COMPOSE_PROFILES=phase2` and accept detached `--no-build` startup.
 - Task 7 must stop artifact writers before `runtime-frozen`, publish no required
   artifact changes after manifest commit, and acknowledge the terminal control
   only through `terminal-notified`.

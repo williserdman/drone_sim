@@ -90,6 +90,7 @@ class ComposeRuntime:
         self._monotonic = monotonic
         self.environment = {
             **dict(os.environ if base_environment is None else base_environment),
+            "COMPOSE_PROFILES": "phase2",
             "SIM_RUN_ID": run_id,
             "SIM_RUN_DIRECTORY": str(self.run_directory),
             "SIM_CONFIG_PATH": str(self.config_path),
@@ -164,7 +165,7 @@ class ComposeRuntime:
         return self._compose(["down", "--remove-orphans"], timeout)
 
     def ps(self, timeout: float) -> ComposeCommandResult:
-        return self._compose(["ps", "--format", "json"], timeout)
+        return self._compose(["ps", "--all", "--format", "json"], timeout)
 
     def image_digests(self, timeout: float) -> tuple[ImageDigest, ...]:
         """Resolve immutable local image IDs within one caller-supplied budget."""

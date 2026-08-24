@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 import stat
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import UUID, uuid4
 
 from artifacts import validate_regular_file, validate_tree
@@ -190,35 +190,50 @@ class StatusStore:
             raise ValueError("output root must not contain parent traversal")
 
     def _open_output_root(self, *, create: bool) -> int:
-        if create:
-            try:
-                self.output_root.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise ProtocolFileError(f"output root cannot be created: {exc}") from exc
-        elif not self.output_root.exists():
-            raise ProtocolFileError("output root does not exist")
+        current_fd: int | None = None
         try:
-            current = Path(self.output_root.anchor)
+            current_fd = os.open(self.output_root.anchor, _DIRECTORY_FLAGS)
             for part in self.output_root.parts[1:]:
-                current /= part
-                component = current.lstat()
-                if stat.S_ISLNK(component.st_mode):
+                try:
+                    metadata = os.stat(
+                        part, dir_fd=current_fd, follow_symlinks=False
+                    )
+                except FileNotFoundError:
+                    if not create:
+                        raise ProtocolFileError("output root does not exist") from None
+                    os.mkdir(part, 0o755, dir_fd=current_fd)
+                    os.fsync(current_fd)
+                    metadata = os.stat(
+                        part, dir_fd=current_fd, follow_symlinks=False
+                    )
+                if stat.S_ISLNK(metadata.st_mode):
                     raise ProtocolFileError(
                         "output root must not traverse symlink components"
                     )
-            metadata = self.output_root.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                raise ProtocolFileError("output root must be a non-symlink directory")
-            descriptor = os.open(self.output_root, _DIRECTORY_FLAGS)
-            opened = os.fstat(descriptor)
-            if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
-                os.close(descriptor)
-                raise ProtocolFileError("output root changed while opening")
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise ProtocolFileError(
+                        "output root must be a non-symlink directory"
+                    )
+                next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=current_fd)
+                opened = os.fstat(next_fd)
+                if (metadata.st_dev, metadata.st_ino) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                ):
+                    os.close(next_fd)
+                    raise ProtocolFileError("output root changed while opening")
+                os.close(current_fd)
+                current_fd = next_fd
+            descriptor = current_fd
+            current_fd = None
             return descriptor
         except ProtocolFileError:
             raise
         except OSError as exc:
             raise ProtocolFileError(f"output root is unsafe: {exc}") from exc
+        finally:
+            if current_fd is not None:
+                os.close(current_fd)
 
     def run_directory(self, run_id: str) -> Path:
         canonical = _canonical_run_id(run_id)
@@ -303,7 +318,14 @@ class StatusStore:
         return metadata
 
     @classmethod
-    def _read_document_at(cls, directory_fd: int, name: str) -> dict[str, Any] | None:
+    def _read_document_at(
+        cls,
+        directory_fd: int,
+        name: str,
+        deadline_check: Callable[[], None] | None = None,
+    ) -> dict[str, Any] | None:
+        if deadline_check is not None:
+            deadline_check()
         before = cls._inspect_existing(directory_fd, name)
         if before is None:
             return None
@@ -317,7 +339,14 @@ class StatusStore:
                 raise ProtocolFileError(f"protocol file {name!r} is too large")
             chunks: list[bytes] = []
             remaining = _MAX_PROTOCOL_BYTES + 1
-            while remaining and (chunk := os.read(descriptor, min(65536, remaining))):
+            while remaining:
+                if deadline_check is not None:
+                    deadline_check()
+                chunk = os.read(descriptor, min(65536, remaining))
+                if deadline_check is not None:
+                    deadline_check()
+                if not chunk:
+                    break
                 chunks.append(chunk)
                 remaining -= len(chunk)
             if remaining == 0 and os.read(descriptor, 1):
@@ -331,17 +360,23 @@ class StatusStore:
             ):
                 raise ProtocolFileError(f"protocol file {name!r} changed while reading")
             try:
+                if deadline_check is not None:
+                    deadline_check()
                 document = json.loads(
                     b"".join(chunks).decode("utf-8"),
                     object_pairs_hook=_reject_duplicate_pairs,
                     parse_constant=_reject_json_constant,
                 )
+                if deadline_check is not None:
+                    deadline_check()
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
                 raise ProtocolFileError(f"protocol file {name!r} contains invalid JSON: {exc}") from exc
             if not isinstance(document, dict):
                 raise ProtocolFileError(f"protocol file {name!r} must contain a JSON object")
             return document
         except ProtocolFileError:
+            raise
+        except TimeoutError:
             raise
         except OSError as exc:
             raise ProtocolFileError(f"could not read protocol file {name!r}: {exc}") from exc
@@ -512,12 +547,21 @@ class StatusStore:
             raise ProtocolFileError("terminal commit already exists differently")
         return self.run_directory(run_id) / ".control/terminal-committed.json"
 
-    def read_runtime_status(self, run_id: str, name: str) -> dict[str, Any] | None:
+    def read_runtime_status(
+        self,
+        run_id: str,
+        name: str,
+        deadline_check: Callable[[], None] | None = None,
+    ) -> dict[str, Any] | None:
         if name not in _RUNTIME_STATUS_NAMES:
             raise ValueError("runtime status name is not part of the frozen protocol")
         run_fd, status_fd = self._with_protocol_directory(run_id, ".status")
         try:
-            document = self._read_document_at(status_fd, f"{name}.json")
+            document = self._read_document_at(
+                status_fd,
+                f"{name}.json",
+                deadline_check,
+            )
         finally:
             os.close(status_fd)
             os.close(run_fd)
@@ -525,11 +569,17 @@ class StatusStore:
             raise ProtocolFileError(f"runtime status {name!r} has the wrong run_id")
         return document
 
-    def validated_manifest_path(self, run_id: str) -> Path:
+    def validated_manifest_path(
+        self,
+        run_id: str,
+        deadline_check: Callable[[], None] | None = None,
+    ) -> Path:
         run_directory = self.run_directory(run_id)
         run_fd = self._open_run(run_id)
         try:
-            document = self._read_document_at(run_fd, "manifest.json")
+            document = self._read_document_at(
+                run_fd, "manifest.json", deadline_check
+            )
         finally:
             os.close(run_fd)
         if document is None:
@@ -600,6 +650,8 @@ class StatusStore:
         paths: set[str] = set()
         validations: dict[str, str] = {}
         for record in artifacts:
+            if deadline_check is not None:
+                deadline_check()
             if not isinstance(record, dict) or set(record) != {
                 "relative_path",
                 "size_bytes",
@@ -622,7 +674,11 @@ class StatusStore:
             if record["validation"] == "valid":
                 target = run_directory / relative_path
                 validator = validate_tree if target.is_dir() else validate_regular_file
-                result = validator(run_directory, relative_path)
+                result = validator(
+                    run_directory,
+                    relative_path,
+                    deadline_check=deadline_check,
+                )
                 if (
                     result.status.value != "valid"
                     or result.size_bytes != record["size_bytes"]
@@ -679,7 +735,7 @@ class StatusStore:
                 evidence_paths=tuple(scoring["evidence_paths"]),
                 schema_version=document["schema_version"],
             )
-            validate_manifest(domain_manifest)
+            validate_manifest(domain_manifest, deadline_check=deadline_check)
         except (KeyError, TypeError, ValueError) as exc:
             raise ProtocolFileError(f"manifest domain validation failed: {exc}") from exc
         return run_directory / "manifest.json"

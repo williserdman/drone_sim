@@ -119,6 +119,12 @@ class DockerLogCaptureError(RuntimeError):
 
 
 CommandRunner = Callable[[list[str]], DockerLogCommandResult]
+DeadlineCheck = Callable[[], None]
+
+
+def _check_deadline(deadline_check: DeadlineCheck | None) -> None:
+    if deadline_check is not None:
+        deadline_check()
 
 
 def _run_compose_logs(command: list[str]) -> DockerLogCommandResult:
@@ -179,7 +185,9 @@ class _Candidate:
         final_name: str,
         payload: bytes,
         relative_path: str,
+        deadline_check: DeadlineCheck | None = None,
     ) -> _Candidate:
+        _check_deadline(deadline_check)
         partial_name = f"{final_name}.partial"
         descriptor = os.open(
             partial_name,
@@ -191,13 +199,22 @@ class _Candidate:
             view = memoryview(payload)
             written = 0
             while written < len(view):
-                count = os.write(descriptor, view[written:])
+                _check_deadline(deadline_check)
+                count = os.write(
+                    descriptor,
+                    view[written : written + 1024 * 1024],
+                )
+                _check_deadline(deadline_check)
                 if count <= 0:
                     raise OSError("candidate write made no progress")
                 written += count
+            _check_deadline(deadline_check)
             os.fsync(descriptor)
+            _check_deadline(deadline_check)
             os.fchmod(descriptor, 0o444)
+            _check_deadline(deadline_check)
             os.fsync(descriptor)
+            _check_deadline(deadline_check)
             identity = os.fstat(descriptor)
             if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
                 raise OSError("candidate is not an exclusively owned regular file")
@@ -309,7 +326,8 @@ class _Candidate:
                 raise
             raise _CandidateCreationError(exc, diagnostics, leftovers) from exc
 
-    def publish(self) -> None:
+    def publish(self, deadline_check: DeadlineCheck | None = None) -> None:
+        _check_deadline(deadline_check)
         opened = os.fstat(self.descriptor)
         named = os.stat(
             self.partial_name,
@@ -322,6 +340,7 @@ class _Candidate:
             or opened.st_nlink != 1
         ):
             raise OSError("candidate changed before publication")
+        _check_deadline(deadline_check)
         os.link(
             self.partial_name,
             self.final_name,
@@ -329,6 +348,7 @@ class _Candidate:
             dst_dir_fd=self.directory_fd,
             follow_symlinks=False,
         )
+        _check_deadline(deadline_check)
         linked = os.stat(
             self.final_name,
             dir_fd=self.directory_fd,
@@ -337,6 +357,7 @@ class _Candidate:
         if not _same_entry(self.identity, linked):
             raise OSError("published path does not identify the candidate")
         os.unlink(self.partial_name, dir_fd=self.directory_fd)
+        _check_deadline(deadline_check)
         final = os.stat(
             self.final_name,
             dir_fd=self.directory_fd,
@@ -344,7 +365,9 @@ class _Candidate:
         )
         if not _same_entry(self.identity, final) or final.st_nlink != 1:
             raise OSError("published file has an invalid identity")
+        _check_deadline(deadline_check)
         os.fsync(self.directory_fd)
+        _check_deadline(deadline_check)
         self.published = True
 
     def close_and_clean(
@@ -447,26 +470,33 @@ class _ObjectPairs(list[tuple[str, Any]]):
     pass
 
 
-def _convert_pairs(value: Any) -> Any:
+def _convert_pairs(
+    value: Any, deadline_check: DeadlineCheck | None = None
+) -> Any:
+    _check_deadline(deadline_check)
     if isinstance(value, _ObjectPairs):
         converted: dict[str, Any] = {}
         for key, item in value:
             if key in converted:
                 raise ValueError(f"duplicate JSON object key: {key}")
-            converted[key] = _convert_pairs(item)
+            converted[key] = _convert_pairs(item, deadline_check)
         return converted
     if isinstance(value, list):
-        return [_convert_pairs(item) for item in value]
+        return [_convert_pairs(item, deadline_check) for item in value]
     return value
 
 
-def _parse_attempted_object(line: bytes) -> tuple[Mapping[str, Any] | None, str | None]:
+def _parse_attempted_object(
+    line: bytes, deadline_check: DeadlineCheck | None = None
+) -> tuple[Mapping[str, Any] | None, str | None]:
+    _check_deadline(deadline_check)
     try:
         decoded = line.decode("utf-8")
         parsed = json.loads(
             decoded,
             object_pairs_hook=_ObjectPairs,
         )
+        _check_deadline(deadline_check)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None, None
     except (MemoryError, RecursionError) as exc:
@@ -479,7 +509,7 @@ def _parse_attempted_object(line: bytes) -> tuple[Mapping[str, Any] | None, str 
     if not claimed:
         return None, None
     try:
-        converted = _convert_pairs(parsed)
+        converted = _convert_pairs(parsed, deadline_check)
     except (MemoryError, RecursionError) as exc:
         return None, f"JSON normalization resource failure: {exc}"
     except ValueError as exc:
@@ -492,7 +522,9 @@ def _event_from_payload(
     *,
     run_id: str,
     owning_module: str,
+    deadline_check: DeadlineCheck | None = None,
 ) -> StructuredEvent:
+    _check_deadline(deadline_check)
     if set(payload) != _EVENT_KEYS:
         missing = sorted(_EVENT_KEYS - set(payload))
         extra = sorted(set(payload) - _EVENT_KEYS)
@@ -563,6 +595,7 @@ class DockerLogCapture:
         command_runner: CommandRunner | None = None,
         *,
         host_events: bool = False,
+        deadline_check: DeadlineCheck | None = None,
     ) -> None:
         self.run_directory = Path(run_directory)
         self.project_name = project_name
@@ -574,8 +607,13 @@ class DockerLogCapture:
         self.run_id = run_id
         self.command_runner = command_runner or _run_compose_logs
         self.host_events = host_events
+        self.deadline_check = deadline_check
+
+    def _check_deadline(self) -> None:
+        _check_deadline(self.deadline_check)
 
     def _validate_inputs(self) -> None:
+        self._check_deadline()
         if not self.run_directory.is_absolute():
             raise ValueError("run directory must be absolute")
         if (
@@ -590,6 +628,7 @@ class DockerLogCapture:
         services: list[str] = []
         modules: list[str] = []
         for item in self.ownership:
+            self._check_deadline()
             if not isinstance(item, tuple) or len(item) != 2:
                 raise ValueError("ownership must contain service-module pairs")
             service, module = item
@@ -704,10 +743,12 @@ class DockerLogCapture:
 
     def _preflight_targets(self, logs_fd: int, docker_fd: int) -> None:
         for service, _module in self.ownership:
+            self._check_deadline()
             final = f"{service}.log"
             self._require_absent(docker_fd, final)
             self._require_absent(docker_fd, f"{final}.partial")
         for module in REQUIRED_MODULES:
+            self._check_deadline()
             final = f"{module}.jsonl"
             self._require_absent(logs_fd, final)
             self._require_absent(logs_fd, f"{final}.partial")
@@ -735,6 +776,7 @@ class DockerLogCapture:
         diagnostics: list[DockerLogDiagnostic] = []
         failed: list[str] = []
         for service, module in self.ownership:
+            self._check_deadline()
             command = [
                 "docker",
                 "compose",
@@ -761,6 +803,7 @@ class DockerLogCapture:
                 )
                 failed.append(service)
                 continue
+            self._check_deadline()
             outputs[service] = result.output
             if result.returncode != 0:
                 diagnostics.append(
@@ -774,14 +817,15 @@ class DockerLogCapture:
                 failed.append(service)
         return outputs, diagnostics, tuple(failed)
 
-    @staticmethod
     def _read_host_events(
+        self,
         logs_fd: int,
     ) -> tuple[bytes | None, list[DockerLogDiagnostic], tuple[str, ...]]:
         name = Path(HOST_EVENT_PATH).name
         descriptor: int | None = None
         diagnostics: list[DockerLogDiagnostic] = []
         try:
+            self._check_deadline()
             try:
                 named_before = os.stat(
                     name,
@@ -859,7 +903,12 @@ class DockerLogCapture:
                 return None, diagnostics, (HOST_EVENT_PATH,)
             chunks: list[bytes] = []
             try:
-                while chunk := os.read(descriptor, 1024 * 1024):
+                while True:
+                    self._check_deadline()
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    self._check_deadline()
+                    if not chunk:
+                        break
                     chunks.append(chunk)
             except OSError as exc:
                 diagnostics.append(
@@ -926,7 +975,8 @@ class DockerLogCapture:
         source_rank: int,
         strict: bool,
     ) -> tuple[_CapturedEvent | None, DockerLogDiagnostic | None]:
-        payload, parse_error = _parse_attempted_object(line)
+        self._check_deadline()
+        payload, parse_error = _parse_attempted_object(line, self.deadline_check)
         if parse_error is not None:
             return None, DockerLogDiagnostic(
                 "host_event" if strict else "event",
@@ -949,8 +999,10 @@ class DockerLogCapture:
                 payload,
                 run_id=self.run_id,
                 owning_module=owning_module,
+                deadline_check=self.deadline_check,
             )
             encoded = event.to_json_line().encode("utf-8")
+            self._check_deadline()
         except (TypeError, ValueError, OverflowError) as exc:
             return None, DockerLogDiagnostic(
                 "host_event" if strict else "event",
@@ -964,6 +1016,19 @@ class DockerLogCapture:
             None,
         )
 
+    def _iter_lines(self, payload: bytes) -> Iterable[bytes]:
+        start = 0
+        length = len(payload)
+        while start < length:
+            self._check_deadline()
+            end = payload.find(b"\n", start)
+            self._check_deadline()
+            if end < 0:
+                yield payload[start:]
+                return
+            yield payload[start:end]
+            start = end + 1
+
     def _partition(
         self,
         outputs: Mapping[str, bytes],
@@ -974,7 +1039,11 @@ class DockerLogCapture:
         }
         diagnostics: list[DockerLogDiagnostic] = []
         for service, owning_module in self.ownership:
-            for line_number, line in enumerate(outputs[service].split(b"\n"), start=1):
+            self._check_deadline()
+            for line_number, line in enumerate(
+                self._iter_lines(outputs[service]), start=1
+            ):
+                self._check_deadline()
                 if line == b"":
                     continue
                 captured, diagnostic = self._validated_line(
@@ -991,10 +1060,10 @@ class DockerLogCapture:
                     routed[captured.event.module].append(captured)
 
         if host_output is not None:
-            host_lines = [] if host_output == b"" else host_output.split(b"\n")
-            if host_lines and host_lines[-1] == b"":
-                host_lines.pop()
-            for line_number, line in enumerate(host_lines, start=1):
+            for line_number, line in enumerate(
+                self._iter_lines(host_output), start=1
+            ):
+                self._check_deadline()
                 captured, diagnostic = self._validated_line(
                     line,
                     service=None,
@@ -1009,6 +1078,7 @@ class DockerLogCapture:
                     routed["orchestration"].append(captured)
 
         missing = tuple(module for module in REQUIRED_MODULES if not routed[module])
+        self._check_deadline()
         if missing:
             diagnostics.append(
                 DockerLogDiagnostic(
@@ -1024,14 +1094,14 @@ class DockerLogCapture:
                     captured.source_order,
                 )
             )
-        return (
-            {
-                module: b"".join(captured.encoded for captured in events)
-                for module, events in routed.items()
-            },
-            diagnostics,
-            missing,
-        )
+        encoded_by_module: dict[str, bytes] = {}
+        for module, events in routed.items():
+            output = bytearray()
+            for captured in events:
+                self._check_deadline()
+                output.extend(captured.encoded)
+            encoded_by_module[module] = bytes(output)
+        return encoded_by_module, diagnostics, missing
 
     @staticmethod
     def _result(
@@ -1058,6 +1128,7 @@ class DockerLogCapture:
     def capture(self) -> DockerLogCaptureResult:
         """Capture all raw streams, then publish structured logs only if valid."""
         self._validate_inputs()
+        self._check_deadline()
         root_fd, logs_fd, docker_fd, identities = self._open_directories()
         candidates: list[_Candidate] = []
         raw_paths: list[str] = []
@@ -1072,6 +1143,7 @@ class DockerLogCapture:
         leftover_partials: list[str] = []
         try:
             try:
+                self._check_deadline()
                 self._preflight_targets(logs_fd, docker_fd)
             except OSError as exc:
                 diagnostic = DockerLogDiagnostic("filesystem", str(exc))
@@ -1083,6 +1155,7 @@ class DockerLogCapture:
             diagnostics.extend(command_diagnostics)
 
             for service, _module in self.ownership:
+                self._check_deadline()
                 relative_path = f"logs/docker/{service}.log"
                 try:
                     candidate = _Candidate.create(
@@ -1090,6 +1163,7 @@ class DockerLogCapture:
                         f"{service}.log",
                         outputs[service],
                         relative_path,
+                        self.deadline_check,
                     )
                 except OSError as exc:
                     diagnostics.append(
@@ -1130,12 +1204,13 @@ class DockerLogCapture:
 
             raw_publication_failed = False
             for candidate in tuple(candidates):
+                self._check_deadline()
                 try:
                     if not self._directories_stable(
                         root_fd, logs_fd, docker_fd, identities
                     ):
                         raise OSError("retained run directory chain changed")
-                    candidate.publish()
+                    candidate.publish(self.deadline_check)
                     raw_paths.append(candidate.relative_path)
                 except OSError as exc:
                     raw_publication_failed = True
@@ -1172,6 +1247,7 @@ class DockerLogCapture:
 
             structured_candidates: list[_Candidate] = []
             for module in REQUIRED_MODULES:
+                self._check_deadline()
                 relative_path = f"logs/{module}.jsonl"
                 try:
                     candidate = _Candidate.create(
@@ -1179,6 +1255,7 @@ class DockerLogCapture:
                         f"{module}.jsonl",
                         routed[module],
                         relative_path,
+                        self.deadline_check,
                     )
                 except OSError as exc:
                     diagnostics.append(
@@ -1206,12 +1283,13 @@ class DockerLogCapture:
                 structured_candidates.append(candidate)
 
             for candidate in structured_candidates:
+                self._check_deadline()
                 try:
                     if not self._directories_stable(
                         root_fd, logs_fd, docker_fd, identities
                     ):
                         raise OSError("retained run directory chain changed")
-                    candidate.publish()
+                    candidate.publish(self.deadline_check)
                     structured_paths.append(candidate.relative_path)
                 except OSError as exc:
                     if candidate.final_is_linked():
@@ -1247,6 +1325,21 @@ class DockerLogCapture:
         except DockerLogCaptureError as exc:
             capture_error = exc
             result = exc.result
+        except Exception as exc:
+            diagnostic = DockerLogDiagnostic(
+                "deadline" if isinstance(exc, TimeoutError) else "capture",
+                str(exc) or type(exc).__name__,
+            )
+            result = self._result(
+                False,
+                raw_paths,
+                structured_paths,
+                (*diagnostics, diagnostic),
+                command_failures,
+                missing_modules,
+                recovery_paths,
+            )
+            capture_error = DockerLogCaptureError(result)
         finally:
             for candidate in candidates:
                 candidate_diagnostics, candidate_leftovers = (

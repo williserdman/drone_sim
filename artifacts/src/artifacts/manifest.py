@@ -1,5 +1,6 @@
 """Immutable inventory and atomic persistence for a simulation run bundle."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -35,6 +36,12 @@ REQUIRED_ARTIFACT_PATHS = (
 )
 TERMINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+DeadlineCheck = Callable[[], None]
+
+
+def _check_deadline(deadline_check: DeadlineCheck | None) -> None:
+    if deadline_check is not None:
+        deadline_check()
 
 
 class FinalizationConflict(RuntimeError):
@@ -223,8 +230,11 @@ def _validate_timing(simulation: SimulationTiming, wall: WallTiming) -> None:
         raise ValueError("wall duration must be finite, nonnegative, and match timestamps")
 
 
-def validate_manifest(manifest: RunManifest) -> None:
+def validate_manifest(
+    manifest: RunManifest, *, deadline_check: DeadlineCheck | None = None
+) -> None:
     """Validate metadata invariants shared by builders and session finalization."""
+    _check_deadline(deadline_check)
     if manifest.schema_version != 1:
         raise ValueError("schema_version must be 1")
     if not isinstance(manifest.run_id, str) or not manifest.run_id:
@@ -240,6 +250,7 @@ def validate_manifest(manifest: RunManifest) -> None:
 
     source_names: set[str] = set()
     for source in manifest.source_revisions:
+        _check_deadline(deadline_check)
         if (
             not isinstance(source.name, str)
             or not source.name
@@ -254,6 +265,7 @@ def validate_manifest(manifest: RunManifest) -> None:
 
     image_names: set[str] = set()
     for image in manifest.image_digests:
+        _check_deadline(deadline_check)
         if not isinstance(image.name, str) or not image.name:
             raise ValueError("image digest names must be nonempty")
         if image.name in image_names:
@@ -263,6 +275,7 @@ def validate_manifest(manifest: RunManifest) -> None:
 
     configuration_paths: set[str] = set()
     for configuration in manifest.configurations:
+        _check_deadline(deadline_check)
         _require_relative_path("configuration path", configuration.relative_path)
         if configuration.relative_path in configuration_paths:
             raise ValueError("configuration paths must be unique")
@@ -272,6 +285,7 @@ def validate_manifest(manifest: RunManifest) -> None:
     artifact_paths: set[str] = set()
     valid_statuses = {status.value for status in ValidationStatus}
     for artifact in manifest.artifacts:
+        _check_deadline(deadline_check)
         _require_relative_path("artifact path", artifact.relative_path)
         if artifact.relative_path in artifact_paths:
             raise ValueError("artifact paths must be unique")
@@ -294,6 +308,7 @@ def validate_manifest(manifest: RunManifest) -> None:
     if len(set(manifest.incomplete_paths)) != len(manifest.incomplete_paths):
         raise ValueError("incomplete_paths must be unique")
     for incomplete_path in manifest.incomplete_paths:
+        _check_deadline(deadline_check)
         if incomplete_path not in REQUIRED_ARTIFACT_PATHS:
             raise ValueError("incomplete_paths must name required artifact paths")
     required_records = {
@@ -315,7 +330,9 @@ def validate_manifest(manifest: RunManifest) -> None:
     if len(set(manifest.evidence_paths)) != len(manifest.evidence_paths):
         raise ValueError("evidence paths must be unique")
     for evidence_path in manifest.evidence_paths:
+        _check_deadline(deadline_check)
         _require_relative_path("evidence path", evidence_path.split("#", 1)[0])
+    _check_deadline(deadline_check)
 
 
 def _record(run_directory: Path, relative_path: str) -> ArtifactRecord:
@@ -382,22 +399,36 @@ def build_manifest(
     return manifest
 
 
-def canonical_manifest_bytes(manifest: RunManifest) -> bytes:
-    validate_manifest(manifest)
-    return json.dumps(
-        manifest.to_dict(),
+def canonical_manifest_bytes(
+    manifest: RunManifest, *, deadline_check: DeadlineCheck | None = None
+) -> bytes:
+    validate_manifest(manifest, deadline_check=deadline_check)
+    encoder = json.JSONEncoder(
         allow_nan=False,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
-    ).encode("utf-8")
+    )
+    chunks: list[bytes] = []
+    for chunk in encoder.iterencode(manifest.to_dict()):
+        _check_deadline(deadline_check)
+        chunks.append(chunk.encode("utf-8"))
+    payload = b"".join(chunks)
+    _check_deadline(deadline_check)
+    return payload
 
 
-def write_manifest_atomic(run_directory: Path | str, manifest: RunManifest) -> Path:
+def write_manifest_atomic(
+    run_directory: Path | str,
+    manifest: RunManifest,
+    *,
+    deadline_check: DeadlineCheck | None = None,
+) -> Path:
     """Durably and idempotently commit ``manifest.json``."""
     directory = Path(run_directory)
     target = directory / "manifest.json"
-    payload = canonical_manifest_bytes(manifest)
+    payload = canonical_manifest_bytes(manifest, deadline_check=deadline_check)
+    _check_deadline(deadline_check)
     directory_fd = os.open(
         directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     )
@@ -408,13 +439,29 @@ def write_manifest_atomic(run_directory: Path | str, manifest: RunManifest) -> P
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as stream:
-                stream.write(payload)
+                view = memoryview(payload)
+                written = 0
+                while written < len(view):
+                    _check_deadline(deadline_check)
+                    count = stream.write(view[written : written + 1024 * 1024])
+                    if count is None or count <= 0:
+                        raise OSError("manifest write made no progress")
+                    written += count
+                _check_deadline(deadline_check)
                 stream.flush()
+                _check_deadline(deadline_check)
                 os.fsync(stream.fileno())
+                _check_deadline(deadline_check)
             try:
+                _check_deadline(deadline_check)
                 os.link(temporary, target, follow_symlinks=False)
+                _check_deadline(deadline_check)
             except FileExistsError:
-                existing = _read_existing_manifest(directory_fd, manifest.run_id)
+                existing = _read_existing_manifest(
+                    directory_fd,
+                    manifest.run_id,
+                    deadline_check=deadline_check,
+                )
                 if existing == payload:
                     return target
                 raise FinalizationConflict(
@@ -426,12 +473,19 @@ def write_manifest_atomic(run_directory: Path | str, manifest: RunManifest) -> P
                 temporary.unlink()
             except FileNotFoundError:
                 pass
+            _check_deadline(deadline_check)
             os.fsync(directory_fd)
+            _check_deadline(deadline_check)
     finally:
         os.close(directory_fd)
 
 
-def _read_existing_manifest(directory_fd: int, run_id: str) -> bytes:
+def _read_existing_manifest(
+    directory_fd: int,
+    run_id: str,
+    *,
+    deadline_check: DeadlineCheck | None = None,
+) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open("manifest.json", flags, dir_fd=directory_fd)
@@ -441,7 +495,12 @@ def _read_existing_manifest(directory_fd: int, run_id: str) -> bytes:
         ) from exc
     try:
         chunks: list[bytes] = []
-        while chunk := os.read(descriptor, 1024 * 1024):
+        while True:
+            _check_deadline(deadline_check)
+            chunk = os.read(descriptor, 1024 * 1024)
+            _check_deadline(deadline_check)
+            if not chunk:
+                break
             chunks.append(chunk)
         return b"".join(chunks)
     finally:

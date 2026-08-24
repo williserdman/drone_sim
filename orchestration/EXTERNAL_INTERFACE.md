@@ -47,11 +47,14 @@ Simulation state uses `/clock`. Wall-clock deadlines are restricted to startup,
 stalled-host detection, finalization, and forced shutdown and are measured with
 a monotonic clock. Finalization uses one bounded deadline shared across
 quiescence, recorder closure, validation, manifest commit, notification, and
-teardown.
+teardown, with separate bounded manifest and teardown reserves.
 
 ## Failure behavior
 
 Startup fails closed. Partial outputs are preserved. A manifest is produced for completed, failed, and aborted runs.
+Once that manifest validates, its terminal status and reason are authoritative;
+control acknowledgment, terminal-notification, observability, and teardown
+failures are retained as diagnostics and cannot rewrite the terminal result.
 
 All terminal paths stop publishers and cross the `runtime-frozen.json`
 quiescence barrier before recorders drain and close. The bag ends at

@@ -61,6 +61,7 @@ _OWNERSHIP = (
     ("synthetic-electromagnet", "electromagnet"),
     ("synthetic-scorekeeper", "scorekeeper"),
 )
+_REQUIRED_SERVICES = frozenset(service for service, _module in _OWNERSHIP)
 
 
 class ControllerError(RuntimeError):
@@ -105,7 +106,14 @@ class ArtifactFinalReport:
     records: tuple[_ArtifactReportRecord, ...]
 
     @classmethod
-    def parse(cls, run_id: str, document: Any) -> "ArtifactFinalReport":
+    def parse(
+        cls,
+        run_id: str,
+        document: Any,
+        deadline_check: Callable[[], None] | None = None,
+    ) -> "ArtifactFinalReport":
+        if deadline_check is not None:
+            deadline_check()
         if not isinstance(document, dict) or set(document) != {"run_id", "complete", "records"}:
             raise ControllerError("artifacts-final report has invalid top-level keys")
         if document["run_id"] != run_id:
@@ -118,6 +126,8 @@ class ArtifactFinalReport:
         records: list[_ArtifactReportRecord] = []
         seen: set[str] = set()
         for value in values:
+            if deadline_check is not None:
+                deadline_check()
             if not isinstance(value, dict) or set(value) != _REPORT_KEYS:
                 raise ControllerError("artifacts-final record has missing or extra keys")
             relative_path = value["relative_path"]
@@ -174,6 +184,8 @@ class ArtifactFinalReport:
         expected_complete = all(record.status is ValidationStatus.VALID for record in ordered)
         if document["complete"] != expected_complete:
             raise ControllerError("artifacts-final aggregate complete disagrees with records")
+        if deadline_check is not None:
+            deadline_check()
         return cls(run_id, document["complete"], ordered)
 
     def first_failure(self) -> str | None:
@@ -182,17 +194,22 @@ class ArtifactFinalReport:
                 return record.detail
         return None
 
-    def validators(self) -> dict[str, Callable[[Path, str], ValidationResult]]:
+    def validators(
+        self, deadline_check: Callable[[], None] | None = None
+    ) -> dict[str, Callable[[Path, str], ValidationResult]]:
         return {
-            record.relative_path: self._validator(record)
+            record.relative_path: self._validator(record, deadline_check)
             for record in self.records
         }
 
     @staticmethod
     def _validator(
         record: _ArtifactReportRecord,
+        deadline_check: Callable[[], None] | None = None,
     ) -> Callable[[Path, str], ValidationResult]:
         def validate(run_directory: Path, relative_path: str) -> ValidationResult:
+            if deadline_check is not None:
+                deadline_check()
             if relative_path != record.relative_path:
                 return ValidationResult(
                     ValidationStatus.INVALID,
@@ -203,10 +220,20 @@ class ArtifactFinalReport:
             if record.status is not ValidationStatus.VALID:
                 return ValidationResult(record.status, None, None, record.detail)
             host_result = (
-                validate_tree(run_directory, relative_path)
+                validate_tree(
+                    run_directory,
+                    relative_path,
+                    deadline_check=deadline_check,
+                )
                 if relative_path == "rosbag"
-                else validate_regular_file(run_directory, relative_path)
+                else validate_regular_file(
+                    run_directory,
+                    relative_path,
+                    deadline_check=deadline_check,
+                )
             )
+            if deadline_check is not None:
+                deadline_check()
             if host_result.status is not ValidationStatus.VALID:
                 return host_result
             if host_result.size_bytes != record.size_bytes:
@@ -243,6 +270,8 @@ class _HostEventLog:
         self._stream = stream
         self._utcnow = utcnow
         self._closed = False
+        self._file_failed = False
+        self._stream_failed = False
         logs = run_directory / "logs"
         try:
             logs.mkdir(mode=0o755)
@@ -278,6 +307,8 @@ class _HostEventLog:
     def emit(self, event: str, *, severity: str = "INFO", **fields: Any) -> None:
         if self._closed:
             raise RuntimeError("host event log is closed")
+        if self._file_failed:
+            return
         timestamp = self._utcnow()
         if timestamp.tzinfo is None or timestamp.utcoffset() is None:
             raise ControllerError("host event wall clock must be timezone-aware")
@@ -293,25 +324,47 @@ class _HostEventLog:
         line = structured.to_json_line()
         payload = line.encode("utf-8")
         written = 0
-        while written < len(payload):
-            count = os.write(self._descriptor, payload[written:])
-            if count <= 0:
-                raise OSError("host event append made no progress")
-            written += count
-        os.fsync(self._descriptor)
-        self._stream.write(line)
-        self._stream.flush()
+        try:
+            while written < len(payload):
+                count = os.write(self._descriptor, payload[written:])
+                if count <= 0:
+                    raise OSError("host event append made no progress")
+                written += count
+            os.fsync(self._descriptor)
+        except Exception:
+            self._file_failed = True
+            raise
+        if not self._stream_failed:
+            try:
+                self._stream.write(line)
+                self._stream.flush()
+            except Exception:
+                self._stream_failed = True
+                raise
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        failure: Exception | None = None
         try:
             os.fsync(self._descriptor)
-        finally:
+        except Exception as exc:
+            failure = exc
+        try:
             os.close(self._descriptor)
+        except Exception as exc:
+            failure = failure or exc
+        try:
             os.fsync(self._logs_fd)
+        except Exception as exc:
+            failure = failure or exc
+        try:
             os.close(self._logs_fd)
+        except Exception as exc:
+            failure = failure or exc
+        if failure is not None:
+            raise failure
 
 
 class _UnavailableCompose:
@@ -383,6 +436,13 @@ class RunController:
     def _remaining(deadline: float, monotonic: Callable[[], float]) -> float:
         return max(0.0, deadline - monotonic())
 
+    def _deadline_check(self, deadline: float) -> Callable[[], None]:
+        def check() -> None:
+            if self.monotonic() >= deadline:
+                raise TimeoutError("finalization_deadline")
+
+        return check
+
     @staticmethod
     def _cause_for_request(document: Mapping[str, Any]) -> TerminalCause:
         terminal = document["requested_terminal"]
@@ -431,11 +491,21 @@ class RunController:
             return TerminalCause("child_process", "compose_ps_invalid")
         if not rows or any(
             not isinstance(row, dict)
-            or str(row.get("State", "")).lower() not in {"running", "restarting"}
+            or not isinstance(row.get("Service"), str)
+            or not row["Service"]
+            or not isinstance(row.get("State"), str)
+            for row in rows
+        ):
+            return TerminalCause("child_process", "compose_ps_invalid")
+        if any(
+            row["State"].lower() not in {"running", "restarting"}
             or str(row.get("Health", "")).lower() == "unhealthy"
             for row in rows
         ):
             return TerminalCause("child_process", "compose_child_exited")
+        services = [row["Service"] for row in rows]
+        if len(services) != len(set(services)) or set(services) != _REQUIRED_SERVICES:
+            return TerminalCause("child_process", "compose_child_set_invalid")
         return None
 
     def _observed_cause(
@@ -515,7 +585,9 @@ class RunController:
         }[requested]
 
     def _source_revisions(self, deadline: float) -> tuple[SourceRevision, ...]:
+        deadline_check = self._deadline_check(deadline)
         try:
+            deadline_check()
             revision = self.source_runner(
                 ["git", "-C", str(self.project_directory), "rev-parse", "HEAD"],
                 stdout=subprocess.PIPE,
@@ -524,6 +596,7 @@ class RunController:
                 shell=False,
                 timeout=self._remaining(deadline, self.monotonic),
             )
+            deadline_check()
             dirty = self.source_runner(
                 [
                     "git",
@@ -539,6 +612,9 @@ class RunController:
                 shell=False,
                 timeout=self._remaining(deadline, self.monotonic),
             )
+            deadline_check()
+        except TimeoutError:
+            raise
         except Exception as exc:
             raise ControllerError("source_revision_unavailable") from exc
         if revision.returncode != 0 or dirty.returncode != 0:
@@ -551,14 +627,32 @@ class RunController:
             raise ControllerError("source_revision_invalid")
         return (SourceRevision("drone_sim", value, bool(dirty.stdout)),)
 
-    @staticmethod
     def _score_metadata(
+        self,
         run_directory: Path,
+        deadline_check: Callable[[], None] | None = None,
     ) -> tuple[float | None, float | None, str | None, tuple[str, ...]]:
         path = run_directory / "scoring/result.json"
         try:
-            payload = path.read_bytes()
+            chunks: list[bytes] = []
+            with path.open("rb") as stream:
+                while True:
+                    if deadline_check is not None:
+                        deadline_check()
+                    chunk = stream.read(1024 * 1024)
+                    if deadline_check is not None:
+                        deadline_check()
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            payload = b"".join(chunks)
+            if deadline_check is not None:
+                deadline_check()
             document = json.loads(payload.decode("utf-8"))
+            if deadline_check is not None:
+                deadline_check()
+        except TimeoutError:
+            raise
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None, None, None, ()
         if not isinstance(document, dict):
@@ -583,12 +677,36 @@ class RunController:
     def _first_invalid(
         run_directory: Path,
         validators: Mapping[str, Callable[[Path, str], ValidationResult]],
+        deadline_check: Callable[[], None] | None = None,
     ) -> str | None:
         for path in _REPORT_PATHS:
+            if deadline_check is not None:
+                deadline_check()
             result = validators[path](run_directory, path)
             if result.status is not ValidationStatus.VALID:
                 return result.detail
         return None
+
+    @staticmethod
+    def _read_json_with_deadline(
+        path: Path,
+        deadline_check: Callable[[], None],
+    ) -> dict[str, Any]:
+        chunks: list[bytes] = []
+        with path.open("rb") as stream:
+            while True:
+                deadline_check()
+                chunk = stream.read(1024 * 1024)
+                deadline_check()
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        deadline_check()
+        value = json.loads(b"".join(chunks).decode("utf-8"))
+        deadline_check()
+        if not isinstance(value, dict):
+            raise ControllerError("manifest is not a JSON object")
+        return value
 
     def start(self, config_path: Path | str) -> RunResult:
         try:
@@ -599,16 +717,37 @@ class RunController:
         run_directory = store.allocate(config.run_id)
         lifecycle = RunLifecycle.created(config.run_id)
         store.write_operator_status(self._status(lifecycle))
+        diagnostics: list[TerminalCause] = []
         event_log = _HostEventLog(
             run_directory, config.run_id, self.event_stream, self.utcnow
         )
+
+        def retain_observability(operation: str, exc: BaseException) -> None:
+            diagnostic = TerminalCause(
+                "observability",
+                f"host_event_{operation}_failed:{type(exc).__name__}",
+            )
+            if diagnostic not in diagnostics:
+                diagnostics.append(diagnostic)
+
+        def emit_event(event: str, **fields: Any) -> None:
+            try:
+                event_log.emit(event, **fields)
+            except Exception as exc:
+                retain_observability("emit", exc)
+
+        def close_event_log() -> None:
+            try:
+                event_log.close()
+            except Exception as exc:
+                retain_observability("close", exc)
+
         wall_started = self.utcnow()
         mono_started = self.monotonic()
         compose: Any | None = None
         compose_started = False
         compose_attempted = False
         primary: TerminalCause | None = None
-        diagnostics: list[TerminalCause] = []
         sim_start_ns: int | None = None
         sim_end_ns: int | None = None
         manifest_path: Path | None = None
@@ -616,7 +755,7 @@ class RunController:
             self.config_writer(run_directory, config)
             lifecycle = lifecycle.apply(LifecycleEvent.START)
             store.write_operator_status(self._status(lifecycle))
-            event_log.emit("run_starting", config_sha256=config.config_sha256)
+            emit_event("run_starting", config_sha256=config.config_sha256)
             try:
                 compose = self.compose_factory(config, run_directory)
             except Exception as exc:
@@ -710,7 +849,7 @@ class RunController:
                 store.write_operator_status(
                     self._status(lifecycle, primary=primary, diagnostics=tuple(diagnostics))
                 )
-                event_log.emit(
+                emit_event(
                     "run_finalizing",
                     requested_terminal=requested,
                     reason=reason,
@@ -718,7 +857,11 @@ class RunController:
 
                 final_deadline = self.monotonic() + config.finalization_wall_seconds
                 teardown_reserve = min(5.0, config.finalization_wall_seconds / 5.0)
-                work_deadline = final_deadline - teardown_reserve
+                manifest_reserve = min(5.0, config.finalization_wall_seconds / 5.0)
+                manifest_deadline = final_deadline - teardown_reserve
+                work_deadline = manifest_deadline - manifest_reserve
+                work_deadline_check = self._deadline_check(work_deadline)
+                manifest_deadline_check = self._deadline_check(manifest_deadline)
 
                 if compose_started:
                     for status_name in ("runtime-frozen", "artifacts-final"):
@@ -745,8 +888,8 @@ class RunController:
                                 reason = cause.reason
                             break
 
-                event_log.emit("log_capture_starting")
-                event_log.close()
+                emit_event("log_capture_starting")
+                close_event_log()
                 try:
                     capture = self.log_capture_factory(
                         run_directory=run_directory,
@@ -758,6 +901,7 @@ class RunController:
                             self._remaining(work_deadline, self.monotonic),
                         ),
                         host_events=True,
+                        deadline_check=work_deadline_check,
                     )
                     capture.capture()
                 except KeyboardInterrupt:
@@ -765,9 +909,14 @@ class RunController:
                     reason = "operator_interrupt"
                     primary = primary or TerminalCause("operator_interrupt", reason)
                 except DockerLogCaptureError as exc:
+                    deadline_exhausted = any(
+                        item.kind == "deadline" for item in exc.result.diagnostics
+                    )
                     diagnostic = TerminalCause(
                         "docker_log_capture",
-                        "docker_log_capture_failed",
+                        "finalization_deadline"
+                        if deadline_exhausted
+                        else "docker_log_capture_failed",
                     )
                     if primary is None:
                         primary = diagnostic
@@ -791,15 +940,27 @@ class RunController:
                         reason = diagnostic.reason
 
                 try:
-                    report_document = store.read_runtime_status(config.run_id, "artifacts-final")
+                    work_deadline_check()
+                    report_document = store.read_runtime_status(
+                        config.run_id,
+                        "artifacts-final",
+                        deadline_check=work_deadline_check,
+                    )
+                    work_deadline_check()
                     if report_document is None:
                         raise ControllerError("artifacts-final report is missing")
-                    report = ArtifactFinalReport.parse(config.run_id, report_document)
-                    validators = report.validators()
-                    report_failure = report.first_failure() or self._first_invalid(
-                        run_directory, validators
+                    report = ArtifactFinalReport.parse(
+                        config.run_id,
+                        report_document,
+                        work_deadline_check,
                     )
-                except (ControllerError, ProtocolFileError) as exc:
+                    validators = report.validators(work_deadline_check)
+                    report_failure = report.first_failure() or self._first_invalid(
+                        run_directory,
+                        validators,
+                        work_deadline_check,
+                    )
+                except (ControllerError, ProtocolFileError, TimeoutError) as exc:
                     report = None
                     validators = {
                         path: (
@@ -817,13 +978,18 @@ class RunController:
 
                 try:
                     source_revisions = self._source_revisions(work_deadline)
-                except ControllerError as exc:
+                except (ControllerError, TimeoutError) as exc:
                     source_revisions = ()
                     if requested == "COMPLETED":
                         requested = "FAILED"
-                        reason = str(exc)
+                        reason = (
+                            "finalization_deadline"
+                            if isinstance(exc, TimeoutError)
+                            else str(exc)
+                        )
                         primary = primary or TerminalCause("provenance", reason)
                 try:
+                    work_deadline_check()
                     image_digests = tuple(
                         compose.image_digests(
                             self._remaining(work_deadline, self.monotonic)
@@ -831,15 +997,28 @@ class RunController:
                     )
                     if not image_digests:
                         raise ControllerError("image_digest_unavailable")
-                except Exception:
+                    work_deadline_check()
+                except Exception as exc:
                     image_digests = ()
                     if requested == "COMPLETED":
                         requested = "FAILED"
-                        reason = "image_digest_unavailable"
+                        reason = (
+                            "finalization_deadline"
+                            if isinstance(exc, TimeoutError)
+                            else "image_digest_unavailable"
+                        )
                         primary = primary or TerminalCause("provenance", reason)
-                achieved, maximum, scoring_checksum, evidence = self._score_metadata(
-                    run_directory
-                )
+                try:
+                    achieved, maximum, scoring_checksum, evidence = self._score_metadata(
+                        run_directory,
+                        work_deadline_check,
+                    )
+                except TimeoutError:
+                    achieved, maximum, scoring_checksum, evidence = (None, None, None, ())
+                    if requested == "COMPLETED":
+                        requested = "FAILED"
+                        reason = "finalization_deadline"
+                        primary = primary or TerminalCause("provenance", reason)
                 if (sim_start_ns is None) != (sim_end_ns is None):
                     sim_start_ns = None
                     sim_end_ns = None
@@ -863,7 +1042,10 @@ class RunController:
                 )
                 try:
                     session = self.artifact_session_factory(
-                        run_directory, validators=validators
+                        run_directory,
+                        validators=validators,
+                        deadline_check=work_deadline_check,
+                        commit_deadline_check=manifest_deadline_check,
                     )
                     manifest_path = session.finalize(request)
                 except Exception as exc:
@@ -875,8 +1057,14 @@ class RunController:
                 effective = requested
                 if manifest_path is not None:
                     try:
-                        validated = store.validated_manifest_path(config.run_id)
-                        manifest_document = json.loads(validated.read_text(encoding="utf-8"))
+                        validated = store.validated_manifest_path(
+                            config.run_id,
+                            manifest_deadline_check,
+                        )
+                        manifest_document = self._read_json_with_deadline(
+                            validated,
+                            manifest_deadline_check,
+                        )
                         effective = manifest_document["terminal_status"]
                         reason = manifest_document["reason"]
                         if (
@@ -889,30 +1077,6 @@ class RunController:
                             )
                         else:
                             lifecycle = lifecycle.apply(LifecycleEvent.ARTIFACTS_FINALIZED)
-                        store.write_terminal_committed(
-                            config.run_id,
-                            {
-                                "run_id": config.run_id,
-                                "terminal_status": effective,
-                                "reason": reason,
-                                "manifest_path": "manifest.json",
-                            },
-                        )
-                        if compose_started:
-                            notified, notify_cause = self._wait_for(
-                                store,
-                                config.run_id,
-                                compose,
-                                "terminal-notified",
-                                work_deadline,
-                                TerminalCause(
-                                    "finalization_deadline",
-                                    "terminal_notification_deadline",
-                                ),
-                                observe_causes=False,
-                            )
-                            if notify_cause is not None:
-                                diagnostics.append(notify_cause)
                     except Exception as exc:
                         effective = "FAILED"
                         reason = f"manifest_commit_failed:{exc}"
@@ -923,6 +1087,47 @@ class RunController:
                             pending_terminal=None,
                             reason=reason,
                         )
+                    else:
+                        try:
+                            store.write_terminal_committed(
+                                config.run_id,
+                                {
+                                    "run_id": config.run_id,
+                                    "terminal_status": effective,
+                                    "reason": reason,
+                                    "manifest_path": "manifest.json",
+                                },
+                            )
+                        except Exception as exc:
+                            diagnostics.append(
+                                TerminalCause(
+                                    "terminal_notification",
+                                    f"terminal_commit_write_failed:{type(exc).__name__}",
+                                )
+                            )
+                        if compose_started:
+                            try:
+                                _notified, notify_cause = self._wait_for(
+                                    store,
+                                    config.run_id,
+                                    compose,
+                                    "terminal-notified",
+                                    manifest_deadline,
+                                    TerminalCause(
+                                        "finalization_deadline",
+                                        "terminal_notification_deadline",
+                                    ),
+                                    observe_causes=False,
+                                )
+                                if notify_cause is not None:
+                                    diagnostics.append(notify_cause)
+                            except Exception as exc:
+                                diagnostics.append(
+                                    TerminalCause(
+                                        "terminal_notification",
+                                        f"terminal_notification_failed:{type(exc).__name__}",
+                                    )
+                                )
                 else:
                     effective = "FAILED"
                     lifecycle = replace(
@@ -971,10 +1176,7 @@ class RunController:
             store.write_operator_status(status)
             return RunResult(config.run_id, status.state, status.reason, None)
         finally:
-            try:
-                event_log.close()
-            except Exception:
-                pass
+            close_event_log()
             if compose_attempted and compose is not None:
                 teardown_failure: str | None = None
                 try:

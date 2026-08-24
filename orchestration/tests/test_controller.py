@@ -36,6 +36,15 @@ MODULES = (
     "electromagnet",
     "scorekeeper",
 )
+SERVICES = (
+    "orchestration-runtime",
+    "artifacts-runtime",
+    "synthetic-companion",
+    "synthetic-ardupilot-sitl",
+    "synthetic-gazebo",
+    "synthetic-electromagnet",
+    "synthetic-scorekeeper",
+)
 
 
 def _template(tmp_path: Path, **updates) -> Path:
@@ -155,8 +164,8 @@ class TraceStore(StatusStore):
         self.trace.append("allocate")
         return super().allocate(run_id)
 
-    def read_runtime_status(self, run_id, name):
-        value = super().read_runtime_status(run_id, name)
+    def read_runtime_status(self, run_id, name, deadline_check=None):
+        value = super().read_runtime_status(run_id, name, deadline_check)
         if value is not None and name in {
             "artifacts-ready",
             "source-finished",
@@ -225,7 +234,15 @@ class FakeCompose:
         return ComposeCommandResult(0, b"started")
 
     def ps(self, timeout):
-        return ComposeCommandResult(0, b'[{"Service":"synthetic-gazebo","State":"running"}]')
+        return ComposeCommandResult(
+            0,
+            json.dumps(
+                [
+                    {"Service": service, "State": "running", "Health": "healthy"}
+                    for service in SERVICES
+                ]
+            ).encode(),
+        )
 
     def logs(self, command, timeout):
         self.log_timeouts.append(timeout)
@@ -295,13 +312,15 @@ def _controller(
     clock=None,
     sleep=None,
     artifact_session_factory=None,
+    event_stream=None,
+    store_type=TraceStore,
 ):
     trace: list[str] = []
     clock = clock or FakeClock()
     compose_holder = {}
 
     def store_factory(root):
-        return TraceStore(root, trace)
+        return store_type(root, trace)
 
     def compose_factory(config, run_directory):
         compose = FakeCompose(
@@ -353,7 +372,7 @@ def _controller(
         sleep=sleep or clock.sleep,
         utcnow=lambda: datetime(2026, 8, 24, tzinfo=timezone.utc)
         + timedelta(seconds=clock.monotonic() - 100.0),
-        event_stream=io.StringIO(),
+        event_stream=event_stream or io.StringIO(),
         poll_interval=1.0,
     )
     return controller, trace, clock, compose_holder
@@ -394,6 +413,7 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         "--no-build",
     ]
     assert environment == {
+        "COMPOSE_PROFILES": "phase2",
         "PATH": "/bin",
         "SIM_CONFIG_PATH": str(config_path),
         "SIM_PHASE2_PROFILE": "1",
@@ -401,6 +421,60 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         "SIM_RUN_ID": RUN_ID,
     }
     assert timeout == 9.5
+
+
+def test_compose_profile_environment_and_exact_ps_argv_cover_every_operation(tmp_path):
+    calls = []
+
+    def runner(command, *, env, timeout):
+        calls.append((command, env.copy()))
+        if command[-2:] == ["config", "--images"]:
+            output = b"phase2-image\n"
+        elif command[:3] == ["docker", "image", "inspect"]:
+            output = ("sha256:" + "a" * 64 + "\n").encode()
+        else:
+            output = b"[]"
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=(tmp_path / "run").resolve(),
+        config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        runner=runner,
+        base_environment={},
+    )
+    runtime.up(3)
+    runtime.ps(3)
+    runtime.logs(
+        [
+            "docker", "compose", "-p", runtime.project_name, "logs",
+            "--no-color", "--no-log-prefix", "synthetic-gazebo",
+        ],
+        3,
+    )
+    runtime.image_digests(3)
+    runtime.down(3)
+
+    assert all(environment["COMPOSE_PROFILES"] == "phase2" for _, environment in calls)
+    assert calls[1][0][-4:] == ["ps", "--all", "--format", "json"]
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    [
+        ([{"Service": service, "State": "running"} for service in SERVICES[:-1]], "compose_child_set_invalid"),
+        ([{"Service": service, "State": "running"} for service in (*SERVICES, "extra")], "compose_child_set_invalid"),
+        ([{"Service": service, "State": "running"} for service in (*SERVICES[:-1], SERVICES[0])], "compose_child_set_invalid"),
+        ([{"Service": service, "State": "running"} for service in SERVICES[:-1]] + [{"Service": SERVICES[-1], "State": "exited"}], "compose_child_exited"),
+        ([{"State": "running"}], "compose_ps_invalid"),
+    ],
+)
+def test_compose_health_requires_exact_seven_unique_running_services(rows, reason):
+    cause = RunController._ps_cause(ComposeCommandResult(0, json.dumps(rows).encode()))
+
+    assert cause is not None
+    assert cause.reason == reason
 
 
 def test_compose_log_runner_validates_frozen_command_and_augments_project_directory(tmp_path):
@@ -554,7 +628,7 @@ def test_log_capture_wrapper_recomputes_remaining_timeout_for_all_seven_services
 
 
 def test_git_provenance_commands_consume_one_shared_remaining_deadline(tmp_path):
-    values = iter([10.0, 11.0])
+    values = iter([10.0, 10.0, 11.0, 11.0, 11.0])
     calls = []
 
     def monotonic():
@@ -937,6 +1011,223 @@ def test_teardown_exception_is_retained_as_later_operator_diagnostic(tmp_path):
         (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
     )
     assert any(item["kind"] == "teardown" for item in document["diagnostics"])
+
+
+def test_terminal_commit_write_failure_cannot_override_committed_manifest(tmp_path):
+    class FailingTerminalStore(TraceStore):
+        def write_terminal_committed(self, run_id, document):
+            raise OSError("control volume became read-only")
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path, store_type=FailingTerminalStore
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    manifest = json.loads((tmp_path / "runs" / RUN_ID / "manifest.json").read_text())
+    status = json.loads(
+        (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
+    )
+    assert result.state == manifest["terminal_status"] == status["state"] == "COMPLETED"
+    assert any(item["kind"] == "terminal_notification" for item in status["diagnostics"])
+
+
+def test_terminal_commit_write_failure_cannot_override_aborted_manifest(tmp_path):
+    class AbortingFailingTerminalStore(TraceStore):
+        def write_operator_status(self, status):
+            path = super().write_operator_status(status)
+            if status.state == "RUNNING":
+                self.request_finalization(RUN_ID, "ABORTED", "operator_abort")
+            return path
+
+        def write_terminal_committed(self, run_id, document):
+            raise OSError("control volume became read-only")
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path, store_type=AbortingFailingTerminalStore
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    manifest = json.loads((tmp_path / "runs" / RUN_ID / "manifest.json").read_text())
+    assert result.state == manifest["terminal_status"] == "ABORTED"
+    assert result.reason == manifest["reason"] == "operator_abort"
+
+
+def test_terminal_notification_read_failure_cannot_override_committed_manifest(tmp_path):
+    class FailingNotificationStore(TraceStore):
+        def read_runtime_status(self, run_id, name, deadline_check=None):
+            if name == "terminal-notified":
+                raise OSError("status volume became unreadable")
+            return super().read_runtime_status(run_id, name, deadline_check)
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path, store_type=FailingNotificationStore
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    manifest = json.loads((tmp_path / "runs" / RUN_ID / "manifest.json").read_text())
+    assert result.state == manifest["terminal_status"] == "COMPLETED"
+    status = json.loads(
+        (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
+    )
+    assert any(item["kind"] == "terminal_notification" for item in status["diagnostics"])
+
+
+def test_broken_stdout_during_second_event_preserves_manifest_and_teardown(tmp_path):
+    class BrokenSecondWrite(io.StringIO):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def write(self, value):
+            self.calls += 1
+            if self.calls == 2:
+                raise BrokenPipeError("operator disconnected")
+            return super().write(value)
+
+    controller, trace, _clock, _holder = _controller(
+        tmp_path, event_stream=BrokenSecondWrite()
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    assert result.state == "COMPLETED"
+    assert (tmp_path / "runs" / RUN_ID / "manifest.json").is_file()
+    assert trace[-1] == "compose down"
+    status = json.loads(
+        (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
+    )
+    assert any(item["kind"] == "observability" for item in status["diagnostics"])
+
+
+def test_host_partial_append_failure_is_diagnostic_and_finalization_continues(
+    tmp_path, monkeypatch
+):
+    real_write = os.write
+    host_writes = 0
+
+    def failing_write(descriptor, payload):
+        nonlocal host_writes
+        try:
+            target = os.readlink(f"/proc/self/fd/{descriptor}")
+        except OSError:
+            target = ""
+        if target.endswith("orchestration-host.jsonl.partial"):
+            host_writes += 1
+            if host_writes == 2:
+                raise OSError("host event volume full")
+        return real_write(descriptor, payload)
+
+    monkeypatch.setattr(os, "write", failing_write)
+    controller, trace, _clock, _holder = _controller(tmp_path)
+
+    result = controller.start(_template(tmp_path))
+
+    assert result.state == "COMPLETED"
+    assert (tmp_path / "runs" / RUN_ID / "manifest.json").is_file()
+    assert trace[-1] == "compose down"
+    status = json.loads(
+        (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
+    )
+    assert any(item["kind"] == "observability" for item in status["diagnostics"])
+
+
+def test_host_event_close_failure_is_diagnostic_and_finalization_continues(
+    tmp_path, monkeypatch
+):
+    real_fsync = os.fsync
+    host_fsyncs = 0
+
+    def failing_fsync(descriptor):
+        nonlocal host_fsyncs
+        try:
+            target = os.readlink(f"/proc/self/fd/{descriptor}")
+        except OSError:
+            target = ""
+        if target.endswith("orchestration-host.jsonl.partial"):
+            host_fsyncs += 1
+            if host_fsyncs == 4:
+                raise OSError("host event fsync failed")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    controller, trace, _clock, _holder = _controller(tmp_path)
+
+    result = controller.start(_template(tmp_path))
+
+    assert result.state == "COMPLETED"
+    assert trace[-1] == "compose down"
+    status = json.loads(
+        (tmp_path / "runs" / RUN_ID / ".status/operator-state.json").read_text()
+    )
+    assert any(item["kind"] == "observability" for item in status["diagnostics"])
+
+
+def test_host_event_descriptor_close_failure_does_not_skip_remaining_cleanup(
+    tmp_path, monkeypatch
+):
+    real_close = os.close
+    failed = False
+
+    def failing_close(descriptor):
+        nonlocal failed
+        try:
+            target = os.readlink(f"/proc/self/fd/{descriptor}")
+        except OSError:
+            target = ""
+        if not failed and target.endswith("orchestration-host.jsonl.partial"):
+            failed = True
+            raise OSError("host event close failed")
+        return real_close(descriptor)
+
+    monkeypatch.setattr(os, "close", failing_close)
+    controller, trace, _clock, _holder = _controller(tmp_path)
+
+    result = controller.start(_template(tmp_path))
+
+    assert result.state == "COMPLETED"
+    assert trace[-1] == "compose down"
+    run_directory = str(tmp_path / "runs" / RUN_ID)
+    leaked = []
+    for entry in Path("/proc/self/fd").iterdir():
+        try:
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if target.startswith(run_directory):
+            leaked.append(target)
+    assert leaked == [
+        f"{run_directory}/logs/orchestration-host.jsonl.partial"
+    ]
+
+
+def test_session_deadline_exhaustion_cannot_return_completed(tmp_path):
+    clock = FakeClock()
+
+    class AdvancingSession:
+        def __init__(self, *args, deadline_check=None, **kwargs):
+            self.deadline_check = deadline_check
+
+        def finalize(self, request):
+            clock.value += 1000
+            if self.deadline_check is None:
+                raise RuntimeError("deadline seam missing")
+            self.deadline_check()
+            raise AssertionError("deadline check did not stop finalization")
+
+    controller, trace, _clock, holder = _controller(
+        tmp_path, clock=clock, artifact_session_factory=AdvancingSession
+    )
+
+    result = controller.start(_template(tmp_path))
+
+    assert result.state == "FAILED"
+    assert "finalization_deadline" in result.reason
+    assert trace[-1] == "compose down"
+    assert holder["value"].down_timeouts == [0.0]
+    assert not (tmp_path / "runs" / RUN_ID / "manifest.json").exists()
 
 
 @pytest.mark.parametrize(

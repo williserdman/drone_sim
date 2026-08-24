@@ -110,6 +110,36 @@ def test_capture_invokes_one_exact_argument_array_per_service_in_mapping_order(t
     ]
 
 
+def test_capture_checks_deadline_during_per_line_partitioning(tmp_path):
+    results = _valid_results()
+    service, module = OWNERSHIP[0]
+    results[service] = DockerLogCommandResult(
+        0, b"\n".join(_event(module, event=f"event-{index}") for index in range(20))
+    )
+    checks = 0
+
+    def deadline_check():
+        nonlocal checks
+        checks += 1
+        if checks == 15:
+            raise TimeoutError("finalization_deadline")
+
+    runner = FakeRunner(results)
+    capture = DockerLogCapture(
+        run_directory=tmp_path,
+        project_name="phase2-run",
+        ownership=OWNERSHIP,
+        run_id=RUN_ID,
+        command_runner=runner,
+        deadline_check=deadline_check,
+    )
+
+    with pytest.raises(DockerLogCaptureError, match="finalization_deadline") as raised:
+        capture.capture()
+
+    assert raised.value.result.succeeded is False
+
+
 def test_capture_preserves_each_returned_byte_exactly(tmp_path):
     """Decoding or line normalization would destroy raw diagnostic evidence."""
     arbitrary = b"third party\n\ninvalid: \xff\xfe\nlast line without newline"

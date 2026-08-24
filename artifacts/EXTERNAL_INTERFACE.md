@@ -45,6 +45,13 @@ uses the remaining budget of one shared bounded deadline measured by a
 monotonic wall clock, writes the manifest atomically, and explicitly records
 missing or invalid artifacts.
 
+Host capture and `ArtifactSession` expose optional cooperative deadline checks
+without changing existing callers. Parsing, per-line routing, file chunks,
+tree entries, optional inventory, manifest encoding, and publication boundaries
+check the supplied budget. Work-time exhaustion stops further validation and
+records unfinished required paths as timeout-invalid before the reserved
+manifest commit is attempted.
+
 Artifacts does not begin draining until `.status/runtime-frozen.json` proves
 all publishers are permanently quiescent. It closes both video pipelines and
 the bag before writing `artifacts-final.json`. That report has exact top-level

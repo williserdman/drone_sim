@@ -1,5 +1,6 @@
 """Fail-closed filesystem validation for run-bundle artifacts."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -30,6 +31,12 @@ _IDENTITY_FIELDS = (
     "st_mtime_ns",
     "st_ctime_ns",
 )
+DeadlineCheck = Callable[[], None]
+
+
+def _check_deadline(deadline_check: DeadlineCheck | None) -> None:
+    if deadline_check is not None:
+        deadline_check()
 
 
 class ValidationStatus(str, Enum):
@@ -163,9 +170,11 @@ def _open_directory_chain(
     *,
     final_not_directory_detail: str,
     unreadable_detail: str,
+    deadline_check: DeadlineCheck | None = None,
 ) -> int:
     parent_fd = root_fd
     for index, name in enumerate(parts):
+        _check_deadline(deadline_check)
         detail = (
             final_not_directory_detail
             if index == len(parts) - 1
@@ -190,7 +199,9 @@ def _hash_regular_file_at(
     name: str,
     *,
     unreadable_detail: str,
+    deadline_check: DeadlineCheck | None = None,
 ) -> ValidationResult:
+    _check_deadline(deadline_check)
     entry_stat = _stat_at(parent_fd, name, unreadable_detail)
     if stat.S_ISLNK(entry_stat.st_mode):
         _fail(ValidationStatus.INVALID, "symlinks are not allowed")
@@ -220,11 +231,17 @@ def _hash_regular_file_at(
                 "regular files must have exactly one hard link",
             )
         digest = hashlib.sha256()
-        try:
-            while chunk := os.read(descriptor, _CHUNK_SIZE):
-                digest.update(chunk)
-        except OSError:
-            _fail(ValidationStatus.INVALID, unreadable_detail)
+        while True:
+            _check_deadline(deadline_check)
+            try:
+                chunk = os.read(descriptor, _CHUNK_SIZE)
+            except OSError:
+                _fail(ValidationStatus.INVALID, unreadable_detail)
+            _check_deadline(deadline_check)
+            if not chunk:
+                break
+            digest.update(chunk)
+        _check_deadline(deadline_check)
         after = os.fstat(descriptor)
         if not _same_file_snapshot(before, after):
             _fail(ValidationStatus.INVALID, "file changed during validation")
@@ -246,12 +263,16 @@ def _all_entries_still_match(entries: list[_RetainedEntry]) -> bool:
 
 
 def validate_regular_file(
-    run_directory: Path | str, relative_path: Path | str
+    run_directory: Path | str,
+    relative_path: Path | str,
+    *,
+    deadline_check: DeadlineCheck | None = None,
 ) -> ValidationResult:
     """Validate a regular file through a retained, no-follow descriptor walk."""
     held_descriptors: list[int] = []
     retained_entries: list[_RetainedEntry] = []
     try:
+        _check_deadline(deadline_check)
         parts = _relative_parts(relative_path)
         root_fd = _open_run_directory(run_directory)
         held_descriptors.append(root_fd)
@@ -262,12 +283,15 @@ def validate_regular_file(
             retained_entries,
             final_not_directory_detail="path is not a directory",
             unreadable_detail="file could not be read",
+            deadline_check=deadline_check,
         )
         result = _hash_regular_file_at(
             parent_fd,
             parts[-1],
             unreadable_detail="file could not be read",
+            deadline_check=deadline_check,
         )
+        _check_deadline(deadline_check)
         if not _all_entries_still_match(retained_entries):
             _fail(ValidationStatus.INVALID, "path changed during validation")
         return result
@@ -289,11 +313,17 @@ def _tree_file_failure(result: ValidationResult) -> ValidationResult:
     return ValidationResult(ValidationStatus.INVALID, None, None, detail)
 
 
-def validate_tree(run_directory: Path | str, relative_path: Path | str) -> ValidationResult:
+def validate_tree(
+    run_directory: Path | str,
+    relative_path: Path | str,
+    *,
+    deadline_check: DeadlineCheck | None = None,
+) -> ValidationResult:
     """Validate a nonempty tree through retained, no-follow directory descriptors."""
     held_descriptors: list[int] = []
     retained_entries: list[_RetainedEntry] = []
     try:
+        _check_deadline(deadline_check)
         parts = _relative_parts(relative_path)
         root_fd = _open_run_directory(run_directory)
         held_descriptors.append(root_fd)
@@ -304,16 +334,19 @@ def validate_tree(run_directory: Path | str, relative_path: Path | str) -> Valid
             retained_entries,
             final_not_directory_detail="path is not a directory",
             unreadable_detail="directory tree could not be read",
+            deadline_check=deadline_check,
         )
         rows: list[tuple[str, int, str]] = []
         pending: list[tuple[int, tuple[str, ...]]] = [(tree_fd, ())]
         while pending:
+            _check_deadline(deadline_check)
             directory_fd, prefix = pending.pop()
             try:
                 names = sorted(os.listdir(directory_fd))
             except OSError:
                 _fail(ValidationStatus.INVALID, "directory tree could not be read")
             for name in names:
+                _check_deadline(deadline_check)
                 relative_parts = (*prefix, name)
                 relative_posix = "/".join(relative_parts)
                 try:
@@ -353,6 +386,7 @@ def validate_tree(run_directory: Path | str, relative_path: Path | str) -> Valid
                         directory_fd,
                         name,
                         unreadable_detail="directory tree contains unreadable file",
+                        deadline_check=deadline_check,
                     )
                 except _ValidationFailure as failure:
                     raise _ValidationFailure(_tree_file_failure(failure.result)) from failure
@@ -371,8 +405,10 @@ def validate_tree(run_directory: Path | str, relative_path: Path | str) -> Valid
         digest = hashlib.sha256()
         size_bytes = 0
         for path, size, file_digest in sorted(rows):
+            _check_deadline(deadline_check)
             digest.update(f"{path}\0{size}\0{file_digest}\n".encode("utf-8"))
             size_bytes += size
+        _check_deadline(deadline_check)
         return ValidationResult(
             ValidationStatus.VALID,
             size_bytes,
