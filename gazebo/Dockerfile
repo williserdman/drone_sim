@@ -64,6 +64,7 @@ COPY gazebo/provenance /opt/drone_sim/gazebo/provenance
 ENV VIRTUAL_ENV=/opt/drone_sim/venv
 ENV PATH="/opt/drone_sim/venv/bin:${PATH}"
 ENV GZ_SIM_RESOURCE_PATH=/opt/drone_sim/gazebo/resources
+ENV SDF_PATH=/opt/drone_sim/gazebo/resources/models
 
 # Source ROS before replacing PID 1 with the caller's argv. Runtime code is
 # added in Task 5; this stage already owns the immutable runtime supply chain.
