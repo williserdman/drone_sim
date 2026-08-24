@@ -10,6 +10,7 @@ members = [
     "drone-sim-electromagnet",
     "drone-sim-gazebo",
     "drone-sim-orchestration",
+    "drone-sim-scorekeeper",
 ]
 
 [[package]]
@@ -62,6 +63,7 @@ dependencies = [
     { name = "drone-sim-electromagnet" },
     { name = "drone-sim-gazebo" },
     { name = "drone-sim-orchestration" },
+    { name = "drone-sim-scorekeeper" },
     { name = "jsonschema" },
 ]
 
@@ -77,6 +79,7 @@ requires-dist = [
     { name = "drone-sim-electromagnet", editable = "electromagnet" },
     { name = "drone-sim-gazebo", editable = "gazebo" },
     { name = "drone-sim-orchestration", editable = "orchestration" },
+    { name = "drone-sim-scorekeeper", editable = "scorekeeper" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
 ]
 
@@ -115,6 +118,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "drone-sim-artifacts", editable = "artifacts" }]
+
+[[package]]
+name = "drone-sim-scorekeeper"
+version = "0.1.0"
+source = { editable = "scorekeeper" }
 
 [[package]]
 name = "fastcrc"

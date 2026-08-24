@@ -8,6 +8,7 @@ dependencies = [
     "drone-sim-electromagnet",
     "drone-sim-gazebo",
     "drone-sim-orchestration",
+    "drone-sim-scorekeeper",
     "jsonschema>=4.23,<5",
 ]
 
@@ -24,10 +25,11 @@ pythonpath = [
     "companion/src",
     "electromagnet/src",
     "gazebo/src",
+    "scorekeeper/src",
 ]
 
 [tool.uv.workspace]
-members = ["artifacts", "companion", "electromagnet", "gazebo", "orchestration"]
+members = ["artifacts", "companion", "electromagnet", "gazebo", "orchestration", "scorekeeper"]
 
 [tool.uv.sources]
 drone-sim-artifacts = { workspace = true }
@@ -35,3 +37,4 @@ drone-sim-companion = { workspace = true }
 drone-sim-electromagnet = { workspace = true }
 drone-sim-gazebo = { workspace = true }
 drone-sim-orchestration = { workspace = true }
+drone-sim-scorekeeper = { workspace = true }
