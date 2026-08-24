@@ -82,10 +82,10 @@ def test_resolve_default_template_returns_frozen_phase_3_configuration():
     assert resolved.runtime_profile == "phase3"
     assert resolved.simulation == config_module.SimulationConfig(
         seed=1,
-        duration_ns=2_000_000_000,
+        duration_ns=30_000_000_000,
         target_real_time_factor=0.1,
     )
-    assert resolved.expected_camera_frames == 40
+    assert resolved.expected_camera_frames == 600
     assert resolved.recording == RecordingConfig(
         width_px=320,
         height_px=240,
@@ -467,7 +467,7 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
         "config_sha256": resolved.config_sha256,
         "finalization_wall_seconds": 120,
         "max_wall_seconds": 3600,
-        "mission": "physical_foundation",
+        "mission": "controlled_descent",
         "output_root": str((ROOT / "../runs").resolve()),
         "recording": {
             "encoding": "rgb8",
@@ -477,15 +477,15 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
         },
         "run_id": str(FIXED_RUN_ID),
         "runtime_profile": "phase3",
-        "scenario": "passive_descent",
+        "scenario": "descent_v1",
         "simulation": {
-            "duration_sim_seconds": 2.0,
+            "duration_sim_seconds": 30.0,
             "seed": 1,
             "target_real_time_factor": 0.1,
         },
         "startup_wall_seconds": 120,
-        "vehicle": "iris",
-        "world": "phase3_foundation",
+        "vehicle": "iris_flight",
+        "world": "vertical_descent",
     }
     assert load_run_config(written) == resolved
 

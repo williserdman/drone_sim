@@ -26,6 +26,10 @@ selects `phase3`. Phase 2 rejects a `simulation` object. Phase 3 requires:
   exactly by `50,000,000`.
 - `target_real_time_factor`: exactly `0.1`.
 
+The repository default selects the `vertical_descent` world, `iris_flight`
+vehicle, controlled-descent mission, inactive `descent_v1` scenario, and 30.0
+simulated seconds, yielding exactly 600 frames per camera.
+
 The resolved snapshot normalizes the selector and simulation values, includes
 them in `config_sha256`, and derives the expected per-stream frame count before
 Compose construction. Recording remains fixed at `320x240`, `rgb8`, and 20 FPS.

@@ -34,7 +34,7 @@ Recording geometry is exactly `320x240` at 20 FPS with `rgb8` encoding.
 Template and resolved-config validation reject incompatible profile/simulation
 pairs, invalid timing, or other geometry before Compose construction. Phase 3
 derives the expected per-stream frame count from the exact integer-nanosecond
-duration; the default 2.0 simulated seconds yields 40 frames.
+duration; the default 30.0 simulated seconds yields 600 frames per camera.
 
 Secret values must be supplied at runtime and must not be committed.
 
