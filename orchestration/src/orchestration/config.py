@@ -83,14 +83,12 @@ def _validate_recording(document: Any) -> RecordingConfig:
         raise ValueError("recording configuration has missing or unknown keys")
     width = document["width_px"]
     height = document["height_px"]
-    if any(
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < 2
-        or value % 2
-        for value in (width, height)
+    if (
+        type(width) is not int
+        or type(height) is not int
+        or (width, height) != (320, 240)
     ):
-        raise ValueError("recording dimensions must be positive even integers")
+        raise ValueError("recording dimensions must be exactly 320x240")
     if document["fps"] != 20 or isinstance(document["fps"], bool):
         raise ValueError("recording fps must be 20")
     if document["encoding"] != "rgb8":

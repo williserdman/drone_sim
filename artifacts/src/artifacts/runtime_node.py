@@ -20,12 +20,14 @@ from .validation import ValidationStatus
 
 
 _FAULTS = frozenset({"", "clock_stall_after_5", "observer_encoder_after_5"})
+_STARTUP_MISSING = ["onboard", "observer", "rosbag"]
 
 
 class _Protocol(Protocol):
     def write_status(self, name: str, document: Mapping[str, Any]) -> Any: ...
     def read_status(self, name: str) -> dict[str, Any] | None: ...
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
+    def read_manifest_status(self) -> dict[str, Any]: ...
 
 
 class FaultAwareRecorder:
@@ -194,6 +196,7 @@ class AggregateArtifactsRuntime:
         self.lifecycle_ready = lifecycle_ready
         self.started = False
         self.ready = False
+        self._initial_status_published = False
         self.final_report: dict[str, Any] | None = None
         self._failure_written = False
         self._terminal = False
@@ -267,9 +270,22 @@ class AggregateArtifactsRuntime:
             return self.ready
         if not self.check_health():
             return False
+        if not self.bag_recorder.is_ready(graph):
+            return False
+        if not self._initial_status_published:
+            self.publish(
+                {
+                    "run_id": self.run_id,
+                    "ready": False,
+                    "complete": False,
+                    "missing": list(_STARTUP_MISSING),
+                    "manifest_path": "",
+                }
+            )
+            self._initial_status_published = True
+            return False
         if (
-            not self.bag_recorder.is_ready(graph)
-            or not self.video_node.is_ready
+            not self.video_node.is_ready
             or not self.backpressure_ready(graph)
             or not self.lifecycle_ready()
         ):
@@ -478,6 +494,26 @@ class AggregateArtifactsRuntime:
         committed = self.protocol.read_terminal_committed()
         if committed is None:
             return False
+        manifest_status = self.protocol.read_manifest_status()
+        if (
+            committed.get("run_id") != self.run_id
+            or committed.get("manifest_path") != "manifest.json"
+            or manifest_status.get("run_id") != self.run_id
+            or manifest_status.get("manifest_path") != "manifest.json"
+        ):
+            raise RuntimeError("terminal manifest authority is inconsistent")
+        self.publish(
+            {
+                "run_id": self.run_id,
+                "ready": self.ready,
+                "complete": manifest_status["complete"],
+                "missing": sorted(manifest_status["missing"]),
+                "manifest_path": "manifest.json",
+            }
+        )
+        self.protocol.write_status(
+            "terminal-notified", {"run_id": self.run_id, "notified": True}
+        )
         self._terminal = True
         return True
 
@@ -485,6 +521,24 @@ class AggregateArtifactsRuntime:
 def _assign_stamp(stamp: Any, timestamp_ns: int) -> None:
     stamp.sec = timestamp_ns // 1_000_000_000
     stamp.nanosec = timestamp_ns % 1_000_000_000
+
+
+def publish_artifact_status(
+    publisher: Any,
+    message_type: Any,
+    document: Mapping[str, Any],
+    *,
+    timestamp_ns: int,
+) -> None:
+    """Publish one mapped ArtifactStatus without touching frozen file/stdout evidence."""
+    message = message_type()
+    message.run_id = document["run_id"]
+    _assign_stamp(message.sim_timestamp, timestamp_ns)
+    message.ready = document["ready"]
+    message.complete = document["complete"]
+    message.missing = document["missing"]
+    message.manifest_path = document["manifest_path"]
+    publisher.publish(message)
 
 
 def main() -> None:
@@ -547,14 +601,12 @@ def main() -> None:
         )
 
     def publish(document: dict[str, Any]) -> None:
-        message = ArtifactStatus()
-        message.run_id = document["run_id"]
-        _assign_stamp(message.sim_timestamp, last_sim_timestamp_ns)
-        message.ready = document["ready"]
-        message.complete = document["complete"]
-        message.missing = document["missing"]
-        message.manifest_path = document["manifest_path"]
-        publisher.publish(message)
+        publish_artifact_status(
+            publisher,
+            ArtifactStatus,
+            document,
+            timestamp_ns=last_sim_timestamp_ns,
+        )
 
     runtime_ref: list[AggregateArtifactsRuntime] = []
     paired_frames = {"onboard": -1, "observer": -1}
@@ -695,4 +747,9 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["AggregateArtifactsRuntime", "FaultAwareRecorder", "main"]
+__all__ = [
+    "AggregateArtifactsRuntime",
+    "FaultAwareRecorder",
+    "main",
+    "publish_artifact_status",
+]

@@ -15,6 +15,10 @@ supplied `run_id`, obtains exactly one UUID, resolves a relative `output_root`
 against the invoking process, and writes the immutable resolved snapshot with
 exclusive creation plus file and directory `fsync`.
 
+The Phase 2 template and resolved runtime boundary accept only exact recording
+geometry `320x240`, 20 FPS, `rgb8`. Nonmatching dimensions fail before Compose
+construction rather than generalizing the synthetic source/video contract.
+
 Run-directory allocation remains an operator-controller responsibility: it
 rejects any pre-existing run directory before calling `write_resolved_config`.
 The configuration writer itself rejects an existing `configuration/run.json`.
@@ -35,8 +39,11 @@ The runtime publishes `FINALIZING`, permanently stops its own output, and
 writes `.status/quiescence/orchestration.json`. It then validates exact markers
 from companion, `ardupilot_sitl`, Gazebo, electromagnet, and scorekeeper before
 it alone writes aggregate `runtime-frozen.json`. Wrong/stale/duplicate/schema or
-unsafe path evidence does not satisfy the barrier. Terminal acknowledgement is
-durable and silent rather than a post-freeze ROS event.
+unsafe path evidence does not satisfy the barrier. The orchestration runtime
+observes committed terminal facts and exits silently. The artifacts runtime
+alone publishes the post-manifest live `ArtifactStatus`, then writes the
+durable `terminal-notified` acknowledgement; neither action appends required
+artifact data or stdout.
 
 The controller converts resolved `finalization_wall_seconds` to one absolute
 deadline using a monotonic wall clock. Every finalization wait and adapter call
@@ -58,8 +65,11 @@ check both before and after it. Quiescence/report waits use the work slice;
 post-commit terminal notification uses the pre-teardown manifest slice and
 cannot consume teardown reserve.
 
-`ComposeRuntime` activates only the `phase2` profile with
-`COMPOSE_PROFILES=phase2`. Health observation runs exact
+`ComposeRuntime` pins the absolute repository `compose.yaml`, disables implicit
+`.env` loading, removes ambient Compose file/env-file/profile/project
+selectors, and then activates only the `phase2` profile with
+`COMPOSE_PROFILES=phase2`. Docker host, TLS, certificate, and context variables
+remain available for daemon connectivity. Health observation runs exact
 `ps --all --format json` and requires the frozen seven unique service names to
 be present and running/restarting; missing, extra, duplicate, malformed,
 exited, or unhealthy rows fail closed.
@@ -76,3 +86,10 @@ replace those terminal facts.
 `terminal-committed`, terminal-notification, host-event output/close, and
 teardown failures append diagnostics only. Host-event output is fail-once so a
 broken stream cannot recursively prevent file evidence or finalization.
+
+Once a manifest hard link is published, cooperative deadline expiry cannot
+turn that commit into an uncommitted result. Publication resolves the named
+bytes, completes parent-directory durability without another cooperative
+check, and returns typed `FinalizationResult` authority. `status`, `abort`, and
+`collect-results` prefer the descriptor-validated typed manifest result over
+the mutable operator-status cache.

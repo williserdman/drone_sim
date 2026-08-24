@@ -456,5 +456,53 @@ class RuntimeProtocol:
     def read_terminal_committed(self) -> dict[str, Any] | None:
         return self._read_control("terminal-committed")
 
+    def read_manifest_status(self) -> dict[str, Any]:
+        """Read only the final live-status facts from immutable manifest authority."""
+        document = self._read_at(self._run_fd, "manifest.json")
+        if document is None:
+            raise ProtocolError("manifest.json is missing after terminal commit")
+        required = {
+            "schema_version",
+            "run_id",
+            "terminal_status",
+            "artifacts",
+            "incomplete_paths",
+        }
+        if not required.issubset(document) or document.get("schema_version") != 1:
+            raise ProtocolError("manifest status schema is invalid")
+        if document.get("run_id") != self.run_id:
+            raise ProtocolError("manifest status has the wrong run_id")
+        if document.get("terminal_status") not in _TERMINAL_STATES:
+            raise ProtocolError("manifest status has an invalid terminal state")
+        artifacts = document.get("artifacts")
+        incomplete = document.get("incomplete_paths")
+        if not isinstance(artifacts, list) or not isinstance(incomplete, list):
+            raise ProtocolError("manifest status inventory is invalid")
+        validations: dict[str, str] = {}
+        for record in artifacts:
+            if not isinstance(record, dict):
+                raise ProtocolError("manifest status artifact record is invalid")
+            relative_path = record.get("relative_path")
+            validation = record.get("validation")
+            if (
+                not _safe_relative_path(relative_path)
+                or relative_path in validations
+                or validation not in {"valid", "missing", "invalid"}
+            ):
+                raise ProtocolError("manifest status artifact record is invalid")
+            validations[relative_path] = validation
+        if (
+            any(not _safe_relative_path(path) for path in incomplete)
+            or len(incomplete) != len(set(incomplete))
+            or any(validations.get(path) not in {"missing", "invalid"} for path in incomplete)
+        ):
+            raise ProtocolError("manifest incomplete paths are invalid")
+        return {
+            "run_id": self.run_id,
+            "complete": not incomplete,
+            "missing": sorted(incomplete),
+            "manifest_path": "manifest.json",
+        }
+
 
 __all__ = ["ProtocolError", "RuntimeProtocol", "canonical_run_id"]

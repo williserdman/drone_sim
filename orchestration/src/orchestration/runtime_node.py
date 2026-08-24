@@ -231,9 +231,6 @@ class OrchestrationRuntime:
                 if terminal not in _TERMINAL:
                     raise RuntimeError("protocol returned an invalid terminal state")
                 self.state = terminal
-                self._protocol.write_status(
-                    "terminal-notified", {"run_id": self.run_id, "notified": True}
-                )
                 self._terminal = True
         return self._terminal
 

@@ -16,7 +16,6 @@ import subprocess
 import time
 from typing import Any
 
-from artifacts import ValidationStatus
 from artifacts._adapters.rosbag import (
     FIXED_TOPICS,
     FIXED_TOPIC_TYPES,
@@ -217,6 +216,7 @@ def _bag_facts(bundle: Path, run_id: str) -> dict[str, Any]:
     lifecycle: list[str] = []
     scenario_events: list[dict[str, Any]] = []
     score_events: list[dict[str, Any]] = []
+    artifact_statuses: list[dict[str, Any]] = []
     ready_record_index: int | None = None
     first_clock_record_index: int | None = None
     structural_error: str | None = None
@@ -242,8 +242,18 @@ def _bag_facts(bundle: Path, run_id: str) -> dict[str, Any]:
                 frame_ids[topic].append(int(message.frame_id))
             elif topic == "/simulation/run_state":
                 lifecycle.append(RUN_STATE_NAMES.get(int(message.state), f"UNKNOWN:{message.state}"))
-            elif topic == "/simulation/artifact_status" and bool(message.ready):
-                if ready_record_index is None:
+            elif topic == "/simulation/artifact_status":
+                artifact_statuses.append(
+                    {
+                        "sim_timestamp_ns": stamp,
+                        "ready": bool(message.ready),
+                        "complete": bool(message.complete),
+                        "missing": list(message.missing),
+                        "manifest_path": str(message.manifest_path),
+                        "record_index": index,
+                    }
+                )
+                if bool(message.ready) and ready_record_index is None:
                     ready_record_index = index
             elif topic == "/simulation/scenario_events":
                 scenario_events.append(_event_payload(topic, message))
@@ -284,6 +294,7 @@ def _bag_facts(bundle: Path, run_id: str) -> dict[str, Any]:
         "lifecycle": lifecycle,
         "scenario_events": scenario_events,
         "score_events": score_events,
+        "artifact_statuses": artifact_statuses,
         "artifact_ready_record_index": ready_record_index,
         "first_clock_record_index": first_clock_record_index,
         "semantic": {

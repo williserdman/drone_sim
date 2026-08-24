@@ -194,13 +194,14 @@ def _open_directory_chain(
     return parent_fd
 
 
-def _hash_regular_file_at(
+def _read_regular_file_at(
     parent_fd: int,
     name: str,
     *,
     unreadable_detail: str,
     deadline_check: DeadlineCheck | None = None,
-) -> ValidationResult:
+    capture_limit: int | None = None,
+) -> tuple[ValidationResult, bytes | None]:
     _check_deadline(deadline_check)
     entry_stat = _stat_at(parent_fd, name, unreadable_detail)
     if stat.S_ISLNK(entry_stat.st_mode):
@@ -230,7 +231,10 @@ def _hash_regular_file_at(
                 ValidationStatus.INVALID,
                 "regular files must have exactly one hard link",
             )
+        if capture_limit is not None and before.st_size > capture_limit:
+            _fail(ValidationStatus.INVALID, "regular file exceeds byte limit")
         digest = hashlib.sha256()
+        chunks: list[bytes] | None = [] if capture_limit is not None else None
         while True:
             _check_deadline(deadline_check)
             try:
@@ -241,6 +245,8 @@ def _hash_regular_file_at(
             if not chunk:
                 break
             digest.update(chunk)
+            if chunks is not None:
+                chunks.append(chunk)
         _check_deadline(deadline_check)
         after = os.fstat(descriptor)
         if not _same_file_snapshot(before, after):
@@ -248,14 +254,33 @@ def _hash_regular_file_at(
         retained = _RetainedEntry(parent_fd, name, descriptor, after)
         if not _entry_still_matches(retained):
             _fail(ValidationStatus.INVALID, "path changed during validation")
-        return ValidationResult(
-            ValidationStatus.VALID,
-            after.st_size,
-            digest.hexdigest(),
-            "valid regular file",
+        return (
+            ValidationResult(
+                ValidationStatus.VALID,
+                after.st_size,
+                digest.hexdigest(),
+                "valid regular file",
+            ),
+            b"".join(chunks) if chunks is not None else None,
         )
     finally:
         os.close(descriptor)
+
+
+def _hash_regular_file_at(
+    parent_fd: int,
+    name: str,
+    *,
+    unreadable_detail: str,
+    deadline_check: DeadlineCheck | None = None,
+) -> ValidationResult:
+    result, _content = _read_regular_file_at(
+        parent_fd,
+        name,
+        unreadable_detail=unreadable_detail,
+        deadline_check=deadline_check,
+    )
+    return result
 
 
 def _all_entries_still_match(entries: list[_RetainedEntry]) -> bool:
@@ -297,6 +322,50 @@ def validate_regular_file(
         return result
     except _ValidationFailure as failure:
         return failure.result
+    finally:
+        for descriptor in reversed(held_descriptors):
+            os.close(descriptor)
+
+
+def read_regular_file_bytes(
+    run_directory: Path | str,
+    relative_path: Path | str,
+    *,
+    max_bytes: int = 4 * 1024 * 1024,
+    deadline_check: DeadlineCheck | None = None,
+) -> tuple[ValidationResult, bytes | None]:
+    """Read one bounded file through the retained no-follow validation walk."""
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+        raise ValueError("max_bytes must be a nonnegative integer")
+    held_descriptors: list[int] = []
+    retained_entries: list[_RetainedEntry] = []
+    try:
+        _check_deadline(deadline_check)
+        parts = _relative_parts(relative_path)
+        root_fd = _open_run_directory(run_directory)
+        held_descriptors.append(root_fd)
+        parent_fd = _open_directory_chain(
+            root_fd,
+            parts[:-1],
+            held_descriptors,
+            retained_entries,
+            final_not_directory_detail="path is not a directory",
+            unreadable_detail="file could not be read",
+            deadline_check=deadline_check,
+        )
+        result, content = _read_regular_file_at(
+            parent_fd,
+            parts[-1],
+            unreadable_detail="file could not be read",
+            deadline_check=deadline_check,
+            capture_limit=max_bytes,
+        )
+        _check_deadline(deadline_check)
+        if not _all_entries_still_match(retained_entries):
+            _fail(ValidationStatus.INVALID, "path changed during validation")
+        return result, content
+    except _ValidationFailure as failure:
+        return failure.result, None
     finally:
         for descriptor in reversed(held_descriptors):
             os.close(descriptor)

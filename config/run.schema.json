@@ -34,8 +34,8 @@
       "additionalProperties": false,
       "required": ["width_px", "height_px", "fps", "encoding"],
       "properties": {
-        "width_px": {"type": "integer", "minimum": 2, "multipleOf": 2},
-        "height_px": {"type": "integer", "minimum": 2, "multipleOf": 2},
+        "width_px": {"const": 320},
+        "height_px": {"const": 240},
         "fps": {"const": 20},
         "encoding": {"const": "rgb8"}
       }

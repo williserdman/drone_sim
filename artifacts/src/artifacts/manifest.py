@@ -437,6 +437,7 @@ def write_manifest_atomic(
             prefix=".manifest.json.", suffix=".tmp", dir=directory
         )
         temporary = Path(temporary_name)
+        published = False
         try:
             with os.fdopen(descriptor, "wb") as stream:
                 view = memoryview(payload)
@@ -455,27 +456,48 @@ def write_manifest_atomic(
             try:
                 _check_deadline(deadline_check)
                 os.link(temporary, target, follow_symlinks=False)
-                _check_deadline(deadline_check)
+                published = True
             except FileExistsError:
                 existing = _read_existing_manifest(
                     directory_fd,
                     manifest.run_id,
-                    deadline_check=deadline_check,
+                    deadline_check=None,
                 )
                 if existing == payload:
+                    published = True
                     return target
                 raise FinalizationConflict(
                     f"run {manifest.run_id!r} is already finalized differently"
                 )
+            except TimeoutError as timeout:
+                # A cooperative checker may expire from inside an injected
+                # publication boundary after the kernel has created the hard
+                # link.  Resolve that exact ambiguous outcome without another
+                # cooperative rejection: identical named bytes are authority.
+                try:
+                    existing = _read_existing_manifest(
+                        directory_fd,
+                        manifest.run_id,
+                        deadline_check=None,
+                    )
+                except FinalizationConflict:
+                    raise timeout
+                if existing != payload:
+                    raise FinalizationConflict(
+                        f"run {manifest.run_id!r} is already finalized differently"
+                    ) from timeout
+                published = True
             return target
         finally:
             try:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-            _check_deadline(deadline_check)
+            if not published:
+                _check_deadline(deadline_check)
             os.fsync(directory_fd)
-            _check_deadline(deadline_check)
+            if not published:
+                _check_deadline(deadline_check)
     finally:
         os.close(directory_fd)
 

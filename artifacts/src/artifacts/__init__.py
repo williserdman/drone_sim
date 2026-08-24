@@ -39,7 +39,13 @@ from .session import (
     FinalizationResult,
 )
 from .structured_log import StructuredEvent, write_event
-from .validation import ValidationResult, ValidationStatus, validate_regular_file, validate_tree
+from .validation import (
+    ValidationResult,
+    ValidationStatus,
+    read_regular_file_bytes,
+    validate_regular_file,
+    validate_tree,
+)
 
 __all__ = [
     "ArtifactRecord",
@@ -72,6 +78,7 @@ __all__ = [
     "VideoStreamRecorder",
     "VideoValidationResult",
     "VideoValidator",
+    "read_regular_file_bytes",
     "validate_regular_file",
     "validate_tree",
     "write_event",

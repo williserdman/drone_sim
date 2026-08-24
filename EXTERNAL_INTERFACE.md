@@ -24,6 +24,10 @@ the same absolute path explicitly.
 - ROS 2 discovery and network configuration
 - Result and log destinations
 
+Phase 2 recording geometry is exactly `320x240` at 20 FPS with `rgb8`
+encoding. Template and resolved-config validation reject any other dimensions
+before Compose construction; configurable simulator geometry remains deferred.
+
 Secret values must be supplied at runtime and must not be committed.
 
 ## Lifecycle operations
@@ -43,7 +47,8 @@ transient-local QoS depth 1.
 
 ## Fixed ROS 2 contracts
 
-Phase 1 fixes these topic and QoS contracts for later module implementations:
+The topic and type inventory remains fixed. Phase 2 uses these delivery
+contracts for its synthetic runtime and archival paths:
 
 | Topic | Message | QoS |
 | --- | --- | --- |
@@ -53,17 +58,26 @@ Phase 1 fixes these topic and QoS contracts for later module implementations:
 | `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Best effort, depth 10 |
 | `/simulation/scenario_events` | `simulation_interfaces/msg/ScenarioEvent` | Reliable, depth 100 |
 | `/simulation/score_events` | `simulation_interfaces/msg/ScoreEvent` | Reliable, depth 100 |
-| `/camera/onboard/image_raw` | ROS 2 image transport | Best effort, depth 5 |
-| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Best effort, depth 5 |
-| `/camera/observer/image_raw` | ROS 2 image transport | Best effort, depth 5 |
-| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Best effort, depth 5 |
+| `/camera/onboard/image_raw` | ROS 2 image transport | Reliable archival offer/request, depth 5 |
+| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable archival offer/request, depth 5 |
+| `/camera/observer/image_raw` | ROS 2 image transport | Reliable archival offer/request, depth 5 |
+| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable archival offer/request, depth 5 |
+
+The Phase 2 synthetic camera publisher, video subscriptions, and rosbag
+overrides use the reliable depth-5 archival contract so exact recording does
+not depend on lossy delivery. A later mission consumer may request compatible
+best-effort delivery from the same reliable publisher.
 
 `ArtifactStatus` aggregates the whole artifact subsystem. Before the first
-clock it uses simulation time zero. Its final notification reports aggregate
-completeness, sorted missing or invalid paths, and the portable manifest path
-`manifest.json`. Every custom message carries `run_id` and `sim_timestamp`;
-event and frame messages carry their stable identifiers as declared in the
-`.msg` files.
+clock it uses simulation time zero and the bag records first
+`ready=false, complete=false, missing=[onboard, observer, rosbag]`, then
+`ready=true, complete=false, missing=[]`. After the bag closes and the host
+commits `manifest.json`, artifacts publishes the live transient-local final
+notification with aggregate completeness, sorted missing or invalid paths,
+and portable manifest path `manifest.json`; that final notification is
+intentionally outside the immutable bag. Every custom message carries `run_id`
+and `sim_timestamp`; event and frame messages carry their stable identifiers as
+declared in the `.msg` files.
 
 ## Observable outputs
 

@@ -17,6 +17,18 @@ from artifacts import DockerLogCommandResult, ImageDigest
 
 _SERVICE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _DIGEST_PATTERN = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
+_AMBIENT_COMPOSE_SELECTORS = frozenset(
+    {
+        "COMPOSE_FILE",
+        "COMPOSE_ENV_FILES",
+        "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES",
+        "COMPOSE_PROJECT_NAME",
+        "COMPOSE_PROJECT_DIR",
+        "COMPOSE_PROJECT_DIRECTORY",
+        "COMPOSE_DISABLE_ENV_FILE",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -88,8 +100,12 @@ class ComposeRuntime:
         self.project_name = f"drone-sim-{run_id.replace('-', '')}"
         self._runner = runner
         self._monotonic = monotonic
+        environment = dict(os.environ if base_environment is None else base_environment)
+        for selector in _AMBIENT_COMPOSE_SELECTORS:
+            environment.pop(selector, None)
         self.environment = {
-            **dict(os.environ if base_environment is None else base_environment),
+            **environment,
+            "COMPOSE_DISABLE_ENV_FILE": "1",
             "COMPOSE_PROFILES": "phase2",
             "SIM_RUN_ID": run_id,
             "SIM_RUN_DIRECTORY": str(self.run_directory),
@@ -99,6 +115,8 @@ class ComposeRuntime:
         self._base = [
             "docker",
             "compose",
+            "--file",
+            str(self.project_directory / "compose.yaml"),
             "--project-directory",
             str(self.project_directory),
             "-p",

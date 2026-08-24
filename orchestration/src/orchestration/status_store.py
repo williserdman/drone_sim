@@ -12,7 +12,7 @@ import stat
 from typing import Any, Callable, Mapping
 from uuid import UUID, uuid4
 
-from artifacts import validate_regular_file, validate_tree
+from artifacts import FinalizationResult, validate_regular_file, validate_tree
 from artifacts.manifest import (
     ArtifactRecord,
     ConfigurationRecord,
@@ -580,11 +580,11 @@ class StatusStore:
             raise ProtocolFileError(f"runtime status {name!r} has the wrong run_id")
         return document
 
-    def validated_manifest_path(
+    def validated_manifest_result(
         self,
         run_id: str,
         deadline_check: Callable[[], None] | None = None,
-    ) -> Path:
+    ) -> FinalizationResult | None:
         run_directory = self.run_directory(run_id)
         run_fd = self._open_run(run_id)
         try:
@@ -594,7 +594,7 @@ class StatusStore:
         finally:
             os.close(run_fd)
         if document is None:
-            raise ProtocolFileError("manifest.json is missing")
+            return None
         required_keys = {
             "schema_version",
             "run_id",
@@ -749,7 +749,22 @@ class StatusStore:
             validate_manifest(domain_manifest, deadline_check=deadline_check)
         except (KeyError, TypeError, ValueError) as exc:
             raise ProtocolFileError(f"manifest domain validation failed: {exc}") from exc
-        return run_directory / "manifest.json"
+        return FinalizationResult(
+            run_directory / "manifest.json",
+            document["run_id"],
+            document["terminal_status"],
+            document["reason"],
+        )
+
+    def validated_manifest_path(
+        self,
+        run_id: str,
+        deadline_check: Callable[[], None] | None = None,
+    ) -> Path:
+        result = self.validated_manifest_result(run_id, deadline_check)
+        if result is None:
+            raise ProtocolFileError("manifest.json is missing")
+        return result.path
 
     def cleanup(self, run_id: str) -> None:
         descriptor = self._open_run(run_id)

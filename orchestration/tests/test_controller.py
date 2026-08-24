@@ -20,7 +20,7 @@ from artifacts import (
 )
 from artifacts.manifest import REQUIRED_ARTIFACT_PATHS
 from orchestration._adapters.compose import ComposeCommandResult, ComposeRuntime
-from orchestration.controller import RunController, TerminalCause
+from orchestration.controller import ControllerError, RunController, RunResult, TerminalCause
 from orchestration.status_store import OperatorStatus, StatusStore
 
 
@@ -205,6 +205,38 @@ def test_score_metadata_rejects_invalid_provenance_document(tmp_path, updates):
     }
     document.update(updates)
     result.write_text(json.dumps(document), encoding="utf-8")
+
+    assert RunController()._score_metadata(run_directory) == (None, None, None, ())
+
+
+@pytest.mark.parametrize("unsafe_kind", ["parent-symlink", "file-symlink", "hardlink"])
+def test_score_metadata_rejects_out_of_bundle_or_multiply_linked_provenance(
+    tmp_path, unsafe_kind
+):
+    run_directory = tmp_path / "run"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    payload = json.dumps(
+        {
+            "achieved_score": 0.0,
+            "maximum_available_score": 0.0,
+            "scoring_checksum": "d" * 64,
+            "evidence_paths": ["scoring/events.jsonl"],
+        }
+    )
+    outside_result = outside / "result.json"
+    outside_result.write_text(payload, encoding="utf-8")
+    scoring = run_directory / "scoring"
+    run_directory.mkdir()
+    if unsafe_kind == "parent-symlink":
+        scoring.symlink_to(outside, target_is_directory=True)
+    else:
+        scoring.mkdir()
+        result = scoring / "result.json"
+        if unsafe_kind == "file-symlink":
+            result.symlink_to(outside_result)
+        else:
+            os.link(outside_result, result)
 
     assert RunController()._score_metadata(run_directory) == (None, None, None, ())
 
@@ -469,7 +501,21 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         run_directory=run_directory,
         config_path=config_path,
         runner=runner,
-        base_environment={"PATH": "/bin"},
+        base_environment={
+            "PATH": "/bin",
+            "COMPOSE_FILE": "/tmp/hostile.yaml",
+            "COMPOSE_ENV_FILES": "/tmp/hostile.env",
+            "COMPOSE_DISABLE_ENV_FILE": "0",
+            "COMPOSE_PATH_SEPARATOR": ";",
+            "COMPOSE_PROFILES": "hostile",
+            "COMPOSE_PROJECT_NAME": "hostile",
+            "COMPOSE_PROJECT_DIR": "/tmp/hostile-project",
+            "COMPOSE_PROJECT_DIRECTORY": "/tmp/hostile-project-directory",
+            "DOCKER_HOST": "tcp://docker.example:2376",
+            "DOCKER_TLS_VERIFY": "1",
+            "DOCKER_CERT_PATH": "/certs",
+            "DOCKER_CONTEXT": "remote",
+        },
     )
 
     result = runtime.up(timeout=9.5)
@@ -479,6 +525,8 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
     assert command == [
         "docker",
         "compose",
+        "--file",
+        str(project / "compose.yaml"),
         "--project-directory",
         str(project),
         "-p",
@@ -488,7 +536,12 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         "--no-build",
     ]
     assert environment == {
+        "COMPOSE_DISABLE_ENV_FILE": "1",
         "COMPOSE_PROFILES": "phase2",
+        "DOCKER_CERT_PATH": "/certs",
+        "DOCKER_CONTEXT": "remote",
+        "DOCKER_HOST": "tcp://docker.example:2376",
+        "DOCKER_TLS_VERIFY": "1",
         "PATH": "/bin",
         "SIM_CONFIG_PATH": str(config_path),
         "SIM_PHASE2_PROFILE": "1",
@@ -496,6 +549,33 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         "SIM_RUN_ID": RUN_ID,
     }
     assert timeout == 9.5
+
+
+def test_non_phase2_recording_geometry_is_rejected_before_compose_construction(tmp_path):
+    template = _template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    document["recording"] = {
+        **document["recording"],
+        "width_px": 640,
+        "height_px": 480,
+    }
+    template.write_text(json.dumps(document), encoding="utf-8")
+    compose_calls = []
+
+    def compose_factory(config, run_directory):
+        compose_calls.append((config, run_directory))
+        raise AssertionError("Compose must not be constructed")
+
+    controller = RunController(
+        project_directory=Path(__file__).parents[2],
+        compose_factory=compose_factory,
+        uuid_factory=lambda: FIXED_UUID,
+        event_stream=io.StringIO(),
+    )
+
+    with pytest.raises(ControllerError, match="dimensions"):
+        controller.start(template)
+    assert compose_calls == []
 
 
 def test_compose_profile_environment_and_exact_ps_argv_cover_every_operation(tmp_path):
@@ -597,6 +677,8 @@ def test_compose_log_runner_validates_frozen_command_and_augments_project_direct
             [
                 "docker",
                 "compose",
+                "--file",
+                str(tmp_path.resolve() / "compose.yaml"),
                 "--project-directory",
                 str(tmp_path.resolve()),
                 "-p",
@@ -1304,7 +1386,7 @@ def test_terminal_notification_read_failure_cannot_override_committed_manifest(t
 
 def test_post_commit_manifest_reread_failure_cannot_override_typed_authority(tmp_path):
     class FailingPostCommitReadStore(TraceStore):
-        def validated_manifest_path(self, run_id, deadline_check=None):
+        def validated_manifest_result(self, run_id, deadline_check=None):
             raise TimeoutError("post_commit_deadline")
 
     controller, _trace, _clock, _holder = _controller(
@@ -1320,6 +1402,32 @@ def test_post_commit_manifest_reread_failure_cannot_override_typed_authority(tmp
     assert result.state == manifest["terminal_status"] == status["state"] == "COMPLETED"
     assert result.reason == manifest["reason"] == "mission_complete"
     assert any(item["kind"] == "manifest_verification" for item in status["diagnostics"])
+
+
+def test_post_manifest_operator_status_failure_returns_committed_result_and_commands_prefer_it(
+    tmp_path,
+):
+    class FailingTerminalOperatorStore(TraceStore):
+        def write_operator_status(self, status):
+            if status.manifest_path == "manifest.json":
+                raise OSError("operator status volume became read-only")
+            return super().write_operator_status(status)
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        store_type=FailingTerminalOperatorStore,
+    )
+
+    started = controller.start(_template(tmp_path))
+    manifest_path = tmp_path / "runs" / RUN_ID / "manifest.json"
+    immutable = manifest_path.read_bytes()
+    expected = RunResult(RUN_ID, "COMPLETED", "mission_complete", "manifest.json")
+
+    assert started == expected
+    assert controller.status(RUN_ID, tmp_path / "runs") == expected
+    assert controller.abort(RUN_ID, tmp_path / "runs") == expected
+    assert controller.collect_results(RUN_ID, tmp_path / "runs") == expected
+    assert manifest_path.read_bytes() == immutable
 
 
 def test_wait_rejects_runtime_status_that_crosses_deadline_and_passes_checker():

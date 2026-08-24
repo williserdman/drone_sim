@@ -10,7 +10,12 @@ from artifacts.manifest import (
     REQUIRED_ARTIFACT_PATHS,
     SourceRevision,
 )
-from artifacts.session import ArtifactSession, FinalizationConflict, FinalizationInput
+from artifacts.session import (
+    ArtifactSession,
+    FinalizationConflict,
+    FinalizationInput,
+    FinalizationResult,
+)
 from artifacts.validation import ValidationResult, ValidationStatus
 
 
@@ -231,6 +236,77 @@ def test_finalize_fsyncs_parent_directory_after_no_clobber_publication(
     ArtifactSession(tmp_path).finalize(_finalization_input())
 
     assert events[-2:] == ["link", "directory-fsync"]
+
+
+def test_deadline_expiry_inside_link_returns_durable_typed_publication_authority(
+    tmp_path, monkeypatch
+):
+    """A cooperative timeout after the hard link must not hide the commit."""
+    _complete_run_directory(tmp_path)
+    real_link = os.link
+    real_fsync = os.fsync
+    published = False
+    directory_fsynced = False
+
+    def expiring_link(source, target, **kwargs):
+        nonlocal published
+        real_link(source, target, **kwargs)
+        published = True
+        deadline_check()
+
+    def deadline_check():
+        if published:
+            raise TimeoutError("finalization_deadline")
+
+    def recording_fsync(descriptor):
+        nonlocal directory_fsynced
+        if published and os.path.isdir(f"/proc/self/fd/{descriptor}"):
+            directory_fsynced = True
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "link", expiring_link)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+
+    result = ArtifactSession(
+        tmp_path,
+        commit_deadline_check=deadline_check,
+    ).finalize_with_result(_finalization_input())
+
+    assert isinstance(result, FinalizationResult)
+    assert result.path == tmp_path / "manifest.json"
+    assert result.terminal_status == "COMPLETED"
+    assert directory_fsynced is True
+    assert json.loads(result.path.read_text())["reason"] == result.reason
+
+
+def test_identical_existing_manifest_remains_authoritative_after_link_deadline(
+    tmp_path, monkeypatch
+):
+    _complete_run_directory(tmp_path)
+    request = _finalization_input()
+    first = ArtifactSession(tmp_path).finalize_with_result(request)
+    real_link = os.link
+    link_attempted = False
+
+    def existing_link(source, target, **kwargs):
+        nonlocal link_attempted
+        try:
+            return real_link(source, target, **kwargs)
+        finally:
+            link_attempted = True
+
+    def deadline_check():
+        if link_attempted:
+            raise TimeoutError("finalization_deadline")
+
+    monkeypatch.setattr(os, "link", existing_link)
+
+    second = ArtifactSession(
+        tmp_path,
+        commit_deadline_check=deadline_check,
+    ).finalize_with_result(request)
+
+    assert second == first
 
 
 def test_finalize_cleans_collision_safe_temporary_after_publication_error(

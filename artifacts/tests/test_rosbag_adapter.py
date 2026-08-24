@@ -434,25 +434,47 @@ def _image(timestamp_ns, *, data=b"rgb"):
     return SimpleNamespace(header=SimpleNamespace(stamp=_stamp(timestamp_ns)), data=data)
 
 
+def _artifact_status(*, ready, missing):
+    return _custom_message(
+        0,
+        ready=ready,
+        complete=False,
+        missing=missing,
+        manifest_path="",
+    )
+
+
 def _valid_messages():
     return [
-        BagMessage("/clock", SimpleNamespace(clock=_stamp(0)), 100),
-        BagMessage("/simulation/run_state", _custom_message(0), 101),
-        BagMessage("/simulation/artifact_status", _custom_message(0), 102),
-        BagMessage("/simulation/ground_truth", _custom_message(0), 103),
-        BagMessage("/simulation/scenario_events", _custom_message(0), 104),
-        BagMessage("/simulation/score_events", _custom_message(0), 105),
-        BagMessage("/camera/onboard/image_raw", _image(0), 106),
+        BagMessage(
+            "/simulation/artifact_status",
+            _artifact_status(
+                ready=False,
+                missing=["onboard", "observer", "rosbag"],
+            ),
+            100,
+        ),
+        BagMessage(
+            "/simulation/artifact_status",
+            _artifact_status(ready=True, missing=[]),
+            101,
+        ),
+        BagMessage("/clock", SimpleNamespace(clock=_stamp(0)), 102),
+        BagMessage("/simulation/run_state", _custom_message(0), 103),
+        BagMessage("/simulation/ground_truth", _custom_message(0), 104),
+        BagMessage("/simulation/scenario_events", _custom_message(0), 105),
+        BagMessage("/simulation/score_events", _custom_message(0), 106),
+        BagMessage("/camera/onboard/image_raw", _image(0), 107),
         BagMessage(
             "/camera/onboard/frame_metadata",
             _custom_message(0, frame_id=0, stream="onboard"),
-            107,
+            108,
         ),
-        BagMessage("/camera/observer/image_raw", _image(0), 108),
+        BagMessage("/camera/observer/image_raw", _image(0), 109),
         BagMessage(
             "/camera/observer/frame_metadata",
             _custom_message(0, frame_id=0, stream="observer"),
-            109,
+            110,
         ),
     ]
 
@@ -515,7 +537,14 @@ def test_valid_bag_returns_immutable_topic_count_type_and_timestamp_diagnostics(
 
     assert result.status is ValidationStatus.VALID
     assert tuple(topic.name for topic in result.topics) == FIXED_TOPICS
-    assert all(topic.message_count == 1 for topic in result.topics)
+    assert {
+        topic.name: topic.message_count for topic in result.topics
+    }["/simulation/artifact_status"] == 2
+    assert all(
+        topic.message_count == 1
+        for topic in result.topics
+        if topic.name != "/simulation/artifact_status"
+    )
     assert result.topics[0].message_type == "rosgraph_msgs/msg/Clock"
     assert result.topics[0].first_sim_timestamp_ns == 0
     assert result.topics[0].last_sim_timestamp_ns == 0
@@ -623,8 +652,8 @@ def test_validation_rejects_unreadable_serialized_message(tmp_path):
 def test_validation_rejects_wrong_run_id(tmp_path):
     _bag_directory(tmp_path)
     backend = FakeBagBackend()
-    backend.messages[1] = replace(
-        backend.messages[1], message=_custom_message(0, run_id="stale-run")
+    backend.messages[3] = replace(
+        backend.messages[3], message=_custom_message(0, run_id="stale-run")
     )
 
     result = _validate(tmp_path, backend)
@@ -655,7 +684,7 @@ def test_validation_rejects_nonmonotonic_custom_simulation_timestamps(tmp_path):
 def test_validation_rejects_image_without_payload(tmp_path):
     _bag_directory(tmp_path)
     backend = FakeBagBackend()
-    backend.messages[6] = replace(backend.messages[6], message=_image(0, data=b""))
+    backend.messages[7] = replace(backend.messages[7], message=_image(0, data=b""))
 
     result = _validate(tmp_path, backend)
 
@@ -678,8 +707,8 @@ def test_validation_rejects_mismatched_image_and_metadata_counts(tmp_path):
 def test_validation_rejects_unpaired_image_and_metadata_timestamps(tmp_path):
     _bag_directory(tmp_path)
     backend = FakeBagBackend()
-    backend.messages[7] = replace(
-        backend.messages[7],
+    backend.messages[8] = replace(
+        backend.messages[8],
         message=_custom_message(50_000_000, frame_id=0, stream="onboard"),
     )
 
@@ -692,8 +721,8 @@ def test_validation_rejects_unpaired_image_and_metadata_timestamps(tmp_path):
 def test_validation_rejects_wrong_frame_metadata_stream(tmp_path):
     _bag_directory(tmp_path)
     backend = FakeBagBackend()
-    backend.messages[7] = replace(
-        backend.messages[7],
+    backend.messages[8] = replace(
+        backend.messages[8],
         message=_custom_message(0, frame_id=0, stream="observer"),
     )
 
@@ -706,8 +735,8 @@ def test_validation_rejects_wrong_frame_metadata_stream(tmp_path):
 def test_validation_rejects_noncontiguous_frame_ids(tmp_path):
     _bag_directory(tmp_path)
     backend = FakeBagBackend()
-    backend.messages[7] = replace(
-        backend.messages[7],
+    backend.messages[8] = replace(
+        backend.messages[8],
         message=_custom_message(0, frame_id=1, stream="onboard"),
     )
 
@@ -738,6 +767,31 @@ def test_validation_rejects_frame_interval_other_than_50_ms(tmp_path):
 
     assert result.status is ValidationStatus.INVALID
     assert "50 ms" in result.detail
+
+
+@pytest.mark.parametrize("mutation", ["missing-initial", "ready-first", "wrong-missing"])
+def test_validation_requires_both_exact_startup_artifact_statuses_before_first_clock(
+    tmp_path, mutation
+):
+    _bag_directory(tmp_path)
+    messages = _valid_messages()
+    if mutation == "missing-initial":
+        messages.pop(0)
+    elif mutation == "ready-first":
+        messages[0], messages[2] = messages[2], messages[0]
+    else:
+        messages[0] = replace(
+            messages[0],
+            message=_artifact_status(ready=False, missing=["observer", "rosbag"]),
+        )
+
+    result = _validate(
+        tmp_path,
+        FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
+    )
+
+    assert result.status is ValidationStatus.INVALID
+    assert "artifact status" in result.detail
 
 
 def test_real_jazzy_mcap_fixture_is_read_via_rosbag2_and_deserialized(tmp_path):
@@ -781,7 +835,12 @@ def test_real_jazzy_mcap_fixture_is_read_via_rosbag2_and_deserialized(tmp_path):
         "/clock": Clock(clock=stamp),
         "/simulation/run_state": RunState(run_id=RUN_ID, sim_timestamp=stamp),
         "/simulation/artifact_status": ArtifactStatus(
-            run_id=RUN_ID, sim_timestamp=stamp
+            run_id=RUN_ID,
+            sim_timestamp=stamp,
+            ready=True,
+            complete=False,
+            missing=[],
+            manifest_path="",
         ),
         "/simulation/ground_truth": GroundTruth(run_id=RUN_ID, sim_timestamp=stamp),
         "/simulation/scenario_events": ScenarioEvent(
@@ -811,16 +870,38 @@ def test_real_jazzy_mcap_fixture_is_read_via_rosbag2_and_deserialized(tmp_path):
             run_id=RUN_ID, sim_timestamp=stamp, frame_id=0, stream="observer"
         ),
     }
-    for recorded_timestamp, topic in enumerate(FIXED_TOPICS, start=1):
+    initial_status = ArtifactStatus(
+        run_id=RUN_ID,
+        sim_timestamp=stamp,
+        ready=False,
+        complete=False,
+        missing=["onboard", "observer", "rosbag"],
+        manifest_path="",
+    )
+    writer.write(
+        "/simulation/artifact_status",
+        serialize_message(initial_status),
+        1,
+    )
+    writer.write(
+        "/simulation/artifact_status",
+        serialize_message(messages["/simulation/artifact_status"]),
+        2,
+    )
+    for recorded_timestamp, topic in enumerate(
+        (topic for topic in FIXED_TOPICS if topic != "/simulation/artifact_status"),
+        start=3,
+    ):
         writer.write(topic, serialize_message(messages[topic]), recorded_timestamp)
     writer.close()
 
     result = RosbagValidator(RUN_ID).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.VALID
-    assert [(topic.name, topic.message_count) for topic in result.topics] == [
-        (topic, 1) for topic in FIXED_TOPICS
-    ]
+    assert {topic.name: topic.message_count for topic in result.topics} == {
+        topic: 2 if topic == "/simulation/artifact_status" else 1
+        for topic in FIXED_TOPICS
+    }
 
 
 def test_real_jazzy_qos_api_rejects_best_effort_offer_for_reliable_request(tmp_path):

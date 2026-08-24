@@ -90,6 +90,56 @@ def test_host_controls_are_exact_and_first_observation_is_immutable(run_director
     assert RuntimeProtocol(run_directory, RUN_ID).read_terminal_committed() == terminal
 
 
+def test_manifest_status_is_read_descriptor_safely_after_terminal_commit(run_directory):
+    manifest = {
+        "schema_version": 1,
+        "run_id": RUN_ID,
+        "terminal_status": "FAILED",
+        "artifacts": [
+            {"relative_path": "rosbag", "validation": "missing"},
+            {"relative_path": "video/onboard.mp4", "validation": "valid"},
+            {"relative_path": "video/observer.mp4", "validation": "invalid"},
+        ],
+        "incomplete_paths": ["video/observer.mp4", "rosbag"],
+    }
+    (run_directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+    read_manifest_status = getattr(protocol, "read_manifest_status", None)
+    assert callable(read_manifest_status), "descriptor-safe manifest status reader is missing"
+    assert read_manifest_status() == {
+        "run_id": RUN_ID,
+        "complete": False,
+        "missing": ["rosbag", "video/observer.mp4"],
+        "manifest_path": "manifest.json",
+    }
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_manifest_status_rejects_unsafe_manifest_path(run_directory, kind):
+    outside = run_directory.parent / "outside-manifest.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": RUN_ID,
+                "terminal_status": "COMPLETED",
+                "artifacts": [],
+                "incomplete_paths": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = run_directory / "manifest.json"
+    if kind == "symlink":
+        target.symlink_to(outside)
+    else:
+        os.link(outside, target)
+
+    with pytest.raises(ProtocolError):
+        RuntimeProtocol(run_directory, RUN_ID).read_manifest_status()
+
+
 @pytest.mark.parametrize(
     "document",
     [

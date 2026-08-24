@@ -41,6 +41,15 @@ inventory and models neither camera latency nor simulation time.
 - `runs/<run_id>/manifest.json`
 - Onboard and observer MP4 files, ROS 2 bag, logs, Gazebo state, configuration snapshots, and scoring files
 
+Successful startup publishes two simulation-time-zero aggregate statuses before
+the first clock. The first is exactly not-ready with missing recorder names
+`onboard`, `observer`, and `rosbag`; the second is ready with an empty missing
+list. Both are archived in the bag. After the host commits the manifest and the
+bag is closed, the artifacts runtime publishes one live reliable
+transient-local final status derived through descriptor-safe manifest reading,
+then writes `terminal-notified`. The final live sample does not mutate the bag,
+required artifacts, or stdout.
+
 The required bundle inventory is fixed as `configuration/`,
 `gazebo/server.log`, `gazebo/state/`, `video/onboard.mp4`,
 `video/observer.mp4`, `rosbag/`, one JSONL log for each of orchestration,
@@ -67,6 +76,12 @@ check the supplied budget. Work-time exhaustion stops further validation and
 records unfinished required paths as timeout-invalid before the reserved
 manifest commit is attempted.
 
+`read_regular_file_bytes(run_directory, relative_path)` returns a
+`ValidationResult` plus bounded bytes only after a retained `O_NOFOLLOW`
+descriptor walk proves a regular single-link current-run file with stable
+pre/post identity. Scoring provenance uses this interface rather than following
+path-based substitutions.
+
 `ArtifactSession.finalize_with_result(FinalizationInput)` returns the immutable
 published path, run ID, terminal status, and reason in a `FinalizationResult`.
 Consumers that make terminal decisions use that typed result so a later read
@@ -89,4 +104,6 @@ teardown; the controller must not hash that mutable named bag. The bag
 deliberately ends with
 `FINALIZING`; the host-written `manifest.json` is authoritative for terminal
 status. After writing `artifacts-final.json`, the artifacts runtime remains
-silent while awaiting `.control/terminal-committed.json` and then exits.
+silent while awaiting `.control/terminal-committed.json`; after that commit it
+publishes only the final live aggregate status, writes `terminal-notified`, and
+then exits.

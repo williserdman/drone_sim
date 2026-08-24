@@ -206,7 +206,9 @@ def test_starting_ready_running_order_and_exact_first_clock_stamp():
 
 @pytest.mark.parametrize("preterminal", ["STARTING", "READY", "RUNNING"])
 @pytest.mark.parametrize("terminal", ["COMPLETED", "FAILED", "ABORTED"])
-def test_finalize_from_every_preterminal_state_and_acknowledge_silently(preterminal, terminal):
+def test_finalize_from_every_preterminal_state_leaves_live_notification_to_artifacts(
+    preterminal, terminal
+):
     runtime, protocol, published, _ = _runtime()
     runtime.start()
     if preterminal in {"READY", "RUNNING"}:
@@ -245,9 +247,10 @@ def test_finalize_from_every_preterminal_state_and_acknowledge_silently(pretermi
     assert published[-1].state == "FINALIZING"
     assert runtime.state == terminal
     assert protocol.statuses[-1] == (
-        "terminal-notified",
-        {"run_id": RUN_ID, "notified": True},
+        "runtime-frozen",
+        {"run_id": RUN_ID, "frozen": True},
     )
+    assert not any(name == "terminal-notified" for name, _ in protocol.statuses)
     count = len(published)
     assert runtime.poll() is True
     assert len(published) == count

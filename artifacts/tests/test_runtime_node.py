@@ -15,6 +15,7 @@ class FakeProtocol:
         self.statuses = []
         self.frozen = None
         self.terminal = None
+        self.manifest_status = None
 
     def write_status(self, name, document):
         self.statuses.append((name, document))
@@ -26,17 +27,21 @@ class FakeProtocol:
     def read_terminal_committed(self):
         return self.terminal
 
+    def read_manifest_status(self):
+        return self.manifest_status
+
 
 class FakeBag:
-    def __init__(self, *, ready=True, start_error=None, finalization=None):
+    def __init__(self, *, ready=True, alive=None, start_error=None, finalization=None):
         self.ready = ready
+        self.alive = alive
         self.start_error = start_error
         self.finalization = finalization
         self.finalize_deadlines = []
 
     @property
     def is_alive(self):
-        return self.ready
+        return self.ready if self.alive is None else self.alive
 
     def start(self):
         if self.start_error:
@@ -170,11 +175,44 @@ def _runtime(tmp_path, **changes):
 def test_startup_claims_ready_only_when_every_recorder_and_graph_endpoint_is_ready(tmp_path):
     runtime, protocol, _, _, published = _runtime(tmp_path)
     assert runtime.start(deadline=10.0) is True
+    assert published == []
+    assert runtime.check_ready("graph") is False
     assert runtime.check_ready("graph") is True
     assert published == [
+        {
+            "run_id": RUN_ID,
+            "ready": False,
+            "complete": False,
+            "missing": ["onboard", "observer", "rosbag"],
+            "manifest_path": "",
+        },
         {"run_id": RUN_ID, "ready": True, "complete": False, "missing": [], "manifest_path": ""}
     ]
     assert protocol.statuses == [("artifacts-ready", {"run_id": RUN_ID, "ready": True})]
+
+
+def test_startup_status_waits_for_rosbag_subscription_before_publication(tmp_path):
+    bag = FakeBag(ready=True, alive=True)
+    runtime, protocol, _, _, published = _runtime(tmp_path, bag=bag)
+    runtime.start(deadline=10.0)
+
+    bag.ready = False
+    assert runtime.check_ready("graph") is False
+    assert published == []
+
+    bag.ready = True
+    assert runtime.check_ready("graph") is False
+    assert published == [
+        {
+            "run_id": RUN_ID,
+            "ready": False,
+            "complete": False,
+            "missing": ["onboard", "observer", "rosbag"],
+            "manifest_path": "",
+        }
+    ]
+    assert protocol.statuses == []
+    assert runtime.check_ready("graph") is True
 
 
 def test_startup_waits_for_camera_pair_ack_subscriber_discovery(tmp_path):
@@ -186,7 +224,15 @@ def test_startup_waits_for_camera_pair_ack_subscriber_discovery(tmp_path):
     runtime.start(deadline=10.0)
 
     assert runtime.check_ready("graph") is False
-    assert published == []
+    assert published == [
+        {
+            "run_id": RUN_ID,
+            "ready": False,
+            "complete": False,
+            "missing": ["onboard", "observer", "rosbag"],
+            "manifest_path": "",
+        }
+    ]
     assert protocol.statuses == []
 
     discovered["ack"] = True
@@ -202,7 +248,15 @@ def test_startup_waits_until_current_run_starting_was_observed(tmp_path):
     runtime.start(deadline=10.0)
 
     assert runtime.check_ready("graph") is False
-    assert published == []
+    assert published == [
+        {
+            "run_id": RUN_ID,
+            "ready": False,
+            "complete": False,
+            "missing": ["onboard", "observer", "rosbag"],
+            "manifest_path": "",
+        }
+    ]
     assert protocol.statuses == []
 
     observed["starting"] = True
@@ -233,6 +287,7 @@ def test_finalization_waits_for_freeze_and_shares_one_deadline_for_all_recorders
     runtime, protocol, bag, video, published = _runtime(tmp_path)
     runtime.start(deadline=5.0)
     runtime.check_ready("graph")
+    runtime.check_ready("graph")
     assert runtime.finalize("COMPLETED", deadline=99.0) is None
     protocol.frozen = {"run_id": RUN_ID, "frozen": True}
     report = runtime.finalize("COMPLETED", deadline=99.0)
@@ -255,16 +310,69 @@ def test_finalization_waits_for_freeze_and_shares_one_deadline_for_all_recorders
         "reason": "validated",
         "manifest_path": "manifest.json",
     }
+    protocol.manifest_status = {
+        "run_id": RUN_ID,
+        "complete": True,
+        "missing": [],
+        "manifest_path": "manifest.json",
+    }
     assert runtime.poll_terminal() is True
     assert published == [
+        {
+            "run_id": RUN_ID,
+            "ready": False,
+            "complete": False,
+            "missing": ["onboard", "observer", "rosbag"],
+            "manifest_path": "",
+        },
         {
             "run_id": RUN_ID,
             "ready": True,
             "complete": False,
             "missing": [],
             "manifest_path": "",
-        }
+        },
+        {
+            "run_id": RUN_ID,
+            "ready": True,
+            "complete": True,
+            "missing": [],
+            "manifest_path": "manifest.json",
+        },
     ]
+    assert protocol.statuses[-1] == (
+        "terminal-notified",
+        {"run_id": RUN_ID, "notified": True},
+    )
+
+
+def test_post_manifest_status_sorts_invalid_paths_and_preserves_readiness(tmp_path):
+    runtime, protocol, _, _, published = _runtime(tmp_path)
+    runtime.start(deadline=5.0)
+    runtime.check_ready("graph")
+    runtime.check_ready("graph")
+    protocol.terminal = {
+        "run_id": RUN_ID,
+        "terminal_status": "FAILED",
+        "reason": "invalid artifacts",
+        "manifest_path": "manifest.json",
+    }
+    protocol.manifest_status = {
+        "run_id": RUN_ID,
+        "complete": False,
+        "missing": ["video/observer.mp4", "rosbag"],
+        "manifest_path": "manifest.json",
+    }
+    runtime.final_report = {"run_id": RUN_ID, "complete": False, "records": []}
+
+    assert runtime.poll_terminal() is True
+    assert published[-1] == {
+        "run_id": RUN_ID,
+        "ready": True,
+        "complete": False,
+        "missing": ["rosbag", "video/observer.mp4"],
+        "manifest_path": "manifest.json",
+    }
 
 
 def test_invalid_observer_still_produces_exact_three_record_failure_report(tmp_path):
@@ -355,6 +463,7 @@ def test_unknown_fault_is_rejected(tmp_path):
 def test_premature_ffmpeg_exit_after_readiness_writes_first_wins_runtime_failure(tmp_path):
     runtime, protocol, _, video, _ = _runtime(tmp_path)
     runtime.start(deadline=5.0)
+    assert runtime.check_ready("graph") is False
     assert runtime.check_ready("graph") is True
 
     video.recorders["onboard"].is_ready = False
@@ -438,6 +547,7 @@ def test_rosbag_death_after_finalizing_before_aggregate_freeze_blocks_success(tm
         video_validators=video_validators,
     )
     runtime.start(deadline=5.0)
+    assert runtime.check_ready("graph") is False
     assert runtime.check_ready("graph") is True
 
     # FINALIZING has been requested, but orchestration has not yet published

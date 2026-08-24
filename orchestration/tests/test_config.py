@@ -112,6 +112,14 @@ def test_config_schemas_are_valid_and_accept_phase_2_documents(schema_name):
             id="odd-height",
         ),
         pytest.param(
+            lambda value: value["recording"].update({"width_px": 640}),
+            id="wrong-even-width",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update({"height_px": 480}),
+            id="wrong-even-height",
+        ),
+        pytest.param(
             lambda value: value["recording"].update({"fps": 19}), id="wrong-fps"
         ),
         pytest.param(
@@ -166,6 +174,14 @@ def test_template_schema_rejects_caller_supplied_run_id():
         pytest.param(
             lambda value: value["recording"].update({"height_px": 239}),
             id="odd-dimension",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update({"width_px": 640}),
+            id="wrong-even-width",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update({"height_px": 480}),
+            id="wrong-even-height",
         ),
         pytest.param(
             lambda value: value["recording"].update({"fps": 30}), id="wrong-fps"

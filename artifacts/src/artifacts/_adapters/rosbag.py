@@ -633,9 +633,13 @@ class RosbagValidator:
         counts = {topic: 0 for topic in FIXED_TOPICS}
         timestamps: dict[str, list[int]] = {topic: [] for topic in FIXED_TOPICS}
         frame_ids: dict[str, list[int]] = {"onboard": [], "observer": []}
+        artifact_statuses: list[tuple[int, Any]] = []
+        first_clock_index: int | None = None
         try:
-            for record in self._backend.read_messages(
-                bag_directory, metadata.storage_id, FIXED_TOPIC_TYPES
+            for record_index, record in enumerate(
+                self._backend.read_messages(
+                    bag_directory, metadata.storage_id, FIXED_TOPIC_TYPES
+                )
             ):
                 if record.topic not in counts:
                     return self._result(
@@ -647,6 +651,8 @@ class RosbagValidator:
                 counts[record.topic] += 1
                 if record.topic == "/clock":
                     sim_timestamp_ns = _timestamp_ns(message.clock)
+                    if first_clock_index is None:
+                        first_clock_index = record_index
                 elif record.topic.endswith("/image_raw"):
                     if not message.data:
                         return self._result(
@@ -682,6 +688,8 @@ class RosbagValidator:
                                 f"{message.stream!r}",
                             )
                         frame_ids[stream].append(message.frame_id)
+                    elif record.topic == "/simulation/artifact_status":
+                        artifact_statuses.append((record_index, message))
                 timestamps[record.topic].append(sim_timestamp_ns)
         except Exception as error:
             return self._result(
@@ -696,6 +704,43 @@ class RosbagValidator:
                     filesystem,
                     ValidationStatus.INVALID,
                     f"rosbag topic {topic} metadata count does not match readable messages",
+                )
+
+        expected_artifact_statuses = (
+            {
+                "ready": False,
+                "complete": False,
+                "missing": ["onboard", "observer", "rosbag"],
+                "manifest_path": "",
+            },
+            {
+                "ready": True,
+                "complete": False,
+                "missing": [],
+                "manifest_path": "",
+            },
+        )
+        if len(artifact_statuses) != 2 or first_clock_index is None:
+            return self._result(
+                filesystem,
+                ValidationStatus.INVALID,
+                "rosbag artifact status startup sequence is incomplete",
+            )
+        for (record_index, message), expected in zip(
+            artifact_statuses, expected_artifact_statuses, strict=True
+        ):
+            if (
+                record_index >= first_clock_index
+                or _timestamp_ns(message.sim_timestamp) != 0
+                or message.ready is not expected["ready"]
+                or message.complete is not expected["complete"]
+                or list(message.missing) != expected["missing"]
+                or message.manifest_path != expected["manifest_path"]
+            ):
+                return self._result(
+                    filesystem,
+                    ValidationStatus.INVALID,
+                    "rosbag artifact status startup sequence is invalid",
                 )
 
         for stream in ("onboard", "observer"):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -42,7 +42,7 @@ SERVICES = (
 EXACT_COUNTS = {
     "/clock": 41,
     "/simulation/run_state": 4,
-    "/simulation/artifact_status": 1,
+    "/simulation/artifact_status": 2,
     "/simulation/ground_truth": 40,
     "/simulation/scenario_events": 1,
     "/simulation/score_events": 1,
@@ -355,6 +355,41 @@ def _assert_provenance(bundle: Path, manifest: dict[str, Any]) -> None:
     ]
 
 
+def _image_digest_mapping(manifest: dict[str, Any]) -> dict[str, str]:
+    return {
+        item["name"]: item["digest"]
+        for item in manifest["image_digests"]
+    }
+
+
+def _finalization_intervals(bundle: Path) -> dict[str, float]:
+    host_events = [
+        json.loads(line)
+        for line in (bundle / "logs/orchestration.jsonl").read_text().splitlines()
+    ]
+    timestamps = {
+        item["event"]: datetime.fromisoformat(
+            item["wall_timestamp"].replace("Z", "+00:00")
+        )
+        for item in host_events
+        if item["event"] in {"run_finalizing", "log_capture_starting"}
+    }
+    assert set(timestamps) == {"run_finalizing", "log_capture_starting"}
+    manifest_at = datetime.fromtimestamp(
+        (bundle / "manifest.json").stat().st_mtime_ns / 1_000_000_000,
+        tz=timezone.utc,
+    )
+    finalizing_at = timestamps["run_finalizing"]
+    capture_at = timestamps["log_capture_starting"]
+    intervals = {
+        "FINALIZING_to_capture": (capture_at - finalizing_at).total_seconds(),
+        "capture_to_manifest": (manifest_at - capture_at).total_seconds(),
+        "FINALIZING_to_manifest": (manifest_at - finalizing_at).total_seconds(),
+    }
+    assert all(value >= 0 for value in intervals.values())
+    return intervals
+
+
 def _canonical_terminal_result(bundle: Path) -> dict[str, Any]:
     manifest = _manifest(bundle)
     return {
@@ -472,6 +507,32 @@ def _assert_completed_bundle(bundle: Path) -> dict[str, Any]:
     assert bag["semantic"]["status"] == "valid"
     assert {item["name"]: item["decoded_count"] for item in bag["topics"]} == EXACT_COUNTS
     assert bag["lifecycle"] == ["STARTING", "READY", "RUNNING", "FINALIZING"]
+    assert [
+        {key: value for key, value in item.items() if key != "record_index"}
+        for item in bag["artifact_statuses"]
+    ] == [
+        {
+            "sim_timestamp_ns": 0,
+            "ready": False,
+            "complete": False,
+            "missing": ["onboard", "observer", "rosbag"],
+            "manifest_path": "",
+        },
+        {
+            "sim_timestamp_ns": 0,
+            "ready": True,
+            "complete": False,
+            "missing": [],
+            "manifest_path": "",
+        },
+    ]
+    assert [item["record_index"] for item in bag["artifact_statuses"]] == sorted(
+        item["record_index"] for item in bag["artifact_statuses"]
+    )
+    assert all(
+        item["record_index"] < bag["first_clock_record_index"]
+        for item in bag["artifact_statuses"]
+    )
     assert bag["artifact_ready_record_index"] < bag["first_clock_record_index"]
     assert len(bag["scenario_events"]) == len(bag["score_events"]) == 1
     expected_ids = list(range(40))
@@ -662,6 +723,36 @@ def test_abort_is_durable_idempotent_and_preserves_readable_bundle(
                 process.wait(timeout=10)
         if bundle is not None:
             _cleanup_project(bundle.name)
+
+
+def test_all_four_terminal_manifests_share_exact_image_mapping_and_timing_evidence(
+    output_root: Path,
+) -> None:
+    bundles = sorted(path.parent for path in output_root.glob("*/manifest.json"))
+    assert len(bundles) == 4
+    manifests = [_manifest(bundle) for bundle in bundles]
+    mappings = [_image_digest_mapping(manifest) for manifest in manifests]
+
+    assert len(mappings[0]) == 7
+    assert all(mapping == mappings[0] for mapping in mappings[1:])
+    assert sorted(manifest["terminal_status"] for manifest in manifests) == [
+        "ABORTED",
+        "COMPLETED",
+        "COMPLETED",
+        "FAILED",
+    ]
+    for bundle in bundles:
+        intervals = _finalization_intervals(bundle)
+        assert intervals["FINALIZING_to_manifest"] == pytest.approx(
+            intervals["FINALIZING_to_capture"] + intervals["capture_to_manifest"],
+            abs=1e-6,
+        )
+        notification = bundle / ".status/terminal-notified.json"
+        assert json.loads(notification.read_text()) == {
+            "run_id": bundle.name,
+            "notified": True,
+        }
+        assert notification.stat().st_mtime_ns >= (bundle / "manifest.json").stat().st_mtime_ns
 
 
 @pytest.mark.parametrize(

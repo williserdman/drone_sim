@@ -29,6 +29,7 @@ from artifacts import (
     StructuredEvent,
     ValidationResult,
     ValidationStatus,
+    read_regular_file_bytes,
     validate_regular_file,
     validate_tree,
 )
@@ -671,20 +672,14 @@ class RunController:
         run_directory: Path,
         deadline_check: Callable[[], None] | None = None,
     ) -> tuple[float | None, float | None, str | None, tuple[str, ...]]:
-        path = run_directory / "scoring/result.json"
         try:
-            chunks: list[bytes] = []
-            with path.open("rb") as stream:
-                while True:
-                    if deadline_check is not None:
-                        deadline_check()
-                    chunk = stream.read(1024 * 1024)
-                    if deadline_check is not None:
-                        deadline_check()
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-            payload = b"".join(chunks)
+            validation, payload = read_regular_file_bytes(
+                run_directory,
+                "scoring/result.json",
+                deadline_check=deadline_check,
+            )
+            if validation.status is not ValidationStatus.VALID or payload is None:
+                return None, None, None, ()
             if deadline_check is not None:
                 deadline_check()
             document = json.loads(payload.decode("utf-8"))
@@ -747,27 +742,6 @@ class RunController:
             if result.status is not ValidationStatus.VALID:
                 return result.detail
         return None
-
-    @staticmethod
-    def _read_json_with_deadline(
-        path: Path,
-        deadline_check: Callable[[], None],
-    ) -> dict[str, Any]:
-        chunks: list[bytes] = []
-        with path.open("rb") as stream:
-            while True:
-                deadline_check()
-                chunk = stream.read(1024 * 1024)
-                deadline_check()
-                if not chunk:
-                    break
-                chunks.append(chunk)
-        deadline_check()
-        value = json.loads(b"".join(chunks).decode("utf-8"))
-        deadline_check()
-        if not isinstance(value, dict):
-            raise ControllerError("manifest is not a JSON object")
-        return value
 
     @staticmethod
     def _remove_captured_host_events(run_directory: Path) -> None:
@@ -1196,20 +1170,13 @@ class RunController:
                         lifecycle = lifecycle.apply(LifecycleEvent.ARTIFACTS_FINALIZED)
 
                     try:
-                        validated = store.validated_manifest_path(
+                        validated_result = store.validated_manifest_result(
                             config.run_id,
                             manifest_deadline_check,
                         )
-                        manifest_document = self._read_json_with_deadline(
-                            validated,
-                            manifest_deadline_check,
-                        )
                         if (
-                            validated != committed.path
-                            or manifest_document.get("run_id") != committed.run_id
-                            or manifest_document.get("terminal_status")
-                            != committed.terminal_status
-                            or manifest_document.get("reason") != committed.reason
+                            validated_result is None
+                            or validated_result != committed
                         ):
                             raise ControllerError("committed manifest verification mismatch")
                     except Exception as exc:
@@ -1314,7 +1281,13 @@ class RunController:
                     primary,
                     tuple(diagnostics),
                 )
-                store.write_operator_status(final_status)
+                try:
+                    store.write_operator_status(final_status)
+                except Exception:
+                    # The typed manifest result is already authoritative.  A
+                    # mutable operator-cache failure cannot erase foreground
+                    # terminal facts; later commands validate the manifest.
+                    pass
                 return RunResult(
                     config.run_id,
                     effective,
@@ -1371,26 +1344,56 @@ class RunController:
 
     def status(self, run_id: str, output_root: Path | str) -> RunResult:
         store = self.status_store_factory(self._absolute_output_root(output_root))
+        committed = store.validated_manifest_result(run_id)
+        if committed is not None:
+            return RunResult(
+                committed.run_id,
+                committed.terminal_status,
+                committed.reason,
+                "manifest.json",
+            )
         status = store.read_operator_status(run_id)
+        committed = store.validated_manifest_result(run_id)
+        if committed is not None:
+            return RunResult(
+                committed.run_id,
+                committed.terminal_status,
+                committed.reason,
+                "manifest.json",
+            )
         return RunResult(status.run_id, status.state, status.reason, status.manifest_path)
 
     def abort(self, run_id: str, output_root: Path | str) -> RunResult:
         store = self.status_store_factory(self._absolute_output_root(output_root))
+        committed = store.validated_manifest_result(run_id)
+        if committed is not None:
+            return RunResult(
+                committed.run_id,
+                committed.terminal_status,
+                committed.reason,
+                "manifest.json",
+            )
         store.request_finalization(run_id, "ABORTED", "operator_abort")
+        committed = store.validated_manifest_result(run_id)
+        if committed is not None:
+            return RunResult(
+                committed.run_id,
+                committed.terminal_status,
+                committed.reason,
+                "manifest.json",
+            )
         status = store.read_operator_status(run_id)
         return RunResult(status.run_id, status.state, status.reason, status.manifest_path)
 
     def collect_results(self, run_id: str, output_root: Path | str) -> RunResult:
         store = self.status_store_factory(self._absolute_output_root(output_root))
-        path = store.validated_manifest_path(run_id)
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ControllerError(f"manifest cannot be read: {exc}") from exc
+        committed = store.validated_manifest_result(run_id)
+        if committed is None:
+            raise ProtocolFileError("manifest.json is missing")
         return RunResult(
-            run_id,
-            document["terminal_status"],
-            document["reason"],
+            committed.run_id,
+            committed.terminal_status,
+            committed.reason,
             "manifest.json",
         )
 
