@@ -1,0 +1,12 @@
+[project]
+name = "drone-sim-electromagnet"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["drone-sim-artifacts==0.1.0"]
+
+[project.scripts]
+drone-sim-electromagnet-runtime = "drone_sim_electromagnet.runtime_node:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

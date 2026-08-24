@@ -7,9 +7,13 @@
 
 ## ROS 2 outputs
 
-- Idempotent physical-effect requests consumed by Gazebo
 - Scenario events on `/simulation/scenario_events` using
   `simulation_interfaces/msg/ScenarioEvent` and reliable QoS depth 100
+
+For `descent_v1`, the production runtime publishes exactly one transient-local
+event on the first observed simulation clock: event ID 0,
+`magnet_id=descent-v1-magnet`, and `state=INACTIVE`. It exposes no physical
+effect output and applies no Gazebo force.
 
 Each output identifies `run_id`, event identity, `magnet_id`, desired state, and simulation timestamp. Repeated delivery of the same event identity must not apply an effect or score twice.
 
@@ -25,6 +29,9 @@ freeze.
 ## Prohibited paths
 
 The module must never directly command ArduPilot or directly mutate aircraft pose, velocity, actuator, or sensor state. Physical effects pass through Gazebo physics.
+
+The final structured event precedes
+`.status/quiescence/electromagnet.json`; no output follows that marker.
 
 ## Deferred decisions
 

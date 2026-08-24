@@ -24,13 +24,15 @@ Simulation-timestamped camera frames, ROS 2 `/clock`, MAVLink telemetry, modes, 
 
 MAVLink flight and mission commands plus wall-clock performance diagnostics.
 
-## Implementation stages
+## Implemented vertical-slice stages
 
-1. Receive camera frames and preserve `run_id`, frame identity, and capture time.
-2. Run frame-triggered vision and mission decisions.
-3. Issue MAVLink commands with causal frame metadata where supported.
-4. Consume acknowledgements and telemetry.
-5. Expose health and latency diagnostics without scheduling from wall time.
+1. Consume ROS simulation clock and ground-truth contact.
+2. Correlate PyMAVLink heartbeat, ACK, mode, arm, altitude, and landed state.
+3. Execute the pure 1.5 m takeoff and controlled `LAND` state machine.
+4. Persist readiness, terminal outcome, structured evidence, and quiescence.
+
+Camera-driven legacy vision remains intentionally outside the first runnable
+vertical descent; the nested `companion/comp2026` repository is untouched.
 
 ## Acceptance criteria
 

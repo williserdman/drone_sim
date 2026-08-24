@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+
+from drone_sim_companion.mavlink_adapter import MavlinkAdapter
+from drone_sim_companion.mission import CommandKind
+
+
+class Message:
+    def __init__(self, kind: str, **fields: object) -> None:
+        self._kind = kind
+        for name, value in fields.items():
+            setattr(self, name, value)
+
+    def get_type(self) -> str:
+        return self._kind
+
+
+@dataclass
+class FakeMav:
+    calls: list[tuple[object, ...]] = field(default_factory=list)
+    stream_calls: list[tuple[object, ...]] = field(default_factory=list)
+
+    def command_long_send(self, *arguments: object) -> None:
+        self.calls.append(arguments)
+
+    def request_data_stream_send(self, *arguments: object) -> None:
+        self.stream_calls.append(arguments)
+
+
+class FakeConnection:
+    def __init__(self, messages: list[Message] | None = None) -> None:
+        self.target_system = 1
+        self.target_component = 1
+        self.mav = FakeMav()
+        self.messages = list(messages or [])
+
+    def recv_match(self, *, blocking: bool) -> Message | None:
+        assert blocking is False
+        return self.messages.pop(0) if self.messages else None
+
+
+def mavutil() -> SimpleNamespace:
+    constants = SimpleNamespace(
+        MAV_CMD_DO_SET_MODE=176,
+        MAV_CMD_COMPONENT_ARM_DISARM=400,
+        MAV_CMD_NAV_TAKEOFF=22,
+        MAV_CMD_NAV_LAND=21,
+        MAV_MODE_FLAG_CUSTOM_MODE_ENABLED=1,
+        MAV_MODE_FLAG_SAFETY_ARMED=128,
+        MAV_RESULT_ACCEPTED=0,
+        MAV_RESULT_IN_PROGRESS=5,
+        MAV_LANDED_STATE_ON_GROUND=1,
+        MAV_DATA_STREAM_ALL=0,
+    )
+    return SimpleNamespace(
+        mavlink=constants,
+        mode_string_v10=lambda message: {0: "STABILIZE", 4: "GUIDED", 9: "LAND"}[
+            message.custom_mode
+        ],
+    )
+
+
+def test_commands_translate_to_exact_mavlink_long_commands() -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+    adapter.send(CommandKind.SET_GUIDED, None)
+    adapter.send(CommandKind.ARM, None)
+    adapter.send(CommandKind.TAKEOFF, 1.5)
+    adapter.send(CommandKind.LAND, None)
+
+    assert connection.mav.calls == [
+        (1, 1, 176, 0, 1, 4, 0, 0, 0, 0, 0),
+        (1, 1, 400, 0, 1, 0, 0, 0, 0, 0, 0),
+        (1, 1, 22, 0, 0, 0, 0, 0, 0, 0, 1.5),
+        (1, 1, 21, 0, 0, 0, 0, 0, 0, 0, 0),
+    ]
+
+
+def test_telemetry_stream_request_is_explicit_and_simulation_neutral() -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+    adapter.request_telemetry(rate_hz=10)
+    assert connection.mav.stream_calls == [(1, 1, 0, 10, 1)]
+
+
+def test_mavlink_messages_are_stamped_with_current_simulation_time() -> None:
+    connection = FakeConnection(
+        [
+            Message("HEARTBEAT", custom_mode=4, base_mode=128),
+            Message("COMMAND_ACK", command=400, result=0),
+            Message("GLOBAL_POSITION_INT", relative_alt=1234, vz=25),
+            Message("EXTENDED_SYS_STATE", landed_state=1),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    heartbeat = adapter.poll(1_000_000_000)
+    acknowledgement = adapter.poll(1_050_000_000)
+    altitude = adapter.poll(1_100_000_000)
+    landed = adapter.poll(1_150_000_000)
+
+    assert heartbeat is not None
+    assert (heartbeat.timestamp_ns, heartbeat.heartbeat, heartbeat.mode, heartbeat.armed) == (
+        1_000_000_000,
+        True,
+        "GUIDED",
+        True,
+    )
+    assert acknowledgement is not None
+    assert acknowledgement.ack is not None
+    assert acknowledgement.ack.command is CommandKind.ARM
+    assert acknowledgement.ack.accepted
+    assert altitude is not None
+    assert altitude.relative_altitude_m == 1.234
+    assert altitude.vertical_speed_m_s == -0.25
+    assert landed is not None and landed.landed is True
+
+
+def test_in_progress_ack_waits_and_negative_ack_is_exposed() -> None:
+    connection = FakeConnection(
+        [
+            Message("COMMAND_ACK", command=22, result=5),
+            Message("COMMAND_ACK", command=22, result=4),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+    assert adapter.poll(10) is None
+    rejected = adapter.poll(20)
+    assert rejected is not None and rejected.ack is not None
+    assert rejected.ack.command is CommandKind.TAKEOFF
+    assert not rejected.ack.accepted
+
+
+def test_ground_truth_contact_is_merged_with_latest_vehicle_state() -> None:
+    connection = FakeConnection(
+        [
+            Message("HEARTBEAT", custom_mode=9, base_mode=128),
+            Message("HEARTBEAT", custom_mode=9, base_mode=0),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+    adapter.poll(100)
+
+    truth = adapter.ground_truth(
+        timestamp_ns=150,
+        altitude_m=0.02,
+        vertical_speed_m_s=-0.04,
+        in_contact=True,
+    )
+    assert (truth.mode, truth.armed, truth.relative_altitude_m, truth.in_contact, truth.landed) == (
+        "LAND",
+        True,
+        0.02,
+        True,
+        True,
+    )
+    disarmed = adapter.poll(200)
+    assert disarmed is not None
+    assert disarmed.armed is False and disarmed.landed is True

@@ -2,9 +2,19 @@
 
 ## Current interface
 
-No same-process sibling interface exists in the initial scaffold.
+- `mission.advance(state, telemetry)` is the pure, immutable mission seam. It
+  reads no clocks and returns commands plus structured event facts.
+- `MissionController` sends returned commands through the `VehicleCommands`
+  protocol and commits state only after the send succeeds.
+- `MavlinkAdapter` is the only PyMAVLink boundary. It translates the four
+  mission commands and stamps received messages with caller-supplied
+  simulation time.
+- `CompanionLifecycle` owns readiness, mission terminal status, structured
+  output, and the final quiescence boundary.
+- `runtime_node` alone imports ROS 2 and the real PyMAVLink connection.
 
 ## Future seams
 
-Mission, vision, and vehicle-adapter submodules may use language-native imports. Their documented interfaces must preserve `run_id`, source frame identity, and simulation timestamps, and must not expose direct Gazebo control.
-
+Future vision modules may use language-native imports. Their documented
+interfaces must preserve `run_id`, source frame identity, and simulation
+timestamps, and must not expose direct Gazebo control.

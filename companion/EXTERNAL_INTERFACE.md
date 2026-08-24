@@ -14,12 +14,34 @@ timestamp.
 
 - Output: flight and mission commands to ArduPilot SITL
 - Input: vehicle telemetry, modes, and command acknowledgements
+- Production endpoint: `tcp:ardupilot-sitl:5760` on the Compose network
+
+The `descent_v1` command sequence is `GUIDED`, arm, take off to 1.5 m,
+and `LAND`. Every transition requires the ordered positive command ACK and
+observed vehicle state; a command send is logged only after PyMAVLink accepts
+it. Negative ACKs, unexpected ACKs, mode inconsistency, timestamp regression,
+and contact before descent fail the mission without repair.
 
 Commands derived from imagery retain `source_frame_id` where the adapter permits.
 
 ## Timing and ordering
 
 Mission logic is frame- or event-triggered in simulation time. Duplicate frames are idempotently ignored, missing frames are diagnosed, stale `run_id` data is ignored, and loss of `/clock` prevents new simulated decisions. Wall time measures computation and infrastructure health only.
+
+MAVLink messages are correlated with the latest authoritative `/clock` value.
+Ground truth retains its native message timestamp. Equal timestamps are ordered
+by receipt; a lower timestamp than the preceding mission input is rejected.
+
+## Durable lifecycle
+
+- `.status/companion-ready.json` records the first heartbeat simulation stamp
+  and the fixed MAVLink endpoint.
+- `.status/mission-finished.json` is written only after actual landed/disarmed
+  success and is exactly `{run_id,finished:true,sim_timestamp_ns,outcome:"LANDED"}`.
+  Failures remain structured failure evidence and can never create or repair
+  this completion fact.
+- The final structured event precedes
+  `.status/quiescence/companion.json`; no output follows that marker.
 
 ## Prohibited path
 
@@ -31,4 +53,4 @@ schema, then remains silent while orchestration aggregates the freeze.
 
 ## Deferred decisions
 
-- MAVLink ports, routing, and command-to-frame correlation encoding
+- Command-to-frame correlation encoding for future vision-driven missions

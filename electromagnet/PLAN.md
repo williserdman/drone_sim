@@ -12,15 +12,19 @@ Evaluate deterministic electromagnet scenario rules, request their physical effe
 
 ## Inputs and outputs
 
-The module consumes run configuration and ROS 2 `/clock`. It produces physical-effect requests for Gazebo and scenario events for the scorekeeper.
+The vertical-slice runtime consumes run configuration and ROS 2 `/clock` and
+produces the truthful inactive scenario event for the scorekeeper. It exposes
+no Gazebo effect request in `descent_v1`; that seam remains reserved for a
+future active-magnet ruleset.
 
 ## Implementation stages
 
-1. Consume configuration and simulation time.
-2. Evaluate deterministic scenario conditions.
-3. Publish idempotent activation or deactivation requests to Gazebo.
-4. Publish corresponding scorekeeper events.
-5. Expose health and event diagnostics.
+1. Consume the authoritative ROS simulation clock.
+2. Publish one deterministic `descent_v1` inactive event.
+3. Expose readiness, publication, failure, finalization, and quiescence logs.
+
+Active-effect requests and force parameters remain deferred because the
+vertical descent rules require a permanently inactive magnet.
 
 ## Acceptance criteria
 
