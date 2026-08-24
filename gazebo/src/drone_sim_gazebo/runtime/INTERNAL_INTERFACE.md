@@ -50,3 +50,11 @@ finalization intent to one absolute monotonic deadline. `ActionExecutor`
 applies pure actions in order. `ChildSupervisor` launches bridge wrappers in
 new sessions and terminates their process groups before calling
 `GazeboServer.stop` with the same deadline.
+
+For `vertical_descent`, transport discovery additionally requires the
+plugin-owned `/model/iris/ardupilot/status` service. The runtime will not emit
+its local `GazeboReady` event until the service reports at least one received
+servo frame, motor-command update, and sent JSON state, with no frame gaps or
+send errors. `GazeboReadyStatus` freezes those exact counters into the durable
+Gazebo fact. This is the strongest truth available inside the Gazebo boundary;
+aggregate current-run peer readiness remains an orchestration responsibility.

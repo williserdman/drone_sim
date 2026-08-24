@@ -31,10 +31,46 @@ _STATIC_TOPICS = (
     "/gazebo/private/camera/observer/image",
     "/gazebo/private/iris/odometry",
 )
+_FLIGHT_STATUS_SERVICE = "/model/iris/ardupilot/status"
+_FLIGHT_STATUS_KEYS = frozenset(
+    {
+        "online",
+        "servo_packets_received",
+        "motor_updates",
+        "duplicate_servo_packets",
+        "servo_frame_gaps",
+        "json_states_sent",
+        "json_send_errors",
+        "last_servo_frame",
+        "last_json_sim_time_ns",
+    }
+)
 
 
 class TransportError(RuntimeError):
     """Gazebo Transport discovery or world control failed."""
+
+
+def _validate_flight_status(value: object) -> dict[str, bool | int]:
+    if not isinstance(value, dict) or set(value) != _FLIGHT_STATUS_KEYS:
+        raise TransportError("ArduPilot status has an invalid field inventory")
+    if type(value["online"]) is not bool:
+        raise TransportError("ArduPilot online status must be boolean")
+    for key in _FLIGHT_STATUS_KEYS - {"online"}:
+        if type(value[key]) is not int or value[key] < 0:
+            raise TransportError(f"ArduPilot status field {key} must be nonnegative")
+    return dict(value)
+
+
+def _flight_status_ready(status: Mapping[str, bool | int]) -> bool:
+    return bool(
+        status["online"]
+        and status["servo_packets_received"] >= 1
+        and status["motor_updates"] >= 1
+        and status["json_states_sent"] >= 1
+        and status["servo_frame_gaps"] == 0
+        and status["json_send_errors"] == 0
+    )
 
 
 class GazeboReadyStatus:
@@ -45,18 +81,34 @@ class GazeboReadyStatus:
             raise ValueError("run directory and canonical run_id must agree")
         self._directory = Path(run_directory) / ".status"
         self._target = self._directory / "gazebo-ready.json"
-        self._payload = (
-            json.dumps(
-                {"run_id": run_id, "ready": True},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        ).encode()
+        self._run_id = run_id
+        self._flight_exchange: dict[str, bool | int] | None = None
+        self._payload: bytes | None = None
+
+    def record_flight_exchange(self, status: Mapping[str, bool | int]) -> None:
+        validated = _validate_flight_status(dict(status))
+        if not _flight_status_ready(validated):
+            raise RuntimeError("cannot record an unready ArduPilot exchange")
+        if self._payload is not None:
+            raise RuntimeError("gazebo-ready payload is already frozen")
+        if self._flight_exchange is not None and self._flight_exchange != validated:
+            raise RuntimeError("flight exchange readiness was already latched")
+        self._flight_exchange = validated
+
+    def _frozen_payload(self) -> bytes:
+        if self._payload is None:
+            document: dict[str, object] = {"run_id": self._run_id, "ready": True}
+            if self._flight_exchange is not None:
+                document["flight_exchange"] = self._flight_exchange
+            self._payload = (
+                json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
+            ).encode()
+        return self._payload
 
     def write_gazebo_ready(self) -> Path:
+        payload = self._frozen_payload()
         if self._target.exists():
-            if self._target.read_bytes() != self._payload:
+            if self._target.read_bytes() != payload:
                 raise RuntimeError("gazebo-ready fact conflicts with existing evidence")
             return self._target
         temporary = self._directory / f".gazebo-ready.{uuid4().hex}.tmp"
@@ -66,14 +118,14 @@ class GazeboReadyStatus:
             0o644,
         )
         try:
-            os.write(descriptor, self._payload)
+            os.write(descriptor, payload)
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
         try:
             os.link(temporary, self._target)
         except FileExistsError:
-            if self._target.read_bytes() != self._payload:
+            if self._target.read_bytes() != payload:
                 raise RuntimeError("gazebo-ready fact conflicts with existing evidence")
         finally:
             temporary.unlink(missing_ok=True)
@@ -96,6 +148,7 @@ class GazeboTransport:
         if world_name not in {"phase3_foundation", "vertical_descent"}:
             raise ValueError("world_name must identify an approved local world")
         self._environment = dict(environment)
+        self._flight = world_name == "vertical_descent"
         self._topics = _STATIC_TOPICS + (
             f"/world/{world_name}/model/ground_plane/link/ground_link/sensor/"
             "iris_ground_contact/contact",
@@ -131,6 +184,47 @@ class GazeboTransport:
             raise TransportError(
                 f"required Gazebo service is missing: {self._control_service}"
             )
+        if self._flight and _FLIGHT_STATUS_SERVICE not in services:
+            raise TransportError(
+                f"required Gazebo service is missing: {_FLIGHT_STATUS_SERVICE}"
+            )
+
+    def flight_exchange_status(self) -> dict[str, bool | int]:
+        if not self._flight:
+            raise TransportError("the passive world has no ArduPilot exchange")
+        result = self._command(
+            (
+                "gz",
+                "service",
+                "-s",
+                _FLIGHT_STATUS_SERVICE,
+                "--reqtype",
+                "gz.msgs.Empty",
+                "--reptype",
+                "gz.msgs.StringMsg",
+                "--timeout",
+                "1000",
+                "--req",
+                "",
+            ),
+            timeout=2.0,
+        )
+        output = result.stdout.strip()
+        if not output.startswith('data: "'):
+            raise TransportError("ArduPilot status service returned malformed data")
+        try:
+            encoded = json.loads(output.removeprefix("data: "))
+            document = json.loads(encoded)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise TransportError("ArduPilot status service returned malformed JSON") from error
+        return _validate_flight_status(document)
+
+    def flight_exchange_ready(self) -> bool:
+        return _flight_status_ready(self.flight_exchange_status())
+
+    def ready_flight_exchange(self) -> dict[str, bool | int] | None:
+        status = self.flight_exchange_status()
+        return status if _flight_status_ready(status) else None
 
     def _control(self, request: str) -> None:
         result = self._command(

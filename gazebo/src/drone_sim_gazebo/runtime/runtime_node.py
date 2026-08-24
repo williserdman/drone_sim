@@ -216,8 +216,15 @@ def main() -> int:
         while not quiescent:
             ros_executor.spin_once(timeout_sec=0.05)
             if not gazebo_ready_seen and adapter.transport_ready():
-                gazebo_ready_seen = True
-                inbox.append(GazeboReady(run_id))
+                exchange_ready = True
+                if resolved.world_name == "vertical_descent":
+                    flight_exchange = transport.ready_flight_exchange()
+                    exchange_ready = flight_exchange is not None
+                    if flight_exchange is not None:
+                        status.record_flight_exchange(flight_exchange)
+                if exchange_ready:
+                    gazebo_ready_seen = True
+                    inbox.append(GazeboReady(run_id))
             if not artifacts_ready_seen and protocol.read_status("artifacts-ready") is not None:
                 if adapter.recorders_ready():
                     artifacts_ready_seen = True

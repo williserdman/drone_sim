@@ -1,11 +1,16 @@
 # Gazebo External Interface
 
-## Phase 3 scope
+## Runtime scope
 
 One run-scoped `gazebo-runtime` service owns the headless Gazebo Harmonic
 server, private Gazebo Transport endpoints, bridges, public ROS adapter, native
 state, and raw server log. Gazebo is the sole producer of physical truth and
 simulation time. Gazebo Transport is not a repository-wide interface.
+
+Two immutable selections are accepted. `phase3_foundation/iris` is the passive
+foundation world. `vertical_descent/iris_flight` is the flight world; the
+configured resource selector remains `iris_flight`, while its physical Gazebo
+entity and private topic child are named `iris`.
 
 ## ROS 2 outputs
 
@@ -56,8 +61,8 @@ authority.
 ## Reset, timing, and failure behavior
 
 Reset destroys the run-scoped container/server and starts a fresh server from
-immutable `phase3_foundation.sdf` under a new Compose project and Gazebo
-partition. There is no public in-process reset endpoint. Stale-run or foreign
+the selected immutable `phase3_foundation.sdf` or `vertical_descent.sdf` under
+a new Compose project and Gazebo partition. There is no public in-process reset endpoint. Stale-run or foreign
 partition data cannot satisfy readiness or completion. When paused, `/clock`,
 images, metadata, pose, and ground truth do not advance.
 
@@ -73,6 +78,21 @@ image owns `/etc/drone_sim/gazebo-bridge.yaml` and immutable resources at
 camera, odometry, contact, and world-control endpoints before publishing
 `.status/gazebo-ready.json`.
 
+For `vertical_descent` only, Gazebo loads the pinned, downstream-patched
+ArduPilotPlugin from `/opt/drone_sim/gazebo/plugins`. The plugin binds UDP 9002,
+accepts Copter servo frames, sends JSON sensor state, and holds physics in
+lockstep while awaiting the next frame. It emits the initial state at simulation
+time zero while the world remains paused; this performs no physics step or
+motor-force update. Its private `/model/iris/ardupilot/status` service is
+advertised only after UDP bind and reports exchange, motor-update, gap, send
+error, last-frame, and last-sim-time counters.
+
+Flight-local readiness fails closed until that service shows an online,
+bidirectional, zero-gap, zero-send-error exchange, and the observed counters are
+preserved in `.status/gazebo-ready.json`. Orchestration alone aggregates this
+fact with durable ArduPilot, companion, artifact, and scorekeeper readiness;
+the Gazebo fact does not claim those peer processes are lifecycle-ready.
+
 On the first valid finalization request the runtime converts the durable intent
 and resolved finalization allowance into one absolute monotonic deadline.
 Repeated reads reuse that deadline; bridge, server, and native-log stages do
@@ -80,7 +100,6 @@ not receive restarted budgets.
 
 ## Excluded and reserved interfaces
 
-Phase 3 has no ArduPilot actuator/sensor seam and does not claim lockstep.
-ArduPilot SITL, MAVLink, motor dynamics, NED conversion, and ArduPilot-Gazebo
-lockstep are reserved for Phase 4. Electromagnet physical-effect requests,
+The passive foundation selection has no ArduPilot actuator/sensor seam.
+MAVLink is owned by ArduPilot SITL and companion, not Gazebo. Electromagnet physical-effect requests,
 payload behavior, course policy, and competition scoring remain Phase 6 work.

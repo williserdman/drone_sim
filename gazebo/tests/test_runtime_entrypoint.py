@@ -53,7 +53,9 @@ def test_flight_transport_discovers_and_controls_the_flight_world():
                 contact,
             )
         ),
-        ("gz", "service", "-l"): "/world/vertical_descent/control\n",
+        ("gz", "service", "-l"): (
+            "/world/vertical_descent/control\n/model/iris/ardupilot/status\n"
+        ),
     }
     calls = []
 
@@ -72,6 +74,114 @@ def test_flight_transport_discovers_and_controls_the_flight_world():
     transport.request_steps(1)
 
     assert "/world/vertical_descent/control" in calls[-1][0]
+
+
+def test_flight_transport_rejects_a_world_without_the_plugin_status_service():
+    """A passive world must not satisfy the flight runtime's local readiness."""
+    contact = (
+        "/world/vertical_descent/model/ground_plane/link/ground_link/sensor/"
+        "iris_ground_contact/contact"
+    )
+
+    def run(argv, **_kwargs):
+        output = (
+            "\n".join(
+                (
+                    "/clock",
+                    "/gazebo/private/camera/onboard/image",
+                    "/gazebo/private/camera/observer/image",
+                    "/gazebo/private/iris/odometry",
+                    contact,
+                )
+            )
+            if argv[1] == "topic"
+            else "/world/vertical_descent/control\n"
+        )
+        return type("Result", (), {"returncode": 0, "stdout": output, "stderr": ""})()
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+
+    with pytest.raises(TransportError, match="ardupilot/status"):
+        transport.assert_ready()
+
+
+def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
+    """Generic Gazebo endpoints cannot substitute for one real JSON exchange."""
+    payload = (
+        '{"online":true,"servo_packets_received":3,"motor_updates":2,'
+        '"duplicate_servo_packets":1,"servo_frame_gaps":0,'
+        '"json_states_sent":3,"json_send_errors":0,'
+        '"last_servo_frame":2,"last_json_sim_time_ns":0}'
+    )
+
+    def run(_argv, **_kwargs):
+        escaped = payload.replace('"', '\\"')
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": f'data: "{escaped}"\n', "stderr": ""},
+        )()
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+
+    assert transport.flight_exchange_status() == {
+        "online": True,
+        "servo_packets_received": 3,
+        "motor_updates": 2,
+        "duplicate_servo_packets": 1,
+        "servo_frame_gaps": 0,
+        "json_states_sent": 3,
+        "json_send_errors": 0,
+        "last_servo_frame": 2,
+        "last_json_sim_time_ns": 0,
+    }
+    assert transport.flight_exchange_ready() is True
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        {"online": False},
+        {"servo_packets_received": 0},
+        {"motor_updates": 0},
+        {"json_states_sent": 0},
+        {"servo_frame_gaps": 1},
+        {"json_send_errors": 1},
+    ),
+)
+def test_flight_exchange_readiness_fails_closed_on_incomplete_or_gapped_exchange(changed):
+    """Every required exchange fact must be healthy before Gazebo flight-ready."""
+    status = {
+        "online": True,
+        "servo_packets_received": 1,
+        "motor_updates": 1,
+        "duplicate_servo_packets": 0,
+        "servo_frame_gaps": 0,
+        "json_states_sent": 1,
+        "json_send_errors": 0,
+        "last_servo_frame": 0,
+        "last_json_sim_time_ns": 0,
+    }
+    status.update(changed)
+
+    def run(_argv, **_kwargs):
+        payload = __import__("json").dumps(status, separators=(",", ":"))
+        escaped = payload.replace('"', '\\"')
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": f'data: "{escaped}"\n', "stderr": ""},
+        )()
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+
+    assert transport.flight_exchange_ready() is False
 
 
 def test_transport_names_missing_actual_endpoint():
@@ -145,3 +255,34 @@ def test_gazebo_ready_status_refuses_conflicting_existing_fact(tmp_path):
 
     with pytest.raises(RuntimeError, match="conflicts"):
         GazeboReadyStatus(run_directory, run_directory.name).write_gazebo_ready()
+
+
+def test_gazebo_ready_fact_preserves_the_latched_flight_exchange_counts(tmp_path):
+    """The current run must retain the counters that justified flight readiness."""
+    run_directory = tmp_path / "11111111-1111-4111-8111-111111111111"
+    (run_directory / ".status").mkdir(parents=True)
+    status = GazeboReadyStatus(run_directory, run_directory.name)
+    status.record_flight_exchange(
+        {
+            "online": True,
+            "servo_packets_received": 1,
+            "motor_updates": 1,
+            "duplicate_servo_packets": 0,
+            "servo_frame_gaps": 0,
+            "json_states_sent": 1,
+            "json_send_errors": 0,
+            "last_servo_frame": 0,
+            "last_json_sim_time_ns": 0,
+        }
+    )
+
+    target = status.write_gazebo_ready()
+
+    assert target.read_text() == (
+        '{"flight_exchange":{"duplicate_servo_packets":0,'
+        '"json_send_errors":0,"json_states_sent":1,'
+        '"last_json_sim_time_ns":0,"last_servo_frame":0,'
+        '"motor_updates":1,"online":true,"servo_frame_gaps":0,'
+        '"servo_packets_received":1},"ready":true,'
+        '"run_id":"11111111-1111-4111-8111-111111111111"}\n'
+    )
