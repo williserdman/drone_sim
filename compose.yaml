@@ -8,6 +8,7 @@ x-phase2-defaults: &phase2-defaults
     SIM_CONFIG_PATH: ${SIM_CONFIG_PATH:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001/configuration/run.json}
     SIM_PHASE2_FAULT: ${SIM_PHASE2_FAULT:-}
     SIM_SYNTHETIC_WALL_DELAY_MS: ${SIM_SYNTHETIC_WALL_DELAY_MS:-0}
+    SIM_SYNTHETIC_QUIESCENCE_DELAY_MS: ${SIM_SYNTHETIC_QUIESCENCE_DELAY_MS:-0}
   volumes:
     - type: bind
       source: ${SIM_RUN_DIRECTORY:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001}
@@ -20,7 +21,9 @@ x-phase2-defaults: &phase2-defaults
 
 services:
   foundation:
+    profiles: [foundation]
     init: true
+    image: drone-sim-foundation:phase1
     build:
       context: .
       dockerfile: tests/foundation/Dockerfile
@@ -30,6 +33,7 @@ services:
 
   orchestration-runtime:
     <<: *phase2-defaults
+    image: drone-sim-orchestration-runtime:phase2
     build:
       context: .
       dockerfile: orchestration/Dockerfile
@@ -41,6 +45,7 @@ services:
 
   artifacts-runtime:
     <<: *phase2-defaults
+    image: drone-sim-artifacts-runtime:phase2
     build:
       context: .
       dockerfile: artifacts/Dockerfile
@@ -52,6 +57,7 @@ services:
 
   synthetic-companion:
     <<: *phase2-defaults
+    image: drone-sim-synthetic-companion:phase2
     build:
       context: .
       dockerfile: tests/phase2/Dockerfile
@@ -63,6 +69,7 @@ services:
 
   synthetic-ardupilot-sitl:
     <<: *phase2-defaults
+    image: drone-sim-synthetic-ardupilot-sitl:phase2
     build:
       context: .
       dockerfile: tests/phase2/Dockerfile
@@ -74,6 +81,7 @@ services:
 
   synthetic-gazebo:
     <<: *phase2-defaults
+    image: drone-sim-synthetic-gazebo:phase2
     build:
       context: .
       dockerfile: tests/phase2/Dockerfile
@@ -85,6 +93,7 @@ services:
 
   synthetic-electromagnet:
     <<: *phase2-defaults
+    image: drone-sim-synthetic-electromagnet:phase2
     build:
       context: .
       dockerfile: tests/phase2/Dockerfile
@@ -96,6 +105,7 @@ services:
 
   synthetic-scorekeeper:
     <<: *phase2-defaults
+    image: drone-sim-synthetic-scorekeeper:phase2
     build:
       context: .
       dockerfile: tests/phase2/Dockerfile

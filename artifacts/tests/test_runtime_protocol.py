@@ -15,6 +15,7 @@ RUN_ID = "11111111-1111-4111-8111-111111111111"
 def run_directory(tmp_path: Path) -> Path:
     run = tmp_path / RUN_ID
     (run / ".status").mkdir(parents=True)
+    (run / ".status/quiescence").mkdir()
     (run / ".control").mkdir()
     return run
 
@@ -157,11 +158,96 @@ def test_runtime_write_fsyncs_file_and_directory(monkeypatch, run_directory):
 
 
 def test_runtime_status_is_readable_by_the_non_root_host_controller(run_directory):
-    path = RuntimeProtocol(run_directory, RUN_ID).write_status(
-        "artifacts-ready", {"run_id": RUN_ID, "ready": True}
-    )
+    previous = os.umask(0o077)
+    try:
+        path = RuntimeProtocol(run_directory, RUN_ID).write_status(
+            "artifacts-ready", {"run_id": RUN_ID, "ready": True}
+        )
+    finally:
+        os.umask(previous)
 
-    assert path.stat().st_mode & stat.S_IROTH
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("bad_path", [None, 7, True, {"path": "logs/x"}, ["logs/x"]])
+def test_runtime_failure_rejects_non_string_diagnostic_paths_as_protocol_error(
+    run_directory, bad_path
+):
+    with pytest.raises(ProtocolError, match="invalid schema"):
+        RuntimeProtocol(run_directory, RUN_ID).write_status(
+            "runtime-failure",
+            {
+                "run_id": RUN_ID,
+                "module": "artifacts",
+                "reason": "bad diagnostic path",
+                "diagnostic_paths": [bad_path],
+            },
+        )
+
+
+def test_quiescence_markers_are_exact_descriptor_safe_and_host_readable(run_directory):
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+    previous = os.umask(0o077)
+    try:
+        path = protocol.write_quiescence("gazebo")
+    finally:
+        os.umask(previous)
+
+    assert json.loads(path.read_text()) == {
+        "run_id": RUN_ID,
+        "module": "gazebo",
+        "quiescent": True,
+    }
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert protocol.read_quiescence("gazebo") == {
+        "run_id": RUN_ID,
+        "module": "gazebo",
+        "quiescent": True,
+    }
+    assert protocol.write_quiescence("gazebo") == path
+
+
+@pytest.mark.parametrize("module", ["artifacts", "../gazebo", "", "unknown"])
+def test_quiescence_rejects_unowned_or_unsafe_module_names(run_directory, module):
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+    with pytest.raises(ValueError, match="quiescence module"):
+        protocol.write_quiescence(module)
+    with pytest.raises(ValueError, match="quiescence module"):
+        protocol.read_quiescence(module)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"run_id":"stale","module":"gazebo","quiescent":true}',
+        b'{"run_id":"11111111-1111-4111-8111-111111111111","module":"scorekeeper","quiescent":true}',
+        b'{"run_id":"11111111-1111-4111-8111-111111111111","module":"gazebo","quiescent":false}',
+        b'{"run_id":"11111111-1111-4111-8111-111111111111","module":"gazebo","module":"gazebo","quiescent":true}',
+    ],
+)
+def test_quiescence_read_rejects_stale_wrong_duplicate_or_invalid_schema(
+    run_directory, payload
+):
+    (run_directory / ".status/quiescence/gazebo.json").write_bytes(payload)
+    with pytest.raises(ProtocolError):
+        RuntimeProtocol(run_directory, RUN_ID).read_quiescence("gazebo")
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo"])
+def test_quiescence_rejects_unsafe_marker_paths(run_directory, kind):
+    target = run_directory / "target-marker"
+    target.write_text(
+        json.dumps({"run_id": RUN_ID, "module": "gazebo", "quiescent": True})
+    )
+    path = run_directory / ".status/quiescence/gazebo.json"
+    if kind == "symlink":
+        path.symlink_to(target)
+    elif kind == "hardlink":
+        os.link(target, path)
+    else:
+        os.mkfifo(path)
+    with pytest.raises(ProtocolError):
+        RuntimeProtocol(run_directory, RUN_ID).read_quiescence("gazebo")
 
 
 def test_constructor_rejects_noncanonical_id_and_unsafe_run_root(tmp_path):

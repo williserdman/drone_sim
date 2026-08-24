@@ -17,6 +17,11 @@ Each output identifies `run_id`, event identity, `magnet_id`, desired state, and
 
 Scenario rules use simulation time exclusively. Stale-run inputs are ignored with diagnostics. Loss of `/clock` prevents new transitions. Delivery or peer failures are reported without directly compensating through aircraft state.
 
+For Phase 2 synthetic finalization, the fixture publisher stops output before
+writing `.status/quiescence/electromagnet.json` with exact current-run
+quiescence schema, then remains silent while orchestration aggregates the
+freeze.
+
 ## Prohibited paths
 
 The module must never directly command ArduPilot or directly mutate aircraft pose, velocity, actuator, or sensor state. Physical effects pass through Gazebo physics.

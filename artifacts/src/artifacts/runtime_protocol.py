@@ -21,6 +21,9 @@ _DIRECTORY_FLAGS = (
 _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 _MAX_BYTES = 4 * 1024 * 1024
 _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
+_QUIESCENCE_MODULES = frozenset(
+    {"orchestration", "companion", "ardupilot_sitl", "gazebo", "electromagnet", "scorekeeper"}
+)
 _STATUS_NAMES = frozenset(
     {
         "artifacts-ready",
@@ -133,6 +136,7 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
             and isinstance(document.get("reason"), str)
             and bool(document["reason"])
             and isinstance(paths, list)
+            and all(isinstance(path, str) for path in paths)
             and len(paths) == len(set(paths))
             and all(_safe_relative_path(path) for path in paths)
         )
@@ -239,9 +243,13 @@ class RuntimeProtocol:
         self.close()
 
     def _open_directory(self, name: str) -> int:
+        return self._open_directory_at(self._run_fd, name)
+
+    @staticmethod
+    def _open_directory_at(parent_fd: int, name: str) -> int:
         try:
-            before = os.stat(name, dir_fd=self._run_fd, follow_symlinks=False)
-            descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=self._run_fd)
+            before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
             opened = os.fstat(descriptor)
         except OSError as error:
             raise ProtocolError(f"protocol directory {name!r} is unsafe: {error}") from error
@@ -339,6 +347,7 @@ class RuntimeProtocol:
                 0o644,
                 dir_fd=directory_fd,
             )
+            os.fchmod(descriptor, 0o644)
             written = 0
             while written < len(payload):
                 count = os.write(descriptor, payload[written:])
@@ -386,6 +395,44 @@ class RuntimeProtocol:
             os.close(status_fd)
         if document is not None:
             _validate_status(name, document, self.run_id)
+        return document
+
+    @staticmethod
+    def _validate_quiescence_module(module: str) -> None:
+        if module not in _QUIESCENCE_MODULES:
+            raise ValueError("quiescence module is not part of the frozen protocol")
+
+    def write_quiescence(self, module: str) -> Path:
+        self._validate_quiescence_module(module)
+        document = {"run_id": self.run_id, "module": module, "quiescent": True}
+        status_fd = self._open_directory(".status")
+        try:
+            quiescence_fd = self._open_directory_at(status_fd, "quiescence")
+            try:
+                self._write_at(quiescence_fd, f"{module}.json", document)
+            finally:
+                os.close(quiescence_fd)
+        finally:
+            os.close(status_fd)
+        return self.run_directory / ".status" / "quiescence" / f"{module}.json"
+
+    def read_quiescence(self, module: str) -> dict[str, Any] | None:
+        self._validate_quiescence_module(module)
+        status_fd = self._open_directory(".status")
+        try:
+            quiescence_fd = self._open_directory_at(status_fd, "quiescence")
+            try:
+                document = self._read_at(quiescence_fd, f"{module}.json")
+            finally:
+                os.close(quiescence_fd)
+        finally:
+            os.close(status_fd)
+        if document is not None and document != {
+            "run_id": self.run_id,
+            "module": module,
+            "quiescent": True,
+        }:
+            raise ProtocolError(f"quiescence marker for {module!r} has an invalid schema")
         return document
 
     def _read_control(self, name: str) -> dict[str, Any] | None:

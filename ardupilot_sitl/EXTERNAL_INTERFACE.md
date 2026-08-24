@@ -18,9 +18,13 @@ ArduPilot and Gazebo advance in lockstep: the next control update depends on com
 
 Loss of either required peer is reported. Loss of the Gazebo exchange prevents continued simulated progress; malformed or unsupported MAVLink commands receive the protocol-defined rejection where available.
 
+For Phase 2 synthetic finalization, the stub stops publisher/log output before
+writing `.status/quiescence/ardupilot_sitl.json` with exact current-run
+quiescence schema, then remains silent while orchestration aggregates the
+freeze.
+
 ## Deferred decisions
 
 - MAVLink ports and routing
 - ArduPilot-Gazebo adapter version and transport details
 - Exact lockstep readiness signal
-

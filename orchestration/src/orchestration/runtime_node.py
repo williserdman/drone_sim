@@ -8,7 +8,8 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Callable, Protocol
+import time
+from typing import Any, Callable, Iterable, Protocol
 
 from artifacts.runtime_protocol import RuntimeProtocol, canonical_run_id
 from artifacts.structured_log import StructuredEvent, write_event
@@ -16,12 +17,21 @@ from artifacts.structured_log import StructuredEvent, write_event
 
 _PRETERMINAL = frozenset({"STARTING", "READY", "RUNNING"})
 _TERMINAL = frozenset({"COMPLETED", "FAILED", "ABORTED"})
+_QUIESCENCE_PEERS = (
+    "companion",
+    "ardupilot_sitl",
+    "gazebo",
+    "electromagnet",
+    "scorekeeper",
+)
 
 
 class _Protocol(Protocol):
     def read_finalize_request(self) -> dict[str, Any] | None: ...
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
     def write_status(self, name: str, document: dict[str, Any]) -> Any: ...
+    def write_quiescence(self, module: str) -> Any: ...
+    def read_quiescence(self, module: str) -> dict[str, Any] | None: ...
 
 
 @dataclass(frozen=True)
@@ -31,6 +41,68 @@ class RuntimeStateEvent:
     sim_timestamp_ns: int
     reason: str
     config_sha256: str
+
+
+@dataclass(frozen=True)
+class RunStateSubscriber:
+    """Discovery attributes needed to identify a lifecycle archive consumer."""
+
+    node_name: str
+    topic_type: str
+    reliable: bool
+    transient_local: bool
+
+
+class RunStateTransportBarrier:
+    """Require every intended lifecycle consumer before publishing STARTING."""
+
+    _REQUIRED_NODES = frozenset(
+        {
+            "artifacts_runtime",
+            "synthetic_companion",
+            "synthetic_ardupilot_sitl",
+            "synthetic_gazebo",
+            "synthetic_electromagnet",
+            "synthetic_scorekeeper",
+        }
+    )
+    _TYPE = "simulation_interfaces/msg/RunState"
+
+    def __init__(self, *, deadline: float, failure: Callable[[str], None]) -> None:
+        self._deadline = deadline
+        self._failure = failure
+        self.ready = False
+        self.failed = False
+        self.preempted = False
+
+    def poll(
+        self,
+        subscribers: Iterable[RunStateSubscriber],
+        *,
+        now: float,
+        finalizing: bool,
+    ) -> bool:
+        if self.ready:
+            return True
+        if self.failed or self.preempted:
+            return False
+        if finalizing:
+            self.preempted = True
+            return False
+        valid_names = {
+            item.node_name
+            for item in subscribers
+            if item.topic_type == self._TYPE and item.reliable and item.transient_local
+        }
+        runtime_consumers = valid_names & self._REQUIRED_NODES
+        recorder_present = any(name.startswith("rosbag2_recorder_") for name in valid_names)
+        if runtime_consumers == self._REQUIRED_NODES and recorder_present:
+            self.ready = True
+            return True
+        if now >= self._deadline:
+            self.failed = True
+            self._failure("run-state transport discovery deadline expired")
+        return False
 
 
 class OrchestrationRuntime:
@@ -59,6 +131,8 @@ class OrchestrationRuntime:
         self.state = "CREATED"
         self.last_sim_timestamp_ns = 0
         self._terminal = False
+        self._quiescence_written = False
+        self._freeze_written = False
 
     def _emit(self, state: str, reason: str = "") -> None:
         self.state = state
@@ -113,13 +187,27 @@ class OrchestrationRuntime:
             request = self._protocol.read_finalize_request()
             if request is not None:
                 self._emit("FINALIZING", request["reason"])
+                self._protocol.write_quiescence("orchestration")
+                self._quiescence_written = True
         if self.state == "FINALIZING":
+            if not self._quiescence_written:
+                raise RuntimeError("orchestration quiescence marker was not written")
+            if not self._freeze_written:
+                if not all(
+                    self._protocol.read_quiescence(module) is not None
+                    for module in _QUIESCENCE_PEERS
+                ):
+                    return False
+                self._protocol.write_status(
+                    "runtime-frozen", {"run_id": self.run_id, "frozen": True}
+                )
+                self._freeze_written = True
             committed = self._protocol.read_terminal_committed()
             if committed is not None:
                 terminal = committed["terminal_status"]
                 if terminal not in _TERMINAL:
                     raise RuntimeError("protocol returned an invalid terminal state")
-                self._emit(terminal, committed["reason"])
+                self.state = terminal
                 self._protocol.write_status(
                     "terminal-notified", {"run_id": self.run_id, "notified": True}
                 )
@@ -216,6 +304,39 @@ def main() -> None:
         clock_callback,
         QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
     )
+
+    def run_state_subscribers() -> list[RunStateSubscriber]:
+        return [
+            RunStateSubscriber(
+                endpoint.node_name,
+                endpoint.topic_type,
+                endpoint.qos_profile.reliability == ReliabilityPolicy.RELIABLE,
+                endpoint.qos_profile.durability == DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            for endpoint in node.get_subscriptions_info_by_topic("/simulation/run_state")
+        ]
+
+    startup_barrier = RunStateTransportBarrier(
+        deadline=time.monotonic() + float(config["startup_wall_seconds"]),
+        failure=lambda reason: protocol.write_status(
+            "runtime-failure",
+            {
+                "run_id": run_id,
+                "module": "orchestration",
+                "reason": reason,
+                "diagnostic_paths": ["logs/docker/orchestration.log.partial"],
+            },
+        ),
+    )
+    while rclpy.ok():
+        finalizing = protocol.read_finalize_request() is not None
+        if startup_barrier.poll(
+            run_state_subscribers(), now=time.monotonic(), finalizing=finalizing
+        ):
+            break
+        if startup_barrier.failed or startup_barrier.preempted:
+            break
+        rclpy.spin_once(node, timeout_sec=0.05)
     runtime.start()
     try:
         while rclpy.ok() and not runtime.poll():
@@ -230,4 +351,10 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["OrchestrationRuntime", "RuntimeStateEvent", "main"]
+__all__ = [
+    "OrchestrationRuntime",
+    "RunStateSubscriber",
+    "RunStateTransportBarrier",
+    "RuntimeStateEvent",
+    "main",
+]

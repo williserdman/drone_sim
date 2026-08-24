@@ -2,7 +2,12 @@ from dataclasses import dataclass
 
 import pytest
 
-from orchestration.runtime_node import OrchestrationRuntime, RuntimeStateEvent
+from orchestration.runtime_node import (
+    OrchestrationRuntime,
+    RunStateSubscriber,
+    RunStateTransportBarrier,
+    RuntimeStateEvent,
+)
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -13,6 +18,8 @@ class FakeProtocol:
         self.finalize = None
         self.terminal = None
         self.statuses = []
+        self.quiescence = {}
+        self.quiescence_writes = []
 
     def read_finalize_request(self):
         return self.finalize
@@ -22,6 +29,17 @@ class FakeProtocol:
 
     def write_status(self, name, document):
         self.statuses.append((name, document))
+
+    def write_quiescence(self, module):
+        self.quiescence_writes.append(module)
+        self.quiescence[module] = {
+            "run_id": RUN_ID,
+            "module": module,
+            "quiescent": True,
+        }
+
+    def read_quiescence(self, module):
+        return self.quiescence.get(module)
 
 
 def _runtime():
@@ -36,6 +54,72 @@ def _runtime():
         diagnostic=diagnostics.append,
     )
     return runtime, protocol, published, diagnostics
+
+
+def _subscriber(name, *, topic_type="simulation_interfaces/msg/RunState", reliable=True,
+                transient_local=True):
+    return RunStateSubscriber(name, topic_type, reliable, transient_local)
+
+
+def _required_subscribers():
+    return [
+        _subscriber("artifacts_runtime"),
+        _subscriber("synthetic_companion"),
+        _subscriber("synthetic_ardupilot_sitl"),
+        _subscriber("synthetic_gazebo"),
+        _subscriber("synthetic_electromagnet"),
+        _subscriber("synthetic_scorekeeper"),
+        _subscriber("rosbag2_recorder_deadbeef"),
+    ]
+
+
+def test_run_state_transport_barrier_requires_all_seven_intended_subscribers():
+    failures = []
+    barrier = RunStateTransportBarrier(deadline=10.0, failure=failures.append)
+
+    assert barrier.poll(_required_subscribers()[:6], now=1.0, finalizing=False) is False
+    assert barrier.poll(_required_subscribers(), now=2.0, finalizing=False) is True
+    assert barrier.ready is True
+    assert failures == []
+
+
+def test_run_state_transport_barrier_ignores_duplicates_stale_qos_type_and_extras():
+    failures = []
+    required = _required_subscribers()
+    barrier = RunStateTransportBarrier(deadline=10.0, failure=failures.append)
+    invalid = [
+        required[0],
+        required[0],
+        _subscriber("stale", topic_type="std_msgs/msg/String"),
+        _subscriber("synthetic_scorekeeper", reliable=False),
+        _subscriber("unrelated_debugger"),
+    ]
+    assert barrier.poll(invalid, now=1.0, finalizing=False) is False
+
+    assert barrier.poll(required + [_subscriber("unrelated_debugger")], now=2.0,
+                        finalizing=False) is True
+    assert failures == []
+
+
+def test_run_state_transport_barrier_durable_fails_once_at_deadline():
+    failures = []
+    barrier = RunStateTransportBarrier(deadline=3.0, failure=failures.append)
+
+    assert barrier.poll(_required_subscribers()[:6], now=3.0, finalizing=False) is False
+    assert barrier.failed is True
+    assert failures == ["run-state transport discovery deadline expired"]
+    assert barrier.poll(_required_subscribers(), now=4.0, finalizing=False) is False
+    assert failures == ["run-state transport discovery deadline expired"]
+
+
+def test_run_state_transport_barrier_finalize_preempts_without_failure():
+    failures = []
+    barrier = RunStateTransportBarrier(deadline=10.0, failure=failures.append)
+
+    assert barrier.poll([], now=1.0, finalizing=True) is False
+    assert barrier.preempted is True
+    assert barrier.poll(_required_subscribers(), now=2.0, finalizing=False) is False
+    assert failures == []
 
 
 def test_starting_ready_running_order_and_exact_first_clock_stamp():
@@ -80,6 +164,19 @@ def test_finalize_from_every_preterminal_state_and_acknowledge_silently(pretermi
     assert published[-1] == RuntimeStateEvent(
         RUN_ID, "FINALIZING", 123 if preterminal == "RUNNING" else 0, "operator requested", "a" * 64
     )
+    assert protocol.quiescence_writes == ["orchestration"]
+    assert not any(name == "runtime-frozen" for name, _document in protocol.statuses)
+    for module in ("companion", "ardupilot_sitl", "gazebo", "electromagnet", "scorekeeper"):
+        protocol.quiescence[module] = {
+            "run_id": RUN_ID,
+            "module": module,
+            "quiescent": True,
+        }
+    assert runtime.poll() is False
+    assert protocol.statuses[-1] == (
+        "runtime-frozen",
+        {"run_id": RUN_ID, "frozen": True},
+    )
     protocol.terminal = {
         "run_id": RUN_ID,
         "terminal_status": terminal,
@@ -87,8 +184,8 @@ def test_finalize_from_every_preterminal_state_and_acknowledge_silently(pretermi
         "manifest_path": "manifest.json",
     }
     assert runtime.poll() is True
-    assert published[-1].state == terminal
-    assert published[-1].sim_timestamp_ns == (123 if preterminal == "RUNNING" else 0)
+    assert published[-1].state == "FINALIZING"
+    assert runtime.state == terminal
     assert protocol.statuses[-1] == (
         "terminal-notified",
         {"run_id": RUN_ID, "notified": True},
@@ -96,6 +193,44 @@ def test_finalize_from_every_preterminal_state_and_acknowledge_silently(pretermi
     count = len(published)
     assert runtime.poll() is True
     assert len(published) == count
+
+
+def test_aggregate_freeze_waits_for_all_six_quiescence_owners_and_writes_once():
+    runtime, protocol, published, _ = _runtime()
+    runtime.start()
+    protocol.finalize = {
+        "run_id": RUN_ID,
+        "requested_terminal": "FAILED",
+        "reason": "recorder failed",
+    }
+
+    assert runtime.poll() is False
+    assert published[-1].state == "FINALIZING"
+    assert protocol.quiescence_writes == ["orchestration"]
+
+    for module in ("companion", "ardupilot_sitl", "gazebo", "electromagnet"):
+        protocol.quiescence[module] = {
+            "run_id": RUN_ID,
+            "module": module,
+            "quiescent": True,
+        }
+        assert runtime.poll() is False
+        assert not any(name == "runtime-frozen" for name, _document in protocol.statuses)
+
+    protocol.quiescence["scorekeeper"] = {
+        "run_id": RUN_ID,
+        "module": "scorekeeper",
+        "quiescent": True,
+    }
+    assert runtime.poll() is False
+    assert [item for item in protocol.statuses if item[0] == "runtime-frozen"] == [
+        ("runtime-frozen", {"run_id": RUN_ID, "frozen": True})
+    ]
+    runtime.poll()
+    assert protocol.quiescence_writes == ["orchestration"]
+    assert [item for item in protocol.statuses if item[0] == "runtime-frozen"] == [
+        ("runtime-frozen", {"run_id": RUN_ID, "frozen": True})
+    ]
 
 
 def test_stale_ids_are_diagnosed_before_quiescence_and_ignored():

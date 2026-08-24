@@ -18,7 +18,11 @@
 - Reject an existing run directory; no command may overwrite a previous run.
 - Recorder readiness is required before the first `/clock` message.
 - Synthetic image timestamps are exact integer nanoseconds at 20 frames per simulated second; wall time never determines their values.
-- `/clock` remains best effort depth 1, lifecycle and aggregate artifact status are reliable transient-local depth 1, and both image and metadata streams are best effort depth 5.
+- `/clock` remains best effort depth 1 and lifecycle/aggregate artifact status
+  remain reliable transient-local depth 1. Task 4's reusable camera consumer
+  default is best effort depth 5; the Task 7 archival publishers, video
+  subscriptions, and rosbag overrides use reliable depth 5 so exact recording
+  does not depend on a lossy delivery promise.
 - The ROS bag records complete image payloads, not thumbnails or filenames.
 - The bag deliberately records lifecycle through `FINALIZING`; `manifest.json` is the authoritative terminal commit because successful terminal status depends on closing and validating the bag.
 - Finalization uses bounded monotonic wall time after publishers become quiescent.
@@ -81,6 +85,7 @@ runs/<run_id>/.status/artifacts-ready.json
 runs/<run_id>/.status/runtime-running.json
 runs/<run_id>/.status/source-finished.json
 runs/<run_id>/.status/runtime-failure.json
+runs/<run_id>/.status/quiescence/{orchestration,companion,ardupilot_sitl,gazebo,electromagnet,scorekeeper}.json
 runs/<run_id>/.status/runtime-frozen.json
 runs/<run_id>/.status/artifacts-final.json
 runs/<run_id>/.status/terminal-notified.json
@@ -89,10 +94,16 @@ runs/<run_id>/.status/terminal-notified.json
 Finalization order is fixed:
 
 1. Host selects the requested terminal outcome and writes `finalize-request.json`.
-2. The ROS orchestrator publishes `FINALIZING`; synthetic publishers stop permanently and write `runtime-frozen.json`.
+2. The ROS orchestrator publishes `FINALIZING`. Each of orchestration,
+   companion, ArduPilot SITL, Gazebo, electromagnet, and scorekeeper stops its
+   publishers/stdout permanently before writing exact
+   `.status/quiescence/<module>.json={run_id,module,quiescent:true}`.
+   Orchestration waits for all six markers and is the only writer of the
+   aggregate `runtime-frozen.json`.
 3. Artifacts drain callbacks, close both FFmpeg inputs, stop rosbag2 with `SIGINT` and bounded `TERM`/`KILL` escalation, rename valid `.partial` videos, validate recorder-local output, and write `artifacts-final.json`. The report has exact path-keyed records for both videos and the bag with status/detail, stable byte count and checksum, and nonempty semantic facts; the host rejects absent, stale, or mismatched records.
 4. Host captures raw Docker logs and partitions structured events, validates the complete bundle, downgrades invalid completion to `FAILED`, closes the orchestration log, and atomically commits `manifest.json`.
-5. Host writes `terminal-committed.json`; the ROS orchestrator publishes the terminal `RunState`, artifacts publishes final `ArtifactStatus`, both write no further required artifact data, and services exit.
+5. Host writes `terminal-committed.json`; runtime nodes write the durable
+   terminal acknowledgement and exit without another ROS/stdout publication.
 6. Host captures no new required data, removes Compose containers/network, and leaves the run directory intact.
 
 ## File Structure
@@ -724,13 +735,32 @@ Expected: failure because the Phase 2 services and runtime nodes do not exist.
 
 - [ ] **Step 3: Implement the ROS orchestration runtime**
 
-Publish `STARTING` immediately. Subscribe to aggregate artifact status and publish `READY` only for the current run with `ready=true`. On the first valid clock after readiness publish `RUNNING`, then atomically write `.status/runtime-running.json` with the run ID, fixed state, and first-clock simulation nanoseconds. Watch `finalize-request.json`, publish `FINALIZING` with its reason, then wait for `terminal-committed.json`, apply `ARTIFACTS_FINALIZED` or `FINALIZATION_FAILED`, publish the terminal state, write `terminal-notified.json`, and exit. Use zero ROS time before the first clock and the final observed simulation timestamp afterward.
+Before publishing `STARTING`, cross a bounded infrastructure discovery barrier
+for the exact six runtime consumers and the rosbag recorder subscription on
+`/simulation/run_state`, validating message type and reliable transient-local
+QoS. Durable-fail on timeout and allow finalize/abort preemption. Then publish
+`STARTING`. Subscribe to aggregate artifact status and publish `READY` only for
+the current run with `ready=true`. On the first valid clock after readiness
+publish `RUNNING`, then atomically write `.status/runtime-running.json` with
+the run ID, fixed state, and first-clock simulation nanoseconds. Watch
+`finalize-request.json`, publish `FINALIZING`, stop orchestration output, write
+its quiescence marker, wait for the other five exact markers, and alone publish
+the aggregate `runtime-frozen.json`. After host terminal commit, write
+`terminal-notified.json` without another ROS/log publication and exit. Use zero
+ROS time before the first clock and the final observed simulation timestamp
+afterward.
 
 Runtime status schemas are exact: `artifacts-ready={run_id,ready:true}`, `runtime-running={run_id,state:"RUNNING",sim_timestamp_ns}`, `source-finished={run_id,finished:true,sim_timestamp_ns}`, `runtime-failure={run_id,module,reason,diagnostic_paths}`, `runtime-frozen={run_id,frozen:true}`, and `terminal-notified={run_id,notified:true}`. Runtime readers validate exact host controls `finalize-request={run_id,requested_terminal,reason}` and `terminal-committed={run_id,terminal_status,reason,manifest_path:"manifest.json"}`. Reject unknown keys, wrong IDs, symlinks, hard links, nonregular files, and conflicting rewrites.
 
 - [ ] **Step 4: Implement aggregate artifacts runtime**
 
-Start the bag and both video pipelines, verify all required graph subscriptions and writable paths, publish/write ready status, and watch lifecycle. On `FINALIZING`, require `runtime-frozen.json`, drain callbacks, finalize videos and bag under one wall deadline, validate recorder-local output, and write the strict three-record `artifacts-final.json` contract frozen in Task 6. After host commit, publish final `ArtifactStatus` with `manifest_path`, write no required log event, and exit.
+Start the bag and both video pipelines, verify all required graph subscriptions
+and writable paths, publish/write ready status, and watch lifecycle. On
+`FINALIZING`, require aggregate `runtime-frozen.json`, drain callbacks, finalize
+videos and bag under one wall deadline, validate recorder-local output, and
+write the strict three-record `artifacts-final.json` contract frozen in Task 6.
+After host commit, exit without another ROS/stdout publication or required
+artifact write.
 
 Do not publish aggregate READY until the artifacts runtime has observed the
 current-run STARTING state as well as recorder/graph readiness. This preserves
@@ -739,7 +769,15 @@ discovery nondeterminism without delaying simulation time.
 
 Serialize video semantics directly as `codec_name`, `pix_fmt`, `avg_frame_rate`, `width`, `height`, `frame_count`, and ordered diagnostics. Serialize bag semantics as ordered topic records with `name`, `message_type`, `message_count`, `first_sim_timestamp_ns`, and `last_sim_timestamp_ns`. Every valid/missing/invalid report record has a nonempty semantic object and stable descriptor-based size/checksum facts when available.
 
-If a recorder fails before finalization, atomically write `.status/runtime-failure.json` with module `artifacts`, a stable reason, and diagnostic paths, but keep the runtime alive to preserve and finalize surviving output.
+If a recorder fails before finalization, first-wins atomically write
+`.status/runtime-failure.json` with module `artifacts`, a stable reason, and
+diagnostic paths before any structured diagnostic. Monitor FFmpeg and rosbag
+process health after readiness. If rosbag cannot be confirmed stopped after
+bounded escalation, emit the durable failure, do not write
+`artifacts-final.json`, remain silent/alive until the controller work deadline,
+and let teardown terminate the container; the host must not hash the mutable
+named bag and instead reserves explicit timeout-invalid records with null
+checksums.
 
 For the synthetic transport only, buffer at most 40 camera pairs per stream by
 exact frame ID/simulation stamp and publish `/simulation/camera_pair_ack` as
@@ -763,7 +801,15 @@ The `observer_encoder_after_5` fault belongs in artifacts runtime after observer
 
 - [ ] **Step 5: Implement deterministic synthetic services**
 
-`synthetic_gazebo` waits for `READY`, publishes the initial zero clock, waits for `RUNNING`, then publishes the 40 deterministic RGB frame pairs and ground truth using integer nanosecond stamps. It waits for `FINALIZING`, stops permanently, writes a clearly labeled fixture `gazebo/server.log` and `gazebo/state/synthetic-state.json`, then writes `runtime-frozen.json`. A test-only `SIM_SYNTHETIC_WALL_DELAY_MS` may slow each already-determined step for abort/slow-host tests but never changes a timestamp, frame ID, payload, or event order.
+`synthetic_gazebo` waits for `READY`, publishes the initial zero clock, waits for
+`RUNNING`, then publishes the 40 deterministic RGB frame pairs and ground truth
+using integer nanosecond stamps. On `FINALIZING` it stops permanently, writes a
+clearly labeled fixture `gazebo/server.log` and
+`gazebo/state/synthetic-state.json`, then writes only its exact quiescence
+marker. A test-only `SIM_SYNTHETIC_WALL_DELAY_MS` may slow each already-decided
+step and `SIM_SYNTHETIC_QUIESCENCE_DELAY_MS` may delay the scorekeeper's
+already-decided marker for barrier tests; neither changes a timestamp, frame
+ID, payload, or event order.
 
 Before publishing pair `N+1`, the synthetic source waits for the exact current-run
 aggregate acknowledgement for pair `N`; it ignores stale IDs and exact
@@ -776,7 +822,7 @@ After the fortieth frame, it writes `.status/source-finished.json`; this is an i
 
 - [ ] **Step 6: Implement container images and Compose profile**
 
-Build all new images from the exact pinned ROS base digest in Global Constraints, build `simulation_interfaces`, and install only owned Python sources. `artifacts/Dockerfile` installs `ffmpeg`, asserts `libx264` appears in `ffmpeg -encoders`, and includes rosbag2 MCAP plus `ffprobe`. Provide a `test` target containing pytest/uv and a minimal runtime target. Preserve the existing `foundation` service outside the Phase 2 profile.
+Build all new images from the exact pinned ROS base digest in Global Constraints, build `simulation_interfaces`, and install only owned Python sources. `artifacts/Dockerfile` installs `ffmpeg`, asserts `libx264` appears in `ffmpeg -encoders`, and includes rosbag2 MCAP plus `ffprobe`. Provide a `test` target containing pytest/uv and a minimal runtime target. Give all seven Phase 2 services explicit stable `:phase2` image tags so unique per-run Compose projects can use the same prebuilt images with `up --no-build`. Put the existing foundation service alone in a separate `foundation` profile with stable `:phase1` tag; `COMPOSE_PROFILES=phase2` must render exactly the frozen seven while explicit Phase 1 `docker compose run --rm foundation` remains valid.
 
 Every Phase 2 service receives the same absolute host/container run-directory path and a read-only overlay of the resolved config at the identical `SIM_CONFIG_PATH`. Use long bind syntax and safe interpolation defaults so plain Phase 1 `docker compose config` still succeeds without Phase 2 variables. `COMPOSE_PROFILES=phase2` from Task 6 activates the profile; do not add profile flags to the frozen Compose argv.
 

@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import stat
 
 import pytest
 
@@ -32,6 +33,9 @@ def test_allocate_exclusively_creates_only_owned_protocol_directories(tmp_path):
         ".status",
         "configuration",
     ]
+    quiescence = run_directory / ".status/quiescence"
+    assert quiescence.is_dir()
+    assert stat.S_IMODE(quiescence.stat().st_mode) == 0o755
     with pytest.raises(FileExistsError):
         store.allocate(RUN_ID)
 

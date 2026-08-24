@@ -40,6 +40,14 @@ that same deadline, so a timeout or invalid/empty output has a named diagnostic
 video partial and FFmpeg diagnostic log before the adapter returns to the
 barrier.
 
+Aggregate finalization monitors FFmpeg and rosbag health after readiness.
+Diagnostic/callback failure writes durable first-wins runtime failure before
+structured output. An unconfirmed live rosbag is a fail-closed barrier: no
+`artifacts-final.json` is written, no recorder-local completeness is claimed,
+and no validator hashes the mutable named bag. The silent process remains alive
+so the controller reaches its work deadline, reserves timeout-invalid/null-hash
+records, and then terminates the container during bounded teardown.
+
 The synthetic aggregate runtime places separate reliable archival image and metadata
 arrivals in a fixed 40-pair buffer keyed by exact simulation stamp and frame ID.
 It drains only contiguous exact pairs through the unchanged fail-closed Task 4
@@ -68,6 +76,5 @@ the published path and exact committed run ID, terminal status, and reason.
 That return is the authority boundary; `finalize(...)` remains the compatible
 path-only wrapper.
 
-After `.control/terminal-committed.json`, artifacts publishes the final
-`/simulation/artifact_status` with `manifest_path` set to `manifest.json`, then
-exits without writing another required log or recording event.
+After `.control/terminal-committed.json`, artifacts exits without another ROS
+publication, log event, or recording write.

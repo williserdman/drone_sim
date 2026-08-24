@@ -240,6 +240,10 @@ class RosbagRecorder:
     def log_path(self) -> Path:
         return self.run_directory / "logs/docker/rosbag2.log.partial"
 
+    @property
+    def is_alive(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
     def command(self) -> tuple[str, ...]:
         return (
             "ros2",

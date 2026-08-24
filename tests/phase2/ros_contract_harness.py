@@ -147,6 +147,7 @@ def main() -> None:
         run = Path(temporary) / RUN_ID
         (run / ".control").mkdir(parents=True)
         (run / ".status").mkdir()
+        (run / ".status/quiescence").mkdir()
         (run / "configuration").mkdir()
         _atomic_json(
             run / "configuration/run.json",
@@ -213,9 +214,32 @@ def main() -> None:
                 "sim_timestamp_ns": 2_000_000_000,
             }
 
-            while not (run / ".status/runtime-frozen.json").exists():
+            gazebo_marker = run / ".status/quiescence/gazebo.json"
+            while not gazebo_marker.exists():
                 node.publish_state(RunState.FINALIZING)
                 rclpy.spin_once(node, timeout_sec=0.05)
+            assert json.loads(gazebo_marker.read_text()) == {
+                "run_id": RUN_ID,
+                "module": "gazebo",
+                "quiescent": True,
+            }
+            assert not (run / ".status/runtime-frozen.json").exists()
+            frozen_counts = (
+                len(node.clocks),
+                *(len(node.images[stream]) for stream in ("onboard", "observer")),
+                *(len(node.metadata[stream]) for stream in ("onboard", "observer")),
+                len(node.ground_truth),
+            )
+            node.publish_state(RunState.RUNNING)
+            deadline = time.monotonic() + 0.2
+            while time.monotonic() < deadline:
+                rclpy.spin_once(node, timeout_sec=0.02)
+            assert frozen_counts == (
+                len(node.clocks),
+                *(len(node.images[stream]) for stream in ("onboard", "observer")),
+                *(len(node.metadata[stream]) for stream in ("onboard", "observer")),
+                len(node.ground_truth),
+            )
             _atomic_json(
                 run / ".control/terminal-committed.json",
                 {

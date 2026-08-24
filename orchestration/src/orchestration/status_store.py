@@ -248,10 +248,21 @@ class StatusStore:
         run_fd: int | None = None
         try:
             os.mkdir(canonical, 0o755, dir_fd=root_fd)
+            os.chmod(canonical, 0o755, dir_fd=root_fd, follow_symlinks=False)
             os.fsync(root_fd)
             run_fd = os.open(canonical, _DIRECTORY_FLAGS, dir_fd=root_fd)
             for name in (".control", ".status", "configuration"):
                 os.mkdir(name, 0o755, dir_fd=run_fd)
+                os.chmod(name, 0o755, dir_fd=run_fd, follow_symlinks=False)
+            status_fd = os.open(".status", _DIRECTORY_FLAGS, dir_fd=run_fd)
+            try:
+                os.mkdir("quiescence", 0o755, dir_fd=status_fd)
+                os.chmod(
+                    "quiescence", 0o755, dir_fd=status_fd, follow_symlinks=False
+                )
+                os.fsync(status_fd)
+            finally:
+                os.close(status_fd)
             os.fsync(run_fd)
         finally:
             if run_fd is not None:

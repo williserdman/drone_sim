@@ -40,6 +40,12 @@ ground-truth order. The queue is bounded to six and `FINALIZING` clears it
 immediately; neither discovery polling nor queue draining supplies simulation
 timestamps or modeled latency.
 
+For Phase 2 synthetic finalization, Gazebo stops all publishers and stdout,
+writes its fixture files, then atomically writes only
+`.status/quiescence/gazebo.json={run_id,module:"gazebo",quiescent:true}`. It
+does not write the public aggregate freeze; orchestration publishes
+`runtime-frozen.json` only after all six module markers exist.
+
 ## Reset, timing, and failure behavior
 
 Reset clears run-scoped world state before accepting the new `run_id`. Stale-run requests are rejected or ignored with diagnostics. When paused, `/clock` does not advance and simulated events do not occur. Loss of the ArduPilot lockstep peer prevents uncontrolled physics progress.

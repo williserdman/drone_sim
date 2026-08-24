@@ -53,7 +53,9 @@ Every owned process log line has `run_id`, `module`, `severity`, `event`,
 
 ## Failure behavior
 
-Recorder failure is reported immediately. After simulation stops, finalization
+Recorder failures, including premature post-readiness FFmpeg or rosbag exits,
+are first-wins durably reported in `.status/runtime-failure.json` before any
+structured diagnostic is attempted. After simulation stops, finalization
 uses the remaining budget of one shared bounded deadline measured by a
 monotonic wall clock, writes the manifest atomically, and explicitly records
 missing or invalid artifacts.
@@ -71,16 +73,20 @@ Consumers that make terminal decisions use that typed result so a later read
 failure cannot contradict an already committed manifest. The existing
 `finalize(FinalizationInput) -> Path` call remains supported.
 
-Artifacts does not begin draining until `.status/runtime-frozen.json` proves
-all publishers are permanently quiescent. It closes both video pipelines and
-the bag before writing `artifacts-final.json`. That report has exact top-level
+Artifacts trusts only the orchestration-owned aggregate
+`.status/runtime-frozen.json`; individual module markers cannot begin capture
+or draining. It closes both video pipelines and the bag before writing
+`artifacts-final.json`. That report has exact top-level
 keys `run_id`, `complete`, and `records`; the records list contains exactly one
 record for each of `video/onboard.mp4`,
 `video/observer.mp4`, and `rosbag`. Each record contains `relative_path`,
 `status` (`valid`, `missing`, or `invalid`), `detail`, `size_bytes`, `sha256`,
 and a nonempty `semantic` object describing the recorder-local validation.
 Missing records, malformed facts, or host-recomputed size/checksum mismatches
-fail closed. The bag deliberately ends with
+fail closed. If rosbag remains alive after bounded escalation, artifacts writes
+no final report/completeness claim and stays silent/alive until controller
+teardown; the controller must not hash that mutable named bag. The bag
+deliberately ends with
 `FINALIZING`; the host-written `manifest.json` is authoritative for terminal
-status. After `.control/terminal-committed.json`, the final artifact-status
-notification writes no required artifact data.
+status. After writing `artifacts-final.json`, the artifacts runtime remains
+silent while awaiting `.control/terminal-committed.json` and then exits.

@@ -21,8 +21,11 @@ Modules receive `run_id`, configuration, output paths, and lifecycle state. Requ
 Lifecycle states use the fixed order `CREATED`, `STARTING`, `READY`, `RUNNING`,
 `FINALIZING`, `COMPLETED`, `FAILED`, and `ABORTED`. The orchestrator publishes
 `simulation_interfaces/msg/RunState` on `/simulation/run_state` with reliable,
-transient-local QoS depth 1. Phase 1 proves this publisher with the synthetic
-foundation service; production orchestration is implemented in a later phase.
+transient-local QoS depth 1. Before its first `STARTING` publication, the Phase
+2 runtime requires the exact six runtime consumers plus rosbag recorder
+subscription, including exact type and compatible QoS; this bounded
+infrastructure barrier makes the full four-sample lifecycle archival record
+deterministic without advancing simulation time.
 
 Artifact readiness and completeness use
 `simulation_interfaces/msg/ArtifactStatus` on
@@ -35,6 +38,13 @@ The run directory also carries the durable wall-time control/status protocol:
 `.control/finalize-request.json`, `.control/terminal-committed.json`, and
 `.status/{operator-state,artifacts-ready,runtime-running,source-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
 Each file is atomically replaced only after file and directory `fsync`.
+
+The six non-artifact publishers own exact
+`.status/quiescence/<module>.json={run_id,module,quiescent:true}` markers for
+orchestration, companion, `ardupilot_sitl`, Gazebo, electromagnet, and
+scorekeeper. Each stops publishers and stdout before its marker. Orchestration
+alone waits for all six markers and atomically publishes aggregate
+`runtime-frozen.json`; artifacts trusts only that aggregate.
 
 `runtime-running.json` contains the current `run_id`, fixed state `RUNNING`, and
 the nonnegative first-clock simulation timestamp in integer nanoseconds. The
@@ -58,7 +68,8 @@ deadline failure is diagnostic only.
 control acknowledgment, terminal-notification, observability, and teardown
 failures are retained as diagnostics and cannot rewrite the terminal result.
 
-All terminal paths stop publishers and cross the `runtime-frozen.json`
+All terminal paths stop publishers and cross the aggregate `runtime-frozen.json`
 quiescence barrier before recorders drain and close. The bag ends at
 `FINALIZING`; `manifest.json` is authoritative for terminal status because the
-terminal state depends on successful close and validation.
+terminal state depends on successful close and validation. Terminal durable
+acknowledgement is intentionally silent on ROS/stdout after the marker boundary.

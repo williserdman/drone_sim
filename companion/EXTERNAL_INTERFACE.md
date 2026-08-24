@@ -25,6 +25,10 @@ Mission logic is frame- or event-triggered in simulation time. Duplicate frames 
 
 The companion must never directly command or mutate Gazebo.
 
+For Phase 2 synthetic finalization, the stub stops publisher/log output before
+writing `.status/quiescence/companion.json` with exact current-run quiescence
+schema, then remains silent while orchestration aggregates the freeze.
+
 ## Deferred decisions
 
 - MAVLink ports, routing, and command-to-frame correlation encoding

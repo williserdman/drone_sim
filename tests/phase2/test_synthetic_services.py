@@ -9,6 +9,7 @@ import pytest
 PHASE2 = Path(__file__).resolve().parent
 sys.path.insert(0, str(PHASE2))
 
+import module_stub
 from module_stub import write_bytes_atomic
 from synthetic_gazebo import (
     BoundedPublicationQueue,
@@ -271,6 +272,31 @@ def test_synthetic_score_result_is_explicit_fixture_and_checksums_config(tmp_pat
 
 def test_fixture_output_is_readable_by_non_root_host_controller(tmp_path):
     path = tmp_path / "scoring/result.json"
-    write_bytes_atomic(path, b"{}\n")
+    previous = __import__("os").umask(0o077)
+    try:
+        write_bytes_atomic(path, b"{}\n")
+    finally:
+        __import__("os").umask(previous)
 
-    assert path.stat().st_mode & stat.S_IROTH
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o755
+
+
+def test_quiescence_boundary_performs_last_output_before_marker_then_stays_silent():
+    events = []
+
+    class Protocol:
+        def write_quiescence(self, module):
+            events.append(("marker", module))
+
+    boundary = module_stub.QuiescenceBoundary(Protocol(), "gazebo")
+
+    def emit(value):
+        if boundary.output_allowed:
+            events.append(("output", value))
+
+    assert boundary.enter(lambda: emit("finalizing")) is True
+    emit("late")
+    assert boundary.enter(lambda: emit("duplicate")) is False
+    assert events == [("output", "finalizing"), ("marker", "gazebo")]
+    assert boundary.output_allowed is False

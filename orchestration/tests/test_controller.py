@@ -886,6 +886,70 @@ def test_named_failures_commit_failed_manifest_and_teardown(
     assert json.loads(manifest_path.read_text())["terminal_status"] == "FAILED"
 
 
+def test_missing_artifacts_final_expires_before_log_capture_or_mutable_bag_hashing(
+    tmp_path, monkeypatch
+):
+    capture_checks = []
+
+    class DeadlineGuardedCapture:
+        def __init__(self, *, deadline_check, **_kwargs):
+            self.deadline_check = deadline_check
+
+        def capture(self):
+            capture_checks.append("entered")
+            with pytest.raises(TimeoutError, match="finalization_deadline"):
+                self.deadline_check()
+            capture_checks.append("blocked")
+            raise TimeoutError("finalization_deadline")
+
+    def forbidden_validation(*_args, **_kwargs):
+        raise AssertionError("expired work may not inspect or hash mutable artifacts")
+
+    monkeypatch.setattr("artifacts.session.validate_regular_file", forbidden_validation)
+    monkeypatch.setattr("artifacts.session.validate_tree", forbidden_validation)
+    real_up = FakeCompose.up
+
+    def stubborn_runtime_up(self, timeout):
+        result = real_up(self, timeout)
+        (self.run_directory / ".status/artifacts-final.json").unlink()
+        return result
+
+    monkeypatch.setattr(FakeCompose, "up", stubborn_runtime_up)
+
+    controller, _trace, _clock, holder = _controller(
+        tmp_path,
+        statuses=(
+            "artifacts-ready",
+            "runtime-running",
+            "source-finished",
+            "runtime-frozen",
+            "terminal-notified",
+        ),
+    )
+    controller.log_capture_factory = DeadlineGuardedCapture
+
+    result = controller.start(
+        _template(tmp_path, finalization_wall_seconds=5, max_wall_seconds=4)
+    )
+
+    assert result.state == "FAILED"
+    assert capture_checks == ["entered", "blocked"]
+    manifest = json.loads(
+        (tmp_path / "runs" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["terminal_status"] == "FAILED"
+    required = {
+        record["relative_path"]: record
+        for record in manifest["artifacts"]
+        if record["relative_path"] in REQUIRED_ARTIFACT_PATHS
+    }
+    assert set(required) == set(REQUIRED_ARTIFACT_PATHS)
+    assert all(record["validation"] == "invalid" for record in required.values())
+    assert all(record["sha256"] is None for record in required.values())
+    assert all(record["size_bytes"] is None for record in required.values())
+    assert holder["value"].down_timeouts
+
+
 def test_ctrl_c_requests_aborted_finalization_and_returns_130_semantics(tmp_path):
     calls = 0
 

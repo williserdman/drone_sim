@@ -28,10 +28,15 @@ class FakeProtocol:
 
 
 class FakeBag:
-    def __init__(self, *, ready=True, start_error=None):
+    def __init__(self, *, ready=True, start_error=None, finalization=None):
         self.ready = ready
         self.start_error = start_error
+        self.finalization = finalization
         self.finalize_deadlines = []
+
+    @property
+    def is_alive(self):
+        return self.ready
 
     def start(self):
         if self.start_error:
@@ -42,7 +47,9 @@ class FakeBag:
 
     def finalize(self, deadline):
         self.finalize_deadlines.append(deadline)
-        return SimpleNamespace(exited=True, returncode=0, detail="bag finalized")
+        return self.finalization or SimpleNamespace(
+            exited=True, returncode=0, detail="bag finalized"
+        )
 
 
 class FakeStream:
@@ -246,13 +253,15 @@ def test_finalization_waits_for_freeze_and_shares_one_deadline_for_all_recorders
         "manifest_path": "manifest.json",
     }
     assert runtime.poll_terminal() is True
-    assert published[-1] == {
-        "run_id": RUN_ID,
-        "ready": True,
-        "complete": True,
-        "missing": [],
-        "manifest_path": "manifest.json",
-    }
+    assert published == [
+        {
+            "run_id": RUN_ID,
+            "ready": True,
+            "complete": False,
+            "missing": [],
+            "manifest_path": "",
+        }
+    ]
 
 
 def test_invalid_observer_still_produces_exact_three_record_failure_report(tmp_path):
@@ -338,3 +347,77 @@ def test_runtime_pair_buffer_drains_reordered_dds_topics_in_frame_order():
 def test_unknown_fault_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="SIM_PHASE2_FAULT"):
         _runtime(tmp_path, fault="unknown")
+
+
+def test_premature_ffmpeg_exit_after_readiness_writes_first_wins_runtime_failure(tmp_path):
+    runtime, protocol, _, video, _ = _runtime(tmp_path)
+    runtime.start(deadline=5.0)
+    assert runtime.check_ready("graph") is True
+
+    video.recorders["onboard"].is_ready = False
+    assert runtime.check_health() is False
+    assert runtime.check_health() is False
+    assert protocol.statuses[-1] == (
+        "runtime-failure",
+        {
+            "run_id": RUN_ID,
+            "module": "artifacts",
+            "reason": "onboard FFmpeg exited after recorder readiness",
+            "diagnostic_paths": ["logs/docker/ffmpeg-onboard.log.partial"],
+        },
+    )
+    assert [name for name, _document in protocol.statuses].count("runtime-failure") == 1
+
+
+def test_video_diagnostic_writes_durable_failure_before_structured_output(tmp_path):
+    runtime, protocol, _, _, _ = _runtime(tmp_path)
+    observed = []
+    diagnostic = SimpleNamespace(
+        stream="observer", event="recorder_callback_failed", detail="broken pipe"
+    )
+
+    runtime.report_video_diagnostic(diagnostic, structured=lambda: observed.append("logged"))
+    runtime.report_video_diagnostic(diagnostic, structured=lambda: observed.append("duplicate"))
+
+    assert protocol.statuses[0] == (
+        "runtime-failure",
+        {
+            "run_id": RUN_ID,
+            "module": "artifacts",
+            "reason": "observer recorder_callback_failed: broken pipe",
+            "diagnostic_paths": ["logs/docker/ffmpeg-observer.log.partial"],
+        },
+    )
+    assert observed == ["logged", "duplicate"]
+
+
+def test_stubborn_rosbag_never_publishes_final_report_or_runs_validators(tmp_path):
+    stubborn = SimpleNamespace(
+        exited=False,
+        returncode=None,
+        detail="recorder did not exit before deadline after SIGINT, SIGTERM, SIGKILL",
+    )
+    bag_validator = FakeBagValidator()
+    video_validators = {
+        "onboard": FakeVideoValidator("onboard"),
+        "observer": FakeVideoValidator("observer"),
+    }
+    runtime, protocol, bag, _, _ = _runtime(
+        tmp_path,
+        bag=FakeBag(finalization=stubborn),
+        bag_validator=bag_validator,
+        video_validators=video_validators,
+    )
+    runtime.start(deadline=5.0)
+    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+
+    assert runtime.finalize("FAILED", deadline=99.0) is None
+    assert runtime.finalize("FAILED", deadline=99.0) is None
+    assert runtime.finalization_started is True
+    assert runtime.finalization_blocked is True
+    assert bag.finalize_deadlines == [99.0]
+    assert bag_validator.calls == []
+    assert all(validator.calls == [] for validator in video_validators.values())
+    assert not any(name == "artifacts-final" for name, _document in protocol.statuses)
+    assert protocol.statuses[-1][0] == "runtime-failure"
+    assert "did not exit" in protocol.statuses[-1][1]["reason"]

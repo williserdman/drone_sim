@@ -62,7 +62,7 @@ class BoundedPublicationQueue:
 
 
 class CameraTransportBarrier:
-    """Bounded infrastructure barrier for the four best-effort camera publishers."""
+    """Bounded infrastructure barrier for the four reliable archival publishers."""
 
     def __init__(
         self,
@@ -290,6 +290,7 @@ def main() -> None:
     from simulation_interfaces.msg import FrameMetadata, GroundTruth, RunState
     from artifacts.runtime_protocol import RuntimeProtocol
     from artifacts.structured_log import StructuredEvent, write_event
+    from module_stub import QuiescenceBoundary
 
     run_id = os.environ["SIM_RUN_ID"]
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"])
@@ -300,6 +301,7 @@ def main() -> None:
     except ValueError as error:
         raise ValueError("SIM_SYNTHETIC_WALL_DELAY_MS must be an integer") from error
     protocol = RuntimeProtocol(run_directory, run_id)
+    boundary = QuiescenceBoundary(protocol, "gazebo")
     rclpy.init()
     node = Node("synthetic_gazebo")
     clock_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -326,10 +328,9 @@ def main() -> None:
     )
     publication_queue = BoundedPublicationQueue(limit=len(FRAME_PUBLICATION_ORDER))
     last_sim_timestamp_ns = 0
-    quiescent = False
 
     def emit(event: str, **fields: Any) -> None:
-        if quiescent:
+        if not boundary.output_allowed:
             return
         write_event(
             sys.stdout,
@@ -469,7 +470,6 @@ def main() -> None:
         ),
     )
     emit("starting")
-    frozen = False
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.01)
@@ -505,15 +505,14 @@ def main() -> None:
                         sim_timestamp_ns=(next_frame_before_step + 1)
                         * FRAME_INTERVAL_NS,
                     )
-            if model.finalizing and not frozen:
-                emit("finalizing")
-                quiescent = True
-                _write_fixture_files(run_directory, run_id, model.next_frame_id)
-                protocol.write_status(
-                    "runtime-frozen", {"run_id": run_id, "frozen": True}
+            if model.finalizing and boundary.output_allowed:
+                boundary.enter(
+                    lambda: (
+                        emit("finalizing"),
+                        _write_fixture_files(run_directory, run_id, model.next_frame_id),
+                    )
                 )
-                frozen = True
-            if frozen and protocol.read_terminal_committed() is not None:
+            if not boundary.output_allowed and protocol.read_terminal_committed() is not None:
                 break
     finally:
         node.destroy_node()

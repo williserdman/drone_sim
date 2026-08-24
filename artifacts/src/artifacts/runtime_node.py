@@ -197,6 +197,8 @@ class AggregateArtifactsRuntime:
         self.final_report: dict[str, Any] | None = None
         self._failure_written = False
         self._terminal = False
+        self.finalization_started = False
+        self.finalization_blocked = False
 
     def report_failure(self, reason: str, diagnostic_paths: list[str]) -> None:
         if self._failure_written:
@@ -211,6 +213,33 @@ class AggregateArtifactsRuntime:
             },
         )
         self._failure_written = True
+
+    def report_video_diagnostic(
+        self, diagnostic: Any, *, structured: Callable[[], None]
+    ) -> None:
+        self.report_failure(
+            f"{diagnostic.stream} {diagnostic.event}: {diagnostic.detail}",
+            [f"logs/docker/ffmpeg-{diagnostic.stream}.log.partial"],
+        )
+        structured()
+
+    def check_health(self) -> bool:
+        if not self.started or self.finalization_blocked:
+            return False
+        if not self.bag_recorder.is_alive:
+            self.report_failure(
+                "rosbag recorder exited after recorder readiness",
+                ["logs/docker/rosbag2.log.partial"],
+            )
+            return False
+        for stream in ("onboard", "observer"):
+            if not self.video_node.recorders[stream].is_ready:
+                self.report_failure(
+                    f"{stream} FFmpeg exited after recorder readiness",
+                    [f"logs/docker/ffmpeg-{stream}.log.partial"],
+                )
+                return False
+        return True
 
     def start(self, *, deadline: float) -> bool:
         if self.started:
@@ -232,6 +261,8 @@ class AggregateArtifactsRuntime:
     def check_ready(self, graph: Any) -> bool:
         if not self.started or self._failure_written or self.ready:
             return self.ready
+        if not self.check_health():
+            return False
         if (
             not self.bag_recorder.is_ready(graph)
             or not self.video_node.is_ready
@@ -365,8 +396,11 @@ class AggregateArtifactsRuntime:
     def finalize(self, outcome: str, *, deadline: float) -> dict[str, Any] | None:
         if self.final_report is not None:
             return self.final_report
+        if self.finalization_blocked:
+            return None
         if self.protocol.read_status("runtime-frozen") is None:
             return None
+        self.finalization_started = True
         for recorder in self.video_node.recorders.values():
             freeze = getattr(recorder, "freeze", None)
             if freeze is not None:
@@ -380,12 +414,21 @@ class AggregateArtifactsRuntime:
                     [f"logs/docker/ffmpeg-{stream}.log.partial"],
                 )
         try:
-            self.bag_recorder.finalize(deadline)
+            bag_finalization = self.bag_recorder.finalize(deadline)
         except Exception as error:
             self.report_failure(
                 f"bag recorder finalization failed: {type(error).__name__}: {error}",
                 ["logs/docker/rosbag2.log.partial"],
             )
+            self.finalization_blocked = True
+            return None
+        if not bag_finalization.exited:
+            self.report_failure(
+                f"bag recorder finalization failed: {bag_finalization.detail}",
+                ["logs/docker/rosbag2.log.partial"],
+            )
+            self.finalization_blocked = True
+            return None
 
         video_results = {
             stream: self._video_result(stream, outcome, deadline)
@@ -418,20 +461,6 @@ class AggregateArtifactsRuntime:
         committed = self.protocol.read_terminal_committed()
         if committed is None:
             return False
-        missing = sorted(
-            item["relative_path"]
-            for item in self.final_report["records"]
-            if item["status"] != "valid"
-        )
-        self.publish(
-            {
-                "run_id": self.run_id,
-                "ready": True,
-                "complete": self.final_report["complete"],
-                "missing": missing,
-                "manifest_path": "manifest.json",
-            }
-        )
         self._terminal = True
         return True
 
@@ -581,7 +610,10 @@ def main() -> None:
         node_backend=node,
         recorder_factory=recorder_factory,
         qos_factory=camera_recorder_qos,
-        error_sink=lambda event: write_event(sys.stdout, event) if not quiescent else None,
+        error_sink=lambda event: runtime_ref[0].report_video_diagnostic(
+            event,
+            structured=lambda: write_event(sys.stdout, event) if not quiescent else None,
+        ),
     )
     runtime = AggregateArtifactsRuntime(
         run_directory,
@@ -628,9 +660,11 @@ def main() -> None:
                 runtime.check_ready(node)
                 if runtime.ready:
                     emit_log("ready")
+            elif requested_outcome is None:
+                runtime.check_health()
             if requested_outcome is not None and finalization_deadline is not None:
                 report = runtime.finalize(requested_outcome, deadline=finalization_deadline)
-                if report is not None:
+                if report is not None or runtime.finalization_started:
                     quiescent = True
             if runtime.poll_terminal():
                 break

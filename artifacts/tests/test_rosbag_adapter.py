@@ -162,6 +162,18 @@ def test_start_uses_shell_free_process_and_appends_combined_recorder_log(tmp_pat
     assert log_path.read_bytes() == b"existing diagnostics\n"
 
 
+def test_process_health_detects_premature_recorder_exit_without_graph_access(tmp_path):
+    process = FakeProcess()
+    recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(process))
+    assert recorder.is_alive is False
+
+    recorder.start()
+    assert recorder.is_alive is True
+
+    process.returncode = 7
+    assert recorder.is_alive is False
+
+
 @pytest.mark.parametrize("symlink_component", ["logs", "docker", "log-file"])
 def test_start_rejects_symlinked_log_path_without_writing_outside_run(
     tmp_path,

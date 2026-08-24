@@ -23,9 +23,11 @@ def main() -> None:
     from simulation_interfaces.msg import RunState, ScenarioEvent
     from artifacts.runtime_protocol import RuntimeProtocol
     from artifacts.structured_log import StructuredEvent, write_event
+    from module_stub import QuiescenceBoundary
 
     run_id = os.environ["SIM_RUN_ID"]
     protocol = RuntimeProtocol(Path(os.environ["SIM_RUN_DIRECTORY"]), run_id)
+    boundary = QuiescenceBoundary(protocol, "electromagnet")
     rclpy.init()
     node = Node("synthetic_electromagnet")
     publisher = node.create_publisher(
@@ -39,6 +41,8 @@ def main() -> None:
     last_stamp = 0
 
     def emit(event: str) -> None:
+        if not boundary.output_allowed:
+            return
         write_event(
             sys.stdout,
             StructuredEvent(
@@ -55,8 +59,12 @@ def main() -> None:
         if message.state == RunState.RUNNING:
             running = True
         elif message.state == RunState.FINALIZING and not finalizing:
-            emit("finalizing")
-            finalizing = True
+            def stop() -> None:
+                nonlocal finalizing
+                emit("finalizing")
+                finalizing = True
+
+            boundary.enter(stop)
 
     def clock_callback(message: Any) -> None:
         nonlocal published, last_stamp

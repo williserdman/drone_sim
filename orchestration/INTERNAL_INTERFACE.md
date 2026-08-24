@@ -31,6 +31,13 @@ waits for the `runtime-frozen.json` quiescence barrier and
 allowing terminal ROS notifications; those notifications cannot append to
 required artifacts.
 
+The runtime publishes `FINALIZING`, permanently stops its own output, and
+writes `.status/quiescence/orchestration.json`. It then validates exact markers
+from companion, `ardupilot_sitl`, Gazebo, electromagnet, and scorekeeper before
+it alone writes aggregate `runtime-frozen.json`. Wrong/stale/duplicate/schema or
+unsafe path evidence does not satisfy the barrier. Terminal acknowledgement is
+durable and silent rather than a post-freeze ROS event.
+
 The controller converts resolved `finalization_wall_seconds` to one absolute
 deadline using a monotonic wall clock. Every finalization wait and adapter call
 receives the remaining time from that shared deadline; no step receives a fresh
@@ -56,6 +63,11 @@ cannot consume teardown reserve.
 `ps --all --format json` and requires the frozen seven unique service names to
 be present and running/restarting; missing, extra, duplicate, malformed,
 exited, or unhealthy rows fail closed.
+
+All seven Phase 2 services have explicit stable `:phase2` tags, so the unique
+per-run project name and frozen `up --no-build` command resolve identical
+prebuilt images. `foundation` is isolated in its own profile with a stable
+`:phase1` tag and remains explicitly runnable for Phase 1 verification.
 
 Returning a typed `FinalizationResult` from `ArtifactSession` marks the manifest
 publication boundary; its status and reason are immediately immutable.

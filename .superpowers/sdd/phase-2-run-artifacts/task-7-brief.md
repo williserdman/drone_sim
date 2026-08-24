@@ -55,7 +55,11 @@ Every service must:
 - use interpolation defaults that leave ordinary `docker compose config --quiet` valid without Phase 2 variables;
 - remain alive through normal source completion/fault reporting until terminal coordination.
 
-Task 6 already sets `COMPOSE_PROFILES=phase2`; preserve its exact detached `up --detach --no-build` argv. The foundation service stays outside the profile and remains behaviorally unchanged.
+Task 6 already sets `COMPOSE_PROFILES=phase2`; preserve its exact detached
+`up --detach --no-build` argv. Give all seven services explicit stable
+`:phase2` image tags so unique project names resolve the same prebuilt images.
+The foundation service has its own `foundation` profile and stable `:phase1`
+tag; explicit `docker compose run --rm foundation` remains supported.
 
 ## Runtime protocol helper
 
@@ -73,6 +77,15 @@ runtime-frozen.json    {"run_id": UUID, "frozen": true}
 terminal-notified.json {"run_id": UUID, "notified": true}
 ```
 
+Six descriptor-safe module markers also live at
+`.status/quiescence/<module>.json` with exact
+`{"run_id": UUID, "module": module, "quiescent": true}` schema for
+`orchestration`, `companion`, `ardupilot_sitl`, `gazebo`, `electromagnet`, and
+`scorekeeper`. Each process permanently stops publishers/stdout before its
+marker. Orchestration alone waits for all six and writes `runtime-frozen`.
+Runtime files are explicitly mode `0644` and owned directories mode `0755`,
+independent of a restrictive process umask.
+
 Exact host-owned inputs:
 
 ```text
@@ -88,12 +101,19 @@ terminal-committed.json {"run_id": UUID, "terminal_status": COMPLETED|FAILED|ABO
 
 Implement a small injected/testable domain core plus an `rclpy` adapter:
 
-- publish `STARTING` immediately on `/simulation/run_state`, reliable transient-local depth 1, zero simulation timestamp;
+- before the first publication, cross a bounded discovery barrier for the six
+  exact runtime consumers plus rosbag's RunState subscription, validating the
+  exact type and reliable transient-local QoS; timeout durable-fails and
+  finalize/abort preempts;
+- publish `STARTING` on `/simulation/run_state`, reliable transient-local depth 1, zero simulation timestamp;
 - accept only current-run aggregate artifact readiness, then publish `READY`;
 - accept no clock transition before readiness;
 - on first valid `/clock` after readiness, publish `RUNNING`, then durably write `runtime-running.json` with that exact stamp (the synthetic first valid clock is zero);
 - monitor `finalize-request.json` from STARTING, READY, or RUNNING; publish `FINALIZING` with last known simulation stamp and request reason;
-- wait for exact `terminal-committed.json`, apply finalized/failure lifecycle event consistently with its terminal state, publish terminal `RunState`, atomically write `terminal-notified.json`, and exit;
+- on `FINALIZING`, stop output, write orchestration's marker, wait for the other
+  five exact markers, and alone write aggregate `runtime-frozen.json`;
+- wait for exact `terminal-committed.json`, atomically write
+  `terminal-notified.json`, and exit without another ROS/log publication;
 - after the host capture barrier, terminal publication/status acknowledgement must be silent on stdout and write no required artifact/log event;
 - ignore stale ROS run IDs with diagnostics before the quiescence/log-capture boundary.
 
@@ -109,6 +129,8 @@ Startup:
 - start recorder processes before allowing clock;
 - publish `/simulation/artifact_status` ready only for the current run and atomically write `artifacts-ready.json` after all required endpoints/output handles are usable;
 - never claim ready on partial startup; write `runtime-failure.json` and remain alive long enough to preserve diagnostics.
+- monitor both FFmpeg processes and rosbag after readiness; durable
+  first-wins failure evidence precedes structured diagnostics.
 
 Running/faults:
 
@@ -126,7 +148,15 @@ Finalization:
 - bag semantic contains `storage_id` and ordered `topics`, each with `name`, `message_type`, `message_count`, `first_sim_timestamp_ns`, `last_sim_timestamp_ns`;
 - record stable descriptor-based size/checksum/tree-checksum facts from the validation results;
 - atomically write `artifacts-final.json`, then wait silently for `terminal-committed.json`;
-- publish final `ArtifactStatus` with portable `manifest_path="manifest.json"`, write no required event, and exit.
+- after host commit, exit without another ROS/stdout publication or required
+  artifact write.
+
+If rosbag remains alive after bounded escalation, fail closed: write durable
+runtime failure, do not write `artifacts-final`, publish no completeness claim,
+and remain silent/alive until controller teardown. The controller's expired
+work checker must prevent Docker-log parsing and all bag hashing, reserve an
+explicit timeout-invalid/null-checksum bag record, and then terminate the
+container.
 
 ## Deterministic synthetic services
 
@@ -145,7 +175,7 @@ Finalization:
 - publish exactly 40 onboard and 40 observer `rgb8` 320x240 frames at `0.05..2.00` seconds with `frame_id=0..39`, exact paired `FrameMetadata`, and one matching ground-truth message per frame;
 - deterministic payloads are functions only of stream/frame ID; no wall-derived values;
 - after frame 39, atomically write `source-finished.json` with stamp `2_000_000_000` and remain alive;
-- on FINALIZING, stop permanently, write clearly labeled fixture `gazebo/server.log` and `gazebo/state/synthetic-state.json`, atomically write `runtime-frozen.json`, then remain silent/alive for terminal handshake.
+- on FINALIZING, stop permanently, write clearly labeled fixture `gazebo/server.log` and `gazebo/state/synthetic-state.json`, atomically write only the Gazebo quiescence marker, then remain silent/alive for terminal handshake.
 
 `SIM_SYNTHETIC_WALL_DELAY_MS` may delay already-decided steps only. `clock_stall_after_5` publishes through frame ID 4 and then stalls without `source-finished`; it stays alive for controller finalization. Reject all other source fault strings.
 
@@ -194,6 +224,11 @@ git diff --check
 Also run the relevant container test targets after image changes and record exact image IDs/digests. Do not claim Task 8 terminal runs yet.
 
 Write `.superpowers/sdd/phase-2-run-artifacts/task-7-report.md` with RED/GREEN evidence, exact tests/builds/image IDs, runtime schemas, service topology, self-review, and Task 8 concerns. Commit scoped work as `feat: add synthetic artifact runtime stack`, leave the worktree clean, and report the hash.
+
+Review fix round 1 uses the scoped commit
+`fix: seal synthetic runtime boundaries`; preserve the original implementation
+commit and record the new RED/GREEN, image, marker-delay, and unique-project
+evidence in the report and ledger.
 
 ## Judgment constraints
 

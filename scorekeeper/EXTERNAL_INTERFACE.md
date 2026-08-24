@@ -24,6 +24,12 @@ simulated aircraft.
 
 Inputs are correlated by run and simulation time. Duplicate event identities are idempotently ignored. Late or out-of-order data follows a documented buffering policy before results are finalized. Missing required inputs mark a run incomplete rather than causing corrective control.
 
+For Phase 2 synthetic finalization, the fixture publisher persists its scoring
+files, stops output, then writes `.status/quiescence/scorekeeper.json` with
+exact current-run quiescence schema. A test-only bounded wall delay may postpone
+that already-decided marker to exercise aggregate freeze ordering; it never
+changes simulated facts.
+
 ## Prohibited outputs
 
 The scorekeeper exposes no command, mode, actuator, force, constraint, pose, velocity, or physics-mutation output.

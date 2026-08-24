@@ -35,6 +35,15 @@ PHASE2_SERVICES = (
     ("synthetic-electromagnet", "electromagnet"),
     ("synthetic-scorekeeper", "scorekeeper"),
 )
+PHASE2_IMAGES = (
+    "drone-sim-orchestration-runtime:phase2",
+    "drone-sim-artifacts-runtime:phase2",
+    "drone-sim-synthetic-companion:phase2",
+    "drone-sim-synthetic-ardupilot-sitl:phase2",
+    "drone-sim-synthetic-gazebo:phase2",
+    "drone-sim-synthetic-electromagnet:phase2",
+    "drone-sim-synthetic-scorekeeper:phase2",
+)
 
 
 @pytest.fixture(scope="module")
@@ -46,6 +55,7 @@ def compose_document() -> dict:
         "SIM_CONFIG_PATH",
         "SIM_PHASE2_FAULT",
         "SIM_SYNTHETIC_WALL_DELAY_MS",
+        "SIM_SYNTHETIC_QUIESCENCE_DELAY_MS",
     ):
         environment.pop(name, None)
     result = subprocess.run(
@@ -110,6 +120,56 @@ def test_container_contract_phase2_services_are_profile_scoped_and_unprivileged(
         )
 
 
+def _compose_output(*arguments: str, project_name: str) -> tuple[str, ...]:
+    environment = os.environ.copy()
+    environment["COMPOSE_PROFILES"] = "phase2"
+    result = subprocess.run(
+        ["docker", "compose", "--project-name", project_name, *arguments],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return tuple(line for line in result.stdout.splitlines() if line)
+
+
+def test_phase2_profile_resolves_exact_stable_project_independent_service_images() -> None:
+    services_a = _compose_output("config", "--services", project_name="phase2-contract-a")
+    services_b = _compose_output("config", "--services", project_name="phase2-contract-b")
+    images_a = _compose_output("config", "--images", project_name="phase2-contract-a")
+    images_b = _compose_output("config", "--images", project_name="phase2-contract-b")
+
+    assert set(services_a) == set(services_b) == {name for name, _module in PHASE2_SERVICES}
+    assert set(images_a) == set(images_b) == set(PHASE2_IMAGES)
+    assert "foundation" not in services_a
+
+
+def test_foundation_has_separate_profile_while_plain_config_remains_valid() -> None:
+    result = subprocess.run(
+        ["docker", "compose", "config", "--format", "json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    document = json.loads(result.stdout)
+    assert document["services"] == {}
+
+    all_profiles = subprocess.run(
+        ["docker", "compose", "--profile", "*", "config", "--format", "json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert all_profiles.returncode == 0, all_profiles.stderr
+    foundation = json.loads(all_profiles.stdout)["services"]["foundation"]
+    assert foundation["profiles"] == ["foundation"]
+
+
 def test_container_contract_services_share_safe_absolute_run_configuration_bindings(
     compose_document: dict,
     compose_text: str,
@@ -125,6 +185,7 @@ def test_container_contract_services_share_safe_absolute_run_configuration_bindi
         assert environment["SIM_CONFIG_PATH"] == CONFIG_PATH_DEFAULT
         assert environment["SIM_PHASE2_FAULT"] == ""
         assert environment["SIM_SYNTHETIC_WALL_DELAY_MS"] == "0"
+        assert environment["SIM_SYNTHETIC_QUIESCENCE_DELAY_MS"] == "0"
 
         run_directory = environment["SIM_RUN_DIRECTORY"]
         config_path = environment["SIM_CONFIG_PATH"]
@@ -136,6 +197,7 @@ def test_container_contract_services_share_safe_absolute_run_configuration_bindi
         assert "${SIM_CONFIG_PATH:-/" in compose_text
         assert "${SIM_PHASE2_FAULT:-" in compose_text
         assert "${SIM_SYNTHETIC_WALL_DELAY_MS:-" in compose_text
+        assert "${SIM_SYNTHETIC_QUIESCENCE_DELAY_MS:-" in compose_text
 
         bindings = phase2[name]["volumes"]
         assert all(isinstance(binding, dict) for binding in bindings)

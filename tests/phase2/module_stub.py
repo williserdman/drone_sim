@@ -10,9 +10,31 @@ import sys
 from typing import Any
 
 
+class QuiescenceBoundary:
+    """Make one process permanently silent before publishing its marker."""
+
+    def __init__(self, protocol: Any, module: str) -> None:
+        self._protocol = protocol
+        self._module = module
+        self.output_allowed = True
+        self._entered = False
+
+    def enter(self, final_output: Any = lambda: None) -> bool:
+        if self._entered:
+            return False
+        try:
+            final_output()
+        finally:
+            self.output_allowed = False
+        self._protocol.write_quiescence(self._module)
+        self._entered = True
+        return True
+
+
 def write_bytes_atomic(path: Path, payload: bytes) -> None:
     """Durably replace one owned fixture file through a sibling temporary."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o755)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     descriptor: int | None = None
     try:
@@ -23,6 +45,7 @@ def write_bytes_atomic(path: Path, payload: bytes) -> None:
             # builder after being created by root-run containers.
             0o644,
         )
+        os.fchmod(descriptor, 0o644)
         written = 0
         while written < len(payload):
             count = os.write(descriptor, payload[written:])
@@ -60,11 +83,14 @@ def main() -> None:
     if module not in {"companion", "ardupilot_sitl"}:
         raise ValueError("module_stub owns only companion or ardupilot_sitl")
     protocol = RuntimeProtocol(Path(os.environ["SIM_RUN_DIRECTORY"]), run_id)
+    boundary = QuiescenceBoundary(protocol, module)
     rclpy.init()
     node = Node(f"synthetic_{module}")
     finalizing = False
 
     def emit(event: str) -> None:
+        if not boundary.output_allowed:
+            return
         write_event(
             sys.stdout,
             StructuredEvent(
@@ -81,8 +107,12 @@ def main() -> None:
     def callback(message: Any) -> None:
         nonlocal finalizing
         if message.run_id == run_id and message.state == RunState.FINALIZING and not finalizing:
-            emit("finalizing")
-            finalizing = True
+            def stop() -> None:
+                nonlocal finalizing
+                emit("finalizing")
+                finalizing = True
+
+            boundary.enter(stop)
 
     node.create_subscription(
         RunState,

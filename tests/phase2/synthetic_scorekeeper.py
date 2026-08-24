@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 
@@ -37,10 +38,18 @@ def main() -> None:
     from simulation_interfaces.msg import RunState, ScoreEvent
     from artifacts.runtime_protocol import RuntimeProtocol
     from artifacts.structured_log import StructuredEvent, write_event
-    from module_stub import write_bytes_atomic
+    from module_stub import QuiescenceBoundary, write_bytes_atomic
 
     run_id = os.environ["SIM_RUN_ID"]
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"])
+    try:
+        quiescence_delay_ms = int(
+            os.environ.get("SIM_SYNTHETIC_QUIESCENCE_DELAY_MS", "0")
+        )
+    except ValueError as error:
+        raise ValueError("SIM_SYNTHETIC_QUIESCENCE_DELAY_MS must be an integer") from error
+    if quiescence_delay_ms < 0:
+        raise ValueError("SIM_SYNTHETIC_QUIESCENCE_DELAY_MS must be nonnegative")
     scoring_config = Path(__file__).with_name("scoring.json")
     result_path = run_directory / "scoring/result.json"
     events_path = run_directory / "scoring/events.jsonl"
@@ -49,6 +58,7 @@ def main() -> None:
         (json.dumps(scoring_result(run_id, scoring_config), sort_keys=True, separators=(",", ":")) + "\n").encode(),
     )
     protocol = RuntimeProtocol(run_directory, run_id)
+    boundary = QuiescenceBoundary(protocol, "scorekeeper")
     rclpy.init()
     node = Node("synthetic_scorekeeper")
     publisher = node.create_publisher(
@@ -62,6 +72,8 @@ def main() -> None:
     last_stamp = 0
 
     def emit(event: str) -> None:
+        if not boundary.output_allowed:
+            return
         write_event(
             sys.stdout,
             StructuredEvent(
@@ -78,8 +90,14 @@ def main() -> None:
         if message.state == RunState.RUNNING:
             running = True
         elif message.state == RunState.FINALIZING and not finalizing:
-            emit("finalizing")
-            finalizing = True
+            def stop() -> None:
+                nonlocal finalizing
+                emit("finalizing")
+                finalizing = True
+                if quiescence_delay_ms:
+                    time.sleep(quiescence_delay_ms / 1000.0)
+
+            boundary.enter(stop)
 
     def clock_callback(message: Any) -> None:
         nonlocal published, last_stamp
