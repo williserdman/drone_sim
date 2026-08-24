@@ -38,6 +38,11 @@ versions="$(gz sim --versions)"
 printf '%s\n' "$versions"
 grep --extended-regexp --quiet '^8[.]' <<<"$versions"
 ros2 pkg prefix ros_gz_bridge
+ros2 pkg prefix simulation_interfaces
+python3 -c 'import drone_sim_gazebo.runtime.runtime_node; from simulation_interfaces.msg import FrameMetadata, GroundTruth, RunState'
+test -x /opt/drone_sim/venv/bin/drone-sim-gazebo-runtime
+test -s /etc/drone_sim/gazebo-bridge.yaml
+python3 -m pytest -q /opt/drone_sim/source/tests/test_adapter_node.py
 
 # Phase 3 must not contain an ArduPilotPlugin shared library.
 plugin_path="$(

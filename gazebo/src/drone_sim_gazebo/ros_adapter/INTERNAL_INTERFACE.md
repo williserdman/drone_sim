@@ -29,3 +29,16 @@ not mutate an existing adapter.
 idempotent, returns the same frozen `AdapterSummary`, and makes every later
 sample unacceptable. All returned collections and payloads are immutable
 tuples or bytes. This package depends only on the Python standard library.
+
+The live layer adds `PrivateTruthAggregator` and `LiveAdapter`. The aggregator
+holds only the current odometry/contact candidate and one completed truth
+value. Gazebo emits a contact sample when contact exists but does not emit an
+empty sample for every no-contact tick; advancing odometry therefore closes
+the preceding candidate as `in_contact=false`. An explicit same-stamp contact
+closes it with the native state. The live adapter supports either callback
+arrival order but releases ground truth only when the pure model reports the
+same current camera pair.
+
+`GazeboAdapterNode` is the only ROS-dependent adapter class. It republishes the
+private native clock through the sole public `/clock` publisher, publishes the
+fixed camera/metadata/truth contract, and has no camera-ack subscription.

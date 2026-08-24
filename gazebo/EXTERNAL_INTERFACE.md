@@ -65,6 +65,19 @@ Malformed native data, missing endpoints, child exit, clock stall, camera
 discontinuity, or recorder failure emits durable run-failure evidence and
 preserves available native diagnostics.
 
+The production executable is `drone-sim-gazebo-runtime`. It requires
+`SIM_RUN_ID`, `SIM_RUN_DIRECTORY`, and the resolved configuration at
+`SIM_CONFIG_PATH` (defaulting to `configuration/run.json` in that run). The
+image owns `/etc/drone_sim/gazebo-bridge.yaml` and immutable resources at
+`/opt/drone_sim/gazebo/resources`. It discovers the actual Harmonic clock,
+camera, odometry, contact, and world-control endpoints before publishing
+`.status/gazebo-ready.json`.
+
+On the first valid finalization request the runtime converts the durable intent
+and resolved finalization allowance into one absolute monotonic deadline.
+Repeated reads reuse that deadline; bridge, server, and native-log stages do
+not receive restarted budgets.
+
 ## Excluded and reserved interfaces
 
 Phase 3 has no ArduPilot actuator/sensor seam and does not claim lockstep.

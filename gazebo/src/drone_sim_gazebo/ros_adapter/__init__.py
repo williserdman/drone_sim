@@ -10,6 +10,8 @@ from .model import (
     PublicFrame,
     PublicGroundTruth,
 )
+from .aggregation import AggregationFault, NativeOdometry, PrivateTruthAggregator
+from .live import LiveAdapter
 
 
 __all__ = [
@@ -21,4 +23,8 @@ __all__ = [
     "NativeImage",
     "PublicFrame",
     "PublicGroundTruth",
+    "AggregationFault",
+    "NativeOdometry",
+    "PrivateTruthAggregator",
+    "LiveAdapter",
 ]

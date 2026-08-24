@@ -42,36 +42,38 @@ RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
         /tmp/harmonic-expected-delta \
     && rm -rf /var/lib/apt/lists/*
 
-COPY artifacts/pyproject.toml /opt/drone_sim/projects/artifacts/pyproject.toml
-COPY artifacts/src /opt/drone_sim/projects/artifacts/src
-COPY gazebo/pyproject.toml /opt/drone_sim/projects/gazebo/pyproject.toml
-RUN python3 -m venv --system-site-packages /opt/drone_sim/venv \
+COPY artifacts orchestration gazebo ros_ws/src/simulation_interfaces /opt/drone_sim/source/
+RUN mkdir -p /opt/drone_sim/gazebo /etc/drone_sim \
+    && cp -a /opt/drone_sim/source/resources /opt/drone_sim/gazebo/resources \
+    && cp -a /opt/drone_sim/source/provenance /opt/drone_sim/gazebo/provenance \
+    && cp /opt/drone_sim/source/config/bridge.yaml /etc/drone_sim/gazebo-bridge.yaml \
+    && python3 -m venv --system-site-packages /opt/drone_sim/venv \
     && /opt/drone_sim/venv/bin/pip install \
         --no-cache-dir \
         --no-index \
         --no-build-isolation \
         --no-deps \
-        /opt/drone_sim/projects/artifacts \
-    && /opt/drone_sim/venv/bin/pip install \
-        --no-cache-dir \
-        --no-index \
-        --no-build-isolation \
-        /opt/drone_sim/projects/gazebo
+        /opt/drone_sim/source \
+    && bash -lc 'source /opt/ros/jazzy/setup.bash \
+    && cmake -S /opt/drone_sim/source \
+        -B /opt/drone_sim/ros_ws/build/simulation_interfaces \
+        -DCMAKE_INSTALL_PREFIX=/opt/drone_sim/ros_ws/install/simulation_interfaces \
+    && cmake --build /opt/drone_sim/ros_ws/build/simulation_interfaces --parallel 2 \
+    && cmake --install /opt/drone_sim/ros_ws/build/simulation_interfaces'
 
-COPY gazebo/resources /opt/drone_sim/gazebo/resources
-COPY gazebo/provenance /opt/drone_sim/gazebo/provenance
-
-ENV VIRTUAL_ENV=/opt/drone_sim/venv
-ENV PATH="/opt/drone_sim/venv/bin:${PATH}"
-ENV GZ_SIM_RESOURCE_PATH=/opt/drone_sim/gazebo/resources
-ENV SDF_PATH=/opt/drone_sim/gazebo/resources/models
+ENV VIRTUAL_ENV=/opt/drone_sim/venv \
+    PATH="/opt/drone_sim/venv/bin:${PATH}" \
+    GZ_SIM_RESOURCE_PATH=/opt/drone_sim/gazebo/resources \
+    SDF_PATH=/opt/drone_sim/gazebo/resources/models \
+    AMENT_PREFIX_PATH="/opt/drone_sim/ros_ws/install/simulation_interfaces:/opt/ros/jazzy" \
+    CMAKE_PREFIX_PATH="/opt/drone_sim/ros_ws/install/simulation_interfaces:/opt/ros/jazzy" \
+    LD_LIBRARY_PATH="/opt/drone_sim/ros_ws/install/simulation_interfaces/lib:/opt/ros/jazzy/lib" \
+    PYTHONPATH="/opt/drone_sim/ros_ws/install/simulation_interfaces/lib/python3.12/site-packages"
 
 # Source ROS before replacing PID 1 with the caller's argv. Runtime code is
 # added in Task 5; this stage already owns the immutable runtime supply chain.
-ENTRYPOINT ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && exec \"$@\"", "--"]
+ENTRYPOINT ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && source /opt/drone_sim/ros_ws/install/simulation_interfaces/share/simulation_interfaces/local_setup.bash && export PYTHONPATH=/opt/drone_sim/ros_ws/install/simulation_interfaces/lib/python3.12/site-packages:${PYTHONPATH} && export LD_LIBRARY_PATH=/opt/drone_sim/ros_ws/install/simulation_interfaces/lib:${LD_LIBRARY_PATH} && exec \"$@\"", "--"]
 
 FROM runtime AS test
 
-COPY gazebo/tests/test_gazebo_image /usr/local/bin/test-gazebo-image
-
-CMD ["/usr/local/bin/test-gazebo-image"]
+CMD ["/opt/drone_sim/source/tests/test_gazebo_image"]

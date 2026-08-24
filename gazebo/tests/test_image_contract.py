@@ -75,7 +75,8 @@ def test_runtime_copies_only_repository_local_gazebo_resources():
     """Omitting the local resource root would force runtime model lookup elsewhere."""
     dockerfile = _dockerfile().lower()
 
-    assert "copy gazebo/resources /opt/drone_sim/gazebo/resources" in dockerfile
+    assert "copy artifacts orchestration gazebo ros_ws/src/simulation_interfaces /opt/drone_sim/source/" in dockerfile
+    assert "cp -a /opt/drone_sim/source/resources /opt/drone_sim/gazebo/resources" in dockerfile
     assert "gz_sim_resource_path=/opt/drone_sim/gazebo/resources" in dockerfile
     assert "http://" not in dockerfile
     assert "https://" not in dockerfile
@@ -89,12 +90,30 @@ def test_test_target_proves_harmonic_bridge_and_plugin_absence_offline():
     image_test = IMAGE_TEST.read_text(encoding="utf-8")
 
     assert "FROM runtime AS test" in dockerfile
-    assert "COPY gazebo/tests/test_gazebo_image /usr/local/bin/test-gazebo-image" in dockerfile
+    assert "/opt/drone_sim/source/tests/test_gazebo_image" in dockerfile
     assert "RUN <<" not in dockerfile
     assert "gz sim --versions" in image_test
     assert "ros2 pkg prefix ros_gz_bridge" in image_test
     assert "ArduPilotPlugin" in image_test
-    assert 'CMD ["/usr/local/bin/test-gazebo-image"]' in dockerfile
+    assert 'CMD ["/opt/drone_sim/source/tests/test_gazebo_image"]' in dockerfile
+
+
+def test_entrypoint_sources_the_cmake_installed_interface_package():
+    """A direct CMake install has a package setup file, not a colcon workspace one."""
+    dockerfile = _dockerfile()
+
+    assert (
+        "source /opt/drone_sim/ros_ws/install/simulation_interfaces/"
+        "share/simulation_interfaces/local_setup.bash"
+    ) in dockerfile
+    assert (
+        "export PYTHONPATH=/opt/drone_sim/ros_ws/install/simulation_interfaces/"
+        "lib/python3.12/site-packages:${PYTHONPATH}"
+    ) in dockerfile
+    assert (
+        "export LD_LIBRARY_PATH=/opt/drone_sim/ros_ws/install/"
+        "simulation_interfaces/lib:${LD_LIBRARY_PATH}"
+    ) in dockerfile
 
 
 def test_gazebo_project_is_installable_and_reserves_the_runtime_entry_point():

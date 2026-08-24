@@ -44,3 +44,9 @@ deadline through an injected monotonic clock. The current durable finalization
 protocol does not store that deadline; Task 6/7 must hand one non-restarting
 absolute deadline from durable intent to `StopServer` rather than create a new
 budget in either layer.
+
+The live entry point closes that handoff by latching the first durable
+finalization intent to one absolute monotonic deadline. `ActionExecutor`
+applies pure actions in order. `ChildSupervisor` launches bridge wrappers in
+new sessions and terminates their process groups before calling
+`GazeboServer.stop` with the same deadline.

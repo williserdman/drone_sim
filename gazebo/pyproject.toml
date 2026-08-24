@@ -12,8 +12,8 @@ drone-sim-gazebo-runtime = "drone_sim_gazebo.runtime.runtime_node:main"
 [tool.uv.sources]
 drone-sim-artifacts = { workspace = true }
 
-[tool.setuptools]
-packages = []
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [build-system]
 requires = ["setuptools>=68"]

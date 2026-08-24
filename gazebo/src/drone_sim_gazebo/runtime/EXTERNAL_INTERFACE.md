@@ -36,3 +36,9 @@ diagnostic. An unrelated earlier runtime failure alone does not prevent a first
 valid stopped summary from recording failed-run quiescence. Later
 output-producing inputs are rejected; duplicate terminal observations are
 silent.
+
+`drone-sim-gazebo-runtime` is the live adapter around this model. The first
+durable finalization request receives one absolute deadline computed from the
+resolved run allowance, and every later stop stage reuses it. Bridge process
+groups stop before the exact `GazeboServer`; one valid native summary is fed
+back as `ServerStopped` before Gazebo quiescence is written.

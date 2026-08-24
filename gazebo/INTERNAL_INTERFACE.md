@@ -19,3 +19,16 @@ nor its siblings writes the aggregate runtime freeze or terminal manifest.
 
 No Phase 3 internal API exposes actuator exchange, ArduPilot lockstep,
 electromagnet force mutation, or an in-process world reset.
+
+`runtime.runtime_node` is the sole live composition root. It applies every
+side effect returned by `RuntimeModel`, uses `RuntimeProtocol` for existing
+durable lifecycle facts, and uses the Gazebo-owned writer only for
+`gazebo-ready`. `runtime.children` supervises two new process groups: a
+one-way parameter bridge for clock, odometry, and contact, plus one
+`ros_gz_image` bridge for the fixed camera pair. Both quiesce before the
+server.
+
+`ros_adapter.aggregation` retains at most one odometry, one contact, and one
+completed truth value. `ros_adapter.live` joins that truth to the current
+camera pair before the public ROS node publishes it. Private sensor QoS may be
+best effort; public QoS remains exactly the external table.
