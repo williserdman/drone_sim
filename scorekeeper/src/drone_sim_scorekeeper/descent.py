@@ -244,14 +244,12 @@ class ScoreResult:
         }
 
     def finished_status(self) -> dict[str, object]:
+        if not self.events:
+            raise ValueError("score result has no final event timestamp")
         return {
             "run_id": self.run_id,
-            "complete": self.complete,
-            "ruleset_id": self.ruleset_id,
-            "achieved_score": self.achieved_score,
-            "maximum_available_score": self.maximum_available_score,
-            "scoring_checksum": self.scoring_checksum,
-            "result_path": "scoring/result.json",
+            "finished": True,
+            "sim_timestamp_ns": self.events[-1].sim_timestamp_ns,
         }
 
 
@@ -287,6 +285,18 @@ class DescentScorer:
         self._diagnostic: str | None = None
         self._result: ScoreResult | None = None
 
+    @property
+    def last_sim_timestamp_ns(self) -> int | None:
+        return self._samples[-1].sim_timestamp_ns if self._samples else None
+
+    def fail(self, reason: str) -> None:
+        if self._result is not None:
+            raise RuntimeError("score has already been finalized")
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("score failure reason must be nonempty")
+        if self._diagnostic is None:
+            self._diagnostic = reason
+
     def accept(self, sample: GroundTruthSample) -> None:
         if self._result is not None:
             raise RuntimeError("score has already been finalized")
@@ -299,23 +309,40 @@ class DescentScorer:
         if len(self._samples) >= self.expected_ground_truth_samples:
             self._diagnostic = "ground_truth_sample_overrun"
             return
-        if self._samples and (
-            sample.sim_timestamp_ns
-            != self._samples[-1].sim_timestamp_ns + self.rules.sample_interval_ns
-        ):
-            self._diagnostic = "ground_truth_timestamp_gap"
-            return
+        if self._samples:
+            previous = self._samples[-1].sim_timestamp_ns
+            expected = previous + self.rules.sample_interval_ns
+            if sample.sim_timestamp_ns == previous:
+                self._diagnostic = "ground_truth_timestamp_duplicate"
+                return
+            if sample.sim_timestamp_ns < expected:
+                self._diagnostic = "ground_truth_timestamp_regression"
+                return
+            if sample.sim_timestamp_ns > expected:
+                self._diagnostic = "ground_truth_timestamp_gap"
+                return
         self._samples.append(sample)
 
     def _evaluated_rules(self) -> tuple[bool, bool, bool, bool]:
-        first_contact = next(
-            (index for index, sample in enumerate(self._samples) if sample.in_contact),
+        first_airborne = next(
+            (
+                index
+                for index, sample in enumerate(self._samples)
+                if sample.position_xyz[2] > self.rules.rise_height_m
+            ),
             None,
         )
-        airborne_then_contact = first_contact is not None and any(
-            sample.position_xyz[2] > self.rules.rise_height_m
-            for sample in self._samples[:first_contact]
+        first_contact = next(
+            (
+                index
+                for index, sample in enumerate(self._samples)
+                if first_airborne is not None
+                and index > first_airborne
+                and sample.in_contact
+            ),
+            None,
         )
+        airborne_then_contact = first_airborne is not None and first_contact is not None
         if not airborne_then_contact or first_contact is None:
             return False, False, False, False
 

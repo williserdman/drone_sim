@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""Production scorekeeper container entry point."""
+
+from drone_sim_scorekeeper.runtime_node import main
+
+
+raise SystemExit(main())

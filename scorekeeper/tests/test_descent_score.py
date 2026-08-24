@@ -116,6 +116,19 @@ def test_safe_contiguous_descent_scores_exact_maximum():
     assert len(result.scoring_checksum) == 64
 
 
+def test_initial_ground_contact_does_not_hide_later_airborne_touchdown():
+    """The Iris begins landed; scoring must select contact after takeoff."""
+    values = perfect_descent()
+    for index in range(10):
+        values[index] = sample(index, contact=True)
+
+    result = score(values)
+
+    assert result.complete is True
+    assert result.achieved_score == 100.0
+    assert [rule.passed for rule in result.rule_results] == [True, True, True, True]
+
+
 def test_first_gap_latches_incomplete_and_later_samples_cannot_repair_it():
     """Accepting a later contiguous suffix could falsely certify incomplete evidence."""
     scorer = DescentScorer(

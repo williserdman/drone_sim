@@ -57,12 +57,8 @@ def test_persisted_result_matches_manifest_scoring_contract(tmp_path):
     assert events[-1]["event_type"] == "score.finalized"
     assert result.finished_status() == {
         "run_id": RUN_ID,
-        "complete": True,
-        "ruleset_id": "descent_v1",
-        "achieved_score": 0.0,
-        "maximum_available_score": 100.0,
-        "scoring_checksum": result.scoring_checksum,
-        "result_path": "scoring/result.json",
+        "finished": True,
+        "sim_timestamp_ns": result.events[-1].sim_timestamp_ns,
     }
 
 

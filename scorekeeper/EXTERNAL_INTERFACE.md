@@ -33,14 +33,18 @@ pre-impact downward-speed threshold of 1.0 m/s. The scorekeeper emits exactly
 four ordered rule events (`descent.airborne_then_contact`,
 `descent.touchdown_precision`, `descent.safe_preimpact_speed`, and
 `descent.stable_contact`) followed by `score.finalized`. It persists the same
-five events as JSONL and exposes a narrow immutable finished-status document
-for the production ROS/lifecycle adapter.
+five events as JSONL. Only after both files are durably created and all five
+reliable publications are acknowledged does it create
+`.status/score-finished.json` with exactly `run_id`, `finished=true`, and the
+final simulation timestamp. Existing evidence is never overwritten.
 
-For Phase 2 synthetic finalization, the fixture publisher persists its scoring
-files, stops output, then writes `.status/quiescence/scorekeeper.json` with
-exact current-run quiescence schema. A test-only bounded wall delay may postpone
-that already-decided marker to exercise aggregate freeze ordering; it never
-changes simulated facts.
+On incomplete, discontinuous, conflicting, or truncated input, the runtime
+fails closed, persists an incomplete result, and writes the shared runtime
+failure instead of `score-finished`. During finalization it stops output and
+writes `.status/quiescence/scorekeeper.json`, then remains alive and silent
+until orchestration commits a terminal state. Structured JSONL events provide
+readiness, scenario, final-score, failure, and finalization diagnostics; wall
+time appears only as observability metadata and deadlines.
 
 ## Prohibited outputs
 

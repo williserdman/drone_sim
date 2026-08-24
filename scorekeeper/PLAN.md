@@ -24,6 +24,9 @@ The scorekeeper consumes run configuration, ROS 2 `/clock`, Gazebo ground truth,
 6. Diagnose incomplete runs.
 7. Prove a completed acceptance run can achieve the versioned maximum score.
 
+Stages 1–6 are implemented by the production `drone-sim-scorekeeper-runtime`
+image and its pure scoring core. Stage 7 requires the integrated live descent.
+
 ## Acceptance criteria
 
 - Scores derive from Gazebo ground truth rather than mission estimates.

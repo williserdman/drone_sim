@@ -3,6 +3,9 @@ name = "drone-sim-scorekeeper"
 version = "0.1.0"
 requires-python = ">=3.12"
 
+[project.scripts]
+drone-sim-scorekeeper-runtime = "drone_sim_scorekeeper.runtime_node:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
