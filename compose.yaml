@@ -1,14 +1,6 @@
-x-phase2-defaults: &phase2-defaults
-  profiles: [phase2]
+x-runtime-defaults: &runtime-defaults
   init: true
   restart: "no"
-  environment: &phase2-environment
-    SIM_RUN_ID: ${SIM_RUN_ID:-00000000-0000-4000-8000-000000000001}
-    SIM_RUN_DIRECTORY: ${SIM_RUN_DIRECTORY:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001}
-    SIM_CONFIG_PATH: ${SIM_CONFIG_PATH:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001/configuration/run.json}
-    SIM_PHASE2_FAULT: ${SIM_PHASE2_FAULT:-}
-    SIM_SYNTHETIC_WALL_DELAY_MS: ${SIM_SYNTHETIC_WALL_DELAY_MS:-0}
-    SIM_SYNTHETIC_QUIESCENCE_DELAY_MS: ${SIM_SYNTHETIC_QUIESCENCE_DELAY_MS:-0}
   volumes:
     - type: bind
       source: ${SIM_RUN_DIRECTORY:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001}
@@ -19,6 +11,16 @@ x-phase2-defaults: &phase2-defaults
       target: ${SIM_CONFIG_PATH:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001/configuration/run.json}
       read_only: true
 
+x-run-environment: &run-environment
+    SIM_RUN_ID: ${SIM_RUN_ID:-00000000-0000-4000-8000-000000000001}
+    SIM_RUN_DIRECTORY: ${SIM_RUN_DIRECTORY:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001}
+    SIM_CONFIG_PATH: ${SIM_CONFIG_PATH:-/tmp/drone-sim/runs/00000000-0000-4000-8000-000000000001/configuration/run.json}
+
+x-phase2-environment: &phase2-environment
+    <<: *run-environment
+    SIM_PHASE2_FAULT: ${SIM_PHASE2_FAULT:-}
+    SIM_SYNTHETIC_WALL_DELAY_MS: ${SIM_SYNTHETIC_WALL_DELAY_MS:-0}
+    SIM_SYNTHETIC_QUIESCENCE_DELAY_MS: ${SIM_SYNTHETIC_QUIESCENCE_DELAY_MS:-0}
 services:
   foundation:
     profiles: [foundation]
@@ -32,7 +34,8 @@ services:
       SIM_OUTPUT_ROOT: ${SIM_OUTPUT_ROOT:-/output}
 
   orchestration-runtime:
-    <<: *phase2-defaults
+    <<: *runtime-defaults
+    profiles: [phase2, phase3]
     image: drone-sim-orchestration-runtime:phase2
     build:
       context: .
@@ -44,7 +47,8 @@ services:
     command: ["python3", "-m", "orchestration.runtime_node"]
 
   artifacts-runtime:
-    <<: *phase2-defaults
+    <<: *runtime-defaults
+    profiles: [phase2, phase3]
     image: drone-sim-artifacts-runtime:phase2
     build:
       context: .
@@ -56,7 +60,8 @@ services:
     command: ["python3", "-m", "artifacts.runtime_node"]
 
   synthetic-companion:
-    <<: *phase2-defaults
+    <<: *runtime-defaults
+    profiles: [phase2, phase3]
     image: drone-sim-synthetic-companion:phase2
     build:
       context: .
@@ -68,7 +73,8 @@ services:
     command: ["python3", "/opt/drone_sim/phase2/module_stub.py", "companion"]
 
   synthetic-ardupilot-sitl:
-    <<: *phase2-defaults
+    <<: *runtime-defaults
+    profiles: [phase2, phase3]
     image: drone-sim-synthetic-ardupilot-sitl:phase2
     build:
       context: .
@@ -80,7 +86,8 @@ services:
     command: ["python3", "/opt/drone_sim/phase2/module_stub.py", "ardupilot_sitl"]
 
   synthetic-gazebo:
-    <<: *phase2-defaults
+    <<: *runtime-defaults
+    profiles: [phase2]
     image: drone-sim-synthetic-gazebo:phase2
     build:
       context: .
@@ -91,8 +98,22 @@ services:
       SIM_MODULE: gazebo
     command: ["python3", "/opt/drone_sim/phase2/synthetic_gazebo.py"]
 
+  gazebo-runtime:
+    <<: *runtime-defaults
+    profiles: [phase3]
+    image: drone-sim-gazebo-runtime:phase3
+    build:
+      context: .
+      dockerfile: gazebo/Dockerfile
+      target: runtime
+    environment:
+      <<: *run-environment
+      SIM_MODULE: gazebo
+    command: ["drone-sim-gazebo-runtime"]
+
   synthetic-electromagnet:
-    <<: *phase2-defaults
+    <<: *runtime-defaults
+    profiles: [phase2, phase3]
     image: drone-sim-synthetic-electromagnet:phase2
     build:
       context: .
@@ -104,7 +125,8 @@ services:
     command: ["python3", "/opt/drone_sim/phase2/synthetic_electromagnet.py"]
 
   synthetic-scorekeeper:
-    <<: *phase2-defaults
+    <<: *runtime-defaults
+    profiles: [phase2, phase3]
     image: drone-sim-synthetic-scorekeeper:phase2
     build:
       context: .

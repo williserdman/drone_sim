@@ -89,7 +89,14 @@ def test_container_contract_compose_has_frozen_service_order(
     service_order = re.findall(r"^  ([a-z][a-z0-9-]+):$", service_text, flags=re.MULTILINE)
     assert service_order == [
         "foundation",
-        *(name for name, _module in PHASE2_SERVICES),
+        "orchestration-runtime",
+        "artifacts-runtime",
+        "synthetic-companion",
+        "synthetic-ardupilot-sitl",
+        "synthetic-gazebo",
+        "gazebo-runtime",
+        "synthetic-electromagnet",
+        "synthetic-scorekeeper",
     ]
 
     services = compose_document["services"]
@@ -106,7 +113,7 @@ def test_container_contract_phase2_services_are_profile_scoped_and_unprivileged(
     assert set(compose_document.get("networks", {})) == {"default"}
 
     for service in _phase2(compose_document).values():
-        assert service["profiles"] == ["phase2"]
+        assert "phase2" in service["profiles"]
         assert service["init"] is True
         assert service["restart"] == "no"
         assert "network_mode" not in service
