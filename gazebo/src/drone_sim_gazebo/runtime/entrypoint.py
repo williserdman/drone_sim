@@ -45,6 +45,11 @@ _FLIGHT_STATUS_KEYS = frozenset(
         "last_json_sim_time_ns",
     }
 )
+_FLIGHT_PROGRESS_KEYS = (
+    "servo_packets_received",
+    "motor_updates",
+    "json_states_sent",
+)
 
 
 class TransportError(RuntimeError):
@@ -149,6 +154,7 @@ class GazeboTransport:
             raise ValueError("world_name must identify an approved local world")
         self._environment = dict(environment)
         self._flight = world_name == "vertical_descent"
+        self._previous_flight_status: dict[str, bool | int] | None = None
         self._topics = _STATIC_TOPICS + (
             f"/world/{world_name}/model/ground_plane/link/ground_link/sensor/"
             "iris_ground_contact/contact",
@@ -220,11 +226,16 @@ class GazeboTransport:
         return _validate_flight_status(document)
 
     def flight_exchange_ready(self) -> bool:
-        return _flight_status_ready(self.flight_exchange_status())
+        return self.ready_flight_exchange() is not None
 
     def ready_flight_exchange(self) -> dict[str, bool | int] | None:
         status = self.flight_exchange_status()
-        return status if _flight_status_ready(status) else None
+        previous = self._previous_flight_status
+        self._previous_flight_status = status
+        if previous is None or not _flight_status_ready(status):
+            return None
+        progressed = all(status[key] > previous[key] for key in _FLIGHT_PROGRESS_KEYS)
+        return status if progressed else None
 
     def _control(self, request: str) -> None:
         result = self._command(

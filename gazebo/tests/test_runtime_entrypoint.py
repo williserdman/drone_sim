@@ -139,7 +139,75 @@ def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
         "last_servo_frame": 2,
         "last_json_sim_time_ns": 0,
     }
-    assert transport.flight_exchange_ready() is True
+    assert transport.ready_flight_exchange() is None
+
+
+def test_flight_exchange_readiness_requires_progress_across_distinct_polls():
+    samples = iter(
+        (
+            {
+                "online": True,
+                "servo_packets_received": 1,
+                "motor_updates": 1,
+                "duplicate_servo_packets": 0,
+                "servo_frame_gaps": 0,
+                "json_states_sent": 1,
+                "json_send_errors": 0,
+                "last_servo_frame": 0,
+                "last_json_sim_time_ns": 0,
+            },
+            {
+                "online": True,
+                "servo_packets_received": 2,
+                "motor_updates": 2,
+                "duplicate_servo_packets": 0,
+                "servo_frame_gaps": 0,
+                "json_states_sent": 2,
+                "json_send_errors": 0,
+                "last_servo_frame": 1,
+                "last_json_sim_time_ns": 0,
+            },
+        )
+    )
+
+    def run(_argv, **_kwargs):
+        payload = __import__("json").dumps(next(samples), separators=(",", ":"))
+        escaped = payload.replace('"', '\\"')
+        return type("Result", (), {"returncode": 0, "stdout": f'data: "{escaped}"\n', "stderr": ""})()
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+
+    assert transport.ready_flight_exchange() is None
+    assert transport.ready_flight_exchange()["last_servo_frame"] == 1
+
+
+def test_flight_exchange_readiness_rejects_healthy_history_after_peer_stops():
+    samples = iter(
+        (
+            (1, 1, 1),
+            (1, 1, 2),
+        )
+    )
+
+    def run(_argv, **_kwargs):
+        servo, motor, sent = next(samples)
+        payload = (
+            '{"online":true,"servo_packets_received":%d,"motor_updates":%d,'
+            '"duplicate_servo_packets":0,"servo_frame_gaps":0,'
+            '"json_states_sent":%d,"json_send_errors":0,'
+            '"last_servo_frame":0,"last_json_sim_time_ns":0}'
+        ) % (servo, motor, sent)
+        escaped = payload.replace('"', '\\"')
+        return type("Result", (), {"returncode": 0, "stdout": f'data: "{escaped}"\n', "stderr": ""})()
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+
+    assert transport.ready_flight_exchange() is None
+    assert transport.ready_flight_exchange() is None
 
 
 @pytest.mark.parametrize(
@@ -168,8 +236,17 @@ def test_flight_exchange_readiness_fails_closed_on_incomplete_or_gapped_exchange
     }
     status.update(changed)
 
+    polls = 0
+
     def run(_argv, **_kwargs):
-        payload = __import__("json").dumps(status, separators=(",", ":"))
+        nonlocal polls
+        polls += 1
+        sample = dict(status)
+        if polls > 1:
+            for key in ("servo_packets_received", "motor_updates", "json_states_sent"):
+                if key not in changed:
+                    sample[key] += 1
+        payload = __import__("json").dumps(sample, separators=(",", ":"))
         escaped = payload.replace('"', '\\"')
         return type(
             "Result",
@@ -181,6 +258,7 @@ def test_flight_exchange_readiness_fails_closed_on_incomplete_or_gapped_exchange
         environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
     )
 
+    assert transport.flight_exchange_ready() is False
     assert transport.flight_exchange_ready() is False
 
 

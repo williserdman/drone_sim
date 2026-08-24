@@ -87,8 +87,9 @@ motor-force update. Its private `/model/iris/ardupilot/status` service is
 advertised only after UDP bind and reports exchange, motor-update, gap, send
 error, last-frame, and last-sim-time counters.
 
-Flight-local readiness fails closed until that service shows an online,
-bidirectional, zero-gap, zero-send-error exchange, and the observed counters are
+Flight-local readiness fails closed until distinct service polls show progress
+in received servo, motor-update, and sent-JSON counters during an online,
+bidirectional, zero-gap, zero-send-error exchange, and the later counters are
 preserved in `.status/gazebo-ready.json`. Orchestration alone aggregates this
 fact with durable ArduPilot, companion, artifact, and scorekeeper readiness;
 the Gazebo fact does not claim those peer processes are lifecycle-ready.

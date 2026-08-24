@@ -7,18 +7,24 @@ immediate sibling packages have these exclusive boundaries:
 | --- | --- |
 | `worlds` | Resolve and validate immutable local world resources and checksums. It performs no server control. |
 | `models` | Resolve and validate immutable model resources, identities, provenance, and checksums. It performs no physics or ROS publication. |
-| `server` | Construct and supervise the paused `gz sim` subprocess, private Gazebo Transport discovery/control, native recording, and raw server log. |
+| `server` | Construct and supervise the paused `gz sim` subprocess, native recording, and raw server log. |
 | `ros_adapter` | Validate private bridged native samples and publish the exact public ROS 2 camera, metadata, clock, and ground-truth contracts. |
-| `runtime` | Own run lifecycle, readiness, completion, finalization, failure facts, and supervision of the other runtime units. |
+| `runtime` | Own run lifecycle, private Gazebo Transport discovery/control, flight exchange observation, completion, finalization, failure facts, and supervision of the other runtime units. |
 
 These APIs are sibling seams, not permission to import another package's
-private implementation files. Gazebo Transport names remain private to
-`server` and `ros_adapter`; no other repository module discovers or consumes
-them. Only `runtime` writes Gazebo lifecycle/quiescence facts, and neither it
+private implementation files. Gazebo Transport names remain private to this
+package: `runtime` owns world control and the flight-only ArduPilot status
+service, while `ros_adapter` owns bridged native samples. No other repository
+module discovers or consumes them. Only `runtime` writes Gazebo lifecycle/quiescence facts, and neither it
 nor its siblings writes the aggregate runtime freeze or terminal manifest.
 
-No Phase 3 internal API exposes actuator exchange, ArduPilot lockstep,
-electromagnet force mutation, or an in-process world reset.
+For `vertical_descent/iris_flight`, the downstream-patched plugin owns the
+private UDP sensor/actuator lockstep seam and
+`/model/iris/ardupilot/status`. Runtime readiness requires servo, motor-update,
+and JSON-send counters to advance across distinct polls with no frame gaps or
+send errors before it freezes the observed counts into `gazebo-ready`.
+Orchestration owns aggregate peer readiness. No internal API exposes
+electromagnet force mutation or an in-process world reset.
 
 `runtime.runtime_node` is the sole live composition root. It applies every
 side effect returned by `RuntimeModel`, uses `RuntimeProtocol` for existing
