@@ -209,14 +209,25 @@ def _independent_descent_score(
     points = tuple(_finite_number(row.get("points"), "rules points") for row in rows)
     if len(points) != 4 or sum(points) != 100.0:
         raise ScoreValidationError("committed descent rule points are incompatible")
-    first_contact = next(
-        (index for index, sample in enumerate(ground_truth) if sample.in_contact),
+    first_airborne = next(
+        (
+            index
+            for index, sample in enumerate(ground_truth)
+            if sample.position_xyz[2] > float(rules["rise_height_m"])
+        ),
         None,
     )
-    airborne_then_contact = first_contact is not None and any(
-        sample.position_xyz[2] > float(rules["rise_height_m"])
-        for sample in ground_truth[:first_contact]
+    first_contact = next(
+        (
+            index
+            for index, sample in enumerate(ground_truth)
+            if first_airborne is not None
+            and index > first_airborne
+            and sample.in_contact
+        ),
+        None,
     )
+    airborne_then_contact = first_airborne is not None and first_contact is not None
     if not airborne_then_contact or first_contact is None:
         outcomes = (False, False, False, False)
     else:

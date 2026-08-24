@@ -225,7 +225,7 @@ def test_self_consistent_false_score_is_rejected_by_independent_ground_truth(tmp
         )
 
 
-def test_independently_recomputed_maximum_score_is_accepted(tmp_path):
+def test_initially_grounded_flight_recomputes_production_maximum_score(tmp_path):
     from artifacts.score_validation import validate_descent_score_outputs
 
     _write_valid_partial_score(tmp_path)
@@ -239,7 +239,7 @@ def test_independently_recomputed_maximum_score_is_accepted(tmp_path):
     events_path = tmp_path / "scoring/events.jsonl"
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
     for event in events:
-        event["sim_timestamp_ns"] = 600_000_000
+        event["sim_timestamp_ns"] = 650_000_000
     events[2]["value"] = 20.0
     events[3]["value"] = 20.0
     events[4]["value"] = 100.0
@@ -248,16 +248,16 @@ def test_independently_recomputed_maximum_score_is_accepted(tmp_path):
     )
 
     ground_truth = []
-    for index in range(13):
+    for index in range(14):
         ground_truth.append(
             GroundTruthEvidence(
                 sim_timestamp_ns=index * 50_000_000,
                 vehicle_id="iris",
-                position_xyz=(0.0, 0.0, 1.0 if index == 0 else 0.0),
+                position_xyz=(0.0, 0.0, 1.0 if index == 1 else 0.0),
                 orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
-                linear_velocity_xyz=(0.0, 0.0, -0.5 if index == 1 else 0.0),
+                linear_velocity_xyz=(0.0, 0.0, -0.5 if index == 2 else 0.0),
                 angular_velocity_xyz=(0.0, 0.0, 0.0),
-                in_contact=index >= 2,
+                in_contact=index == 0 or index >= 3,
             )
         )
     bag_digest = validate_tree(tmp_path, "rosbag").sha256
