@@ -31,6 +31,10 @@ Coordinate the lifecycle and configuration of deterministic simulation runs cont
 6. Collect logs, diagnostics, scores, and run metadata.
 7. Stop modules cleanly and preserve results.
 
+## Active execution plan
+
+The active implementation path is `docs/superpowers/plans/runnable-vertical-descent.md`. It prioritizes, in order: a Compose-launched Gazebo smoke run, ArduPilot lockstep flight, a complete artifact-producing run, a valid scored run, and a verified maximum-score run. Independent module work proceeds in parallel at frozen interfaces; integration reviews gate only runtime correctness, deterministic timing, artifact integrity, and truthful scoring.
+
 ## Acceptance criteria
 
 - All seven child modules have a plan and separate internal and external interfaces.
@@ -44,6 +48,7 @@ Coordinate the lifecycle and configuration of deterministic simulation runs cont
 
 ## Deferred decisions
 
-- Exact reset and readiness protocols
-- Production Docker Compose topology and health-check intervals
-- Operator command-line or service syntax
+- Broader competition rules beyond committed `descent_v1`
+- Active electromagnet/payload behavior
+- Operator UX beyond the existing start and result-collection workflow
+- Non-blocking adversarial hardening recorded in `docs/technical-debt/vertical-slice-hardening.md`

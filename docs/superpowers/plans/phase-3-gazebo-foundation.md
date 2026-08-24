@@ -1,5 +1,7 @@
 # Phase 3 Gazebo Physical Foundation Implementation Plan
 
+> **Execution pivot (2026-08-24):** Tasks 1–5 are complete through `416a180`. Tasks 6–8 are no longer executed as a separate passive-physics phase; their launch-critical work is incorporated into `docs/superpowers/plans/runnable-vertical-descent.md`. Historical constraints and task detail below remain design input.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the Phase 2 synthetic physical source with a deterministic, paused-first Gazebo Harmonic runtime that produces authoritative simulation time, two 20-sim-Hz camera streams, ground truth, native state, and server logs in the existing validated run bundle.
