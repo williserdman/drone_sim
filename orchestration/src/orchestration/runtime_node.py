@@ -24,6 +24,26 @@ _QUIESCENCE_PEERS = (
     "electromagnet",
     "scorekeeper",
 )
+_PHASE2_RUN_STATE_NODES = frozenset(
+    {
+        "artifacts_runtime",
+        "synthetic_companion",
+        "synthetic_ardupilot_sitl",
+        "synthetic_gazebo",
+        "synthetic_electromagnet",
+        "synthetic_scorekeeper",
+    }
+)
+_PHASE3_RUN_STATE_NODES = frozenset(
+    {
+        "artifacts_runtime",
+        "synthetic_companion",
+        "synthetic_ardupilot_sitl",
+        "gazebo_runtime",
+        "synthetic_electromagnet",
+        "synthetic_scorekeeper",
+    }
+)
 
 
 class _Protocol(Protocol):
@@ -56,21 +76,20 @@ class RunStateSubscriber:
 class RunStateTransportBarrier:
     """Require every intended lifecycle consumer before publishing STARTING."""
 
-    _REQUIRED_NODES = frozenset(
-        {
-            "artifacts_runtime",
-            "synthetic_companion",
-            "synthetic_ardupilot_sitl",
-            "synthetic_gazebo",
-            "synthetic_electromagnet",
-            "synthetic_scorekeeper",
-        }
-    )
     _TYPE = "simulation_interfaces/msg/RunState"
 
-    def __init__(self, *, deadline: float, failure: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        *,
+        deadline: float,
+        failure: Callable[[str], None],
+        required_nodes: Iterable[str] = _PHASE2_RUN_STATE_NODES,
+    ) -> None:
         self._deadline = deadline
         self._failure = failure
+        self._required_nodes = frozenset(required_nodes)
+        if not self._required_nodes:
+            raise ValueError("run-state transport barrier requires at least one node")
         self.ready = False
         self.failed = False
         self.preempted = False
@@ -94,9 +113,9 @@ class RunStateTransportBarrier:
             for item in subscribers
             if item.topic_type == self._TYPE and item.reliable and item.transient_local
         }
-        runtime_consumers = valid_names & self._REQUIRED_NODES
+        runtime_consumers = valid_names & self._required_nodes
         recorder_present = any(name.startswith("rosbag2_recorder_") for name in valid_names)
-        if runtime_consumers == self._REQUIRED_NODES and recorder_present:
+        if runtime_consumers == self._required_nodes and recorder_present:
             self.ready = True
             return True
         if now >= self._deadline:
@@ -338,6 +357,11 @@ def main() -> None:
 
     startup_barrier = RunStateTransportBarrier(
         deadline=time.monotonic() + float(config["startup_wall_seconds"]),
+        required_nodes=(
+            _PHASE3_RUN_STATE_NODES
+            if config.get("runtime_profile") == "phase3"
+            else _PHASE2_RUN_STATE_NODES
+        ),
         failure=lambda reason: protocol.write_status(
             "runtime-failure",
             {

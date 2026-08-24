@@ -84,6 +84,34 @@ def test_run_state_transport_barrier_requires_all_seven_intended_subscribers():
     assert failures == []
 
 
+def test_phase3_transport_barrier_requires_real_gazebo_subscriber():
+    failures = []
+    required_nodes = {
+        "artifacts_runtime",
+        "synthetic_companion",
+        "synthetic_ardupilot_sitl",
+        "gazebo_runtime",
+        "synthetic_electromagnet",
+        "synthetic_scorekeeper",
+    }
+    barrier = RunStateTransportBarrier(
+        deadline=10.0,
+        failure=failures.append,
+        required_nodes=required_nodes,
+    )
+    subscribers = [
+        _subscriber(name) for name in sorted(required_nodes)
+    ] + [_subscriber("rosbag2_recorder_deadbeef")]
+
+    synthetic = [
+        _subscriber("synthetic_gazebo") if item.node_name == "gazebo_runtime" else item
+        for item in subscribers
+    ]
+    assert barrier.poll(synthetic, now=1.0, finalizing=False) is False
+    assert barrier.poll(subscribers, now=2.0, finalizing=False) is True
+    assert failures == []
+
+
 def test_run_state_transport_barrier_ignores_duplicates_stale_qos_type_and_extras():
     failures = []
     required = _required_subscribers()
