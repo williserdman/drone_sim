@@ -3,7 +3,7 @@
 ## Scope and baseline
 
 - Baseline: `d527abbf60a9bc2b2fae2621b68f8ed67cc9298f`
-- Verification audit: `2026-08-23T23:27:44Z`
+- Verification audit: `2026-08-24T00:04:38Z`
 - Scope: two 20-FPS, 320x240 `rgb8` FFmpeg pipelines, their ROS-facing
   subscriptions/readiness/errors, read-only MP4 validation, and the pinned
   artifact-image FFmpeg extension.
@@ -97,6 +97,18 @@ Self-review added a further genuine RED: an injected read failure after one
 copied chunk discarded the snapshot. The repaired copy boundary seals and links
 the bytes copied so far and records `video_recovery_copy_failed`.
 
+Review fix round 5 began with `7 failed, 122 deselected`. The failures proved
+that FFmpeg inherited the already named log inode, the log path existed during
+active recording, confirmed logs remained writable, regular collisions were
+accepted, no second `O_TMPFILE` capability was required, and fake and real late
+children could append to the named log after finalization returned. The first
+anonymous-log slice passed all seven. Self-review added one further RED: a late
+conflicting name was not overwritten but was mistaken for the recorder's
+already-published log. Descriptor/name identity comparison now reports that
+collision instead of accepting it. A final full-suite RED exposed a misplaced
+exception handler that let confirmed-log recovery timeout escape; the existing
+shared-deadline regression test now passes with immutable failure return.
+
 ## Implementation and files
 
 - `artifacts/src/artifacts/_adapters/video.py`
@@ -104,10 +116,12 @@ the bytes copied so far and records `video_recovery_copy_failed`.
     preflight;
   - exact timestamp pairing in either arrival order with one pending item per
     side, immutable diagnostics, and fail-closed sequence/format checks;
-  - hardened no-follow/single-link FFmpeg log paths plus an anonymous Linux
-    `O_TMPFILE` inode in the retained video directory before process creation;
-  - FFmpeg writes a duplicate of that exact anonymous inode through
-    `/proc/self/fd/N` and `pass_fds`;
+  - anonymous Linux `O_TMPFILE` inodes are reserved in the retained video and
+    `logs/docker` directories before process creation; preexisting final,
+    partial, or FFmpeg-log names are refused without unlinking or appending;
+  - FFmpeg writes the exact anonymous video inode through `/proc/self/fd/N`
+    and `pass_fds`, while stderr receives only a duplicate of the anonymous
+    append-mode log inode;
   - caller-owned absolute deadline bounds stdin close, wait/TERM/KILL,
     startup preflight/process creation, descriptor hashing, ffprobe, and strict
     full decode;
@@ -119,9 +133,10 @@ the bytes copied so far and records `video_recovery_copy_failed`.
     recovery-copy, and seal/link boundaries; unconfirmed writers are copied
     per chunk into an independent anonymous inode, including an empty or
     truncated snapshot when the copy budget/error boundary is reached;
-  - the recovery snapshot is fsynced, reopened read-only, sealed `0444`, and
-    linked before return; process-only asynchronous cleanup can then kill/reap
-    the child without retaining or mutating the named recovery inode;
+  - video and log recovery share the same reserved copy/seal/link interval;
+    each snapshot is fsynced, reopened read-only, sealed `0444`, and linked
+    before return, after which process-only asynchronous cleanup can kill/reap
+    the child without retaining or mutating either named recovery inode;
   - descriptor-backed ffprobe JSON, `-xerror` full decode, same-descriptor
     before/after hashes/fstats, and retained run-root/video/file mutation
     watches;
@@ -142,7 +157,7 @@ the bytes copied so far and records `video_recovery_copy_failed`.
     caller deadline and contained subscription callbacks so one failed stream
     does not terminate the executor.
 - `artifacts/tests/test_video_adapter.py`
-  - 125 host/container behavioral cases covering pairing, every frozen frame
+  - 131 host/container behavioral cases covering pairing, every frozen frame
     invariant, bounded pending state, process/finalization races and failures,
     filesystem collisions, semantic validation, a real recorder pipe, and the
     real Jazzy node/QoS shape.
@@ -170,8 +185,8 @@ the bytes copied so far and records `video_recovery_copy_failed`.
 - The build also failed closed unless encoder field 2 equaled exactly
   `libx264` (so `libx264rgb` cannot satisfy the gate) and `ffprobe -version`
   succeeded.
-- Final test image:
-  `sha256:3d93ddfe52b03402df8c6c2cd4ac2b4062058de59607dd7a0703ee95c2b4d0e4`.
+- Final source-exact test image:
+  `sha256:1e5ae4a740c293b8c8a632bffa0d9ca568b68425940ed19a33babb592b22bacb`.
 
 ## Output-command security ruling
 
@@ -180,14 +195,18 @@ argument. That pathname cannot bind FFmpeg to the inode validated and later
 published: a dangling symlink or pathname replacement can redirect one of
 those stages. Security and exact inode identity therefore take precedence, as
 the review explicitly directed. The semantic encoding settings remain frozen,
-but active recording is anonymous: `O_TMPFILE` creates an unlinked regular
-inode in the retained video directory and FFmpeg receives its duplicate through
-`/proc/self/fd/N`. After FFmpeg stops, the recorder reopens the exact inode
+but active recording is anonymous: `O_TMPFILE` creates unlinked regular
+inodes in the retained video and log directories. FFmpeg receives the video
+duplicate through `/proc/self/fd/N` and stderr receives only an anonymous log
+duplicate. After FFmpeg stops, the recorder reopens the exact inodes
 read-only, verifies identity, seals mode `0444`, and closes all writable fds.
 Validation sees only that read-only unlinked descriptor. A single no-clobber
-link publishes it directly as final when valid, or as `.partial` when a
-nonempty failed/invalid encode is recoverable. There is no active named partial,
-check-then-unlink cleanup, rollback unlink, or post-link mutating operation.
+link publishes video directly as final when valid, or as `.partial` when a
+failed/invalid encode is recoverable, and publishes the exact confirmed log as
+`ffmpeg-<stream>.log.partial`. An unconfirmed child instead gets independent
+video and log snapshots; late writes reach only the original anonymous inodes.
+There is no active named output/log, check-then-unlink cleanup, rollback unlink,
+or post-link mutating operation.
 
 The target's default capability set is unchanged (`CapEff
 00000000a80425fb`). Direct `linkat(AT_EMPTY_PATH)` returned `ENOENT` without
@@ -225,22 +244,22 @@ probed and fully decoded that recovered file as valid.
 
 ```text
 uv run pytest artifacts/tests/test_video_adapter.py -v
-119 passed, 6 skipped in 3.84s
+125 passed, 6 skipped in 3.85s
 
 uv run pytest artifacts/tests -v
-229 passed, 10 skipped in 4.53s
+235 passed, 10 skipped in 4.73s
 
 docker build -f artifacts/Dockerfile --target test -t drone-sim-artifacts:test .
-exit 0; image sha256:1527619f464159bf4355b720107993573fd0e3db8d2df77b8b9228b95ba61651
+exit 0; image sha256:1e5ae4a740c293b8c8a632bffa0d9ca568b68425940ed19a33babb592b22bacb
 
 docker run --rm drone-sim-artifacts:test uv run pytest artifacts/tests/test_video_adapter.py -v
-125 passed in 11.67s
+131 passed in 10.09s
 
 docker run --rm drone-sim-artifacts:test
-239 passed in 12.38s
+245 passed in 11.18s
 
 uv run pytest -v
-283 passed, 10 skipped in 14.17s
+289 passed, 10 skipped in 10.41s
 
 uv run python -m compileall -q artifacts/src artifacts/tests
 exit 0
@@ -276,8 +295,9 @@ Jazzy node.
   failures, and throwing diagnostic sinks return immutable failure surfaces
   and do not leak retained descriptors.
 - An unconfirmed real child can continue writing only its original inode. The
-  named recovery snapshot exists at adapter return and its bytes, inode, mode,
-  size, and timestamps remain stable before and after asynchronous child reap.
+  named video and log recovery snapshots exist at adapter return and their
+  bytes, inodes, modes, sizes, and timestamps remain stable before and after
+  asynchronous child reap.
 - Recovery copy loops check the caller deadline before/after reads and before
   every write. A separate seal/link margin preserves the copied prefix,
   including zero bytes, if copy time or an I/O error ends the copy phase.

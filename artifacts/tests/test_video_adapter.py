@@ -233,6 +233,19 @@ def test_start_keeps_encoded_inode_anonymous_until_finalization(tmp_path):
     )
 
 
+def test_start_keeps_ffmpeg_log_inode_anonymous_until_finalization(tmp_path):
+    captured = {}
+
+    def factory(command, **kwargs):
+        captured["log_identity"] = os.fstat(kwargs["stderr"].fileno())
+        return FakeProcess()
+
+    recorder = _recorder(tmp_path, process_factory=factory)
+
+    assert captured["log_identity"].st_nlink == 0
+    assert not recorder.log_path.exists()
+
+
 def test_unsupported_otmpfile_fails_without_named_fallback(tmp_path, monkeypatch):
     real_open = video_module.os.open
 
@@ -255,6 +268,37 @@ def test_unsupported_otmpfile_fails_without_named_fallback(tmp_path, monkeypatch
 
     assert not recorder.partial_path.exists()
     assert not recorder.final_path.exists()
+
+
+def test_unsupported_log_otmpfile_fails_without_named_fallback(tmp_path, monkeypatch):
+    real_open = video_module.os.open
+    anonymous_opens = 0
+    before = len(os.listdir("/proc/self/fd"))
+
+    def reject_second_anonymous(path, flags, *args, **kwargs):
+        nonlocal anonymous_opens
+        if flags & os.O_TMPFILE == os.O_TMPFILE:
+            anonymous_opens += 1
+            if anonymous_opens == 2:
+                raise OSError(errno.EOPNOTSUPP, "log O_TMPFILE unsupported")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(video_module.os, "open", reject_second_anonymous)
+    recorder = VideoStreamRecorder(
+        tmp_path,
+        run_id=RUN_ID,
+        stream="onboard",
+        command_runner=FakeCommandRunner(),
+        process_factory=FakeProcessFactory(),
+    )
+
+    with pytest.raises(RuntimeError, match="log.*O_TMPFILE"):
+        recorder.start(deadline=time.monotonic() + 1)
+
+    assert not recorder.log_path.exists()
+    assert not recorder.partial_path.exists()
+    assert not recorder.final_path.exists()
+    assert len(os.listdir("/proc/self/fd")) == before
 
 
 def test_success_validates_only_readonly_anonymous_inode_then_links_final(tmp_path):
@@ -480,7 +524,7 @@ def test_content_mutation_after_validation_result_is_never_published(tmp_path):
     assert recorder.partial_path.exists()
 
 
-def test_success_is_one_readonly_noclobber_link_without_rollback_unlink(
+def test_success_links_readonly_log_and_video_without_rollback_unlink(
     tmp_path, monkeypatch
 ):
     recorder = _recorder(tmp_path)
@@ -508,7 +552,7 @@ def test_success_is_one_readonly_noclobber_link_without_rollback_unlink(
     )
 
     assert result.published is True
-    assert link_calls == ["onboard.mp4"]
+    assert link_calls == ["ffmpeg-onboard.log.partial", "onboard.mp4"]
     assert unlink_calls == []
     assert recorder.final_path.read_bytes() == b"encoded"
     assert not recorder.partial_path.exists()
@@ -545,17 +589,68 @@ def test_start_preflights_encoder_and_ffprobe_before_process(tmp_path):
     assert len(factory.calls) == 1
 
 
-def test_start_appends_ffmpeg_stderr_to_hardened_owned_log(tmp_path):
+@pytest.mark.parametrize("contents", [b"", b"encoder diagnostics\n"])
+def test_confirmed_exit_seals_and_publishes_exact_ffmpeg_log(tmp_path, contents):
+    captured = {}
+
+    def factory(command, **kwargs):
+        descriptor = kwargs["stderr"].fileno()
+        captured["identity"] = os.fstat(descriptor)
+        assert os.write(descriptor, contents) == len(contents)
+        return FakeProcess()
+
+    recorder = _recorder(tmp_path, process_factory=factory)
+    _write_anonymous_output(recorder, b"encoded")
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome="COMPLETED"
+    )
+
+    assert result.published is True
+    assert recorder.log_path.read_bytes() == contents
+    published = recorder.log_path.stat()
+    assert published.st_mode & 0o777 == 0o444
+    assert (published.st_dev, published.st_ino) == (
+        captured["identity"].st_dev,
+        captured["identity"].st_ino,
+    )
+
+
+def test_start_refuses_existing_regular_ffmpeg_log_without_appending(tmp_path):
     log_path = tmp_path / "logs/docker/ffmpeg-onboard.log.partial"
     log_path.parent.mkdir(parents=True)
     log_path.write_bytes(b"existing diagnostics\n")
     factory = FakeProcessFactory()
+    recorder = VideoStreamRecorder(
+        tmp_path,
+        run_id=RUN_ID,
+        stream="onboard",
+        process_factory=factory,
+        command_runner=FakeCommandRunner(),
+    )
 
-    _recorder(tmp_path, process_factory=factory)
+    with pytest.raises(FileExistsError, match="log"):
+        recorder.start(deadline=time.monotonic() + 10)
 
-    stderr = factory.calls[0][1]["stderr"]
-    assert os.path.samefile(f"/proc/self/fd/{stderr.fileno()}", log_path)
     assert log_path.read_bytes() == b"existing diagnostics\n"
+    assert factory.calls == []
+
+
+def test_late_ffmpeg_log_collision_is_not_mistaken_for_published_log(tmp_path):
+    recorder = _recorder(tmp_path)
+    _write_anonymous_output(recorder, b"encoded")
+    recorder.log_path.write_bytes(b"late collision")
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome="COMPLETED"
+    )
+
+    assert result.published is False
+    assert recorder.log_path.read_bytes() == b"late collision"
+    assert any(
+        item.event == "log_recovery_failed"
+        for item in recorder.diagnostics
+    )
 
 
 def test_start_rejects_symlinked_or_hardlinked_ffmpeg_log(tmp_path):
@@ -567,11 +662,11 @@ def test_start_rejects_symlinked_or_hardlinked_ffmpeg_log(tmp_path):
     factory = FakeProcessFactory()
     recorder = VideoStreamRecorder(tmp_path, run_id=RUN_ID, stream="onboard",
         process_factory=factory, command_runner=FakeCommandRunner())
-    with pytest.raises(RuntimeError, match="unsafe recorder log path"):
+    with pytest.raises(FileExistsError, match="refusing existing FFmpeg log"):
         recorder.start(deadline=time.monotonic() + 10)
     log_path.unlink()
     os.link(outside, log_path)
-    with pytest.raises(RuntimeError, match="unsafe recorder log path"):
+    with pytest.raises(FileExistsError, match="refusing existing FFmpeg log"):
         recorder.start(deadline=time.monotonic() + 10)
     assert outside.read_bytes() == b"outside" and factory.calls == []
 
@@ -1042,23 +1137,67 @@ def test_prepare_output_failure_after_anonymous_open_closes_output_and_parent_fd
         stream="onboard",
         command_runner=FakeCommandRunner(),
     )
+    real_open = video_module.os.open
     real_fstat = video_module.os.fstat
     before = len(os.listdir("/proc/self/fd"))
-    calls = 0
+    output_fd = None
+
+    def track_output_open(path, flags, *args, **kwargs):
+        nonlocal output_fd
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if flags == video_module._OUTPUT_FLAGS and output_fd is None:
+            output_fd = descriptor
+        return descriptor
 
     def fail_output_fstat(descriptor):
-        nonlocal calls
-        calls += 1
-        if calls == 3:
+        if descriptor == output_fd:
             raise OSError("anonymous output fstat failed")
         return real_fstat(descriptor)
 
+    monkeypatch.setattr(video_module.os, "open", track_output_open)
     monkeypatch.setattr(video_module.os, "fstat", fail_output_fstat)
 
     with pytest.raises(RuntimeError, match="unsafe video path"):
         recorder.start(deadline=time.monotonic() + 1)
 
     assert len(os.listdir("/proc/self/fd")) == before
+    assert not recorder.partial_path.exists()
+
+
+def test_prepare_output_failure_after_anonymous_log_open_closes_all_fds(
+    tmp_path, monkeypatch
+):
+    recorder = VideoStreamRecorder(
+        tmp_path,
+        run_id=RUN_ID,
+        stream="onboard",
+        command_runner=FakeCommandRunner(),
+    )
+    real_open = video_module.os.open
+    real_fstat = video_module.os.fstat
+    before = len(os.listdir("/proc/self/fd"))
+    log_fd = None
+
+    def track_log_open(path, flags, *args, **kwargs):
+        nonlocal log_fd
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if flags == video_module._LOG_OUTPUT_FLAGS:
+            log_fd = descriptor
+        return descriptor
+
+    def fail_log_fstat(descriptor):
+        if descriptor == log_fd:
+            raise OSError("anonymous log fstat failed")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(video_module.os, "open", track_log_open)
+    monkeypatch.setattr(video_module.os, "fstat", fail_log_fstat)
+
+    with pytest.raises(RuntimeError, match="unsafe video path"):
+        recorder.start(deadline=time.monotonic() + 1)
+
+    assert len(os.listdir("/proc/self/fd")) == before
+    assert not recorder.log_path.exists()
     assert not recorder.partial_path.exists()
 
 
@@ -1150,6 +1289,7 @@ def test_unconfirmed_writer_gets_stable_snapshot_before_shared_deadline(tmp_path
             self.wait_timeouts.append(timeout)
             assert release_cleanup.wait(5)
             os.close(captured["writer_fd"])
+            os.close(captured["log_writer_fd"])
             self.returncode = -signal.SIGKILL
             cleanup_finished.set()
             return self.returncode
@@ -1161,7 +1301,12 @@ def test_unconfirmed_writer_gets_stable_snapshot_before_shared_deadline(tmp_path
     def factory(command, **kwargs):
         output_fd = int(command[-1].rsplit("/", 1)[1])
         captured["writer_fd"] = os.dup(output_fd)
+        captured["log_writer_fd"] = os.dup(kwargs["stderr"].fileno())
+        assert os.write(captured["log_writer_fd"], b"initial log") == 11
         captured["source_identity"] = os.fstat(output_fd)
+        captured["log_source_identity"] = os.fstat(
+            captured["log_writer_fd"]
+        )
         captured["log"] = kwargs["stderr"]
         return process
 
@@ -1177,14 +1322,28 @@ def test_unconfirmed_writer_gets_stable_snapshot_before_shared_deadline(tmp_path
     assert sum(process.wait_timeouts[:3]) < 9.0
     assert clock.now < 9.0
     assert recorder.partial_path.read_bytes() == b"partial output"
+    assert recorder.log_path.read_bytes() == b"initial log"
     partial_before = recorder.partial_path.stat()
+    log_before = recorder.log_path.stat()
     assert partial_before.st_mode & 0o777 == 0o444
+    assert log_before.st_mode & 0o777 == 0o444
     assert (partial_before.st_dev, partial_before.st_ino) != (
         captured["source_identity"].st_dev,
         captured["source_identity"].st_ino,
     )
+    assert (log_before.st_dev, log_before.st_ino) != (
+        captured["log_source_identity"].st_dev,
+        captured["log_source_identity"].st_ino,
+    )
     stable_before = tuple(
         getattr(partial_before, field)
+        for field in (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+            "st_mtime_ns", "st_ctime_ns",
+        )
+    )
+    stable_log_before = tuple(
+        getattr(log_before, field)
         for field in (
             "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
             "st_mtime_ns", "st_ctime_ns",
@@ -1195,7 +1354,9 @@ def test_unconfirmed_writer_gets_stable_snapshot_before_shared_deadline(tmp_path
     assert captured["log"].closed is True
 
     os.pwrite(captured["writer_fd"], b"late mutation!", 0)
+    assert os.write(captured["log_writer_fd"], b"late-log") == 8
     assert recorder.partial_path.read_bytes() == b"partial output"
+    assert recorder.log_path.read_bytes() == b"initial log"
     assert tuple(
         getattr(recorder.partial_path.stat(), field)
         for field in (
@@ -1203,10 +1364,25 @@ def test_unconfirmed_writer_gets_stable_snapshot_before_shared_deadline(tmp_path
             "st_mtime_ns", "st_ctime_ns",
         )
     ) == stable_before
+    assert tuple(
+        getattr(recorder.log_path.stat(), field)
+        for field in (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+            "st_mtime_ns", "st_ctime_ns",
+        )
+    ) == stable_log_before
+    assert tuple(
+        getattr(recorder.log_path.stat(), field)
+        for field in (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+            "st_mtime_ns", "st_ctime_ns",
+        )
+    ) == stable_log_before
 
     release_cleanup.set()
     assert cleanup_finished.wait(5)
     assert recorder.partial_path.read_bytes() == b"partial output"
+    assert recorder.log_path.read_bytes() == b"initial log"
     assert tuple(
         getattr(recorder.partial_path.stat(), field)
         for field in (
@@ -1217,6 +1393,9 @@ def test_unconfirmed_writer_gets_stable_snapshot_before_shared_deadline(tmp_path
     with pytest.raises(OSError) as closed_writer:
         os.fstat(captured["writer_fd"])
     assert closed_writer.value.errno == errno.EBADF
+    with pytest.raises(OSError) as closed_log_writer:
+        os.fstat(captured["log_writer_fd"])
+    assert closed_log_writer.value.errno == errno.EBADF
 
 
 def test_recovery_copy_cutoff_still_links_an_empty_snapshot(tmp_path, monkeypatch):
@@ -1605,6 +1784,12 @@ def test_unexpected_validator_exception_returns_failure_and_closes_retained_fds(
     assert recorder._output_fd is None and recorder._readonly_output_fd is None
     assert recorder._video_fd is None and recorder._root_fd is None
     assert recorder.partial_path.read_bytes() == b"partial"
+    assert recorder.log_path.read_bytes() == b""
+    assert recorder.log_path.stat().st_mode & 0o777 == 0o444
+    assert not any(
+        item.event == "log_recovery_failed"
+        for item in recorder.diagnostics
+    )
 
 
 def test_diagnostic_sink_exception_cannot_escape_finalization(tmp_path):
@@ -1782,7 +1967,8 @@ def test_real_unconfirmed_child_cannot_mutate_published_recovery_snapshot(tmp_pa
                 sys.executable,
                 "-c",
                 "import os,time; time.sleep(0.8); "
-                f"os.pwrite({output_fd}, b'after!', 0); time.sleep(30)",
+                f"os.pwrite({output_fd}, b'after!', 0); "
+                "os.write(2, b'late-log'); time.sleep(30)",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
@@ -1791,6 +1977,10 @@ def test_real_unconfirmed_child_cannot_mutate_published_recovery_snapshot(tmp_pa
         )
         captured["child"] = child
         captured["source_identity"] = os.fstat(output_fd)
+        assert os.write(kwargs["stderr"].fileno(), b"initial-log") == 11
+        captured["log_source_identity"] = os.fstat(
+            kwargs["stderr"].fileno()
+        )
         captured["output_fd"] = output_fd
         captured["log"] = kwargs["stderr"]
         return DeferredKillBoundary(child)
@@ -1806,7 +1996,9 @@ def test_real_unconfirmed_child_cannot_mutate_published_recovery_snapshot(tmp_pa
         assert time.monotonic() - started < 1.05
         assert result.exited is False and result.published is False
         assert recorder.partial_path.read_bytes() == b"before"
+        assert recorder.log_path.read_bytes() == b"initial-log"
         partial_before = recorder.partial_path.stat()
+        log_before = recorder.log_path.stat()
         stable_before = tuple(
             getattr(partial_before, field)
             for field in (
@@ -1815,9 +2007,14 @@ def test_real_unconfirmed_child_cannot_mutate_published_recovery_snapshot(tmp_pa
             )
         )
         assert partial_before.st_mode & 0o777 == 0o444
+        assert log_before.st_mode & 0o777 == 0o444
         assert (partial_before.st_dev, partial_before.st_ino) != (
             captured["source_identity"].st_dev,
             captured["source_identity"].st_ino,
+        )
+        assert (log_before.st_dev, log_before.st_ino) != (
+            captured["log_source_identity"].st_dev,
+            captured["log_source_identity"].st_ino,
         )
         assert not recorder.final_path.exists()
         assert captured["log"].closed is True
@@ -1827,6 +2024,7 @@ def test_real_unconfirmed_child_cannot_mutate_published_recovery_snapshot(tmp_pa
 
         time.sleep(0.5)
         assert recorder.partial_path.read_bytes() == b"before"
+        assert recorder.log_path.read_bytes() == b"initial-log"
         partial_after_write = recorder.partial_path.stat()
         assert tuple(
             getattr(partial_after_write, field)
@@ -1835,11 +2033,33 @@ def test_real_unconfirmed_child_cannot_mutate_published_recovery_snapshot(tmp_pa
                 "st_mtime_ns", "st_ctime_ns",
             )
         ) == stable_before
+        stable_log_before = tuple(
+            getattr(log_before, field)
+            for field in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+                "st_mtime_ns", "st_ctime_ns",
+            )
+        )
+        assert tuple(
+            getattr(recorder.log_path.stat(), field)
+            for field in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+                "st_mtime_ns", "st_ctime_ns",
+            )
+        ) == stable_log_before
 
         release_cleanup.set()
         assert cleanup_finished.wait(5)
         assert captured["child"].poll() is not None
         assert recorder.partial_path.read_bytes() == b"before"
+        assert recorder.log_path.read_bytes() == b"initial-log"
+        assert tuple(
+            getattr(recorder.log_path.stat(), field)
+            for field in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+                "st_mtime_ns", "st_ctime_ns",
+            )
+        ) == stable_log_before
     finally:
         release_cleanup.set()
         child = captured.get("child")

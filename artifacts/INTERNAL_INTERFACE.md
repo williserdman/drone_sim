@@ -13,15 +13,17 @@ Finalizing the same `run_id` repeatedly produces the same artifact inventory and
 Orchestration exclusively allocates and owns each run root. The artifacts
 container is trusted: no untrusted same-UID code or hostile co-tenant can open,
 rename, relink, or mutate entries inside that root. The host does not move the
-run root or its `video` directory while recorder finalization is in progress.
+run root or its owned `video`, `logs`, or `logs/docker` directories while
+recorder finalization is in progress.
 
 Mode `0444` and read-only retained descriptors enforce the recorder lifecycle;
 they are not Linux immutability guarantees against a hostile same-UID process
 or a privileged co-tenant. Owned writers must quiesce before the manifest is
 committed. If an encoder cannot be confirmed stopped within its primary
-budget, the adapter publishes an independent, read-only recovery snapshot and
-asynchronously kills and reaps the child that still owns only the original
-anonymous inode. That child cannot mutate the named snapshot.
+budget, the adapter publishes independent, read-only video and FFmpeg-log
+recovery snapshots under the same absolute deadline and asynchronously kills
+and reaps the child that still owns only the original anonymous inodes. That
+child cannot mutate either named snapshot.
 
 ## Finalization barrier
 
@@ -35,7 +37,8 @@ measured by a monotonic wall clock; an adapter cannot restart it. This
 quiescence barrier prevents required artifacts from changing during host
 validation and manifest commit. Recorder adapters reserve recovery time inside
 that same deadline, so a timeout or invalid/empty output has a named diagnostic
-partial before the adapter returns to the barrier.
+video partial and FFmpeg diagnostic log before the adapter returns to the
+barrier.
 
 After `.control/terminal-committed.json`, artifacts publishes the final
 `/simulation/artifact_status` with `manifest_path` set to `manifest.json`, then

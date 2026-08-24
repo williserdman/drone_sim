@@ -46,13 +46,11 @@ _OUTPUT_FLAGS = (
     | os.O_TMPFILE
     | getattr(os, "O_CLOEXEC", 0)
 )
-_LOG_FLAGS = (
-    os.O_WRONLY
+_LOG_OUTPUT_FLAGS = (
+    os.O_RDWR
     | os.O_APPEND
-    | os.O_CREAT
+    | os.O_TMPFILE
     | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_NONBLOCK", 0)
 )
 
 
@@ -579,10 +577,16 @@ class VideoStreamRecorder:
         self._log_stream: Any | None = None
         self._root_fd: int | None = None
         self._video_fd: int | None = None
+        self._logs_fd: int | None = None
+        self._docker_logs_fd: int | None = None
         self._output_fd: int | None = None
         self._readonly_output_fd: int | None = None
+        self._log_fd: int | None = None
+        self._readonly_log_fd: int | None = None
         self._root_identity: os.stat_result | None = None
         self._video_identity: os.stat_result | None = None
+        self._logs_identity: os.stat_result | None = None
+        self._docker_logs_identity: os.stat_result | None = None
         self._pending_image: Any | None = None
         self._pending_metadata: Any | None = None
         self._frame_count = 0
@@ -695,7 +699,10 @@ class VideoStreamRecorder:
     def _prepare_output(self) -> None:
         root_fd: int | None = None
         video_fd: int | None = None
+        logs_fd: int | None = None
+        docker_logs_fd: int | None = None
         output_fd: int | None = None
+        log_fd: int | None = None
         committed = False
         try:
             root_before = os.stat(self.run_directory, follow_symlinks=False)
@@ -706,6 +713,10 @@ class VideoStreamRecorder:
             if not _same_entry(root_before, root_opened):
                 raise _unsafe_path()
             video_fd, video_identity = _open_or_create_directory(root_fd, "video")
+            logs_fd, logs_identity = _open_or_create_directory(root_fd, "logs")
+            docker_logs_fd, docker_logs_identity = _open_or_create_directory(
+                logs_fd, "docker"
+            )
             for output_name in (
                 f"{self.stream}.mp4",
                 f"{self.stream}.mp4.partial",
@@ -716,6 +727,19 @@ class VideoStreamRecorder:
                     continue
                 raise FileExistsError(
                     f"refusing existing video output: {output_name}"
+                )
+            log_name = f"ffmpeg-{self.stream}.log.partial"
+            try:
+                os.stat(
+                    log_name,
+                    dir_fd=docker_logs_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(
+                    f"refusing existing FFmpeg log: {log_name}"
                 )
             try:
                 output_fd = os.open(".", _OUTPUT_FLAGS, 0o600, dir_fd=video_fd)
@@ -730,7 +754,23 @@ class VideoStreamRecorder:
                         "video output filesystem does not support O_TMPFILE"
                     ) from error
                 raise
+            try:
+                log_fd = os.open(
+                    ".", _LOG_OUTPUT_FLAGS, 0o600, dir_fd=docker_logs_fd
+                )
+            except OSError as error:
+                if error.errno in {
+                    errno.EINVAL,
+                    errno.EISDIR,
+                    errno.ENOTSUP,
+                    errno.EOPNOTSUPP,
+                }:
+                    raise RuntimeError(
+                        "FFmpeg log filesystem does not support O_TMPFILE"
+                    ) from error
+                raise
             output_identity = os.fstat(output_fd)
+            log_identity = os.fstat(log_fd)
             if (
                 not stat.S_ISREG(output_identity.st_mode)
                 or output_identity.st_nlink != 0
@@ -738,8 +778,19 @@ class VideoStreamRecorder:
                 != os.O_RDWR
             ):
                 raise _unsafe_path()
-            self._root_fd, self._video_fd, self._output_fd = root_fd, video_fd, output_fd
+            if (
+                not stat.S_ISREG(log_identity.st_mode)
+                or log_identity.st_nlink != 0
+                or fcntl.fcntl(log_fd, fcntl.F_GETFL) & os.O_ACCMODE
+                != os.O_RDWR
+            ):
+                raise RuntimeError("unsafe recorder log path")
+            self._root_fd, self._video_fd = root_fd, video_fd
+            self._logs_fd, self._docker_logs_fd = logs_fd, docker_logs_fd
+            self._output_fd, self._log_fd = output_fd, log_fd
             self._root_identity, self._video_identity = root_opened, video_identity
+            self._logs_identity = logs_identity
+            self._docker_logs_identity = docker_logs_identity
             committed = True
         except (FileExistsError, RuntimeError):
             raise
@@ -747,7 +798,14 @@ class VideoStreamRecorder:
             raise _unsafe_path() from error
         finally:
             if not committed:
-                for descriptor in (output_fd, video_fd, root_fd):
+                for descriptor in (
+                    log_fd,
+                    output_fd,
+                    docker_logs_fd,
+                    logs_fd,
+                    video_fd,
+                    root_fd,
+                ):
                     if descriptor is not None:
                         try:
                             os.close(descriptor)
@@ -755,55 +813,60 @@ class VideoStreamRecorder:
                             pass
 
     def _paths_safe(self) -> bool:
-        if None in (self._root_fd, self._video_fd, self._root_identity, self._video_identity):
+        if None in (
+            self._root_fd,
+            self._video_fd,
+            self._logs_fd,
+            self._docker_logs_fd,
+            self._root_identity,
+            self._video_identity,
+            self._logs_identity,
+            self._docker_logs_identity,
+        ):
             return False
         try:
             root_now = os.stat(self.run_directory, follow_symlinks=False)
             video_now = os.stat("video", dir_fd=self._root_fd, follow_symlinks=False)
+            logs_now = os.stat("logs", dir_fd=self._root_fd, follow_symlinks=False)
+            docker_logs_now = os.stat(
+                "docker", dir_fd=self._logs_fd, follow_symlinks=False
+            )
             return (
                 _same_entry(root_now, self._root_identity)
                 and _same_entry(os.fstat(self._root_fd), self._root_identity)
                 and _same_entry(video_now, self._video_identity)
                 and _same_entry(os.fstat(self._video_fd), self._video_identity)
+                and _same_entry(logs_now, self._logs_identity)
+                and _same_entry(os.fstat(self._logs_fd), self._logs_identity)
+                and _same_entry(docker_logs_now, self._docker_logs_identity)
+                and _same_entry(
+                    os.fstat(self._docker_logs_fd),
+                    self._docker_logs_identity,
+                )
             )
         except OSError:
             return False
 
     def _open_log_for_append(self) -> Any:
-        if self._root_fd is None:
+        if self._log_fd is None:
             raise RuntimeError("unsafe recorder log path")
-        held: list[int] = []
-        log_fd: int | None = None
+        duplicate: int | None = None
         try:
-            parent_fd = self._root_fd
-            for name in ("logs", "docker"):
-                try:
-                    descriptor, _identity = _open_or_create_directory(parent_fd, name)
-                except RuntimeError as error:
-                    raise RuntimeError("unsafe recorder log path") from error
-                held.append(descriptor)
-                parent_fd = descriptor
-            name = f"ffmpeg-{self.stream}.log.partial"
-            try:
-                log_fd = os.open(name, _LOG_FLAGS, 0o644, dir_fd=parent_fd)
-                opened = os.fstat(log_fd)
-                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            except OSError as error:
-                raise RuntimeError("unsafe recorder log path") from error
+            opened = os.fstat(self._log_fd)
             if (
                 not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or not _same_entry(opened, current)
+                or opened.st_nlink != 0
+                or fcntl.fcntl(self._log_fd, fcntl.F_GETFL) & os.O_ACCMODE
+                != os.O_RDWR
             ):
                 raise RuntimeError("unsafe recorder log path")
-            stream = os.fdopen(log_fd, "ab", buffering=0)
-            log_fd = None
+            duplicate = os.dup(self._log_fd)
+            stream = os.fdopen(duplicate, "ab", buffering=0)
+            duplicate = None
             return stream
         finally:
-            if log_fd is not None:
-                os.close(log_fd)
-            for descriptor in reversed(held):
-                os.close(descriptor)
+            if duplicate is not None:
+                os.close(duplicate)
 
     def start(self, *, deadline: float) -> None:
         if self._process is not None:
@@ -1110,12 +1173,15 @@ class VideoStreamRecorder:
                 if boundary_failure is not None:
                     detail = f"{detail}; {boundary_failure}"
                 self._record_failure("ffmpeg_timeout", detail)
-                self._snapshot_recovery_output(
+                self._snapshot_recovery_artifacts(
                     recovery_copy_deadline, deadline
                 )
                 self._start_async_process_cleanup(process)
                 return VideoFinalization(False, None, tuple(signals), bool(signals), False, detail)
+            self._close_log_stream()
             self._seal_output_readonly(primary_deadline)
+            self._seal_log_readonly(primary_deadline)
+            self._publish_readonly_log()
             if returncode != 0:
                 detail = f"FFmpeg exited with return code {returncode}"
                 self._record_failure("ffmpeg_failed", detail)
@@ -1128,7 +1194,16 @@ class VideoStreamRecorder:
 
             assert self._readonly_output_fd is not None
             assert self._root_fd is not None and self._video_fd is not None
-            path_watch_fd = _watch_descriptors((self._root_fd, self._video_fd))
+            assert self._logs_fd is not None
+            assert self._docker_logs_fd is not None
+            path_watch_fd = _watch_descriptors(
+                (
+                    self._root_fd,
+                    self._video_fd,
+                    self._logs_fd,
+                    self._docker_logs_fd,
+                )
+            )
             validation = self._validator.validate(
                 self.run_directory,
                 f"video/{self.stream}.mp4",
@@ -1170,14 +1245,23 @@ class VideoStreamRecorder:
         except Exception as error:
             detail = f"video finalization failed: {type(error).__name__}: {error}"
             self._record_failure("video_finalize_failed", detail)
-            if not self._preserve_recovery_output(deadline):
-                self._snapshot_recovery_output(
-                    recovery_copy_deadline, deadline
-                )
             try:
                 returncode = process.poll()
             except Exception:
                 returncode = None
+            if returncode is None:
+                self._snapshot_recovery_artifacts(
+                    recovery_copy_deadline, deadline
+                )
+                self._start_async_process_cleanup(process)
+            else:
+                self._close_log_stream()
+                output_preserved = self._preserve_recovery_output(deadline)
+                log_preserved = self._preserve_confirmed_log(deadline)
+                if not output_preserved or not log_preserved:
+                    self._snapshot_recovery_artifacts(
+                        recovery_copy_deadline, deadline
+                    )
             return VideoFinalization(
                 returncode is not None,
                 returncode,
@@ -1357,6 +1441,26 @@ class VideoStreamRecorder:
                 except OSError:
                     pass
 
+    def _seal_log_readonly(self, deadline: float) -> None:
+        if self._log_fd is None:
+            raise RuntimeError("FFmpeg log is not available")
+        writable_fd = self._log_fd
+        readonly_fd: int | None = None
+        try:
+            readonly_fd = self._reopen_anonymous_readonly(
+                writable_fd, deadline
+            )
+            os.close(writable_fd)
+            self._log_fd = None
+            self._readonly_log_fd = readonly_fd
+            readonly_fd = None
+        finally:
+            if readonly_fd is not None:
+                try:
+                    os.close(readonly_fd)
+                except OSError:
+                    pass
+
     def _reopen_anonymous_readonly(
         self, writable_fd: int, deadline: float
     ) -> int:
@@ -1404,11 +1508,22 @@ class VideoStreamRecorder:
     def _publish_readonly_output(self, name: str) -> None:
         if self._readonly_output_fd is None or self._video_fd is None:
             raise RuntimeError("read-only video output is not available")
-        self._publish_readonly_descriptor(self._readonly_output_fd, name)
+        self._publish_readonly_descriptor(
+            self._readonly_output_fd, self._video_fd, name
+        )
 
-    def _publish_readonly_descriptor(self, descriptor: int, name: str) -> None:
-        if self._video_fd is None:
-            raise RuntimeError("video directory is not available")
+    def _publish_readonly_log(self) -> None:
+        if self._readonly_log_fd is None or self._docker_logs_fd is None:
+            raise RuntimeError("read-only FFmpeg log is not available")
+        self._publish_readonly_descriptor(
+            self._readonly_log_fd,
+            self._docker_logs_fd,
+            f"ffmpeg-{self.stream}.log.partial",
+        )
+
+    def _publish_readonly_descriptor(
+        self, descriptor: int, parent_fd: int, name: str
+    ) -> None:
         retained = os.fstat(descriptor)
         if (
             not self._paths_safe()
@@ -1419,7 +1534,7 @@ class VideoStreamRecorder:
             != os.O_RDONLY
         ):
             raise RuntimeError("read-only video output is unsafe")
-        _link_descriptor_noreplace(descriptor, self._video_fd, name)
+        _link_descriptor_noreplace(descriptor, parent_fd, name)
 
     def _preserve_recovery_output(self, deadline: float) -> bool:
         if self._readonly_output_fd is None:
@@ -1436,18 +1551,92 @@ class VideoStreamRecorder:
             )
             return False
 
-    def _snapshot_recovery_output(
+    def _preserve_confirmed_log(self, deadline: float) -> bool:
+        try:
+            if self._readonly_log_fd is None:
+                if self._log_fd is None:
+                    return False
+                self._seal_log_readonly(deadline)
+            if self._monotonic() >= deadline:
+                return False
+            if self._published_log_matches_descriptor():
+                return True
+            self._publish_readonly_log()
+            return True
+        except FileExistsError as error:
+            if self._published_log_matches_descriptor():
+                return True
+            self._record_failure(
+                "log_recovery_failed",
+                "FFmpeg log preservation refused a conflicting named entry: "
+                f"{error}",
+            )
+            return False
+        except Exception as error:
+            self._record_failure(
+                "log_recovery_failed",
+                "FFmpeg log preservation failed: "
+                f"{type(error).__name__}: {error}",
+            )
+            return False
+
+    def _published_log_matches_descriptor(self) -> bool:
+        if self._readonly_log_fd is None or self._docker_logs_fd is None:
+            return False
+        try:
+            retained = os.fstat(self._readonly_log_fd)
+            named = os.stat(
+                f"ffmpeg-{self.stream}.log.partial",
+                dir_fd=self._docker_logs_fd,
+                follow_symlinks=False,
+            )
+            return _same_entry(retained, named)
+        except OSError:
+            return False
+
+    def _snapshot_recovery_artifacts(
         self, copy_deadline: float, deadline: float
     ) -> bool:
-        source_fd = self._output_fd
-        if source_fd is None or self._video_fd is None:
+        self._close_log_stream()
+        started = self._monotonic()
+        video_copy_deadline = started + max(
+            0.0, copy_deadline - started
+        ) / 2
+        video_preserved = self._snapshot_descriptor(
+            self._output_fd,
+            self._video_fd,
+            f"{self.stream}.mp4.partial",
+            video_copy_deadline,
+            deadline,
+            "video",
+        ) if self._output_fd is not None and self._video_fd is not None else False
+        log_preserved = self._snapshot_descriptor(
+            self._log_fd,
+            self._docker_logs_fd,
+            f"ffmpeg-{self.stream}.log.partial",
+            copy_deadline,
+            deadline,
+            "log",
+        ) if self._log_fd is not None and self._docker_logs_fd is not None else False
+        return video_preserved and log_preserved
+
+    def _snapshot_descriptor(
+        self,
+        source_fd: int,
+        parent_fd: int,
+        name: str,
+        copy_deadline: float,
+        deadline: float,
+        diagnostic_prefix: str,
+    ) -> bool:
+        if source_fd is None:
             return False
         snapshot_fd: int | None = None
         readonly_fd: int | None = None
         try:
             self._require_recovery_time(deadline, "video recovery snapshot")
             snapshot_fd = os.open(
-                ".", _OUTPUT_FLAGS, 0o600, dir_fd=self._video_fd
+                ".", _OUTPUT_FLAGS, 0o600, dir_fd=parent_fd
             )
             offset = 0
             copying = True
@@ -1480,8 +1669,8 @@ class VideoStreamRecorder:
                         view = view[count:]
             except Exception as error:
                 self._record_failure(
-                    "video_recovery_copy_failed",
-                    "video recovery copy stopped: "
+                    f"{diagnostic_prefix}_recovery_copy_failed",
+                    f"{diagnostic_prefix} recovery copy stopped: "
                     f"{type(error).__name__}: {error}",
                 )
             readonly_fd = self._reopen_anonymous_readonly(
@@ -1493,13 +1682,13 @@ class VideoStreamRecorder:
                 deadline, "video recovery publication"
             )
             self._publish_readonly_descriptor(
-                readonly_fd, f"{self.stream}.mp4.partial"
+                readonly_fd, parent_fd, name
             )
             return True
         except Exception as error:
             self._record_failure(
-                "video_recovery_failed",
-                "video recovery snapshot failed: "
+                f"{diagnostic_prefix}_recovery_failed",
+                f"{diagnostic_prefix} recovery snapshot failed: "
                 f"{type(error).__name__}: {error}",
             )
             return False
@@ -1511,16 +1700,23 @@ class VideoStreamRecorder:
                     except OSError:
                         pass
 
-    def _close_resources(self) -> None:
+    def _close_log_stream(self) -> None:
         if self._log_stream is not None:
             try:
                 self._log_stream.close()
             except Exception:
                 pass
             self._log_stream = None
+
+    def _close_resources(self) -> None:
+        self._close_log_stream()
         for name in (
+            "_readonly_log_fd",
+            "_log_fd",
             "_readonly_output_fd",
             "_output_fd",
+            "_docker_logs_fd",
+            "_logs_fd",
             "_video_fd",
             "_root_fd",
         ):
