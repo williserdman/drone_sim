@@ -893,6 +893,67 @@ def test_raw_creation_failure_reports_cleanup_unlink_leftover_before_tracking(
     assert (tmp_path / expected).is_file()
 
 
+@pytest.mark.parametrize(
+    "control_flow",
+    [KeyboardInterrupt(), SystemExit(130)],
+    ids=("keyboard-interrupt", "system-exit"),
+)
+def test_candidate_creation_cleanup_preserves_control_flow_baseexception(
+    tmp_path, monkeypatch, control_flow
+):
+    """Cleanup must not convert cancellation or process exit into a capture error."""
+    service = OWNERSHIP[0][0]
+    partial_name = f"{service}.log.partial"
+    real_open = os.open
+    real_fsync = os.fsync
+    real_unlink = os.unlink
+    target_fd = None
+    injected = False
+    cleanup_unlinked = False
+    cleanup_fsynced = False
+
+    def record_target(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal target_fd
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == partial_name:
+            target_fd = fd
+        return fd
+
+    def interrupt_target_fsync(fd):
+        nonlocal injected, cleanup_fsynced
+        if fd == target_fd and not injected:
+            injected = True
+            raise control_flow
+        result = real_fsync(fd)
+        if cleanup_unlinked:
+            cleanup_fsynced = True
+        return result
+
+    def mark_cleanup_unlink(path, **kwargs):
+        nonlocal cleanup_unlinked
+        result = real_unlink(path, **kwargs)
+        if path == partial_name:
+            cleanup_unlinked = True
+        return result
+
+    monkeypatch.setattr(os, "open", record_target)
+    monkeypatch.setattr(os, "fsync", interrupt_target_fsync)
+    monkeypatch.setattr(os, "unlink", mark_cleanup_unlink)
+    capture, runner = _capture(tmp_path)
+
+    with pytest.raises(type(control_flow)) as raised:
+        capture.capture()
+
+    assert raised.value is control_flow
+    assert len(runner.calls) == 7
+    assert cleanup_unlinked is True
+    assert cleanup_fsynced is True
+    assert not (tmp_path / f"logs/docker/{partial_name}").exists()
+    assert target_fd is not None
+    with pytest.raises(OSError):
+        os.fstat(target_fd)
+
+
 def test_structured_creation_cleanup_directory_fsync_failure_is_reported(
     tmp_path, monkeypatch
 ):

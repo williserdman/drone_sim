@@ -3,7 +3,7 @@
 ## Scope and baseline
 
 - Baseline: `637b18a649fc9d24cf5fe1ac65ad32d35b03f7a1`
-- Verification audit: `2026-08-24T01:24:34Z`
+- Verification audit: `2026-08-24T01:35:52Z`
 - Scope: host-side, per-service Compose log capture; exact raw byte evidence;
   strict common-event classification; an explicit host-orchestration merge
   seam; seven owned JSONL streams; and durable, no-clobber publication and
@@ -76,6 +76,14 @@ successful partial unlink produced a false missing-file ownership diagnostic.
 The matching focused GREEN run reported `3 passed, 73 deselected`; the final
 Docker-log surface is 76 cases.
 
+Review fix round 3 persisted two cancellation regressions. The focused RED run
+reported `2 failed, 76 deselected`: both `KeyboardInterrupt` and
+`SystemExit(130)` completed factory cleanup but were then converted into
+`DockerLogCaptureError`. The minimal correction retains the `BaseException`
+cleanup boundary, then re-raises non-`Exception` control flow unchanged and
+wraps only ordinary failures. The focused GREEN run reported
+`2 passed, 76 deselected`; the final Docker-log surface is 78 cases.
+
 ## Implementation and files
 
 - `artifacts/src/artifacts/_adapters/docker_logs.py`
@@ -120,9 +128,12 @@ Docker-log surface is 76 cases.
     directory close failures amend the final immutable result, downgrade
     success, and report exact still-named `.partial` paths; candidate factory
     failures carry these facts across the pre-tracking ownership boundary as
-    well, while an already-absent owned partial is treated as clean.
+    well, while an already-absent owned partial is treated as clean;
+  - `KeyboardInterrupt` and `SystemExit` during candidate creation still run
+    owned cleanup and durability steps but propagate unchanged for Task 6
+    cancellation/exit handling rather than becoming capture failures.
 - `artifacts/tests/test_docker_logs.py`
-  - 76 cases covering exact commands/order, raw byte preservation, canonical
+  - 78 cases covering exact commands/order, raw byte preservation, canonical
     routing, all malformed attempted-event classes, explicit ownership and
     seven-module coverage, deep/oversized JSON failures, runner exception byte
     normalization, strict timestamps, descriptor-safe host merge and recovery,
@@ -186,13 +197,13 @@ repository verification exercise the complete implementation.
 
 ```text
 uv run pytest artifacts/tests/test_docker_logs.py artifacts/tests/test_structured_log.py -v
-92 passed
+94 passed
 
 uv run pytest artifacts/tests -v
-311 passed, 10 skipped
+313 passed, 10 skipped
 
 uv run pytest -v
-365 passed, 10 skipped
+367 passed, 10 skipped
 
 uv run python -m compileall -q artifacts/src artifacts/tests
 exit 0

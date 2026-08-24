@@ -305,6 +305,8 @@ class _Candidate:
                 leftovers = (partial_path,)
             else:
                 leftovers = (partial_path,)
+            if not isinstance(exc, Exception):
+                raise
             raise _CandidateCreationError(exc, diagnostics, leftovers) from exc
 
     def publish(self) -> None:
