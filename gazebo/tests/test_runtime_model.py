@@ -1,0 +1,290 @@
+from __future__ import annotations
+
+import ast
+from dataclasses import FrozenInstanceError
+import math
+from pathlib import Path
+
+import pytest
+
+from drone_sim_gazebo.ros_adapter import AdapterSummary
+from drone_sim_gazebo.runtime import (
+    AdapterCompleted,
+    ArtifactsReady,
+    BeginFinalization,
+    ChildExited,
+    EndpointTimeout,
+    FinalizationRequested,
+    GazeboReady,
+    PublishGazeboReady,
+    RequestSteps,
+    RunStateEvent,
+    RuntimeModel,
+    RuntimeModelError,
+    ServerStopped,
+    SetPaused,
+    StopServer,
+    WriteQuiescence,
+    WriteRuntimeFailure,
+    WriteSourceFinished,
+)
+from drone_sim_gazebo.server import NativeArtifactSummary
+
+
+RUN_ID = "00000000-0000-4000-8000-000000000505"
+STALE_RUN_ID = "00000000-0000-4000-8000-000000000999"
+INTERVAL_NS = 50_000_000
+
+
+def _summary(frames: int = 2, **changes: object) -> AdapterSummary:
+    values: dict[str, object] = {
+        "onboard_frames": frames,
+        "observer_frames": frames,
+        "paired_frames": frames,
+        "ground_truth_samples": frames,
+        "first_sim_timestamp_ns": INTERVAL_NS if frames else None,
+        "last_sim_timestamp_ns": frames * INTERVAL_NS if frames else None,
+    }
+    values.update(changes)
+    return AdapterSummary(**values)  # type: ignore[arg-type]
+
+
+def _native_summary(tmp_path: Path, *, returncode: int = 0, graceful: bool = True):
+    run = tmp_path / RUN_ID
+    state = run / "gazebo/state/state.tlog"
+    log = run / "gazebo/server.log"
+    state.parent.mkdir(parents=True)
+    log.write_bytes(b"log")
+    state.write_bytes(b"state")
+    return NativeArtifactSummary(log, state, returncode, graceful)
+
+
+def _running_model(*, expected_frames: int = 2) -> RuntimeModel:
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=expected_frames)
+    assert model.accept(ArtifactsReady(RUN_ID)) == ()
+    assert model.accept(GazeboReady(RUN_ID)) == (PublishGazeboReady(),)
+    assert model.accept(RunStateEvent(RUN_ID, "READY")) == (RequestSteps(1),)
+    assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == (SetPaused(False),)
+    return model
+
+
+@pytest.mark.parametrize("first", [ArtifactsReady, GazeboReady])
+def test_runtime_releases_one_step_only_after_both_readiness_facts(first):
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=40)
+    second = GazeboReady if first is ArtifactsReady else ArtifactsReady
+
+    assert model.accept(first(RUN_ID)) == ()
+    assert model.accept(first(RUN_ID)) == ()
+    assert model.accept(second(RUN_ID)) == (PublishGazeboReady(),)
+    assert model.accept(second(RUN_ID)) == ()
+    assert model.accept(RunStateEvent(RUN_ID, "READY")) == (RequestSteps(1),)
+    assert model.accept(RunStateEvent(RUN_ID, "READY")) == ()
+    assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == (SetPaused(False),)
+    assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == ()
+
+
+def test_stale_run_facts_cannot_advance_readiness_completion_or_quiescence(tmp_path: Path):
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+    stale_native = _native_summary(tmp_path)
+
+    assert model.accept(ArtifactsReady(STALE_RUN_ID)) == ()
+    assert model.accept(GazeboReady(STALE_RUN_ID)) == ()
+    assert model.accept(RunStateEvent(STALE_RUN_ID, "READY")) == ()
+    assert model.accept(AdapterCompleted(STALE_RUN_ID, _summary())) == ()
+    assert model.accept(ServerStopped(STALE_RUN_ID, stale_native)) == ()
+    assert model.accept(ArtifactsReady(RUN_ID)) == ()
+    assert model.accept(GazeboReady(RUN_ID)) == (PublishGazeboReady(),)
+
+
+def test_premature_running_fails_once_and_never_releases_progress_later():
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+
+    actions = model.accept(RunStateEvent(RUN_ID, "RUNNING"))
+
+    assert actions == (
+        WriteRuntimeFailure(
+            "RUNNING received before the controlled readiness step",
+            ("gazebo/server.log.partial",),
+        ),
+        BeginFinalization(
+            "FAILED",
+            "RUNNING received before the controlled readiness step",
+        ),
+    )
+    assert model.accept(ArtifactsReady(RUN_ID)) == ()
+    assert model.accept(GazeboReady(RUN_ID)) == ()
+    assert model.accept(AdapterCompleted(RUN_ID, _summary())) == ()
+    assert model.accept(FinalizationRequested(RUN_ID, "COMPLETED", "late success", 30.0)) == (
+        StopServer(30.0),
+    )
+
+
+def test_exact_frozen_adapter_completion_pauses_before_source_finished():
+    model = _running_model(expected_frames=2)
+
+    actions = model.accept(AdapterCompleted(RUN_ID, _summary()))
+
+    assert actions == (
+        SetPaused(True),
+        WriteSourceFinished(100_000_000),
+    )
+    assert model.accept(AdapterCompleted(RUN_ID, _summary())) == ()
+
+
+@pytest.mark.parametrize(
+    ("summary", "reason_fragment"),
+    [
+        (_summary(3), "exceeds"),
+        (_summary(2, observer_frames=1), "aligned"),
+        (_summary(2, ground_truth_samples=1), "aligned"),
+        (_summary(2, first_sim_timestamp_ns=1), "timestamp"),
+        (_summary(2, last_sim_timestamp_ns=99_999_999), "timestamp"),
+        (_summary(1), "exactly 2"),
+    ],
+    ids=["overrun", "camera-mismatch", "truth-mismatch", "wrong-first", "wrong-last", "partial"],
+)
+def test_invalid_or_incomplete_adapter_summary_fails_closed(summary: AdapterSummary, reason_fragment: str):
+    model = _running_model(expected_frames=2)
+
+    actions = model.accept(AdapterCompleted(RUN_ID, summary))
+
+    assert isinstance(actions[0], WriteRuntimeFailure)
+    assert reason_fragment in actions[0].reason
+    assert actions[1] == SetPaused(True)
+    assert isinstance(actions[2], BeginFinalization)
+    assert model.accept(AdapterCompleted(RUN_ID, _summary())) == ()
+
+
+def test_child_exit_is_first_failure_and_later_timeout_cannot_replace_it():
+    model = _running_model()
+
+    actions = model.accept(ChildExited(RUN_ID, 17))
+
+    assert actions == (
+        WriteRuntimeFailure(
+            "Gazebo server exited unexpectedly with return code 17",
+            ("gazebo/server.log.partial", "gazebo/state"),
+        ),
+        SetPaused(True),
+        BeginFinalization(
+            "FAILED",
+            "Gazebo server exited unexpectedly with return code 17",
+        ),
+    )
+    assert model.accept(EndpointTimeout(RUN_ID, "world-control")) == ()
+    assert model.accept(ChildExited(RUN_ID, 99)) == ()
+
+
+def test_endpoint_timeout_is_an_infrastructure_fact_not_simulation_progress():
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+
+    actions = model.accept(EndpointTimeout(RUN_ID, "camera/onboard"))
+
+    assert actions == (
+        WriteRuntimeFailure(
+            "Gazebo endpoint readiness timed out: camera/onboard",
+            ("gazebo/server.log.partial",),
+        ),
+        BeginFinalization(
+            "FAILED",
+            "Gazebo endpoint readiness timed out: camera/onboard",
+        ),
+    )
+    assert all(not isinstance(action, (RequestSteps, WriteSourceFinished)) for action in actions)
+
+
+def test_finalizing_lifecycle_preempts_completion_then_request_uses_one_absolute_deadline():
+    model = _running_model()
+
+    assert model.accept(RunStateEvent(RUN_ID, "FINALIZING")) == (SetPaused(True),)
+    assert model.accept(AdapterCompleted(RUN_ID, _summary())) == ()
+    assert model.accept(FinalizationRequested(RUN_ID, "ABORTED", "operator stop", 42.5)) == (
+        BeginFinalization("ABORTED", "operator stop"),
+        StopServer(42.5),
+    )
+    assert model.accept(FinalizationRequested(RUN_ID, "ABORTED", "operator stop", 42.5)) == ()
+
+
+def test_direct_finalization_pauses_before_beginning_and_stopping_server():
+    model = _running_model()
+
+    assert model.accept(FinalizationRequested(RUN_ID, "FAILED", "recorder fault", 50.0)) == (
+        SetPaused(True),
+        BeginFinalization("FAILED", "recorder fault"),
+        StopServer(50.0),
+    )
+
+
+def test_quiescence_requires_stop_request_and_valid_native_summary(tmp_path: Path):
+    native = _native_summary(tmp_path, returncode=-9, graceful=False)
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+
+    premature = model.accept(ServerStopped(RUN_ID, native))
+    assert isinstance(premature[0], WriteRuntimeFailure)
+    assert all(not isinstance(action, WriteQuiescence) for action in premature)
+
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+    model.accept(FinalizationRequested(RUN_ID, "ABORTED", "operator stop", 30.0))
+    assert model.accept(ServerStopped(RUN_ID, native)) == (WriteQuiescence(native),)
+    assert model.accept(ServerStopped(RUN_ID, native)) == ()
+def test_post_quiescence_freeze_rejects_new_input_but_terminal_duplicates_are_idempotent(tmp_path: Path):
+    native = _native_summary(tmp_path)
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+    model.accept(FinalizationRequested(RUN_ID, "ABORTED", "operator stop", 30.0))
+    model.accept(ServerStopped(RUN_ID, native))
+
+    assert model.accept(ServerStopped(RUN_ID, native)) == ()
+    assert model.accept(RunStateEvent(RUN_ID, "FINALIZING")) == ()
+    assert model.accept(RunStateEvent(RUN_ID, "ABORTED")) == ()
+    with pytest.raises(RuntimeModelError, match="frozen"):
+        model.accept(ArtifactsReady(RUN_ID))
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: RuntimeModel(run_id="bad", expected_frames=2),
+        lambda: RuntimeModel(run_id=RUN_ID, expected_frames=True),
+        lambda: RuntimeModel(run_id=RUN_ID, expected_frames=0),
+        lambda: ChildExited(RUN_ID, True),
+        lambda: FinalizationRequested(RUN_ID, "FAILED", "reason", math.inf),
+        lambda: FinalizationRequested(RUN_ID, "COMPLETED", "", 10.0),
+        lambda: RequestSteps(True),
+        lambda: StopServer(math.nan),
+        lambda: WriteRuntimeFailure("reason", ("/absolute",)),
+        lambda: WriteRuntimeFailure("reason", ("../escape",)),
+    ],
+)
+def test_runtime_values_reject_noncanonical_numbers_terminal_data_and_paths(factory):
+    with pytest.raises((TypeError, ValueError)):
+        factory()
+
+
+def test_runtime_actions_events_and_native_summary_are_frozen(tmp_path: Path):
+    values = [
+        PublishGazeboReady(),
+        RequestSteps(1),
+        SetPaused(True),
+        WriteSourceFinished(100_000_000),
+        WriteRuntimeFailure("reason", ("gazebo/server.log.partial",)),
+        BeginFinalization("FAILED", "reason"),
+        StopServer(30.0),
+        WriteQuiescence(_native_summary(tmp_path)),
+        ArtifactsReady(RUN_ID),
+        AdapterCompleted(RUN_ID, _summary()),
+    ]
+    for value in values:
+        with pytest.raises(FrozenInstanceError):
+            value.extra = True  # type: ignore[attr-defined]
+
+
+def test_runtime_model_source_has_no_ros_gazebo_binding_or_wall_clock_dependency():
+    source = Path(__file__).parents[1] / "src/drone_sim_gazebo/runtime/model.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert imported.isdisjoint({"rclpy", "gz", "time", "datetime"})
