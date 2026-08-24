@@ -74,9 +74,10 @@ The complete status set is `operator-state.json`, `artifacts-ready.json`, the
 Phase 3 `gazebo-ready.json`, `runtime-running.json`, `source-finished.json`,
 `runtime-failure.json`, `runtime-frozen.json`, `artifacts-final.json`, and
 `terminal-notified.json` under `.status/`. The ROS orchestration runtime writes `runtime-running.json`
-immediately after publishing `RUNNING` for the first valid clock; the host uses
-that durable signal to update operator state without treating wall time as
-simulation progress.
+after the first valid clock and, for Phase 3, after validated durable ArduPilot
+JSON/MAVLink and companion-heartbeat readiness. It publishes `RUNNING` with
+that unchanged first clock stamp; the host uses the durable signal to update
+operator state without treating wall time as simulation progress.
 
 For Phase 3, the Gazebo runtime first pauses the world, stops and drains its
 public adapter, stops bridges and the server, freezes native state and the raw

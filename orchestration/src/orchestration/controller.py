@@ -958,21 +958,6 @@ class RunController:
                         lifecycle = lifecycle.apply(LifecycleEvent.MODULES_READY)
                         store.write_operator_status(self._status(lifecycle))
 
-                    overall_deadline = mono_started + config.max_wall_seconds
-                    if primary is None:
-                        running, primary = self._wait_for(
-                            store,
-                            config.run_id,
-                            compose,
-                            topology,
-                            "runtime-running",
-                            overall_deadline,
-                            TerminalCause("clock_stall", "clock_source_stall"),
-                        )
-                        if running is not None:
-                            sim_start_ns = self._validate_running(running)
-                            lifecycle = lifecycle.apply(LifecycleEvent.CLOCK_STARTED)
-                            store.write_operator_status(self._status(lifecycle))
                     if primary is None and config.runtime_profile == "phase3":
                         ardupilot_ready, primary = self._wait_for(
                             store,
@@ -997,6 +982,21 @@ class RunController:
                         )
                         if companion_ready is not None:
                             self._validate_companion_ready(companion_ready)
+                    overall_deadline = mono_started + config.max_wall_seconds
+                    if primary is None:
+                        running, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "runtime-running",
+                            overall_deadline,
+                            TerminalCause("clock_stall", "clock_source_stall"),
+                        )
+                        if running is not None:
+                            sim_start_ns = self._validate_running(running)
+                            lifecycle = lifecycle.apply(LifecycleEvent.CLOCK_STARTED)
+                            store.write_operator_status(self._status(lifecycle))
                     if primary is None:
                         finished, primary = self._wait_for(
                             store,

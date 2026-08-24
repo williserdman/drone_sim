@@ -287,6 +287,7 @@ class TraceStore(StatusStore):
             "gazebo-ready",
             "ardupilot-ready",
             "companion-ready",
+            "runtime-running",
             "source-finished",
             "mission-finished",
             "score-finished",
@@ -895,6 +896,7 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
     assert trace.index("wait artifacts-ready") < trace.index("wait gazebo-ready")
     assert trace.index("wait gazebo-ready") < trace.index("wait ardupilot-ready")
     assert trace.index("wait ardupilot-ready") < trace.index("wait companion-ready")
+    assert trace.index("wait companion-ready") < trace.index("wait runtime-running")
     assert trace.index("wait source-finished") < trace.index("wait mission-finished")
     assert trace.index("wait mission-finished") < trace.index("wait score-finished")
     assert trace.index("wait score-finished") < trace.index("request FINALIZING")
@@ -936,9 +938,10 @@ def test_completed_controller_executes_frozen_order_commits_manifest_then_tears_
     assert trace == [
         "allocate",
         "snapshot config",
-        "compose up",
-        "wait artifacts-ready",
-        "wait source-finished",
+            "compose up",
+            "wait artifacts-ready",
+            "wait runtime-running",
+            "wait source-finished",
         "request FINALIZING",
         "wait runtime-frozen",
         "wait artifacts-final",

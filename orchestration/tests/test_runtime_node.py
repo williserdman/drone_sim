@@ -19,6 +19,7 @@ class FakeProtocol:
         self.finalize = None
         self.terminal = None
         self.statuses = []
+        self.readable_statuses = {}
         self.quiescence = {}
         self.quiescence_writes = []
 
@@ -30,6 +31,9 @@ class FakeProtocol:
 
     def write_status(self, name, document):
         self.statuses.append((name, document))
+
+    def read_status(self, name):
+        return self.readable_statuses.get(name)
 
     def write_quiescence(self, module):
         self.quiescence_writes.append(module)
@@ -53,6 +57,21 @@ def _runtime():
         protocol=protocol,
         publish=published.append,
         diagnostic=diagnostics.append,
+    )
+    return runtime, protocol, published, diagnostics
+
+
+def _phase3_runtime():
+    protocol = FakeProtocol()
+    published = []
+    diagnostics = []
+    runtime = OrchestrationRuntime(
+        RUN_ID,
+        "a" * 64,
+        protocol=protocol,
+        publish=published.append,
+        diagnostic=diagnostics.append,
+        required_durable_readiness=("ardupilot-ready", "companion-ready"),
     )
     return runtime, protocol, published, diagnostics
 
@@ -234,6 +253,45 @@ def test_starting_ready_running_order_and_exact_first_clock_stamp():
         )
     ]
     assert runtime.last_sim_timestamp_ns == 50_000_000
+
+
+def test_phase3_first_clock_remains_ready_until_durable_flight_peers_are_ready():
+    runtime, protocol, published, _ = _phase3_runtime()
+    runtime.start()
+    runtime.accept_artifact_status(RUN_ID, True)
+    runtime.accept_clock(0)
+
+    assert [item.state for item in published] == ["STARTING", "READY"]
+    assert protocol.statuses == []
+
+    protocol.readable_statuses["ardupilot-ready"] = {
+        "run_id": RUN_ID,
+        "ready": True,
+        "json_exchange": True,
+        "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+    }
+    assert runtime.poll() is False
+    assert [item.state for item in published] == ["STARTING", "READY"]
+
+    protocol.readable_statuses["companion-ready"] = {
+        "run_id": RUN_ID,
+        "ready": True,
+        "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+        "heartbeat_sim_timestamp_ns": 0,
+    }
+    assert runtime.poll() is False
+
+    assert [(item.state, item.sim_timestamp_ns) for item in published] == [
+        ("STARTING", 0),
+        ("READY", 0),
+        ("RUNNING", 0),
+    ]
+    assert protocol.statuses == [
+        (
+            "runtime-running",
+            {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
+        )
+    ]
 
 
 @pytest.mark.parametrize("preterminal", ["STARTING", "READY", "RUNNING"])

@@ -46,6 +46,7 @@ _PHASE3_RUN_STATE_NODES = frozenset(
 
 
 class _Protocol(Protocol):
+    def read_status(self, name: str) -> dict[str, Any] | None: ...
     def read_finalize_request(self) -> dict[str, Any] | None: ...
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
     def write_status(self, name: str, document: dict[str, Any]) -> Any: ...
@@ -157,6 +158,7 @@ class OrchestrationRuntime:
         protocol: _Protocol,
         publish: Callable[[RuntimeStateEvent], None],
         diagnostic: Callable[[str], None] = lambda _message: None,
+        required_durable_readiness: tuple[str, ...] = (),
     ) -> None:
         self.run_id = canonical_run_id(run_id)
         if (
@@ -169,8 +171,16 @@ class OrchestrationRuntime:
         self._protocol = protocol
         self._publish = publish
         self._diagnostic = diagnostic
+        allowed_readiness = {"ardupilot-ready", "companion-ready"}
+        if (
+            len(required_durable_readiness) != len(set(required_durable_readiness))
+            or any(name not in allowed_readiness for name in required_durable_readiness)
+        ):
+            raise ValueError("durable readiness names are invalid")
+        self._required_durable_readiness = required_durable_readiness
         self.state = "CREATED"
         self.last_sim_timestamp_ns = 0
+        self._clock_observed = False
         self._terminal = False
         self._quiescence_written = False
         self._freeze_written = False
@@ -209,16 +219,26 @@ class OrchestrationRuntime:
         if self.state not in {"READY", "RUNNING"}:
             return
         self.last_sim_timestamp_ns = sim_timestamp_ns
-        if self.state == "READY":
-            self._emit("RUNNING")
-            self._protocol.write_status(
-                "runtime-running",
-                {
-                    "run_id": self.run_id,
-                    "state": "RUNNING",
-                    "sim_timestamp_ns": sim_timestamp_ns,
-                },
-            )
+        self._clock_observed = True
+        if self.state == "READY" and not self._required_durable_readiness:
+            self._start_running()
+
+    def _start_running(self) -> None:
+        self._emit("RUNNING")
+        self._protocol.write_status(
+            "runtime-running",
+            {
+                "run_id": self.run_id,
+                "state": "RUNNING",
+                "sim_timestamp_ns": self.last_sim_timestamp_ns,
+            },
+        )
+
+    def _flight_peers_ready(self) -> bool:
+        return self._clock_observed and all(
+            self._protocol.read_status(name) is not None
+            for name in self._required_durable_readiness
+        )
 
     def poll(self) -> bool:
         """Observe durable controls once; return true after terminal acknowledgement."""
@@ -230,6 +250,8 @@ class OrchestrationRuntime:
                 self._emit("FINALIZING", request["reason"])
                 self._protocol.write_quiescence("orchestration")
                 self._quiescence_written = True
+            elif self.state == "READY" and self._flight_peers_ready():
+                self._start_running()
         if self.state == "FINALIZING":
             if not self._quiescence_written:
                 raise RuntimeError("orchestration quiescence marker was not written")
@@ -326,6 +348,11 @@ def main() -> None:
         publish=publish,
         diagnostic=lambda detail: emit_log(
             "stale_input", runtime.last_sim_timestamp_ns, detail=detail
+        ),
+        required_durable_readiness=(
+            ("ardupilot-ready", "companion-ready")
+            if config.get("runtime_profile") == "phase3"
+            else ()
         ),
     )
 
