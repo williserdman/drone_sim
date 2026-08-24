@@ -237,6 +237,54 @@ def test_startup_status_waits_for_rosbag_subscription_before_publication(tmp_pat
     assert runtime.check_ready("graph") is True
 
 
+def test_startup_ready_waits_for_initial_status_delivery_acknowledgement(tmp_path):
+    delivered = {"initial_status": False}
+    runtime, protocol, _, _, published = _runtime(
+        tmp_path,
+        initial_status_delivered=lambda: delivered["initial_status"],
+    )
+    runtime.start(deadline=10.0)
+
+    assert runtime.check_ready("graph") is False
+    assert runtime.check_ready("graph") is False
+    assert len(published) == 1
+    assert published[0]["ready"] is False
+    assert protocol.statuses == []
+
+    delivered["initial_status"] = True
+    assert runtime.check_ready("graph") is True
+    assert [document["ready"] for document in published] == [False, True]
+
+
+def test_initial_status_delivery_timeout_reports_bounded_startup_failure(tmp_path):
+    now = {"value": 0.0}
+    runtime, protocol, _, _, published = _runtime(
+        tmp_path,
+        initial_status_delivered=lambda: False,
+        monotonic=lambda: now["value"],
+    )
+    runtime.start(deadline=10.0)
+    assert runtime.check_ready("graph") is False
+
+    now["value"] = 10.0
+    assert runtime.check_ready("graph") is False
+    assert [document["ready"] for document in published] == [False]
+    assert protocol.statuses == [
+        (
+            "runtime-failure",
+            {
+                "run_id": RUN_ID,
+                "module": "artifacts",
+                "reason": (
+                    "initial artifact status delivery was not acknowledged "
+                    "before startup deadline"
+                ),
+                "diagnostic_paths": ["logs/docker/rosbag2.log.partial"],
+            },
+        )
+    ]
+
+
 def test_startup_waits_for_camera_pair_ack_subscriber_discovery(tmp_path):
     discovered = {"ack": False}
     runtime, protocol, _, _, published = _runtime(

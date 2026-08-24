@@ -178,6 +178,7 @@ class AggregateArtifactsRuntime:
         monotonic: Callable[[], float] = time.monotonic,
         backpressure_ready: Callable[[Any], bool] = lambda _graph: True,
         lifecycle_ready: Callable[[], bool] = lambda: True,
+        initial_status_delivered: Callable[[], bool] = lambda: True,
         expected_camera_frames: int = 40,
     ) -> None:
         self.run_directory = Path(run_directory)
@@ -202,10 +203,12 @@ class AggregateArtifactsRuntime:
         self.monotonic = monotonic
         self.backpressure_ready = backpressure_ready
         self.lifecycle_ready = lifecycle_ready
+        self.initial_status_delivered = initial_status_delivered
         self.expected_camera_frames = expected_camera_frames
         self.started = False
         self.ready = False
         self._initial_status_published = False
+        self._startup_deadline: float | None = None
         self.final_report: dict[str, Any] | None = None
         self._failure_written = False
         self._terminal = False
@@ -261,6 +264,7 @@ class AggregateArtifactsRuntime:
         if self.started:
             raise RuntimeError("artifact runtime has already started")
         self.started = True
+        self._startup_deadline = deadline
         try:
             self.bag_recorder.start()
             self.video_node.start(deadline=deadline)
@@ -292,6 +296,17 @@ class AggregateArtifactsRuntime:
                 }
             )
             self._initial_status_published = True
+            return False
+        if not self.initial_status_delivered():
+            if (
+                self._startup_deadline is not None
+                and self.monotonic() >= self._startup_deadline
+            ):
+                self.report_failure(
+                    "initial artifact status delivery was not acknowledged "
+                    "before startup deadline",
+                    ["logs/docker/rosbag2.log.partial"],
+                )
             return False
         if (
             not self.video_node.is_ready
@@ -552,6 +567,7 @@ def publish_artifact_status(
 
 def main() -> None:
     import rclpy
+    from rclpy.duration import Duration
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from simulation_interfaces.msg import ArtifactStatus, FrameMetadata, RunState
@@ -719,6 +735,9 @@ def main() -> None:
             else (lambda _graph: True)
         ),
         lifecycle_ready=lambda: saw_current_run_starting,
+        initial_status_delivered=lambda: publisher.wait_for_all_acked(
+            timeout=Duration(nanoseconds=0)
+        ),
         expected_camera_frames=recording_contract.expected_camera_frames,
     )
     runtime_ref.append(runtime)
