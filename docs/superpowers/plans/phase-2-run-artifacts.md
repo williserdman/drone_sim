@@ -849,7 +849,10 @@ git commit -m "feat: add synthetic artifact runtime stack"
 
 **Files:**
 - Create: `tests/integration/test_phase2_compose.py`
+- Create: `tests/phase2/inspect_bundle.py`
 - Create: `docs/verification/phase-2-run-artifacts.md`
+- Modify: `orchestration/src/orchestration/controller.py`
+- Modify: `orchestration/tests/test_controller.py`
 - Modify: `Makefile`
 
 **Interfaces:**
@@ -866,17 +869,21 @@ assert manifest["incomplete_paths"] == []
 assert all(item["validation"] == "valid" for item in manifest["artifacts"])
 ```
 
-Use `ffprobe` JSON and full decode to require both MP4s have one H.264/yuv420p stream, 320x240, `20/1`, and 40 frames. Use the bag validator to require the ten exact topics, 41 clocks, 40 images and metadata per stream, 40 ground-truth messages, paired IDs/stamps, one scenario event, one score event, and lifecycle order `STARTING, READY, RUNNING, FINALIZING`. Require no clock before artifact-ready evidence.
+Create `tests/phase2/inspect_bundle.py` and execute it inside the stable artifacts image with the completed run mounted read-only. Its canonical JSON output must include FFprobe and full-decode facts, per-decoded-frame hashes, bag topic counts/types/simulation stamps, image payload hashes and IDs, and normalized custom-event payloads. Require both MP4s have one H.264/yuv420p stream, 320x240, `20/1`, and 40 frames. Use the bag validator to require the ten exact topics, 41 clocks, 40 images and metadata per stream, 40 ground-truth messages, paired IDs/stamps, one scenario event, one score event, and lifecycle order `STARTING, READY, RUNNING, FINALIZING`. Require no clock before artifact-ready evidence. Do not duplicate a partial MCAP parser or weaken this to presence-only host checks.
 
 Run the completed case once with zero synthetic wall delay and once with a nonzero delay. Compare extracted simulation timestamps, IDs, image payload hashes, event payloads, and decoded video-frame hashes; they must be identical even though wall timing and bag container bytes may differ.
 
-Reparse all seven nonempty module JSONL logs; recompute every file/tree SHA-256 and size; validate configuration/scoring JSON; require no `.partial`/manifest temp; require source/image/config provenance; and require no Compose container/network for the run project after exit.
+Reparse all seven nonempty module JSONL logs; recompute every manifest file/tree SHA-256 and size, including optional raw/recorder logs; validate configuration/scoring JSON; require source/image/config provenance; and require no Compose container/network for the run project after exit. `.control` and `.status` must not be inventoried. Completed runs may retain only the exact inventoried frozen recorder diagnostics `logs/docker/ffmpeg-onboard.log.partial`, `logs/docker/ffmpeg-observer.log.partial`, and `logs/docker/rosbag2.log.partial`; reject manifest candidates, DockerLogCapture publication candidates, and every unknown partial.
+
+The manifest score is exactly `0.0 / 0.0` and its scoring checksum equals the SHA-256 of `tests/phase2/scoring.json`. The controller must strictly consume the result document's lowercase SHA-256 `scoring_checksum` and safe evidence paths rather than substituting the checksum of `scoring/result.json`.
 
 - [ ] **Step 2: Write failed and aborted acceptance tests**
 
-Inject observer-encoder failure after five frames. Require exit `1`, terminal `FAILED`, explicit invalid/missing observer video record, a readable bag, playable onboard video, preserved raw logs, and no deletion of partial observer diagnostics.
+Inject observer-encoder failure after five frames. Require exit `1`, terminal `FAILED`, explicit invalid/missing observer video record, a structurally readable bag, playable positive-frame onboard video, preserved raw logs, and no deletion of explicitly inventoried partial observer diagnostics. Scenario/score messages may be absent and the strict bag record may therefore be invalid.
 
-Start a normal run as a subprocess, wait until `RUNNING`, invoke `drone-sim abort RUN_ID`, and require start exit `130`, terminal `ABORTED`, readable bag, playable shorter videos when at least one frame was accepted, explicit incomplete records where needed, and preserved diagnostics. A second abort and second `collect-results` must be idempotent.
+Start a normal run with nonzero synthetic wall delay as a subprocess, discover its sole new run directory, poll `.status/operator-state.json` until exact durable `RUNNING`, then invoke `drone-sim abort RUN_ID --output-root ABS`. Require start exit `130`, terminal `ABORTED` never upgraded, structurally readable retained bag, playable shorter videos when recorder-local frame count is positive, explicit incomplete records where needed, and preserved diagnostics. Structurally readable means bag metadata opens and every retained serialized message can be iterated/deserialized; full semantic validity is required only when retained counts satisfy the validator. A second abort and two `collect-results` calls must return consistent terminal facts without changing manifest bytes.
+
+Parse foreground `start` stdout as zero or more host `StructuredEvent` objects followed by exactly one `result_type="run_result"` object. Other commands emit exactly one result. After every terminal case assert no project-labeled container and no `<project>_default` network remain.
 
 - [ ] **Step 3: Run the new tests and verify RED before integration completion**
 
@@ -890,11 +897,11 @@ Expected before the final integration wiring: failures identifying the incomplet
 
 - [ ] **Step 4: Complete only the integration wiring required by the failures**
 
-Connect the CLI, status files, Compose profile, recorder runtime, log capture, validators, and manifest session. Do not add Gazebo Harmonic, ArduPilot, companion mission code, electromagnet physics, or real scoring in this task.
+Connect the CLI, status files, Compose profile, recorder runtime, log capture, validators, scoring provenance, and manifest session. Run templates live under temporary directories and use absolute temporary output roots. Production startup remains `--no-build`; stable image names and the exact seven active Phase 2 services must be project-name independent. Do not add Gazebo Harmonic, ArduPilot, companion mission code, electromagnet physics, or real scoring in this task.
 
 - [ ] **Step 5: Run the complete Phase 2 gate**
 
-Update `Makefile` with `test-phase2` and include it in `test`. Run:
+Update `Makefile` with `test-phase2` and include it in `test`. `test-phase2` builds the stable Phase 2 images exactly once before executing all terminal cases; individual cases do not rebuild. Run:
 
 ```bash
 make test
