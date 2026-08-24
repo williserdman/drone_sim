@@ -23,6 +23,14 @@ depend on source completion. Child-exit and server-stop-failure events are
 first-class typed facts, so Task 6 does not bypass the first-failure latch when
 a server, bridge, image bridge, adapter, or native validation fails.
 
+Every current-run `ServerStopped` summary is reconstructed through the native
+summary validator before acceptance. Malformed, internally inconsistent,
+wrong-run, or premature native evidence irreversibly latches a distinct native
+stop failure and forbids later quiescence, even when another runtime failure was
+already first. That native latch does not erase or replace the first diagnostic.
+Conversely, an unrelated runtime failure followed by the first valid native
+summary may still produce quiescence for its failed finalization.
+
 The first invalid processing fact closes normal progress before any accepted
 state can be repaired. Stale canonical run IDs are ignored as required by the
 repository lifecycle contract. Once quiescence is returned, only identical

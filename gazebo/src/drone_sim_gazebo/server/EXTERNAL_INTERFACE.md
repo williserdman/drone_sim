@@ -22,16 +22,21 @@ It rejects an already-expired deadline before inspecting or signaling the
 child. It sends process-group `SIGTERM`, reserves the remaining budget across
 the graceful and forced phases, escalates at most once to `SIGKILL`, and
 requires the retained new session's whole process group to be empty even when
-the leader exited first. It never uses wall time as simulation time.
+the leader exited first. The leader remains unreaped as the identity anchor
+until group quiescence, then is reaped exactly once. Time is resampled after
+each group probe, so a probe that consumes the deadline cannot be followed by
+a sleep, signal, or artifact work. It never uses wall time as simulation time.
 
 The successful native artifact paths are exactly `gazebo/server.log` and
 `gazebo/state/state.tlog` below the current canonical run. The `state`
 record-path is absent at spawn so Gazebo creates that exact path instead of a
-collision-suffixed sibling. Publication descriptor-binds the startup inode,
-creates and validates a same-directory no-clobber hard link, durably syncs the
-final name, and checks the deadline immediately before committing by removing
-the partial name. A deadline at that edge leaves both diagnostic names; after
-the commit, no later clock sample reverses success. The final name is durable;
+collision-suffixed sibling. Publication descriptor-binds the startup log inode
+and retains descriptors for the native state directory and file through a final
+canonical-name and directory-inventory check. It then creates and validates a
+same-directory no-clobber hard link, durably syncs the final name, and checks
+the deadline immediately before committing by removing the partial name. A
+deadline at that edge leaves both diagnostic names; after the commit, no later
+clock sample or cleanup failure reverses success. The final name is durable;
 the implementation does not claim that absence of the partial name survives a
 crash. Missing, empty, linked, replaced, or unsafe evidence raises
 `ServerProcessError` and preserves a named diagnostic. Repeated successful stop

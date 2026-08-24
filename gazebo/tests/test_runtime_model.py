@@ -50,11 +50,17 @@ def _summary(frames: int = 2, **changes: object) -> AdapterSummary:
     return AdapterSummary(**values)  # type: ignore[arg-type]
 
 
-def _native_summary(tmp_path: Path, *, returncode: int = 0, graceful: bool = True):
-    run = tmp_path / RUN_ID
+def _native_summary(
+    tmp_path: Path,
+    *,
+    run_id: str = RUN_ID,
+    returncode: int = 0,
+    graceful: bool = True,
+):
+    run = tmp_path / run_id
     state = run / "gazebo/state/state.tlog"
     log = run / "gazebo/server.log"
-    state.parent.mkdir(parents=True)
+    state.parent.mkdir(parents=True, exist_ok=True)
     log.write_bytes(b"log")
     state.write_bytes(b"state")
     return NativeArtifactSummary(log, state, returncode, graceful)
@@ -327,6 +333,82 @@ def test_prior_runtime_failure_still_allows_valid_native_quiescence(tmp_path: Pa
     assert model.accept(ServerStopped(RUN_ID, native)) == (WriteQuiescence(native),)
 
 
+def test_wrong_run_native_summary_latches_stop_failure_and_blocks_repair(
+    tmp_path: Path,
+):
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+    model.accept(FinalizationRequested(RUN_ID, "ABORTED", "operator stop", 30.0))
+    wrong = _native_summary(tmp_path, run_id=STALE_RUN_ID)
+
+    actions = model.accept(ServerStopped(RUN_ID, wrong))
+
+    assert actions == (
+        WriteRuntimeFailure(
+            "native artifact summary belongs to another run",
+            ("gazebo/server.log.partial", "gazebo/state"),
+        ),
+    )
+    assert model.accept(ServerStopped(RUN_ID, wrong)) == ()
+    assert model.accept(ServerStopped(RUN_ID, _native_summary(tmp_path))) == ()
+
+
+@pytest.mark.parametrize("tamper", ["state-path", "graceful-value"])
+def test_malformed_native_summary_latches_stop_failure(
+    tmp_path: Path,
+    tamper: str,
+):
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+    model.accept(FinalizationRequested(RUN_ID, "ABORTED", "operator stop", 30.0))
+    native = _native_summary(tmp_path)
+    if tamper == "state-path":
+        object.__setattr__(
+            native,
+            "state_log_path",
+            native.state_log_path.with_name("replacement.tlog"),
+        )
+    else:
+        object.__setattr__(native, "graceful", 1)
+
+    actions = model.accept(ServerStopped(RUN_ID, native))
+
+    assert actions == (
+        WriteRuntimeFailure(
+            "native artifact summary is malformed",
+            ("gazebo/server.log.partial", "gazebo/state"),
+        ),
+    )
+    assert model.accept(ServerStopped(RUN_ID, _native_summary(tmp_path))) == ()
+
+
+def test_prior_first_failure_remains_diagnostic_but_bad_native_evidence_blocks_repair(
+    tmp_path: Path,
+):
+    model = _running_model()
+    first = model.accept(ChildExited(RUN_ID, "bridge", 17))
+    model.accept(FinalizationRequested(RUN_ID, "FAILED", "child failed", 30.0))
+
+    assert model.accept(
+        ServerStopped(RUN_ID, _native_summary(tmp_path, run_id=STALE_RUN_ID))
+    ) == ()
+    assert model.accept(ServerStopped(RUN_ID, _native_summary(tmp_path))) == ()
+    assert first[0] == WriteRuntimeFailure(
+        "runtime child bridge exited unexpectedly with return code 17",
+        ("gazebo/server.log.partial", "gazebo/state"),
+    )
+
+
+def test_premature_server_stopped_evidence_cannot_be_repaired_later(tmp_path: Path):
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+    native = _native_summary(tmp_path)
+
+    first = model.accept(ServerStopped(RUN_ID, native))
+    assert isinstance(first[0], WriteRuntimeFailure)
+    assert model.accept(
+        FinalizationRequested(RUN_ID, "FAILED", "invalid stop order", 30.0)
+    ) == (StopServer(30.0),)
+    assert model.accept(ServerStopped(RUN_ID, native)) == ()
+
+
 def test_quiescence_requires_stop_request_and_valid_native_summary(tmp_path: Path):
     native = _native_summary(tmp_path, returncode=-9, graceful=False)
     model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
@@ -339,6 +421,8 @@ def test_quiescence_requires_stop_request_and_valid_native_summary(tmp_path: Pat
     model.accept(FinalizationRequested(RUN_ID, "ABORTED", "operator stop", 30.0))
     assert model.accept(ServerStopped(RUN_ID, native)) == (WriteQuiescence(native),)
     assert model.accept(ServerStopped(RUN_ID, native)) == ()
+
+
 def test_post_quiescence_freeze_rejects_new_input_but_terminal_duplicates_are_idempotent(tmp_path: Path):
     native = _native_summary(tmp_path)
     model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
@@ -346,6 +430,13 @@ def test_post_quiescence_freeze_rejects_new_input_but_terminal_duplicates_are_id
     model.accept(ServerStopped(RUN_ID, native))
 
     assert model.accept(ServerStopped(RUN_ID, native)) == ()
+    with pytest.raises(RuntimeModelError, match="frozen"):
+        model.accept(
+            ServerStopped(
+                RUN_ID,
+                _native_summary(tmp_path, returncode=-9, graceful=False),
+            )
+        )
     assert model.accept(RunStateEvent(RUN_ID, "FINALIZING")) == ()
     assert model.accept(RunStateEvent(RUN_ID, "ABORTED")) == ()
     with pytest.raises(RuntimeModelError, match="frozen"):

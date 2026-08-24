@@ -30,5 +30,9 @@ adapter summary has produced `WriteSourceFinished`; otherwise it fails and can
 emit only `BeginFinalization("FAILED", ...)`. `FAILED` and `ABORTED` remain
 explicit preemptions. A valid current-run `NativeArtifactSummary` after a
 successful stop yields one `WriteQuiescence` and freezes the model. A typed
-stop failure forbids later quiescence or repair. Later output-producing inputs
-are rejected; duplicate terminal observations are silent.
+stop failure, or any malformed, inconsistent, wrong-run, or premature stopped
+summary, forbids later quiescence or repair while preserving the first runtime
+diagnostic. An unrelated earlier runtime failure alone does not prevent a first
+valid stopped summary from recording failed-run quiescence. Later
+output-producing inputs are rejected; duplicate terminal observations are
+silent.

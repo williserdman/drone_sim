@@ -17,14 +17,21 @@ durably writes one JSON data record before `Popen`. `shell=False` and
 Spawn failure closes all parent descriptors but deliberately preserves the
 diagnostic partial.
 
-`GazeboServer.stop()` first checks the deadline, then probes the retained
-session/process-group identity. A live leader must still report the original
-PGID; after leader exit, a Linux `/proc` probe accepts only live members with
-the retained PGID and session ID. Wait timeouts are recomputed from the same
-caller deadline; no phase starts a new budget, and group emptiness precedes all
-artifact work. Once quiescent, the implementation descriptor-opens Gazebo's
-new `state` directory, revalidates retained parent identities, and fsyncs and
-identity-validates the single-link nonempty `state.tlog`.
+`GazeboServer.stop()` first checks the deadline, then observes leader exit with
+Linux `waitid(..., WNOWAIT)` so the unreaped leader PID continues to anchor the
+original session and process-group identity. It never calls `poll()`. A live or
+zombie leader must still report the original PGID before a signal; a Linux
+`/proc` probe accepts only live members with the retained PGID and session ID.
+The leader is reaped exactly once, only after that whole group is empty. Every
+potentially long group probe is followed by a fresh deadline sample before a
+sleep, signal, or other work. No phase starts a new budget, and group emptiness
+precedes all artifact work.
+
+Once quiescent, the implementation descriptor-opens Gazebo's new `state`
+directory and its exact `state.tlog`, then fsyncs and validates the nonempty
+single-link regular file without releasing either identity. After validation,
+one final no-follow inventory and descriptor-to-canonical-name check detects a
+renamed directory, replacement file, or unexpected sibling before publication.
 
 The startup log descriptor remains open through publication. Before linking,
 its device/inode/type must match the named single-link partial. The temporary
@@ -33,7 +40,9 @@ The final link is directory-fsynced and the deadline is checked before the
 partial unlink commit point. Failure before commit retains the partial (and,
 after linking, also the final hard link); failure after commit retains the
 durable final diagnostic. The commit deliberately makes no crash-durability
-claim for removal of the partial name.
+claim for removal of the partial name. Closing the retained parent stream after
+that commit is best-effort cleanup and cannot reverse or withhold the immutable
+successful summary.
 
 Process construction, monotonic time/sleep, process-group identity/probing,
 and group signaling are internal seams accepted by `GazeboServer` for

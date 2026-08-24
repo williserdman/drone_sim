@@ -131,6 +131,24 @@ Sleep = Callable[[float], None]
 SignalProcessGroup = Callable[[int, int], None]
 GetProcessGroup = Callable[[int], int]
 ProcessGroupExists = Callable[[int, int], bool]
+ObserveLeaderExit = Callable[[int], bool]
+
+
+def _observe_leader_exit_without_reap(pid: int) -> bool:
+    """Observe child exit while retaining its PID / group identity as a zombie."""
+    try:
+        result = os.waitid(
+            os.P_PID,
+            pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+    except ChildProcessError as error:
+        raise OSError("Gazebo leader identity was reaped outside its owner") from error
+    if result is None:
+        return False
+    if result.si_pid != pid:
+        raise OSError("waitid returned an unexpected Gazebo leader identity")
+    return True
 
 
 def _linux_process_group_exists(process_group_id: int, session_id: int) -> bool:
@@ -472,6 +490,7 @@ class GazeboServer:
         sleep: Sleep = time.sleep,
         get_process_group: GetProcessGroup = os.getpgid,
         process_group_exists: ProcessGroupExists = _linux_process_group_exists,
+        observe_leader_exit: ObserveLeaderExit = _observe_leader_exit_without_reap,
         signal_process_group: SignalProcessGroup = os.killpg,
     ) -> None:
         if not isinstance(spec, ServerSpec):
@@ -482,6 +501,7 @@ class GazeboServer:
         self._sleep = sleep
         self._get_process_group = get_process_group
         self._process_group_exists = process_group_exists
+        self._observe_leader_exit = observe_leader_exit
         self._signal_process_group = signal_process_group
         self._process: _Process | None = None
         self._process_group_id: int | None = None
@@ -491,9 +511,11 @@ class GazeboServer:
         self._run_fd: int | None = None
         self._gazebo_fd: int | None = None
         self._state_fd: int | None = None
+        self._state_log_fd: int | None = None
         self._run_identity: os.stat_result | None = None
         self._gazebo_identity: os.stat_result | None = None
         self._state_identity: os.stat_result | None = None
+        self._state_log_identity: os.stat_result | None = None
         self._summary: NativeArtifactSummary | None = None
         self._failure: ServerProcessError | None = None
         self._started = False
@@ -649,6 +671,26 @@ class GazeboServer:
         if stream is not None:
             stream.close()
 
+    def _close_log_handle_best_effort(self) -> None:
+        """Release the committed log handle without changing its success result."""
+        stream = self._log_stream
+        self._log_stream = None
+        if stream is None:
+            return
+        descriptor: int | None = None
+        try:
+            descriptor = stream.fileno()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
     def _abandon_log_after_failure(self) -> None:
         """Drop the parent handle without starting new work after a stop fault."""
         stream = self._log_stream
@@ -660,7 +702,7 @@ class GazeboServer:
                 pass
 
     def _close_directories(self) -> None:
-        for attribute in ("_state_fd", "_gazebo_fd", "_run_fd"):
+        for attribute in ("_state_log_fd", "_state_fd", "_gazebo_fd", "_run_fd"):
             descriptor = getattr(self, attribute)
             setattr(self, attribute, None)
             if descriptor is not None:
@@ -701,50 +743,93 @@ class GazeboServer:
             raise TypeError("process-group probe must return a boolean")
         return exists
 
-    def _verify_live_leader_group(self, process: _Process) -> None:
-        if process.returncode is not None:
-            return
-        actual = self._get_process_group(process.pid)
+    def _leader_has_exited(self, process: _Process) -> bool:
+        exited = self._observe_leader_exit(process.pid)
+        if type(exited) is not bool:
+            raise TypeError("leader-exit observer must return a boolean")
+        return exited
+
+    def _verify_retained_leader_group(self, process: _Process) -> None:
+        try:
+            actual = self._get_process_group(process.pid)
+        except ProcessLookupError as error:
+            raise OSError("retained Gazebo leader identity disappeared") from error
         if type(actual) is not int or actual != self._process_group_id:
             raise OSError("Gazebo process-group identity changed before signaling")
 
     def _wait_for_group_empty(self, phase_deadline: float) -> bool:
         while True:
+            if self._remaining(phase_deadline) <= 0:
+                return False
+            group_exists = self._group_exists()
             remaining = self._remaining(phase_deadline)
+            if not group_exists:
+                return True
             if remaining <= 0:
                 return False
-            if not self._group_exists():
-                return True
             self._sleep(min(_GROUP_POLL_SECONDS, remaining))
+
+    def _wait_for_leader_exit(self, process: _Process, deadline: float) -> None:
+        """Wait for the retained child to become waitable without reaping it."""
+        while True:
+            self._check_deadline(deadline, operation="Gazebo leader exit observation")
+            if self._leader_has_exited(process):
+                self._check_deadline(
+                    deadline, operation="post-observation leader verification"
+                )
+                return
+            remaining = self._remaining(deadline)
+            if remaining <= 0:
+                raise TimeoutError(
+                    "absolute monotonic deadline expired before Gazebo leader exit"
+                )
+            self._sleep(min(_GROUP_POLL_SECONDS, remaining))
+
+    def _reap_leader(self, process: _Process, deadline: float) -> int:
+        self._check_deadline(deadline, operation="Gazebo leader reap")
+        remaining = self._remaining(deadline)
+        if remaining <= 0:
+            raise TimeoutError(
+                "absolute monotonic deadline expired before Gazebo leader reap"
+            )
+        return self._returncode(process.wait(timeout=remaining))
 
     def _stop_process(self, deadline: float) -> tuple[int, bool]:
         process = self._process
         if process is None:
             raise ServerProcessError("Gazebo server has not been started")
-        self._check_deadline(deadline, operation="Gazebo process-group inspection")
-        returncode = process.poll()
+        self._check_deadline(deadline, operation="Gazebo leader exit observation")
+        leader_exited = self._leader_has_exited(process)
         self._check_deadline(deadline, operation="Gazebo process-group probe")
         group_exists = self._group_exists()
+        self._check_deadline(deadline, operation="post-probe shutdown decision")
         if not group_exists:
-            if returncode is None:
-                raise OSError("live Gazebo leader has no retained process group")
-            return self._returncode(returncode), False
+            if not leader_exited:
+                self._wait_for_leader_exit(process, deadline)
+            return self._reap_leader(process, deadline), False
 
         signals_sent: list[int] = []
         for index, signum in enumerate((signal.SIGTERM, signal.SIGKILL)):
             self._check_deadline(deadline, operation="Gazebo process-group shutdown")
-            if not self._group_exists():
+            self._leader_has_exited(process)
+            self._check_deadline(deadline, operation="process-group probe")
+            group_exists = self._group_exists()
+            self._check_deadline(deadline, operation="post-probe signal decision")
+            if not group_exists:
                 break
             self._check_deadline(deadline, operation="process-group identity validation")
-            returncode = process.poll()
-            self._verify_live_leader_group(process)
+            self._verify_retained_leader_group(process)
             self._check_deadline(deadline, operation=f"signal {signum}")
             try:
                 assert self._process_group_id is not None
                 self._signal_process_group(self._process_group_id, signum)
             except ProcessLookupError:
                 self._check_deadline(deadline, operation="process-group disappearance probe")
-                if not self._group_exists():
+                group_exists = self._group_exists()
+                self._check_deadline(
+                    deadline, operation="post-disappearance probe decision"
+                )
+                if not group_exists:
                     break
                 raise
             signals_sent.append(signum)
@@ -755,30 +840,20 @@ class GazeboServer:
                 )
             timeout = remaining / (2 - index)
             phase_deadline = deadline - remaining + timeout
-            if returncode is None:
-                self._check_deadline(deadline, operation="Gazebo leader wait")
-                try:
-                    returncode = process.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    returncode = None
-                    continue
             if self._wait_for_group_empty(phase_deadline):
                 break
 
         self._check_deadline(deadline, operation="final process-group quiescence probe")
-        if self._group_exists():
+        group_exists = self._group_exists()
+        self._check_deadline(deadline, operation="post-quiescence probe decision")
+        if group_exists:
             raise subprocess.TimeoutExpired("Gazebo process-group shutdown", 0)
-        self._check_deadline(deadline, operation="Gazebo leader reap verification")
-        returncode = process.poll()
-        if returncode is None:
-            remaining = self._remaining(deadline)
-            if remaining <= 0:
-                raise TimeoutError(
-                    "absolute monotonic deadline expired before Gazebo leader reap"
-                )
-            returncode = process.wait(timeout=remaining)
+        if not self._leader_has_exited(process):
+            self._wait_for_leader_exit(process, deadline)
+        self._check_deadline(deadline, operation="post-quiescence leader verification")
+        returncode = self._reap_leader(process, deadline)
         graceful = signals_sent == [signal.SIGTERM]
-        return self._returncode(returncode), graceful
+        return returncode, graceful
 
     def _verify_owned_directories(self) -> None:
         values = (
@@ -844,11 +919,36 @@ class GazeboServer:
             )
             if not _same_snapshot(opened, after) or not _same_snapshot(after, named_after):
                 raise OSError("native state.tlog changed during validation")
-        finally:
+            self._state_log_fd = descriptor
+            self._state_log_identity = after
+        except BaseException:
             os.close(descriptor)
+            raise
         self._check_deadline(deadline, operation="native state directory fsync")
         os.fsync(self._state_fd)
         self._check_deadline(deadline, operation="native state durability")
+
+    def _verify_native_state_binding(self, deadline: float) -> None:
+        assert self._gazebo_fd is not None
+        assert self._state_fd is not None
+        descriptor = self._state_log_fd
+        identity = self._state_log_identity
+        if descriptor is None or identity is None:
+            raise OSError("native state descriptor identity is unavailable")
+        self._check_deadline(deadline, operation="final native state inventory")
+        entries = set(os.listdir(self._gazebo_fd))
+        if (
+            not {"state", "server.log.partial"} <= entries
+            or entries - {"state", "server.log.partial", "server.log"}
+        ):
+            raise OSError("Gazebo directory inventory changed before publication")
+        self._check_deadline(deadline, operation="final native state parent identity")
+        self._verify_owned_directories()
+        self._check_deadline(deadline, operation="final native state file identity")
+        opened = os.fstat(descriptor)
+        named = os.stat("state.tlog", dir_fd=self._state_fd, follow_symlinks=False)
+        if not _same_snapshot(identity, opened) or not _same_snapshot(opened, named):
+            raise OSError("canonical native state identity changed before publication")
 
     def _publish_log(self, deadline: float) -> None:
         assert self._gazebo_fd is not None
@@ -931,8 +1031,9 @@ class GazeboServer:
             self._check_deadline(deadline, operation="owned directory validation")
             self._verify_owned_directories()
             self._validate_native_state(deadline)
+            self._verify_native_state_binding(deadline)
             self._publish_log(deadline)
-            self._close_log_handle()
+            self._close_log_handle_best_effort()
             self._summary = NativeArtifactSummary(
                 self.spec.final_log_path,
                 self.spec.native_state_path,

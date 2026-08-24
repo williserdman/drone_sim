@@ -74,20 +74,46 @@ class FakeProcess:
     ) -> None:
         self.pid = pid
         self.returncode = returncode
+        self.exited = returncode is not None
+        self.exit_returncode = returncode
         self.waits = list(waits or [0])
         self.wait_timeouts: list[float] = []
+        self.poll_calls = 0
+        self.observations = 0
 
     def poll(self) -> int | None:
+        self.poll_calls += 1
         return self.returncode
+
+    def observe_exit(self, pid: int) -> bool:
+        assert pid == self.pid
+        self.observations += 1
+        return self.exited
+
+    def mark_exited(self, returncode: int) -> None:
+        self.exited = True
+        self.exit_returncode = returncode
+
+    def receive_signal(self, signum: int) -> None:
+        if self.exited:
+            return
+        if signum == signal.SIGTERM and self.waits and self.waits[0] == "timeout":
+            self.waits.pop(0)
+            return
+        if self.waits:
+            outcome = self.waits.pop(0)
+            assert isinstance(outcome, int) and not isinstance(outcome, bool)
+        else:
+            outcome = -signum
+        self.mark_exited(outcome)
 
     def wait(self, timeout: float) -> int:
         self.wait_timeouts.append(timeout)
-        outcome = self.waits.pop(0)
-        if outcome == "timeout":
+        if not self.exited:
             raise subprocess.TimeoutExpired("gz sim", timeout)
-        assert isinstance(outcome, int) and not isinstance(outcome, bool)
-        self.returncode = outcome
-        return outcome
+        assert self.exit_returncode is not None
+        self.returncode = self.exit_returncode
+        return self.exit_returncode
 
 
 class FakeProcessGroup:
@@ -106,10 +132,11 @@ class FakeProcessGroup:
 
     def exists(self, process_group_id: int, session_id: int) -> bool:
         self.probes.append((process_group_id, session_id))
-        return self.descendant_alive or self.process.returncode is None
+        return self.descendant_alive or not self.process.exited
 
     def signal(self, process_group_id: int, signum: int) -> None:
         self.signals.append((process_group_id, signum))
+        self.process.receive_signal(signum)
         if signum == signal.SIGKILL or not self.ignore_sigterm:
             self.descendant_alive = False
 
@@ -136,19 +163,21 @@ def _start(
     monotonic=lambda: 10.0,
     sleep=lambda _seconds: None,
     group: FakeProcessGroup | None = None,
+    observe_leader_exit=None,
 ):
     process = process or FakeProcess()
     factory = PopenFactory(process)
     group = group or FakeProcessGroup(process)
-    server = GazeboServer(
-        spec,
-        popen_factory=factory,
-        monotonic=monotonic,
-        sleep=sleep,
-        get_process_group=lambda pid: pid,
-        process_group_exists=group.exists,
-        signal_process_group=group.signal,
-    )
+    options = {
+        "popen_factory": factory,
+        "monotonic": monotonic,
+        "sleep": sleep,
+        "get_process_group": lambda pid: pid,
+        "process_group_exists": group.exists,
+        "signal_process_group": group.signal,
+    }
+    options["observe_leader_exit"] = observe_leader_exit or process.observe_exit
+    server = GazeboServer(spec, **options)
     server.start()
     spec.native_state_path.parent.mkdir()
     return server, factory, group.signals
@@ -402,6 +431,7 @@ def test_start_leaves_record_path_absent_for_gazebo_to_create(tmp_path: Path):
         sleep=lambda _seconds: None,
         get_process_group=lambda pid: pid,
         process_group_exists=group.exists,
+        observe_leader_exit=process.observe_exit,
         signal_process_group=group.signal,
     )
 
@@ -501,7 +531,8 @@ def test_stop_gracefully_terminates_group_reaps_and_publishes_native_artifacts(t
     summary = server.stop(20.0)
 
     assert signals == [(process.pid, signal.SIGTERM)]
-    assert process.wait_timeouts == [pytest.approx(5.0)]
+    assert process.poll_calls == 0
+    assert process.wait_timeouts == [pytest.approx(10.0)]
     assert summary == NativeArtifactSummary(
         server_log_path=spec.final_log_path,
         state_log_path=spec.native_state_path,
@@ -521,9 +552,138 @@ def test_stop_of_already_exited_child_never_signals_reused_pid(tmp_path: Path):
     summary = server.stop(20.0)
 
     assert signals == []
-    assert process.wait_timeouts == []
+    assert process.poll_calls == 0
+    assert process.wait_timeouts == [pytest.approx(10.0)]
     assert summary.server_returncode == 17
     assert summary.graceful is False
+
+
+def test_clean_unreaped_leader_exit_retains_identity_until_one_final_reap(
+    tmp_path: Path,
+):
+    spec = _spec(tmp_path)
+    process = FakeProcess(returncode=17, waits=[])
+    server, _factory, signals = _start(
+        spec,
+        process=process,
+        observe_leader_exit=process.observe_exit,
+    )
+    spec.native_state_path.write_bytes(b"native state")
+
+    summary = server.stop(20.0)
+
+    assert signals == []
+    assert process.poll_calls == 0
+    assert len(process.wait_timeouts) == 1
+    assert summary.server_returncode == 17
+
+
+def test_concurrent_leader_exit_between_observation_and_group_probe_is_clean(
+    tmp_path: Path,
+):
+    spec = _spec(tmp_path)
+    process = FakeProcess(waits=[])
+    group = FakeProcessGroup(process)
+
+    def exit_during_probe(process_group_id: int, session_id: int) -> bool:
+        group.probes.append((process_group_id, session_id))
+        process.mark_exited(23)
+        return False
+
+    group.exists = exit_during_probe  # type: ignore[method-assign]
+    server, _factory, signals = _start(
+        spec,
+        process=process,
+        group=group,
+        observe_leader_exit=process.observe_exit,
+    )
+    spec.native_state_path.write_bytes(b"native state")
+
+    summary = server.stop(20.0)
+
+    assert signals == []
+    assert process.poll_calls == 0
+    assert len(process.wait_timeouts) == 1
+    assert summary.server_returncode == 23
+
+
+def test_concurrent_exit_after_group_probe_never_signals_reused_numeric_group(
+    tmp_path: Path,
+):
+    spec = _spec(tmp_path)
+    process = FakeProcess(waits=[])
+    group = FakeProcessGroup(process)
+    attempted_signals: list[tuple[int, int]] = []
+
+    def exit_before_signal(process_group_id: int, signum: int) -> None:
+        attempted_signals.append((process_group_id, signum))
+        process.mark_exited(31)
+        raise ProcessLookupError("original group exited")
+
+    group.signal = exit_before_signal  # type: ignore[method-assign]
+    server, _factory, _signals = _start(
+        spec,
+        process=process,
+        group=group,
+        observe_leader_exit=process.observe_exit,
+    )
+    spec.native_state_path.write_bytes(b"native state")
+
+    summary = server.stop(20.0)
+
+    assert attempted_signals == [(process.pid, signal.SIGTERM)]
+    assert process.poll_calls == 0
+    assert len(process.wait_timeouts) == 1
+    assert summary.server_returncode == 31
+
+
+def test_group_can_disappear_just_before_leader_exit_becomes_waitable(
+    tmp_path: Path,
+):
+    spec = _spec(tmp_path)
+    process = FakeProcess(waits=[])
+    group = FakeProcessGroup(process)
+    termination_started = False
+    post_signal_observations = 0
+
+    def delayed_exit_observation(pid: int) -> bool:
+        nonlocal post_signal_observations
+        assert pid == process.pid
+        if not termination_started:
+            return False
+        post_signal_observations += 1
+        if post_signal_observations == 1:
+            return False
+        process.mark_exited(29)
+        return True
+
+    def group_exits_before_waitable(process_group_id: int, signum: int) -> None:
+        nonlocal termination_started
+        group.signals.append((process_group_id, signum))
+        termination_started = True
+        group.descendant_alive = False
+
+    def transition_probe(process_group_id: int, session_id: int) -> bool:
+        group.probes.append((process_group_id, session_id))
+        return not termination_started
+
+    group.signal = group_exits_before_waitable  # type: ignore[method-assign]
+    group.exists = transition_probe  # type: ignore[method-assign]
+    server, _factory, signals = _start(
+        spec,
+        process=process,
+        group=group,
+        observe_leader_exit=delayed_exit_observation,
+    )
+    spec.native_state_path.write_bytes(b"native state")
+
+    summary = server.stop(20.0)
+
+    assert signals == [(process.pid, signal.SIGTERM)]
+    assert post_signal_observations == 2
+    assert process.poll_calls == 0
+    assert len(process.wait_timeouts) == 1
+    assert summary.server_returncode == 29
 
 
 def test_stop_terminates_surviving_descendant_after_group_leader_exited(
@@ -577,14 +737,60 @@ def test_stop_escalates_when_surviving_descendant_ignores_sigterm(tmp_path: Path
     assert summary.graceful is False
 
 
-def test_stop_escalates_once_and_recomputes_remaining_absolute_deadline(tmp_path: Path):
+def test_group_probe_crossing_absolute_deadline_starts_no_sleep_or_signal(
+    tmp_path: Path,
+):
     spec = _spec(tmp_path)
-    process = FakeProcess(waits=["timeout", -signal.SIGKILL])
-    times = iter((10.0, 12.0))
+    process = FakeProcess(returncode=0, waits=[])
+    group = FakeProcessGroup(
+        process,
+        descendant_alive=True,
+        ignore_sigterm=True,
+    )
+    clock = {"now": 10.0}
+    probe_count = 0
+    sleeps: list[float] = []
+
+    def expiring_probe(process_group_id: int, session_id: int) -> bool:
+        nonlocal probe_count
+        probe_count += 1
+        group.probes.append((process_group_id, session_id))
+        if probe_count == 3:
+            clock["now"] = 20.0
+        return group.descendant_alive
+
+    group.exists = expiring_probe  # type: ignore[method-assign]
     server, _factory, signals = _start(
         spec,
         process=process,
-        monotonic=lambda: next(times, 12.0),
+        monotonic=lambda: clock["now"],
+        sleep=sleeps.append,
+        group=group,
+        observe_leader_exit=process.observe_exit,
+    )
+    spec.native_state_path.write_bytes(b"native state")
+
+    with pytest.raises(ServerProcessError, match="deadline"):
+        server.stop(20.0)
+
+    assert signals == [(process.pid, signal.SIGTERM)]
+    assert sleeps == []
+    assert process.wait_timeouts == []
+
+
+def test_stop_escalates_once_and_recomputes_remaining_absolute_deadline(tmp_path: Path):
+    spec = _spec(tmp_path)
+    process = FakeProcess(waits=["timeout", -signal.SIGKILL])
+    clock = {"now": 10.0}
+
+    def finish_grace_phase(_seconds: float) -> None:
+        clock["now"] = 15.0
+
+    server, _factory, signals = _start(
+        spec,
+        process=process,
+        monotonic=lambda: clock["now"],
+        sleep=finish_grace_phase,
     )
     spec.native_state_path.write_bytes(b"native state")
 
@@ -594,7 +800,8 @@ def test_stop_escalates_once_and_recomputes_remaining_absolute_deadline(tmp_path
         (process.pid, signal.SIGTERM),
         (process.pid, signal.SIGKILL),
     ]
-    assert process.wait_timeouts == [pytest.approx(4.0), pytest.approx(8.0)]
+    assert process.poll_calls == 0
+    assert process.wait_timeouts == [pytest.approx(5.0)]
     assert summary.server_returncode == -signal.SIGKILL
     assert summary.graceful is False
 
@@ -654,6 +861,48 @@ def test_stop_rejects_invalid_native_state_and_preserves_partial_log(tmp_path: P
     with pytest.raises(ServerProcessError, match="state.tlog"):
         server.stop(20.0)
 
+    assert spec.partial_log_path.is_file()
+    assert not spec.final_log_path.exists()
+
+
+def test_state_rename_and_replacement_during_validation_never_returns_summary(
+    tmp_path: Path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    server, _factory, _signals = _start(spec)
+    original = b"original native state"
+    replacement = b"replacement native state"
+    spec.native_state_path.write_bytes(original)
+    retained_state = spec.native_state_path.parent.with_name("state.retained")
+    from drone_sim_gazebo.server import process as process_module
+
+    real_fsync = process_module.os.fsync
+    original_identity = spec.native_state_path.stat()
+    swapped = False
+
+    def swap_state_on_file_fsync(descriptor: int) -> None:
+        nonlocal swapped
+        real_fsync(descriptor)
+        opened = os.fstat(descriptor)
+        if swapped or (opened.st_dev, opened.st_ino) != (
+            original_identity.st_dev,
+            original_identity.st_ino,
+        ):
+            return
+        swapped = True
+        spec.native_state_path.parent.rename(retained_state)
+        spec.native_state_path.parent.mkdir()
+        spec.native_state_path.write_bytes(replacement)
+
+    monkeypatch.setattr(process_module.os, "fsync", swap_state_on_file_fsync)
+
+    with pytest.raises(ServerProcessError, match="state|directory|identity|inventory"):
+        server.stop(20.0)
+
+    assert swapped is True
+    assert (retained_state / "state.tlog").read_bytes() == original
+    assert spec.native_state_path.read_bytes() == replacement
     assert spec.partial_log_path.is_file()
     assert not spec.final_log_path.exists()
 
@@ -738,6 +987,42 @@ def test_successful_no_clobber_commit_is_not_reversed_by_later_deadline(
     summary = server.stop(20.0)
 
     assert summary.server_log_path == spec.final_log_path
+    assert spec.final_log_path.is_file()
+    assert not spec.partial_log_path.exists()
+
+
+@pytest.mark.parametrize(
+    "close_error",
+    [OSError("close failed"), RuntimeError("close failed")],
+)
+def test_close_failure_after_log_commit_is_non_authoritative_and_idempotent(
+    tmp_path: Path,
+    close_error: Exception,
+):
+    spec = _spec(tmp_path)
+    process = FakeProcess(waits=[0])
+    server, factory, signals = _start(spec, process=process)
+    spec.native_state_path.write_bytes(b"native")
+    stream = factory.stream
+
+    class CloseFailsAfterClosing:
+        def flush(self) -> None:
+            stream.flush()
+
+        def fileno(self) -> int:
+            return stream.fileno()
+
+        def close(self) -> None:
+            stream.close()
+            raise close_error
+
+    server._log_stream = CloseFailsAfterClosing()  # type: ignore[attr-defined]
+
+    summary = server.stop(20.0)
+    repeated = server.stop(999.0)
+
+    assert repeated is summary
+    assert signals == [(process.pid, signal.SIGTERM)]
     assert spec.final_log_path.is_file()
     assert not spec.partial_log_path.exists()
 

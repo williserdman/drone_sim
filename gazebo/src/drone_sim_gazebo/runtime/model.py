@@ -375,6 +375,11 @@ class RuntimeModel:
             return (PublishGazeboReady(),)
         return ()
 
+    def _native_stop_failure(self, reason: str) -> tuple[RuntimeAction, ...]:
+        actions = self._failure(reason, _SERVER_EXIT_DIAGNOSTICS)
+        self._server_stop_failed = True
+        return actions
+
     def _accept_run_state(self, event: RunStateEvent) -> tuple[RuntimeAction, ...]:
         state = event.state
         if state == "STARTING" and self._lifecycle_state == "STARTING":
@@ -505,13 +510,29 @@ class RuntimeModel:
             if event.native_artifacts == self._native_artifacts:
                 return ()
             raise RuntimeModelError("native artifact summary changed after quiescence")
-        if not self._stop_requested:
-            return self._failure("Gazebo server stopped before finalization requested")
         if self._server_stop_failed:
             return ()
+        native = event.native_artifacts
+        try:
+            validated = NativeArtifactSummary(
+                native.server_log_path,
+                native.state_log_path,
+                native.server_returncode,
+                native.graceful,
+            )
+        except (TypeError, ValueError):
+            return self._native_stop_failure("native artifact summary is malformed")
+        if validated != native:
+            return self._native_stop_failure("native artifact summary is inconsistent")
+        if not self._stop_requested:
+            return self._native_stop_failure(
+                "Gazebo server stopped before finalization requested"
+            )
         run_root = event.native_artifacts.server_log_path.parent.parent
         if run_root.name != self._run_id:
-            return self._failure("native artifact summary belongs to another run")
+            return self._native_stop_failure(
+                "native artifact summary belongs to another run"
+            )
         self._native_artifacts = event.native_artifacts
         self._frozen = True
         return (WriteQuiescence(event.native_artifacts),)
