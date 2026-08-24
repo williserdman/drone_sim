@@ -1,0 +1,10 @@
+{
+  "name": "ArduPilot",
+  "origin": "https://github.com/ArduPilot/ardupilot.git",
+  "tag": "Copter-4.7.0",
+  "revision": "1511f27194f1dcc3728270883047bdf022b3fd53",
+  "license": "GPL-3.0-or-later",
+  "license_file": "ardupilot_sitl/provenance/LICENSE.ArduPilot.txt",
+  "build_target": "bin/arducopter",
+  "build_base": "ardupilot/ardupilot-dev-base@sha256:576cd622957308469d6e72528befe5de5862457b264e61d60aaa4b8f29de85b6"
+}

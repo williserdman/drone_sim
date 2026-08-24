@@ -1,4 +1,19 @@
 # ArduPilot SITL Internal Interface
 
-No language-native sibling interface exists initially. SITL is treated as an independently deployed simulated flight-controller process; callers use its external interfaces.
+The production process remains independently deployed; siblings use only its
+external interfaces. The package exposes a small testable internal boundary:
 
+- `RuntimeConfig` validates run identity/endpoints and produces the shell-free
+  ArduCopter command.
+- `RuntimeState` / `transition` model readiness, failure, and quiescence without
+  consulting wall time.
+- `SITLProcess` owns bounded process I/O and infrastructure shutdown.
+- `OutputFacts` latches upstream JSON-exchange, MAVLink-listener, and peer-loss
+  diagnostics.
+- `JsonPeer` is a bounded test gate for the upstream binary's real 16/32-channel
+  UDP servo packet and newline-delimited JSON sensor response. It is not used in
+  production and never repairs frame gaps.
+
+Wall timeouts exist only in `SITLProcess` and `JsonPeer` to bound unavailable
+infrastructure during startup, testing, and shutdown. No mission or simulated
+event decision depends on them.

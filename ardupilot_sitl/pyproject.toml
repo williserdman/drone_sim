@@ -1,0 +1,12 @@
+[project]
+name = "drone-sim-ardupilot"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+drone-sim-ardupilot-runtime = "drone_sim_ardupilot.runtime_node:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
