@@ -3,6 +3,8 @@ name = "drone-sim-dev"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "drone-sim-artifacts",
+    "drone-sim-orchestration",
     "jsonschema>=4.23,<5",
 ]
 
@@ -13,3 +15,10 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["orchestration/src", "artifacts/src"]
+
+[tool.uv.workspace]
+members = ["artifacts", "orchestration"]
+
+[tool.uv.sources]
+drone-sim-artifacts = { workspace = true }
+drone-sim-orchestration = { workspace = true }

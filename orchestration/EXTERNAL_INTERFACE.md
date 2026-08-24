@@ -33,8 +33,13 @@ invalid relative paths.
 
 The run directory also carries the durable wall-time control/status protocol:
 `.control/finalize-request.json`, `.control/terminal-committed.json`, and
-`.status/{operator-state,artifacts-ready,source-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
+`.status/{operator-state,artifacts-ready,runtime-running,source-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
 Each file is atomically replaced only after file and directory `fsync`.
+
+`runtime-running.json` contains the current `run_id`, fixed state `RUNNING`, and
+the nonnegative first-clock simulation timestamp in integer nanoseconds. The
+runtime writes it immediately after the corresponding ROS publication. It is
+the host controller's authoritative durable evidence for reporting `RUNNING`.
 
 ## Timing
 

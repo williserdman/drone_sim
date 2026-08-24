@@ -40,6 +40,14 @@ that same deadline, so a timeout or invalid/empty output has a named diagnostic
 video partial and FFmpeg diagnostic log before the adapter returns to the
 barrier.
 
+The recorder-local report has exactly three path-keyed records for the two
+videos and bag. A valid record carries the descriptor-stable byte count and
+SHA-256/tree SHA-256 returned by its semantic validator plus a nonempty
+`semantic` summary (video codec/pixel format/dimensions/rate/frame count, or
+bag storage/topic/message summary). The host controller recomputes safe
+size/checksum values and accepts semantic validity only when the report agrees;
+it never replaces semantic validation with presence-only checks.
+
 After `.control/terminal-committed.json`, artifacts publishes the final
 `/simulation/artifact_status` with `manifest_path` set to `manifest.json`, then
 exits without writing another required log or recording event.

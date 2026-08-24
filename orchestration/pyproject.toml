@@ -2,6 +2,15 @@
 name = "drone-sim-orchestration"
 version = "0.1.0"
 requires-python = ">=3.12"
+dependencies = [
+    "drone-sim-artifacts",
+]
+
+[project.scripts]
+drone-sim = "orchestration.cli:main"
+
+[tool.uv.sources]
+drone-sim-artifacts = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=68"]

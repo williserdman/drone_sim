@@ -47,7 +47,14 @@ missing or invalid artifacts.
 
 Artifacts does not begin draining until `.status/runtime-frozen.json` proves
 all publishers are permanently quiescent. It closes both video pipelines and
-the bag before writing `artifacts-final.json`. The bag deliberately ends with
+the bag before writing `artifacts-final.json`. That report has exact top-level
+keys `run_id`, `complete`, and `records`; the records list contains exactly one
+record for each of `video/onboard.mp4`,
+`video/observer.mp4`, and `rosbag`. Each record contains `relative_path`,
+`status` (`valid`, `missing`, or `invalid`), `detail`, `size_bytes`, `sha256`,
+and a nonempty `semantic` object describing the recorder-local validation.
+Missing records, malformed facts, or host-recomputed size/checksum mismatches
+fail closed. The bag deliberately ends with
 `FINALIZING`; the host-written `manifest.json` is authoritative for terminal
 status. After `.control/terminal-committed.json`, the final artifact-status
 notification writes no required artifact data.

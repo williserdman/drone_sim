@@ -1,0 +1,1045 @@
+"""Foreground host policy for one deterministic simulation run."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import time
+from typing import Any, TextIO
+from uuid import UUID, uuid4
+
+from artifacts import (
+    ArtifactSession,
+    ConfigurationRecord,
+    DockerLogCapture,
+    DockerLogCaptureError,
+    FinalizationInput,
+    ImageDigest,
+    SourceRevision,
+    StructuredEvent,
+    ValidationResult,
+    ValidationStatus,
+    validate_regular_file,
+    validate_tree,
+)
+from ._adapters.compose import ComposeCommandResult, ComposeRuntime
+from .config import RunConfig, resolve_run_config, write_resolved_config
+from .lifecycle import LifecycleEvent, LifecycleState, RunLifecycle
+from .status_store import (
+    OperatorStatus,
+    ProtocolFileError,
+    StatusStore,
+    TerminalCause,
+)
+
+
+_REPORT_PATHS = ("video/onboard.mp4", "video/observer.mp4", "rosbag")
+_REPORT_KEYS = {
+    "relative_path",
+    "status",
+    "detail",
+    "size_bytes",
+    "sha256",
+    "semantic",
+}
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_OWNERSHIP = (
+    ("orchestration-runtime", "orchestration"),
+    ("artifacts-runtime", "artifacts"),
+    ("synthetic-companion", "companion"),
+    ("synthetic-ardupilot-sitl", "ardupilot_sitl"),
+    ("synthetic-gazebo", "gazebo"),
+    ("synthetic-electromagnet", "electromagnet"),
+    ("synthetic-scorekeeper", "scorekeeper"),
+)
+
+
+class ControllerError(RuntimeError):
+    """Controlled operator-facing failure."""
+
+
+@dataclass(frozen=True)
+class RunResult:
+    run_id: str
+    state: str
+    reason: str
+    manifest_path: str | None
+
+    @property
+    def exit_code(self) -> int:
+        return {"COMPLETED": 0, "FAILED": 1, "ABORTED": 130}.get(self.state, 0)
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "result_type": "run_result",
+            "run_id": self.run_id,
+            "state": self.state,
+            "reason": self.reason,
+            "manifest_path": self.manifest_path,
+        }
+
+
+@dataclass(frozen=True)
+class _ArtifactReportRecord:
+    relative_path: str
+    status: ValidationStatus
+    detail: str
+    size_bytes: int | None
+    sha256: str | None
+    semantic: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class ArtifactFinalReport:
+    run_id: str
+    complete: bool
+    records: tuple[_ArtifactReportRecord, ...]
+
+    @classmethod
+    def parse(cls, run_id: str, document: Any) -> "ArtifactFinalReport":
+        if not isinstance(document, dict) or set(document) != {"run_id", "complete", "records"}:
+            raise ControllerError("artifacts-final report has invalid top-level keys")
+        if document["run_id"] != run_id:
+            raise ControllerError("artifacts-final report has the wrong run_id")
+        if not isinstance(document["complete"], bool):
+            raise ControllerError("artifacts-final report complete must be boolean")
+        values = document["records"]
+        if not isinstance(values, list) or len(values) != len(_REPORT_PATHS):
+            raise ControllerError("artifacts-final report has missing or extra records")
+        records: list[_ArtifactReportRecord] = []
+        seen: set[str] = set()
+        for value in values:
+            if not isinstance(value, dict) or set(value) != _REPORT_KEYS:
+                raise ControllerError("artifacts-final record has missing or extra keys")
+            relative_path = value["relative_path"]
+            if relative_path not in _REPORT_PATHS or relative_path in seen:
+                raise ControllerError("artifacts-final report has missing, extra, or duplicate paths")
+            seen.add(relative_path)
+            try:
+                status_value = ValidationStatus(value["status"])
+            except (TypeError, ValueError) as exc:
+                raise ControllerError("artifacts-final record status is invalid") from exc
+            detail = value["detail"]
+            if not isinstance(detail, str) or not detail:
+                raise ControllerError("artifacts-final record detail must be nonempty")
+            semantic = value["semantic"]
+            if not isinstance(semantic, dict) or not semantic:
+                raise ControllerError("artifacts-final record semantic must be a nonempty object")
+            size_bytes = value["size_bytes"]
+            sha256 = value["sha256"]
+            if status_value is ValidationStatus.VALID:
+                if (
+                    isinstance(size_bytes, bool)
+                    or not isinstance(size_bytes, int)
+                    or size_bytes < 0
+                    or not isinstance(sha256, str)
+                    or _SHA256_PATTERN.fullmatch(sha256) is None
+                ):
+                    raise ControllerError("valid artifacts-final records require size and checksum")
+            elif (size_bytes is None) != (sha256 is None) or (
+                size_bytes is not None
+                and (
+                    isinstance(size_bytes, bool)
+                    or not isinstance(size_bytes, int)
+                    or size_bytes < 0
+                    or not isinstance(sha256, str)
+                    or _SHA256_PATTERN.fullmatch(sha256) is None
+                )
+            ):
+                raise ControllerError(
+                    "non-valid artifacts-final record size/checksum must both be null or valid"
+                )
+            records.append(
+                _ArtifactReportRecord(
+                    relative_path,
+                    status_value,
+                    detail,
+                    size_bytes,
+                    sha256,
+                    semantic,
+                )
+            )
+        if set(seen) != set(_REPORT_PATHS):
+            raise ControllerError("artifacts-final report has missing records")
+        ordered = tuple(sorted(records, key=lambda item: _REPORT_PATHS.index(item.relative_path)))
+        expected_complete = all(record.status is ValidationStatus.VALID for record in ordered)
+        if document["complete"] != expected_complete:
+            raise ControllerError("artifacts-final aggregate complete disagrees with records")
+        return cls(run_id, document["complete"], ordered)
+
+    def first_failure(self) -> str | None:
+        for record in self.records:
+            if record.status is not ValidationStatus.VALID:
+                return record.detail
+        return None
+
+    def validators(self) -> dict[str, Callable[[Path, str], ValidationResult]]:
+        return {
+            record.relative_path: self._validator(record)
+            for record in self.records
+        }
+
+    @staticmethod
+    def _validator(
+        record: _ArtifactReportRecord,
+    ) -> Callable[[Path, str], ValidationResult]:
+        def validate(run_directory: Path, relative_path: str) -> ValidationResult:
+            if relative_path != record.relative_path:
+                return ValidationResult(
+                    ValidationStatus.INVALID,
+                    None,
+                    None,
+                    "artifacts-final validator path mismatch",
+                )
+            if record.status is not ValidationStatus.VALID:
+                return ValidationResult(record.status, None, None, record.detail)
+            host_result = (
+                validate_tree(run_directory, relative_path)
+                if relative_path == "rosbag"
+                else validate_regular_file(run_directory, relative_path)
+            )
+            if host_result.status is not ValidationStatus.VALID:
+                return host_result
+            if host_result.size_bytes != record.size_bytes:
+                return ValidationResult(
+                    ValidationStatus.INVALID,
+                    None,
+                    None,
+                    f"artifacts-final size mismatch for {relative_path}",
+                )
+            if host_result.sha256 != record.sha256:
+                return ValidationResult(
+                    ValidationStatus.INVALID,
+                    None,
+                    None,
+                    f"artifacts-final checksum mismatch for {relative_path}",
+                )
+            return host_result
+
+        return validate
+
+
+class _HostEventLog:
+    """One exclusively-owned append stream consumed by Task 5 capture."""
+
+    def __init__(
+        self,
+        run_directory: Path,
+        run_id: str,
+        stream: TextIO,
+        utcnow: Callable[[], datetime],
+    ) -> None:
+        self._run_directory = run_directory
+        self._run_id = run_id
+        self._stream = stream
+        self._utcnow = utcnow
+        self._closed = False
+        logs = run_directory / "logs"
+        try:
+            logs.mkdir(mode=0o755)
+        except FileExistsError:
+            pass
+        metadata = logs.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ControllerError("logs path is not a safe directory")
+        self._logs_fd = os.open(
+            logs,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            self._descriptor = os.open(
+                "orchestration-host.jsonl.partial",
+                os.O_WRONLY
+                | os.O_APPEND
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=self._logs_fd,
+            )
+            os.fsync(self._logs_fd)
+        except BaseException:
+            os.close(self._logs_fd)
+            raise
+
+    def emit(self, event: str, *, severity: str = "INFO", **fields: Any) -> None:
+        if self._closed:
+            raise RuntimeError("host event log is closed")
+        timestamp = self._utcnow()
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ControllerError("host event wall clock must be timezone-aware")
+        structured = StructuredEvent(
+            run_id=self._run_id,
+            module="orchestration",
+            severity=severity,
+            event=event,
+            sim_timestamp=None,
+            wall_timestamp=timestamp.astimezone(timezone.utc),
+            fields=fields,
+        )
+        line = structured.to_json_line()
+        payload = line.encode("utf-8")
+        written = 0
+        while written < len(payload):
+            count = os.write(self._descriptor, payload[written:])
+            if count <= 0:
+                raise OSError("host event append made no progress")
+            written += count
+        os.fsync(self._descriptor)
+        self._stream.write(line)
+        self._stream.flush()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            os.fsync(self._descriptor)
+        finally:
+            os.close(self._descriptor)
+            os.fsync(self._logs_fd)
+            os.close(self._logs_fd)
+
+
+class _UnavailableCompose:
+    """Diagnostic-only boundary used when adapter construction itself fails."""
+
+    def __init__(self, run_id: str, detail: str) -> None:
+        self.project_name = f"drone-sim-{run_id.replace('-', '')}"
+        self.detail = detail
+
+    def logs(self, _command: list[str], _timeout: float):
+        from artifacts import DockerLogCommandResult
+
+        return DockerLogCommandResult(1, self.detail.encode("utf-8"))
+
+    def image_digests(self, _timeout: float) -> tuple[ImageDigest, ...]:
+        return ()
+
+
+class RunController:
+    """Own the host lifecycle policy; dependencies remain injectable boundaries."""
+
+    def __init__(
+        self,
+        *,
+        project_directory: Path | str | None = None,
+        status_store_factory: Callable[[Path], StatusStore] = StatusStore,
+        compose_factory: Callable[[RunConfig, Path], Any] | None = None,
+        log_capture_factory: Callable[..., Any] = DockerLogCapture,
+        artifact_session_factory: Callable[..., Any] | None = ArtifactSession,
+        config_writer: Callable[[Path, RunConfig], Path] = write_resolved_config,
+        uuid_factory: Callable[[], UUID] = uuid4,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        utcnow: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        event_stream: TextIO | None = None,
+        poll_interval: float = 0.1,
+        source_runner: Callable[..., Any] = subprocess.run,
+    ) -> None:
+        self.project_directory = Path(
+            project_directory
+            if project_directory is not None
+            else Path(__file__).resolve().parents[3]
+        ).resolve()
+        self.status_store_factory = status_store_factory
+        self.compose_factory = compose_factory or self._default_compose
+        self.log_capture_factory = log_capture_factory
+        self.artifact_session_factory = artifact_session_factory or ArtifactSession
+        self.config_writer = config_writer
+        self.uuid_factory = uuid_factory
+        self.monotonic = monotonic
+        self.sleep = sleep
+        self.utcnow = utcnow
+        self.event_stream = event_stream or sys.stdout
+        if isinstance(poll_interval, bool) or poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
+        self.poll_interval = float(poll_interval)
+        self.source_runner = source_runner
+
+    def _default_compose(self, config: RunConfig, run_directory: Path) -> ComposeRuntime:
+        return ComposeRuntime(
+            project_directory=self.project_directory,
+            run_id=config.run_id,
+            run_directory=run_directory,
+            config_path=run_directory / "configuration/run.json",
+            monotonic=self.monotonic,
+        )
+
+    @staticmethod
+    def _remaining(deadline: float, monotonic: Callable[[], float]) -> float:
+        return max(0.0, deadline - monotonic())
+
+    @staticmethod
+    def _cause_for_request(document: Mapping[str, Any]) -> TerminalCause:
+        terminal = document["requested_terminal"]
+        return TerminalCause(
+            "operator_abort" if terminal == "ABORTED" else "requested_terminal",
+            document["reason"],
+        )
+
+    @staticmethod
+    def _validate_ready(document: Mapping[str, Any]) -> None:
+        if set(document) != {"run_id", "ready"} or document["ready"] is not True:
+            raise ProtocolFileError("artifacts-ready status is invalid")
+
+    @staticmethod
+    def _validate_running(document: Mapping[str, Any]) -> int:
+        if set(document) != {"run_id", "state", "sim_timestamp_ns"}:
+            raise ProtocolFileError("runtime-running status is invalid")
+        stamp = document["sim_timestamp_ns"]
+        if (
+            document["state"] != "RUNNING"
+            or isinstance(stamp, bool)
+            or not isinstance(stamp, int)
+            or stamp < 0
+        ):
+            raise ProtocolFileError("runtime-running status is invalid")
+        return stamp
+
+    @staticmethod
+    def _source_stamp(document: Mapping[str, Any]) -> int | None:
+        stamp = document.get("sim_timestamp_ns")
+        if stamp is None:
+            return None
+        if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0:
+            raise ProtocolFileError("source-finished simulation timestamp is invalid")
+        return stamp
+
+    @staticmethod
+    def _ps_cause(result: ComposeCommandResult) -> TerminalCause | None:
+        if result.returncode != 0:
+            return TerminalCause("child_process", "compose_ps_failed")
+        try:
+            decoded = result.output.decode("utf-8")
+            value = json.loads(decoded)
+            rows = value if isinstance(value, list) else [value]
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return TerminalCause("child_process", "compose_ps_invalid")
+        if not rows or any(
+            not isinstance(row, dict)
+            or str(row.get("State", "")).lower() not in {"running", "restarting"}
+            or str(row.get("Health", "")).lower() == "unhealthy"
+            for row in rows
+        ):
+            return TerminalCause("child_process", "compose_child_exited")
+        return None
+
+    def _observed_cause(
+        self,
+        store: StatusStore,
+        run_id: str,
+        compose: Any,
+        deadline: float,
+    ) -> TerminalCause | None:
+        request = store.read_finalize_request(run_id)
+        if request is not None:
+            return self._cause_for_request(request)
+        failure = store.read_runtime_status(run_id, "runtime-failure")
+        if failure is not None:
+            reason = failure.get("reason")
+            module = failure.get("module")
+            if not isinstance(reason, str) or not reason:
+                return TerminalCause("runtime_failure", "invalid_runtime_failure")
+            return TerminalCause(
+                "runtime_failure",
+                reason,
+                module if isinstance(module, str) and module else None,
+            )
+        remaining = self._remaining(deadline, self.monotonic)
+        try:
+            return self._ps_cause(compose.ps(remaining))
+        except Exception as exc:
+            return TerminalCause("child_process", f"compose_ps_exception:{type(exc).__name__}")
+
+    def _wait_for(
+        self,
+        store: StatusStore,
+        run_id: str,
+        compose: Any,
+        name: str,
+        deadline: float,
+        deadline_cause: TerminalCause,
+        *,
+        observe_causes: bool = True,
+    ) -> tuple[dict[str, Any] | None, TerminalCause | None]:
+        while True:
+            if observe_causes:
+                cause = self._observed_cause(store, run_id, compose, deadline)
+                if cause is not None:
+                    return None, cause
+            document = store.read_runtime_status(run_id, name)
+            if document is not None:
+                return document, None
+            remaining = self._remaining(deadline, self.monotonic)
+            if remaining <= 0:
+                return None, deadline_cause
+            self.sleep(min(self.poll_interval, remaining))
+
+    @staticmethod
+    def _status(
+        lifecycle: RunLifecycle,
+        *,
+        manifest_path: str | None = None,
+        primary: TerminalCause | None = None,
+        diagnostics: tuple[TerminalCause, ...] = (),
+    ) -> OperatorStatus:
+        return OperatorStatus(
+            lifecycle.run_id,
+            lifecycle.state.value,
+            lifecycle.reason,
+            manifest_path,
+            primary,
+            diagnostics,
+        )
+
+    @staticmethod
+    def _terminal_event(requested: str) -> LifecycleEvent:
+        return {
+            "COMPLETED": LifecycleEvent.COMPLETE,
+            "FAILED": LifecycleEvent.FAIL,
+            "ABORTED": LifecycleEvent.ABORT,
+        }[requested]
+
+    def _source_revisions(self, deadline: float) -> tuple[SourceRevision, ...]:
+        try:
+            revision = self.source_runner(
+                ["git", "-C", str(self.project_directory), "rev-parse", "HEAD"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                shell=False,
+                timeout=self._remaining(deadline, self.monotonic),
+            )
+            dirty = self.source_runner(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_directory),
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=normal",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                shell=False,
+                timeout=self._remaining(deadline, self.monotonic),
+            )
+        except Exception as exc:
+            raise ControllerError("source_revision_unavailable") from exc
+        if revision.returncode != 0 or dirty.returncode != 0:
+            raise ControllerError("source_revision_unavailable")
+        try:
+            value = revision.stdout.decode("ascii").strip()
+        except UnicodeDecodeError as exc:
+            raise ControllerError("source_revision_invalid") from exc
+        if not value:
+            raise ControllerError("source_revision_invalid")
+        return (SourceRevision("drone_sim", value, bool(dirty.stdout)),)
+
+    @staticmethod
+    def _score_metadata(
+        run_directory: Path,
+    ) -> tuple[float | None, float | None, str | None, tuple[str, ...]]:
+        path = run_directory / "scoring/result.json"
+        try:
+            payload = path.read_bytes()
+            document = json.loads(payload.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None, None, None, ()
+        if not isinstance(document, dict):
+            return None, None, None, ()
+        achieved = document.get("achieved_score")
+        maximum = document.get("maximum_available_score")
+        if isinstance(achieved, bool) or not isinstance(achieved, (int, float)):
+            achieved = None
+        if isinstance(maximum, bool) or not isinstance(maximum, (int, float)):
+            maximum = None
+        evidence = document.get("evidence_paths", [])
+        if not isinstance(evidence, list) or any(not isinstance(item, str) for item in evidence):
+            evidence = []
+        return (
+            achieved,
+            maximum,
+            hashlib.sha256(payload).hexdigest(),
+            tuple(evidence),
+        )
+
+    @staticmethod
+    def _first_invalid(
+        run_directory: Path,
+        validators: Mapping[str, Callable[[Path, str], ValidationResult]],
+    ) -> str | None:
+        for path in _REPORT_PATHS:
+            result = validators[path](run_directory, path)
+            if result.status is not ValidationStatus.VALID:
+                return result.detail
+        return None
+
+    def start(self, config_path: Path | str) -> RunResult:
+        try:
+            config = resolve_run_config(config_path, run_id_factory=self.uuid_factory)
+        except (OSError, ValueError) as exc:
+            raise ControllerError(str(exc)) from exc
+        store = self.status_store_factory(config.output_root)
+        run_directory = store.allocate(config.run_id)
+        lifecycle = RunLifecycle.created(config.run_id)
+        store.write_operator_status(self._status(lifecycle))
+        event_log = _HostEventLog(
+            run_directory, config.run_id, self.event_stream, self.utcnow
+        )
+        wall_started = self.utcnow()
+        mono_started = self.monotonic()
+        compose: Any | None = None
+        compose_started = False
+        compose_attempted = False
+        primary: TerminalCause | None = None
+        diagnostics: list[TerminalCause] = []
+        sim_start_ns: int | None = None
+        sim_end_ns: int | None = None
+        manifest_path: Path | None = None
+        try:
+            self.config_writer(run_directory, config)
+            lifecycle = lifecycle.apply(LifecycleEvent.START)
+            store.write_operator_status(self._status(lifecycle))
+            event_log.emit("run_starting", config_sha256=config.config_sha256)
+            try:
+                compose = self.compose_factory(config, run_directory)
+            except Exception as exc:
+                primary = TerminalCause(
+                    "compose_factory",
+                    f"compose_factory_exception:{type(exc).__name__}",
+                )
+                compose = _UnavailableCompose(config.run_id, str(exc))
+            startup_deadline = min(
+                mono_started + config.startup_wall_seconds,
+                mono_started + config.max_wall_seconds,
+            )
+            if primary is None:
+                try:
+                    compose_attempted = True
+                    up_result = compose.up(
+                        self._remaining(startup_deadline, self.monotonic)
+                    )
+                    if up_result.returncode != 0:
+                        primary = TerminalCause("compose_start", "compose_up_failed")
+                    else:
+                        compose_started = True
+                except KeyboardInterrupt:
+                    primary = TerminalCause("operator_interrupt", "operator_interrupt")
+                except Exception as exc:
+                    primary = TerminalCause(
+                        "compose_start",
+                        f"compose_up_exception:{type(exc).__name__}",
+                    )
+
+            if compose_started and primary is None:
+                try:
+                    ready, primary = self._wait_for(
+                        store,
+                        config.run_id,
+                        compose,
+                        "artifacts-ready",
+                        startup_deadline,
+                        TerminalCause("startup_deadline", "startup_deadline"),
+                    )
+                    if ready is not None:
+                        self._validate_ready(ready)
+                        lifecycle = lifecycle.apply(LifecycleEvent.MODULES_READY)
+                        store.write_operator_status(self._status(lifecycle))
+
+                    overall_deadline = mono_started + config.max_wall_seconds
+                    if primary is None:
+                        running, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            "runtime-running",
+                            overall_deadline,
+                            TerminalCause("clock_stall", "clock_source_stall"),
+                        )
+                        if running is not None:
+                            sim_start_ns = self._validate_running(running)
+                            lifecycle = lifecycle.apply(LifecycleEvent.CLOCK_STARTED)
+                            store.write_operator_status(self._status(lifecycle))
+                    if primary is None:
+                        finished, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            "source-finished",
+                            overall_deadline,
+                            TerminalCause("clock_stall", "clock_source_stall"),
+                        )
+                        if finished is not None:
+                            sim_end_ns = self._source_stamp(finished)
+                except KeyboardInterrupt:
+                    primary = TerminalCause("operator_interrupt", "operator_interrupt")
+                except (ProtocolFileError, ControllerError) as exc:
+                    primary = TerminalCause("protocol", str(exc))
+
+            requested = "COMPLETED" if primary is None else (
+                "ABORTED"
+                if primary.kind in {"operator_abort", "operator_interrupt"}
+                else "FAILED"
+            )
+            reason = "mission_complete" if primary is None else primary.reason
+
+            if compose is not None:
+                persisted = store.request_finalization(config.run_id, requested, reason)
+                requested = persisted["requested_terminal"]
+                reason = persisted["reason"]
+                persisted_cause = self._cause_for_request(persisted)
+                if primary is None or persisted_cause.kind == "operator_abort":
+                    primary = persisted_cause if requested != "COMPLETED" else None
+                lifecycle = lifecycle.apply(self._terminal_event(requested), reason=reason)
+                store.write_operator_status(
+                    self._status(lifecycle, primary=primary, diagnostics=tuple(diagnostics))
+                )
+                event_log.emit(
+                    "run_finalizing",
+                    requested_terminal=requested,
+                    reason=reason,
+                )
+
+                final_deadline = self.monotonic() + config.finalization_wall_seconds
+                teardown_reserve = min(5.0, config.finalization_wall_seconds / 5.0)
+                work_deadline = final_deadline - teardown_reserve
+
+                if compose_started:
+                    for status_name in ("runtime-frozen", "artifacts-final"):
+                        try:
+                            document, cause = self._wait_for(
+                                store,
+                                config.run_id,
+                                compose,
+                                status_name,
+                                work_deadline,
+                                TerminalCause("finalization_deadline", "finalization_deadline"),
+                                observe_causes=False,
+                            )
+                        except KeyboardInterrupt:
+                            document = None
+                            cause = TerminalCause("operator_interrupt", "operator_interrupt")
+                        if cause is not None:
+                            if primary is None:
+                                primary = cause
+                            elif cause != primary:
+                                diagnostics.append(cause)
+                            if requested == "COMPLETED":
+                                requested = "FAILED"
+                                reason = cause.reason
+                            break
+
+                event_log.emit("log_capture_starting")
+                event_log.close()
+                try:
+                    capture = self.log_capture_factory(
+                        run_directory=run_directory,
+                        project_name=compose.project_name,
+                        ownership=_OWNERSHIP,
+                        run_id=config.run_id,
+                        command_runner=lambda command: compose.logs(
+                            command,
+                            self._remaining(work_deadline, self.monotonic),
+                        ),
+                        host_events=True,
+                    )
+                    capture.capture()
+                except KeyboardInterrupt:
+                    requested = "ABORTED"
+                    reason = "operator_interrupt"
+                    primary = primary or TerminalCause("operator_interrupt", reason)
+                except DockerLogCaptureError as exc:
+                    diagnostic = TerminalCause(
+                        "docker_log_capture",
+                        "docker_log_capture_failed",
+                    )
+                    if primary is None:
+                        primary = diagnostic
+                    else:
+                        diagnostics.append(diagnostic)
+                    if requested == "COMPLETED":
+                        requested = "FAILED"
+                        reason = diagnostic.reason
+                    for item in exc.result.diagnostics:
+                        diagnostics.append(
+                            TerminalCause("docker_log_diagnostic", item.detail, item.module)
+                        )
+                except Exception as exc:
+                    diagnostic = TerminalCause(
+                        "docker_log_capture",
+                        f"docker_log_capture_exception:{type(exc).__name__}",
+                    )
+                    primary = primary or diagnostic
+                    if requested == "COMPLETED":
+                        requested = "FAILED"
+                        reason = diagnostic.reason
+
+                try:
+                    report_document = store.read_runtime_status(config.run_id, "artifacts-final")
+                    if report_document is None:
+                        raise ControllerError("artifacts-final report is missing")
+                    report = ArtifactFinalReport.parse(config.run_id, report_document)
+                    validators = report.validators()
+                    report_failure = report.first_failure() or self._first_invalid(
+                        run_directory, validators
+                    )
+                except (ControllerError, ProtocolFileError) as exc:
+                    report = None
+                    validators = {
+                        path: (
+                            lambda detail: lambda _root, _path: ValidationResult(
+                                ValidationStatus.INVALID, None, None, detail
+                            )
+                        )(str(exc))
+                        for path in _REPORT_PATHS
+                    }
+                    report_failure = str(exc)
+                if report_failure is not None and requested == "COMPLETED":
+                    requested = "FAILED"
+                    reason = report_failure
+                    primary = primary or TerminalCause("artifact_validation", reason)
+
+                try:
+                    source_revisions = self._source_revisions(work_deadline)
+                except ControllerError as exc:
+                    source_revisions = ()
+                    if requested == "COMPLETED":
+                        requested = "FAILED"
+                        reason = str(exc)
+                        primary = primary or TerminalCause("provenance", reason)
+                try:
+                    image_digests = tuple(
+                        compose.image_digests(
+                            self._remaining(work_deadline, self.monotonic)
+                        )
+                    )
+                    if not image_digests:
+                        raise ControllerError("image_digest_unavailable")
+                except Exception:
+                    image_digests = ()
+                    if requested == "COMPLETED":
+                        requested = "FAILED"
+                        reason = "image_digest_unavailable"
+                        primary = primary or TerminalCause("provenance", reason)
+                achieved, maximum, scoring_checksum, evidence = self._score_metadata(
+                    run_directory
+                )
+                if (sim_start_ns is None) != (sim_end_ns is None):
+                    sim_start_ns = None
+                    sim_end_ns = None
+                request = FinalizationInput(
+                    run_id=config.run_id,
+                    requested_terminal=requested,
+                    reason=reason,
+                    sim_start_ns=sim_start_ns,
+                    sim_end_ns=sim_end_ns,
+                    wall_started_at=wall_started,
+                    wall_ended_at=self.utcnow(),
+                    source_revisions=source_revisions,
+                    image_digests=image_digests,
+                    configuration_records=(
+                        ConfigurationRecord("configuration/run.json", config.config_sha256),
+                    ),
+                    achieved_score=achieved,
+                    maximum_available_score=maximum,
+                    scoring_checksum=scoring_checksum,
+                    evidence_paths=evidence,
+                )
+                try:
+                    session = self.artifact_session_factory(
+                        run_directory, validators=validators
+                    )
+                    manifest_path = session.finalize(request)
+                except Exception as exc:
+                    requested = "FAILED"
+                    reason = f"artifact_finalization_failed:{exc}"
+                    primary = primary or TerminalCause("artifact_finalization", reason)
+                    manifest_path = None
+
+                effective = requested
+                if manifest_path is not None:
+                    try:
+                        validated = store.validated_manifest_path(config.run_id)
+                        manifest_document = json.loads(validated.read_text(encoding="utf-8"))
+                        effective = manifest_document["terminal_status"]
+                        reason = manifest_document["reason"]
+                        if (
+                            effective == "FAILED"
+                            and lifecycle.pending_terminal is LifecycleState.COMPLETED
+                        ):
+                            lifecycle = lifecycle.apply(
+                                LifecycleEvent.FINALIZATION_FAILED,
+                                reason=reason,
+                            )
+                        else:
+                            lifecycle = lifecycle.apply(LifecycleEvent.ARTIFACTS_FINALIZED)
+                        store.write_terminal_committed(
+                            config.run_id,
+                            {
+                                "run_id": config.run_id,
+                                "terminal_status": effective,
+                                "reason": reason,
+                                "manifest_path": "manifest.json",
+                            },
+                        )
+                        if compose_started:
+                            notified, notify_cause = self._wait_for(
+                                store,
+                                config.run_id,
+                                compose,
+                                "terminal-notified",
+                                work_deadline,
+                                TerminalCause(
+                                    "finalization_deadline",
+                                    "terminal_notification_deadline",
+                                ),
+                                observe_causes=False,
+                            )
+                            if notify_cause is not None:
+                                diagnostics.append(notify_cause)
+                    except Exception as exc:
+                        effective = "FAILED"
+                        reason = f"manifest_commit_failed:{exc}"
+                        primary = primary or TerminalCause("manifest", reason)
+                        lifecycle = replace(
+                            lifecycle,
+                            state=LifecycleState.FAILED,
+                            pending_terminal=None,
+                            reason=reason,
+                        )
+                else:
+                    effective = "FAILED"
+                    lifecycle = replace(
+                        lifecycle,
+                        state=LifecycleState.FAILED,
+                        pending_terminal=None,
+                        reason=reason,
+                    )
+
+                later = store.read_runtime_status(config.run_id, "runtime-failure")
+                if later is not None:
+                    later_reason = later.get("reason")
+                    if isinstance(later_reason, str) and later_reason:
+                        later_cause = TerminalCause(
+                            "runtime_failure",
+                            later_reason,
+                            later.get("module")
+                            if isinstance(later.get("module"), str)
+                            else None,
+                        )
+                        if later_cause != primary and later_cause not in diagnostics:
+                            diagnostics.append(later_cause)
+                final_status = OperatorStatus(
+                    config.run_id,
+                    effective,
+                    reason,
+                    "manifest.json" if manifest_path is not None else None,
+                    primary,
+                    tuple(diagnostics),
+                )
+                store.write_operator_status(final_status)
+                return RunResult(
+                    config.run_id,
+                    effective,
+                    reason,
+                    final_status.manifest_path,
+                )
+
+            lifecycle = replace(
+                lifecycle,
+                state=LifecycleState.FAILED,
+                pending_terminal=None,
+                reason=(primary.reason if primary else "compose_start_failed"),
+            )
+            status = self._status(lifecycle, primary=primary)
+            store.write_operator_status(status)
+            return RunResult(config.run_id, status.state, status.reason, None)
+        finally:
+            try:
+                event_log.close()
+            except Exception:
+                pass
+            if compose_attempted and compose is not None:
+                teardown_failure: str | None = None
+                try:
+                    # The finalization branch defines final_deadline. Startup failures
+                    # retain a small bounded teardown attempt.
+                    deadline = locals().get("final_deadline", self.monotonic() + 1.0)
+                    down_result = compose.down(
+                        self._remaining(deadline, self.monotonic)
+                    )
+                    if down_result.returncode != 0:
+                        teardown_failure = (
+                            f"compose_down_failed:{down_result.returncode}"
+                        )
+                except BaseException as exc:
+                    teardown_failure = f"compose_down_exception:{type(exc).__name__}"
+                if teardown_failure is not None:
+                    try:
+                        existing = store.read_operator_status(config.run_id)
+                        diagnostic = TerminalCause("teardown", teardown_failure)
+                        if diagnostic not in existing.diagnostics:
+                            store.write_operator_status(
+                                replace(
+                                    existing,
+                                    diagnostics=(*existing.diagnostics, diagnostic),
+                                )
+                            )
+                    except Exception:
+                        pass
+
+    @staticmethod
+    def _absolute_output_root(output_root: Path | str) -> Path:
+        path = Path(output_root)
+        if not path.is_absolute():
+            raise ControllerError("output root must be absolute")
+        return path
+
+    def status(self, run_id: str, output_root: Path | str) -> RunResult:
+        store = self.status_store_factory(self._absolute_output_root(output_root))
+        status = store.read_operator_status(run_id)
+        return RunResult(status.run_id, status.state, status.reason, status.manifest_path)
+
+    def abort(self, run_id: str, output_root: Path | str) -> RunResult:
+        store = self.status_store_factory(self._absolute_output_root(output_root))
+        store.request_finalization(run_id, "ABORTED", "operator_abort")
+        status = store.read_operator_status(run_id)
+        return RunResult(status.run_id, status.state, status.reason, status.manifest_path)
+
+    def collect_results(self, run_id: str, output_root: Path | str) -> RunResult:
+        store = self.status_store_factory(self._absolute_output_root(output_root))
+        path = store.validated_manifest_path(run_id)
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ControllerError(f"manifest cannot be read: {exc}") from exc
+        return RunResult(
+            run_id,
+            document["terminal_status"],
+            document["reason"],
+            "manifest.json",
+        )
+
+
+__all__ = [
+    "ArtifactFinalReport",
+    "ControllerError",
+    "RunController",
+    "RunResult",
+]

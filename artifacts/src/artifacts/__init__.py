@@ -6,7 +6,6 @@ from .manifest import (
     ImageDigest,
     RunManifest,
     SourceRevision,
-    build_manifest,
     write_manifest_atomic,
 )
 from ._adapters.rosbag import (
@@ -67,7 +66,6 @@ __all__ = [
     "VideoStreamRecorder",
     "VideoValidationResult",
     "VideoValidator",
-    "build_manifest",
     "validate_regular_file",
     "validate_tree",
     "write_event",

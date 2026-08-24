@@ -1,0 +1,71 @@
+# SDD ledger — plan: docs/superpowers/plans/phase-2-run-artifacts.md
+
+## Preflight scan
+
+| Tasks | Producer / consumer relationship | Finding |
+| --- | --- | --- |
+| Task 1 -> Task 3 | Fixes the ten bag topics and `config/recording-qos.yaml`; bag adapter consumes both | Clean. |
+| Task 1 -> Task 4 | Produces immutable width, height, FPS, encoding, metadata topics, and QoS; video adapter consumes them | Clean. |
+| Task 1 -> Task 6 | Produces template resolution, resolved snapshots, deadlines, and CLI contract; controller consumes them | Clean. |
+| Task 1 -> Task 7 | Produces ROS/status/finalization bindings; runtime nodes implement them | Clean. |
+| Task 1 -> Task 8 | Produces documented fixed contracts; terminal gate verifies them | Clean. |
+| Task 2 -> Task 3 | Produces `ValidationResult`; bag validator returns it | Clean. |
+| Task 2 -> Task 4 | Produces `ValidationResult` and session inventory; video validator consumes both | Clean. |
+| Task 2 -> Task 5 | Produces structured validation/inventory semantics; log capture produces required inputs | Clean. |
+| Task 2 -> Task 6 | Produces `ArtifactSession.finalize`; controller owns its invocation and terminal downgrade | Clean. |
+| Task 2 -> Task 8 | Produces schema, hashes, and idempotent terminal commit; gate validates them | Clean. |
+| Task 3 -> Task 4 | Creates `artifacts/Dockerfile`; Task 4 extends it with FFmpeg | Clean and sequential. |
+| Task 3 -> Task 7 | Produces rosbag process/readiness/finalization adapter; artifacts runtime consumes it | Clean. |
+| Task 3 -> Task 8 | Produces explicit MCAP bag and validator; gate checks exact inventory/counts | Clean. |
+| Task 4 -> Task 7 | Produces video adapter/node and extends artifact image; runtime composes them | Clean. |
+| Task 4 -> Task 8 | Produces MP4 and ffprobe validation; gate checks both streams | Clean. |
+| Task 5 -> Task 6 | Produces host Docker-log capture; controller invokes it before manifest commit | Clean. |
+| Task 5 -> Task 8 | Produces raw/partitioned logs; gate verifies seven module streams | Clean. |
+| Task 6 -> Task 7 | Produces status/Compose/controller seams; runtime services and profile satisfy them | Clean; Task 6 tests use fake Compose until services exist. |
+| Task 6 -> Task 8 | Produces operator commands and terminal sequence; gate drives all three outcomes | Clean. |
+| Task 7 -> Task 8 | Produces complete profile and synthetic fixtures; gate treats them as non-production evidence | Clean. |
+| Tasks 1 and 6 | Both modify orchestration package exports/configuration surface | Clean and sequential; Task 6 consumes Task 1 names. |
+| Tasks 2-5 | Sequentially modify artifact exports and validation surfaces | Clean; each task consumes the exact prior interface. |
+| Tasks 3, 4, and 7 | Sequentially create/extend `artifacts/Dockerfile` | Clean; bag test target precedes FFmpeg and runtime wiring. |
+| Task 1 | Files, tests, YAML, docs, and commit scope agree internally | Clean. |
+| Task 2 | Files, types, validators, schema, tests, and commit scope agree internally | Clean. |
+| Task 3 | Dockerfile is created before its test command and before later modifications | Clean. |
+| Task 4 | Video pairing, FFmpeg command, validation, and Dockerfile extension agree | Clean. |
+| Task 5 | Raw log preservation and strict structured-event routing agree with the common log contract | Clean. |
+| Task 6 | CLI location, uv workspace installation, controller ordering, exits, and status lookup agree | Clean. |
+| Task 7 | Runtime files, service topology, fault names, simulation stamps, and test commands agree | Clean. |
+| Task 8 | Completed/failed/aborted tests cover the Phase 2 gate and preserve explicit non-claims | Clean. |
+
+Baseline: `make test` passed 58 unit/contract tests and 3 Docker integration tests in the isolated worktree.
+
+Task 1: Ruling: exclusive run-directory allocation belongs to Task 6 `StatusStore`; Task 1 `write_resolved_config` accepts that newly allocated directory and exclusively rejects an existing `configuration/run.json` — this preserves the plan's allocate-then-snapshot sequence while the full system still rejects existing runs — if wrong, Task 6 must move allocation into the configuration writer and its controller interface/tests require rework.
+Task 1: minor (fixing with related review findings): `write_resolved_config` should reject a hand-constructed invalid `run_id`, not only resolver-produced values.
+Task 1: fix round 1/5 (2 addressed, 0 open — shared bounded monotonic finalization deadline; persistence-boundary UUID validation; commits befdf06..cb34f59).
+Task 1: complete (commits 938a777..cb34f59, review clean with one cross-task allocation ruling).
+Task 2: review round 1/5 (3 important findings open — atomic no-clobber concurrent manifest publication; descriptor-anchored intermediate path traversal; fail-closed non-UTF-8 tree names). Minor compatibility-wrapper concern deferred to Task 6 controller integration, where the authoritative finalization seam is selected.
+Task 2: fix round 1/5 (3 addressed, 0 open — concurrent no-clobber publication; descriptor-anchored file/tree traversal; stable invalid result for non-UTF-8 paths; commits 37c425e..5c2a70c).
+Task 2: complete (commits cb34f59..5c2a70c; 61 focused, 77 artifact, and 131 repository tests passed; scoped re-review approved). Task 6 must deprecate/unexport the compatibility-only `build_manifest` and use `ArtifactSession.finalize(FinalizationInput)` as the sole production seam.
+Task 3: review round 1/5 (3 important and 1 minor findings open — readiness must verify frozen ROS topic types; semantic bag inspection and returned checksum must describe one stable snapshot; apt-added ROS/runtime/build packages must be reproducibly constrained; recorder log creation must reject symlink/path escape).
+Task 3: fix round 1/5 (4 addressed, 0 open — frozen endpoint type readiness; stable before/after semantic bag snapshot; exact seven-package apt lock; descriptor-anchored append-only recorder log; commits 4280836..d527abb).
+Task 3: complete (commits 5c2a70c..d527abb; 37 focused and 114 full container tests, 164 host tests; scoped re-review approved).
+Task 4: review round 1/5 (2 critical, 5 important, 1 minor open — bound stdin close/probe/decode to shared deadline; bind FFmpeg and publication to the reserved output inode; use configured expected count; descriptor-stable semantic validation; strict full-decode error handling; fail-closed exception cleanup; transactional structured-error node startup; exact libx264 match). Task 7 integration concerns must be resolved in this interface: canonical terminal values, configured 40-frame input, and callback containment.
+Task 4: fix round 1/5 (original findings structurally addressed, but re-review left 1 critical, 6 important, 2 minor open — mutation watch must span validation through publication; watch retained parent chain ABA; full raw-pipe writes; reap child after exceptional wait/signal failure; close prepare-output locals on startup race; retain partial across late publication failure; deadline-bound hashing; preserve MISSING and no-stale empty results; propagate startup deadline).
+Task 4: fix round 2/5 (round-2 findings mostly addressed, but re-review left 1 critical, 2 important, 1 minor open — final post-guard mutation window; spawn-deadline handoff log/zombie ownership; check-then-unlink cleanup races; reject over-reported writes). Ruling: replace the named in-progress output with a Linux anonymous `O_TMPFILE`, drop all writable capabilities before validation, and descriptor-link the exact inode to final on success or `.partial` on failure; this removes unsafe cleanup instead of adding another check. If wrong, the fixed Linux target lacks `O_TMPFILE` on the run volume and the design must use a private inaccessible staging directory or explicitly narrow the same-UID threat model.
+Task 4: fix round 3/5 (mutation, spawn ownership, cleanup, and malformed-write findings addressed under the exclusive trusted artifacts-container model; 1 important open — reserve deadline budget and preserve a stable `.partial` snapshot even when the encoder cannot be confirmed stopped, including empty/corrupt diagnostic output). Stronger hostile same-UID or concurrent host path mutation is outside the simulator trust model and must be documented without claiming Linux immutability.
+Task 4: fix round 4/5 (bounded video recovery snapshot addressed; 1 important open — an unconfirmed child still inherits the named FFmpeg log and can mutate it after finalization return; make log evidence anonymous/snapshotted too). Evidence-only correction: report package-lock section must name the final source-exact image digest `1527619f...`, not stale `3d93ddfe...`.
+Task 4: fix round 5/5 (anonymous FFmpeg log ownership and bounded independent video/log recovery snapshots addressed; 0 open; final source-exact image `1e5ae4a...`; 131 focused and 245 full container tests; final scoped re-review approved).
+Task 4: complete (commits d527abb..637b18a; trust model and O_TMPFILE/procfd publication rulings documented; all five review rounds exhausted and approved).
+Task 5: Ruling: preserve the frozen repository/manifest module identifier and filename `ardupilot_sitl` / `logs/ardupilot_sitl.jsonl`; the initial Task 5 brief's `ardupilot` spelling was a controller drafting error. If wrong, manifest inventory and module directory/interface names would all require a coordinated rename outside Task 5.
+Task 5: review round 1/5 (3 important, 2 minor open — typed/preserving parser resource limits; Task 6 host-orchestration merge seam; explicit ISO-8601 profile; stderr-only exception bytes; truthful cleanup failures).
+Task 5: fix round 1/5 (original five findings addressed; re-review left 1 important and 1 minor cleanup gap — pre-tracking candidate creation failures did not report cleanup facts/leftovers, and an already-absent published partial produced a false ownership diagnostic; commits 6cffe8b..758aac1).
+Task 5: fix round 2/5 (candidate-creation cleanup facts and FileNotFound handling addressed; re-review left 1 important cancellation regression — the new BaseException cleanup carrier wrapped KeyboardInterrupt/SystemExit and could break Task 6 Ctrl-C handling; commits 758aac1..3b9d8ab).
+Task 5: fix round 3/5 (control-flow exceptions now propagate unchanged after complete cleanup while ordinary failures retain typed diagnostics/leftovers; 0 open; 94 paired, 313 artifact, and 367 repository tests passed; commits 3b9d8ab..065cbad).
+Task 5: complete (commits 637b18a..065cbad; descriptor-safe host orchestration-event merge seam, strict structured parsing, exact raw preservation, and truthful cleanup/cancellation behavior independently approved).
+Task 6: complete (68 focused, 112 orchestration, 432 combined with 10 skipped, and 435 repository tests with 10 skipped; installed four-command CLI, durable first-cause lifecycle, strict artifact report/hash agreement, and bounded teardown verified).
+Task 6: Ruling: `status`, `abort`, and `collect-results` emit exactly one deterministic result object; foreground `start` streams deterministic host `StructuredEvent` JSONL to stdout and writes the same events to `logs/orchestration-host.jsonl.partial`, then emits exactly one distinguishable final result object last. This resolves the brief's over-strong one-object wording without violating the explicit observability seam. If wrong, either start-time stdout observability or the machine-readable CLI contract must be narrowed in the frozen interface.
+Task 6: Ruling: add runtime-owned `.status/runtime-running.json` immediately after the first valid-clock `RUNNING` publication; the host validates it and updates durable operator state. If wrong, Task 8 has no truthful filesystem-visible RUNNING condition for its concurrent abort gate.
+Task 6: Ruling: keep Task 5's frozen log-runner argv as an internal input, but have `ComposeRuntime.logs` validate and augment the actual subprocess call with explicit project directory/environment and a freshly recomputed remaining timeout for each service. If wrong, either Task 5 raw capture or Task 6 no-ambient-Compose constraint must change.
+Task 6: Ruling: freeze `artifacts-final.json` as an exact three-record semantic report for both videos and rosbag; host validators recompute safe size/checksum and require agreement while trusting recorder-local semantic tools. If wrong, the host needs FFmpeg/ROS runtime dependencies or Phase 2 accepts presence-only corrupt media.
+Task 6: Ruling: the semantic report has exact top-level `{run_id, complete, records}` and an exact three-element records list keyed uniquely by `relative_path`; records have exact `{relative_path,status,detail,size_bytes,sha256,semantic}` keys, and `semantic` remains nonempty for invalid/missing evidence. If wrong, Task 7 runtime and Task 8 gate require coordinated schema changes.
+Task 6: Ruling: Compose `up` is detached `up --detach --no-build`; reserve `min(5 seconds, finalization_wall_seconds / 5)` inside the single finalization deadline for `down`. If wrong, the controller either blocks before observing runtime status or can exhaust all teardown budget and leak Phase 2 resources.
+Task 4: fix round 5/5 (anonymous FFmpeg log ownership and bounded recovery snapshot addressed; active stderr stays on an unlinked `O_TMPFILE`, confirmed exit seals and descriptor-links that exact inode, and unconfirmed exit publishes an independent read-only log snapshot beside the video snapshot before return). Video and log share one caller-owned recovery budget; late children retain only unlinked originals. No-clobber collisions and unsupported log `O_TMPFILE` fail closed.

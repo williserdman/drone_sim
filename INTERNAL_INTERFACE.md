@@ -61,5 +61,9 @@ and teardown share its remaining bounded budget; no stage restarts the clock.
 All control and status JSON is committed through a collision-safe temporary
 sibling, file flush and `fsync`, atomic replacement, and directory `fsync`.
 The complete status set is `operator-state.json`, `artifacts-ready.json`,
-`source-finished.json`, `runtime-failure.json`, `runtime-frozen.json`,
-`artifacts-final.json`, and `terminal-notified.json` under `.status/`.
+`runtime-running.json`, `source-finished.json`, `runtime-failure.json`,
+`runtime-frozen.json`, `artifacts-final.json`, and `terminal-notified.json`
+under `.status/`. The ROS orchestration runtime writes `runtime-running.json`
+immediately after publishing `RUNNING` for the first valid clock; the host uses
+that durable signal to update operator state without treating wall time as
+simulation progress.

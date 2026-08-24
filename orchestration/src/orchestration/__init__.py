@@ -14,6 +14,8 @@ from .lifecycle import (
     LifecycleState,
     RunLifecycle,
 )
+from .controller import ControllerError, RunController, RunResult
+from .status_store import OperatorStatus, ProtocolFileError, StatusStore, TerminalCause
 
 __all__ = [
     "InvalidTransition",
@@ -22,7 +24,14 @@ __all__ = [
     "RecordingConfig",
     "RunConfig",
     "RunLifecycle",
+    "RunController",
+    "RunResult",
     "RunTemplate",
+    "ControllerError",
+    "OperatorStatus",
+    "ProtocolFileError",
+    "StatusStore",
+    "TerminalCause",
     "load_run_config",
     "resolve_run_config",
     "write_resolved_config",

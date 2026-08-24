@@ -78,6 +78,7 @@ runs/<run_id>/.control/finalize-request.json
 runs/<run_id>/.control/terminal-committed.json
 runs/<run_id>/.status/operator-state.json
 runs/<run_id>/.status/artifacts-ready.json
+runs/<run_id>/.status/runtime-running.json
 runs/<run_id>/.status/source-finished.json
 runs/<run_id>/.status/runtime-failure.json
 runs/<run_id>/.status/runtime-frozen.json
@@ -89,7 +90,7 @@ Finalization order is fixed:
 
 1. Host selects the requested terminal outcome and writes `finalize-request.json`.
 2. The ROS orchestrator publishes `FINALIZING`; synthetic publishers stop permanently and write `runtime-frozen.json`.
-3. Artifacts drain callbacks, close both FFmpeg inputs, stop rosbag2 with `SIGINT` and bounded `TERM`/`KILL` escalation, rename valid `.partial` videos, validate recorder-local output, and write `artifacts-final.json`.
+3. Artifacts drain callbacks, close both FFmpeg inputs, stop rosbag2 with `SIGINT` and bounded `TERM`/`KILL` escalation, rename valid `.partial` videos, validate recorder-local output, and write `artifacts-final.json`. The report has exact path-keyed records for both videos and the bag with status/detail, stable byte count and checksum, and nonempty semantic facts; the host rejects absent, stale, or mismatched records.
 4. Host captures raw Docker logs and partitions structured events, validates the complete bundle, downgrades invalid completion to `FAILED`, closes the orchestration log, and atomically commits `manifest.json`.
 5. Host writes `terminal-committed.json`; the ROS orchestrator publishes the terminal `RunState`, artifacts publishes final `ArtifactStatus`, both write no further required artifact data, and services exit.
 6. Host captures no new required data, removes Compose containers/network, and leaves the run directory intact.
@@ -633,6 +634,8 @@ Add failures for startup deadline, recorder failure, clock stall, log-capture fa
 
 During startup and running, race the expected success status against `.status/runtime-failure.json`, operator abort, child-process death, and the shared wall deadline. The first observed cause wins and is persisted; later failures remain diagnostics and cannot replace the primary reason.
 
+The runtime writes `.status/runtime-running.json` immediately after publishing `RUNNING` for the first valid clock. The controller consumes that durable signal to update `operator-state.json`; test an abort racing the signal so Task 8 can reliably wait for `RUNNING` without inferring simulation progress from wall time.
+
 - [ ] **Step 3: Run focused tests and verify RED**
 
 Run:
@@ -645,11 +648,13 @@ Expected: import failures because the controller surfaces do not exist.
 
 - [ ] **Step 4: Implement atomic status and Compose adapters**
 
-`StatusStore` owns only JSON control/status files and exclusive directory allocation. `ComposeRuntime` uses argument arrays with a unique project `drone-sim-<run_id-without-hyphens>`, explicit `--project-directory`, and environment variables `SIM_RUN_ID`, `SIM_RUN_DIRECTORY`, `SIM_CONFIG_PATH`, and `SIM_PHASE2_PROFILE=1`. It implements `up`, `logs`, `stop_services`, `down`, `ps`, and `image_digests`; it has no lifecycle policy.
+`StatusStore` owns only JSON control/status files and exclusive directory allocation. `ComposeRuntime` uses argument arrays with a unique project `drone-sim-<run_id-without-hyphens>`, explicit `--project-directory`, and environment variables `SIM_RUN_ID`, `SIM_RUN_DIRECTORY`, `SIM_CONFIG_PATH`, and `SIM_PHASE2_PROFILE=1`. It implements `up`, `logs`, `stop_services`, `down`, `ps`, and `image_digests`; it has no lifecycle policy. `up` is exactly bounded detached startup (`up --detach --no-build`). Its Docker-log runner validates Task 5's frozen per-service argv, augments the actual subprocess invocation with the project directory/environment, and receives a newly computed remaining timeout for each of the seven calls.
 
 - [ ] **Step 5: Implement controller and CLI**
 
-Use one shared monotonic deadline for each startup/finalization phase so retries cannot reset the budget. Polling wall time only observes status files and process health. Append host operator structured events to stdout and `logs/orchestration-host.jsonl.partial`; include them in the final orchestration module log during Task 5 capture.
+Use one shared monotonic deadline for each startup/finalization phase so retries cannot reset the budget. Reserve `min(5 seconds, finalization_wall_seconds / 5)` inside the finalization deadline for `compose down`; earlier work uses the shortened work deadline and teardown uses the remaining total budget. Polling wall time only observes status files and process health. Append host operator structured events to stdout and `logs/orchestration-host.jsonl.partial`; include them in the final orchestration module log during Task 5 capture.
+
+Parse the runtime-owned `artifacts-final.json` as a strict report with exactly three records: `video/onboard.mp4`, `video/observer.mp4`, and `rosbag`. Each record contains `relative_path`, `status`, `detail`, `size_bytes`, `sha256`, and nonempty `semantic` facts. Inject `ArtifactSession` validators that recompute host-safe size/tree checksum and require exact agreement with the report; absent/malformed records, corrupt media/bag evidence, stale digests, or status mismatches downgrade requested completion. The controller does not need host FFmpeg or ROS dependencies and must not fall back to presence-only validation.
 
 Before manifest commit, record source revision/dirty state with read-only Git commands and image digests with `docker image inspect`. After commit, write `terminal-committed.json`; never rewrite required artifacts. Always run Compose teardown in a bounded `finally` block.
 
@@ -712,11 +717,11 @@ Expected: failure because the Phase 2 services and runtime nodes do not exist.
 
 - [ ] **Step 3: Implement the ROS orchestration runtime**
 
-Publish `STARTING` immediately. Subscribe to aggregate artifact status and publish `READY` only for the current run with `ready=true`. On the first valid clock after readiness publish `RUNNING`. Watch `finalize-request.json`, publish `FINALIZING` with its reason, then wait for `terminal-committed.json`, apply `ARTIFACTS_FINALIZED` or `FINALIZATION_FAILED`, publish the terminal state, write `terminal-notified.json`, and exit. Use zero ROS time before the first clock and the final observed simulation timestamp afterward.
+Publish `STARTING` immediately. Subscribe to aggregate artifact status and publish `READY` only for the current run with `ready=true`. On the first valid clock after readiness publish `RUNNING`, then atomically write `.status/runtime-running.json` with the run ID, fixed state, and first-clock simulation nanoseconds. Watch `finalize-request.json`, publish `FINALIZING` with its reason, then wait for `terminal-committed.json`, apply `ARTIFACTS_FINALIZED` or `FINALIZATION_FAILED`, publish the terminal state, write `terminal-notified.json`, and exit. Use zero ROS time before the first clock and the final observed simulation timestamp afterward.
 
 - [ ] **Step 4: Implement aggregate artifacts runtime**
 
-Start the bag and both video pipelines, verify all required graph subscriptions and writable paths, publish/write ready status, and watch lifecycle. On `FINALIZING`, require `runtime-frozen.json`, drain callbacks, finalize videos and bag under one wall deadline, validate recorder-local output, and write `artifacts-final.json`. After host commit, publish final `ArtifactStatus` with `manifest_path`, write no required log event, and exit.
+Start the bag and both video pipelines, verify all required graph subscriptions and writable paths, publish/write ready status, and watch lifecycle. On `FINALIZING`, require `runtime-frozen.json`, drain callbacks, finalize videos and bag under one wall deadline, validate recorder-local output, and write the strict three-record `artifacts-final.json` contract frozen in Task 6. After host commit, publish final `ArtifactStatus` with `manifest_path`, write no required log event, and exit.
 
 If a recorder fails before finalization, atomically write `.status/runtime-failure.json` with module `artifacts`, a stable reason, and diagnostic paths, but keep the runtime alive to preserve and finalize surviving output.
 
