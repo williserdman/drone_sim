@@ -14,11 +14,24 @@ The fixed ROS subscriptions are `/clock` at best-effort depth 1,
 `/simulation/artifact_status` at reliable transient-local depth 1,
 `/simulation/ground_truth` at best-effort depth 10,
 `/simulation/scenario_events` and `/simulation/score_events` at reliable depth
-100, and `/camera/{onboard,observer}/{image_raw,frame_metadata}` at best-effort
-depth 5. The metadata topics are `/camera/onboard/frame_metadata` and
+100, and `/camera/{onboard,observer}/{image_raw,frame_metadata}` at reliable
+depth 5 for the archival Phase 2 runtime. The metadata topics are `/camera/onboard/frame_metadata` and
 `/camera/observer/frame_metadata`, both using
 `simulation_interfaces/msg/FrameMetadata`. The exact subscriber overrides are
 stored in `config/recording-qos.yaml`.
+
+The archival reliability request is scoped to the recorder path. A reliable
+camera publisher remains compatible with later mission consumers that request
+best effort; exact bag and video acceptance does not rely on a best-effort
+delivery promise.
+
+Phase 2 synthetic infrastructure also publishes a transport-only acknowledgement
+on `/simulation/camera_pair_ack` after both exact camera pairs have drained into
+their recorders. It reuses `simulation_interfaces/msg/FrameMetadata` with the
+current canonical `run_id`, `stream="aggregate"`, contiguous `frame_id=N`, and
+`sim_timestamp=(N+1)*50_000_000` nanoseconds. QoS is reliable, transient-local, depth
+1. This acknowledgement is intentionally absent from the fixed ten-topic bag
+inventory and models neither camera latency nor simulation time.
 
 ## Outputs
 

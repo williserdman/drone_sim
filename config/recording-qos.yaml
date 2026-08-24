@@ -23,7 +23,7 @@
 /camera/onboard/image_raw: &image_qos
   history: keep_last
   depth: 5
-  reliability: best_effort
+  reliability: reliable
   durability: volatile
 /camera/onboard/frame_metadata: *image_qos
 /camera/observer/image_raw: *image_qos

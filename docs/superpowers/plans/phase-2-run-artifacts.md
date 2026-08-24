@@ -47,8 +47,8 @@ uv run drone-sim collect-results RUN_ID [--output-root PATH]
 | Topic | Message | QoS |
 | --- | --- | --- |
 | `/simulation/artifact_status` | `simulation_interfaces/msg/ArtifactStatus` | Reliable, transient local, depth 1 |
-| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Best effort, depth 5 |
-| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Best effort, depth 5 |
+| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable archival offer/request, depth 5 |
+| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable archival offer/request, depth 5 |
 
 `ArtifactStatus` is aggregate for the whole artifact subsystem. Before the first clock its simulation timestamp is zero. Startup publishes `ready=false, complete=false` with missing recorder names, then `ready=true, complete=false, missing=[]`. The post-manifest notification sets `complete` to whether every required artifact validated, lists sorted missing/invalid relative paths in `missing`, and sets portable run-relative `manifest_path` to `manifest.json`.
 
@@ -264,7 +264,7 @@ Create `config/recording-qos.yaml` with these exact subscriber overrides:
 /camera/onboard/image_raw: &image_qos
   history: keep_last
   depth: 5
-  reliability: best_effort
+  reliability: reliable
   durability: volatile
 /camera/onboard/frame_metadata: *image_qos
 /camera/observer/image_raw: *image_qos
@@ -511,7 +511,7 @@ Expected: import failure because the video adapter does not exist.
 
 Use `Popen` argument arrays and `stdin=PIPE`; never invoke a shell. Preflight `ffmpeg -encoders` for `libx264` and `ffprobe -version` before reporting readiness. Convert ROS time to integer nanoseconds with `sec * 1_000_000_000 + nanosec`. Write `bytes(image.data)` unchanged for valid `rgb8` frames and flush only at finalization; pipe backpressure is allowed to slow wall execution without altering simulation stamps.
 
-`VideoRecorderNode` owns two `VideoStreamRecorder` instances and four best-effort depth-5 subscriptions. It exposes discovered subscription counts to aggregate readiness and emits structured recorder errors without selecting terminal status.
+`VideoRecorderNode` owns two `VideoStreamRecorder` instances and four depth-5 subscriptions. Its reusable Task 4 default is best effort; the Task 7 archival runtime injects the reliable depth-5 QoS fixed above. It exposes discovered subscription counts to aggregate readiness and emits structured recorder errors without selecting terminal status.
 
 - [ ] **Step 5: Verify Task 4 in the artifact image**
 
@@ -685,6 +685,11 @@ git commit -m "feat: add simulation operator lifecycle"
 - Create: `orchestration/Dockerfile`
 - Create: `orchestration/src/orchestration/runtime_node.py`
 - Modify: `artifacts/Dockerfile`
+- Create: `artifacts/src/artifacts/runtime_protocol.py`
+- Create: `artifacts/src/artifacts/runtime_node.py`
+- Create: `artifacts/tests/test_runtime_protocol.py`
+- Create: `artifacts/tests/test_runtime_node.py`
+- Create: `orchestration/tests/test_runtime_node.py`
 - Create: `tests/phase2/Dockerfile`
 - Create: `tests/phase2/module_stub.py`
 - Create: `tests/phase2/synthetic_gazebo.py`
@@ -705,6 +710,8 @@ Render Compose with the `phase2` profile and assert services exist for `orchestr
 
 Run the source in a ROS integration harness and assert it publishes no clock before aggregate readiness. After `READY`, assert 41 clock values `0, 0.05, ..., 2.00` seconds and exactly 40 frames per stream at `0.05, ..., 2.00` with IDs `0..39`, `rgb8` 320x240 payloads, exact matching metadata, and ground truth at each frame.
 
+Also write unit-first RED tests for a shared runtime-protocol helper and both aggregate runtime nodes. The protocol helper is owned by the lower-level artifacts package (already consumed by orchestration) and must durably write runtime-owned status files without importing host controller policy.
+
 - [ ] **Step 2: Run the focused test and verify RED**
 
 Run:
@@ -719,15 +726,49 @@ Expected: failure because the Phase 2 services and runtime nodes do not exist.
 
 Publish `STARTING` immediately. Subscribe to aggregate artifact status and publish `READY` only for the current run with `ready=true`. On the first valid clock after readiness publish `RUNNING`, then atomically write `.status/runtime-running.json` with the run ID, fixed state, and first-clock simulation nanoseconds. Watch `finalize-request.json`, publish `FINALIZING` with its reason, then wait for `terminal-committed.json`, apply `ARTIFACTS_FINALIZED` or `FINALIZATION_FAILED`, publish the terminal state, write `terminal-notified.json`, and exit. Use zero ROS time before the first clock and the final observed simulation timestamp afterward.
 
+Runtime status schemas are exact: `artifacts-ready={run_id,ready:true}`, `runtime-running={run_id,state:"RUNNING",sim_timestamp_ns}`, `source-finished={run_id,finished:true,sim_timestamp_ns}`, `runtime-failure={run_id,module,reason,diagnostic_paths}`, `runtime-frozen={run_id,frozen:true}`, and `terminal-notified={run_id,notified:true}`. Runtime readers validate exact host controls `finalize-request={run_id,requested_terminal,reason}` and `terminal-committed={run_id,terminal_status,reason,manifest_path:"manifest.json"}`. Reject unknown keys, wrong IDs, symlinks, hard links, nonregular files, and conflicting rewrites.
+
 - [ ] **Step 4: Implement aggregate artifacts runtime**
 
 Start the bag and both video pipelines, verify all required graph subscriptions and writable paths, publish/write ready status, and watch lifecycle. On `FINALIZING`, require `runtime-frozen.json`, drain callbacks, finalize videos and bag under one wall deadline, validate recorder-local output, and write the strict three-record `artifacts-final.json` contract frozen in Task 6. After host commit, publish final `ArtifactStatus` with `manifest_path`, write no required log event, and exit.
 
+Do not publish aggregate READY until the artifacts runtime has observed the
+current-run STARTING state as well as recorder/graph readiness. This preserves
+the reliable single-writer STARTING→READY order in the bag and removes startup
+discovery nondeterminism without delaying simulation time.
+
+Serialize video semantics directly as `codec_name`, `pix_fmt`, `avg_frame_rate`, `width`, `height`, `frame_count`, and ordered diagnostics. Serialize bag semantics as ordered topic records with `name`, `message_type`, `message_count`, `first_sim_timestamp_ns`, and `last_sim_timestamp_ns`. Every valid/missing/invalid report record has a nonempty semantic object and stable descriptor-based size/checksum facts when available.
+
 If a recorder fails before finalization, atomically write `.status/runtime-failure.json` with module `artifacts`, a stable reason, and diagnostic paths, but keep the runtime alive to preserve and finalize surviving output.
+
+For the synthetic transport only, buffer at most 40 camera pairs per stream by
+exact frame ID/simulation stamp and publish `/simulation/camera_pair_ack` as
+reliable transient-local depth 1 after both streams drain each contiguous pair. Reuse
+`FrameMetadata` with the current `run_id`, `stream="aggregate"`, `frame_id=N`,
+and stamp `(N+1)*50_000_000` nanoseconds. This internal acknowledgement is not
+part of the fixed ten-topic bag inventory and does not model latency.
+
+The Phase 2 synthetic source offers all four camera image/metadata topics as
+reliable depth 5, while the artifacts video subscriptions and rosbag overrides
+request reliable depth 5. This archival-only contract is required for exact
+40-frame acceptance; later mission consumers may still request best effort.
+Before the initial clock/frame, require both artifact-video and rosbag
+subscriptions on all four publishers. Drain each frame through a bounded
+six-item queue, exactly one publication per executor turn, in clock, onboard
+image, onboard metadata, observer image, observer metadata, ground-truth order.
+`FINALIZING` clears and preempts the queue. Discovery and executor scheduling
+are infrastructure behavior and never generate simulation stamps or latency.
+
+The `observer_encoder_after_5` fault belongs in artifacts runtime after observer frame ID 4; the publisher remains correct so the bag and onboard recording survive. All seven services remain alive after source completion or fault reporting until terminal coordination. Once `runtime-frozen`/`artifacts-final` are written, services emit no further stdout events before host log capture and terminal acknowledgement.
 
 - [ ] **Step 5: Implement deterministic synthetic services**
 
 `synthetic_gazebo` waits for `READY`, publishes the initial zero clock, waits for `RUNNING`, then publishes the 40 deterministic RGB frame pairs and ground truth using integer nanosecond stamps. It waits for `FINALIZING`, stops permanently, writes a clearly labeled fixture `gazebo/server.log` and `gazebo/state/synthetic-state.json`, then writes `runtime-frozen.json`. A test-only `SIM_SYNTHETIC_WALL_DELAY_MS` may slow each already-determined step for abort/slow-host tests but never changes a timestamp, frame ID, payload, or event order.
+
+Before publishing pair `N+1`, the synthetic source waits for the exact current-run
+aggregate acknowledgement for pair `N`; it ignores stale IDs and exact
+duplicates and rejects bad streams, stamps, gaps, and future acknowledgements.
+`FINALIZING` always preempts this wait so abort and failure paths cannot deadlock.
 
 After the fortieth frame, it writes `.status/source-finished.json`; this is an infrastructure completion signal to the host, not a wall-time-derived simulated event. Test-only `SIM_PHASE2_FAULT=clock_stall_after_5` stops clock/frame progress without claiming completion; `SIM_PHASE2_FAULT=observer_encoder_after_5` makes the observer recorder report failure after frame 4. No other fault strings are accepted.
 
@@ -736,6 +777,8 @@ After the fortieth frame, it writes `.status/source-finished.json`; this is an i
 - [ ] **Step 6: Implement container images and Compose profile**
 
 Build all new images from the exact pinned ROS base digest in Global Constraints, build `simulation_interfaces`, and install only owned Python sources. `artifacts/Dockerfile` installs `ffmpeg`, asserts `libx264` appears in `ffmpeg -encoders`, and includes rosbag2 MCAP plus `ffprobe`. Provide a `test` target containing pytest/uv and a minimal runtime target. Preserve the existing `foundation` service outside the Phase 2 profile.
+
+Every Phase 2 service receives the same absolute host/container run-directory path and a read-only overlay of the resolved config at the identical `SIM_CONFIG_PATH`. Use long bind syntax and safe interpolation defaults so plain Phase 1 `docker compose config` still succeeds without Phase 2 variables. `COMPOSE_PROFILES=phase2` from Task 6 activates the profile; do not add profile flags to the frozen Compose argv.
 
 - [ ] **Step 7: Verify Task 7**
 

@@ -32,8 +32,13 @@ ENTRYPOINT ["/opt/drone_sim/entrypoint.sh"]
 
 FROM runtime AS test
 
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends python3-pytest \
-    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv --system-site-packages /opt/drone_sim/test-venv \
+    && /opt/drone_sim/test-venv/bin/pip install \
+        --no-cache-dir \
+        "uv==0.12.1" \
+        "pytest==8.4.2"
 
-CMD ["python3", "-m", "pytest", "tests/phase2"]
+COPY tests/phase2/test_synthetic_services.py /opt/drone_sim/phase2/test_synthetic_services.py
+COPY tests/phase2/ros_contract_harness.py /opt/drone_sim/phase2/ros_contract_harness.py
+
+CMD ["/opt/drone_sim/test-venv/bin/pytest", "/opt/drone_sim/phase2/test_synthetic_services.py", "-v"]

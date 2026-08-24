@@ -40,6 +40,14 @@ that same deadline, so a timeout or invalid/empty output has a named diagnostic
 video partial and FFmpeg diagnostic log before the adapter returns to the
 barrier.
 
+The synthetic aggregate runtime places separate reliable archival image and metadata
+arrivals in a fixed 40-pair buffer keyed by exact simulation stamp and frame ID.
+It drains only contiguous exact pairs through the unchanged fail-closed Task 4
+recorder. Once both streams have drained frame `N`, it publishes the internal
+camera-pair acknowledgement. Duplicate, malformed, missing, or excess buffered
+inputs fail closed; finalization freezes and clears the buffer without waiting
+for another acknowledgement.
+
 The recorder-local report has exactly three path-keyed records for the two
 videos and bag. A valid record carries the descriptor-stable byte count and
 SHA-256/tree SHA-256 returned by its semantic validator plus a nonempty

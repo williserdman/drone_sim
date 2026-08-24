@@ -50,7 +50,15 @@ RUN /opt/drone_sim/venv/bin/pip install \
 
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --inexact --no-install-project
+COPY artifacts/pyproject.toml artifacts/pyproject.toml
+COPY orchestration/pyproject.toml orchestration/pyproject.toml
+RUN uv sync --frozen --inexact --no-install-workspace
+COPY conftest.py ./conftest.py
 COPY orchestration/tests orchestration/tests
+COPY config config
+RUN git init --quiet \
+    && git add pyproject.toml uv.lock config \
+    && git -c user.name="Test Fixture" -c user.email="test@example.invalid" \
+        commit --quiet -m "test fixture"
 
-CMD ["uv", "run", "pytest", "orchestration/tests", "-v"]
+CMD ["uv", "run", "--no-sync", "pytest", "orchestration/tests", "-v"]
