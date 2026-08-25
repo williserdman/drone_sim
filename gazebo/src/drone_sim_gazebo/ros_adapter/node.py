@@ -74,7 +74,7 @@ class GazeboAdapterNode(_node_base()):
         self._completion_reported = False
         self._faulted = False
         self._output_active = False
-        self._output_epoch = OutputEpochGate()
+        self._output_epoch = OutputEpochGate(expected_frames=expected_frames)
         self._last_public_clock_ns: int | None = None
         self._clock_type = Clock
         self._image_type = Image
@@ -153,15 +153,10 @@ class GazeboAdapterNode(_node_base()):
         self._output_active = False
 
     def activate_output(self) -> None:
-        """Publish public zero and open the rebased physical sample epoch."""
-        if self._faulted or self._output_active:
+        """Arm the native-source barrier for the rebased public epoch."""
+        if self._faulted or self._output_active or self._completion_reported:
             return
-        try:
-            public_zero_ns = self._output_epoch.activate()
-            self._publish_clock(public_zero_ns)
-            self._output_active = True
-        except (AdapterFault, ValueError, TypeError) as error:
-            self._fail(error)
+        self._output_epoch.request_activation()
 
     def _publish_clock(self, timestamp_ns: int, message=None) -> None:
         if (
@@ -182,22 +177,27 @@ class GazeboAdapterNode(_node_base()):
             self._on_fault(str(error))
 
     def _accept_clock(self, message) -> None:
-        if self._faulted:
+        if self._faulted or self._completion_reported:
             return
         try:
             timestamp_ns = _nanoseconds(message.clock)
             public_timestamp_ns = self._output_epoch.accept_clock(timestamp_ns)
             if public_timestamp_ns is not None:
+                self._output_active = True
                 self._publish_clock(public_timestamp_ns)
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
     def _accept_image(self, stream: str, message) -> None:
-        if self._faulted or not self._output_active:
+        if self._faulted or self._completion_reported:
+            return
+        if not self._output_active and not self._output_epoch.activation_pending:
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
-            public_timestamp_ns = self._output_epoch.rebase_sample(timestamp_ns)
+            public_timestamp_ns = self._output_epoch.accept_camera(
+                stream, timestamp_ns
+            )
             if public_timestamp_ns is None:
                 return
             output = self._live.accept_image(

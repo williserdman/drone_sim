@@ -48,8 +48,12 @@ same current camera pair.
 private native clock through the sole public `/clock` publisher after mapping
 it through `OutputEpochGate`, publishes the fixed camera/metadata/truth
 contract, and has no camera-ack subscription. During warmup the gate retains
-only the greatest observed native clock. `activate()` creates an immutable
-`PublicEpoch` by flooring that clock to `50,000,000` ns, and returns public
-zero. `rebase_sample()` returns no value through the epoch and otherwise the
-native-minus-epoch timestamp used identically for images, metadata, odometry,
-contact, ground truth, and later clock samples.
+only the greatest observed native clock. `request_activation()` starts a
+source barrier; `accept_camera()` records each stream's greatest post-request
+stamp, and `accept_clock()` creates the immutable `PublicEpoch` only when the
+clock has reached both stream watermarks. It floors that clock to
+`50,000,000` ns and returns public zero. `rebase_sample()` returns no value
+through the epoch and otherwise the native-minus-epoch timestamp used
+identically for images, metadata, odometry, contact, ground truth, and later
+clock samples. Clock mapping returns no value beyond the configured final
+frame timestamp or after node completion.

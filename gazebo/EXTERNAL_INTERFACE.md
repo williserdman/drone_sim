@@ -29,11 +29,13 @@ Both streams are fixed at `320x240`, `rgb8`, and 20 simulated Hz. Each accepted
 camera pair has one ground-truth sample at the same public timestamp. The
 onboard public image is the exact stream later consumed by companion vision and
 artifacts. Before `RUNNING`, none of these topics publishes warmup evidence.
-At `RUNNING`, `/clock` publishes zero exactly once. The adapter floors the
-latest private native clock to the preceding 50 ms camera epoch, drops queued
-native samples at or before that epoch, and rebases every later clock, image,
-metadata, ground-truth, and contact timestamp. Frame 0 is therefore at public
-50 ms; for a 60 second run, frame 1199 is at public 60.000 seconds.
+`RUNNING` arms a native-source barrier: after both camera streams have crossed
+it and the private clock has reached their greatest stamp, the adapter floors
+that clock to the preceding 50 ms camera epoch and publishes `/clock=0`
+exactly once. It drops queued native samples at or before that epoch and
+rebases every later clock, image, metadata, ground-truth, and contact
+timestamp. Frame 0 is therefore at public 50 ms; for a 60 second run, frame
+1199 is at public 60.000 seconds, and no later private clock is public.
 
 `GroundTruth.pose` and its linear and angular velocity are expressed in the
 Gazebo world frame using ENU axes. `GroundTruth.in_contact` is true when the

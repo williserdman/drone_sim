@@ -452,7 +452,7 @@ class RuntimeModel:
             or first != _FRAME_INTERVAL_NS
             or last != self._expected_frames * _FRAME_INTERVAL_NS
         ):
-            return "adapter completion timestamp does not match the native frame cadence"
+            return "adapter completion timestamp does not match the public frame cadence"
         return None
 
     def _accept_completion(

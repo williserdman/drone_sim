@@ -175,31 +175,35 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         assert completions == []
 
         adapter.activate_output()
-        _spin_until(observer, lambda: clocks == [0])
-        # Samples at the floored epoch may already be queued in a different
-        # DDS reader and execute after the RUNNING callback.
-        adapter._accept_image("onboard", image(49_000_000_000))
-        adapter._accept_image("observer", image(49_000_000_000))
-        adapter._accept_odometry(odometry(49_000_000_000))
-        adapter._accept_contacts(contacts(49_000_000_000))
+        # Newer warmup samples may already be queued in independent DDS
+        # readers when the RUNNING callback requests activation.
+        adapter._accept_image("onboard", image(49_050_000_000))
+        adapter._accept_image("observer", image(49_050_000_000))
+        adapter._accept_clock(warmup_clock)
         rclpy.spin_once(observer, timeout_sec=0.1)
+        assert clocks == []
         assert images == []
         assert truths == []
         assert faults == []
         assert completions == []
 
-        adapter._accept_image("onboard", image(49_050_000_000))
-        adapter._accept_image("observer", image(49_050_000_000))
-        adapter._accept_contacts(contacts(49_050_000_000, in_contact=True))
-        adapter._accept_odometry(odometry(49_050_000_000))
+        barrier_clock = Clock()
+        _set_stamp(barrier_clock.clock, 49_075_000_000)
+        adapter._accept_clock(barrier_clock)
+        _spin_until(observer, lambda: clocks == [0])
+
+        adapter._accept_image("onboard", image(49_100_000_000))
+        adapter._accept_image("observer", image(49_100_000_000))
+        adapter._accept_contacts(contacts(49_100_000_000, in_contact=True))
+        adapter._accept_odometry(odometry(49_100_000_000))
         _spin_until(observer, lambda: len(images) == 2 and truths == [50_000_000])
 
         assert images == [50_000_000, 50_000_000]
         _spin_until(observer, lambda: clocks == [0, 50_000_000])
         delayed_clock = Clock()
-        _set_stamp(delayed_clock.clock, 49_025_000_000)
+        _set_stamp(delayed_clock.clock, 49_075_000_000)
         adapter._accept_clock(delayed_clock)
-        _set_stamp(delayed_clock.clock, 49_050_000_000)
+        _set_stamp(delayed_clock.clock, 49_100_000_000)
         adapter._accept_clock(delayed_clock)
         rclpy.spin_once(observer, timeout_sec=0.1)
         assert clocks == [0, 50_000_000]
@@ -210,10 +214,13 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         # executor when the exact final frame completes the adapter.  Those
         # queued callbacks belong after the completed run boundary and must
         # be discarded rather than mutating the frozen adapter.
-        adapter._accept_image("onboard", image(49_100_000_000))
-        adapter._accept_image("observer", image(49_100_000_000))
-        adapter._accept_contacts(contacts(49_100_000_000))
-        adapter._accept_odometry(odometry(49_100_000_000))
+        adapter._accept_image("onboard", image(49_150_000_000))
+        adapter._accept_image("observer", image(49_150_000_000))
+        adapter._accept_contacts(contacts(49_150_000_000))
+        adapter._accept_odometry(odometry(49_150_000_000))
+        post_completion_clock = Clock()
+        _set_stamp(post_completion_clock.clock, 109_150_000_000)
+        adapter._accept_clock(post_completion_clock)
         rclpy.spin_once(observer, timeout_sec=0.1)
 
         assert faults == []
@@ -223,9 +230,9 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
 
         adapter.freeze_output()
         frozen_clock = Clock()
-        _set_stamp(frozen_clock.clock, 49_100_000_000)
+        _set_stamp(frozen_clock.clock, 109_200_000_000)
         adapter._accept_clock(frozen_clock)
-        adapter._accept_image("onboard", image(49_100_000_000))
+        adapter._accept_image("onboard", image(49_150_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
 
         assert clocks == [0, 50_000_000]

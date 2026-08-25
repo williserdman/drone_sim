@@ -40,6 +40,8 @@ completed truth value. `ros_adapter.live` joins that truth to the current
 camera pair before the public ROS node publishes it. Private sensor QoS may be
 best effort; public QoS remains exactly the external table. The pure
 `OutputEpochGate` caches only the greatest native clock observed during
-warmup. Its immutable `PublicEpoch` floors that clock to the 50 ms grid and is
-the single mapping used for clock, cameras, odometry, and contact after
-activation.
+warmup. After activation is requested, it records a watermark from each camera
+stream and waits for the native clock to reach both before its immutable
+`PublicEpoch` floors that clock to the 50 ms grid. The epoch is the single
+mapping used for clock, cameras, odometry, and contact, and the configured
+frame count caps public clock output at the final frame timestamp.

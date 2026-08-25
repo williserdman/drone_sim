@@ -34,7 +34,9 @@ is bridged back into Gazebo. Callback-order alignment is bounded to the one
 current timestamp, and adapter output freezes before bridge/server shutdown.
 Before activation, the node caches the greatest native clock but publishes no
 clock, camera, metadata, ground-truth, or contact-derived output. Activation
-floors that clock to the preceding 50 ms boundary, publishes public `/clock=0`,
-and rebases every later native input against that epoch. Inputs at or before
-the epoch are discarded as queued warmup. Native Gazebo recording remains
-unchanged and is never reset.
+waits for one post-request watermark from each camera and a native clock at or
+beyond both, then floors that clock to the preceding 50 ms boundary, publishes
+public `/clock=0`, and rebases every later native input against that epoch.
+Inputs at or before the epoch are discarded as queued warmup. Public clock is
+capped at `expected_frames * 50,000,000` ns and closes with adapter completion.
+Native Gazebo recording remains unchanged and is never reset.

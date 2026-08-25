@@ -42,33 +42,64 @@ class PublicEpoch:
 class OutputEpochGate:
     """Cache warmup clock only, then expose one rebased public epoch."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, expected_frames: int) -> None:
+        if type(expected_frames) is not int or expected_frames <= 0:
+            raise AdapterFault("expected_frames must be a positive integer")
+        self._maximum_public_timestamp_ns = expected_frames * FRAME_INTERVAL_NS
         self._latest_native_clock_ns: int | None = None
         self._epoch: PublicEpoch | None = None
+        self._activation_requested = False
+        self._barrier_camera_stamps: dict[str, int] = {}
 
     @property
     def native_epoch_ns(self) -> int | None:
         return None if self._epoch is None else self._epoch.native_epoch_ns
 
+    @property
+    def activation_pending(self) -> bool:
+        return self._activation_requested and self._epoch is None
+
+    def request_activation(self) -> None:
+        self._activation_requested = True
+
     def accept_clock(self, native_timestamp_ns: object) -> int | None:
         native = _native_timestamp(native_timestamp_ns)
         if self._epoch is not None:
-            return self._epoch.rebase(native)
+            public = self._epoch.rebase(native)
+            if (
+                public is not None
+                and public > self._maximum_public_timestamp_ns
+            ):
+                return None
+            return public
         if (
             self._latest_native_clock_ns is None
             or native > self._latest_native_clock_ns
         ):
             self._latest_native_clock_ns = native
-        return None
-
-    def activate(self) -> int:
-        if self._epoch is None:
-            if self._latest_native_clock_ns is None:
-                raise AdapterFault("public output activation requires a native clock")
+        if (
+            self._activation_requested
+            and set(self._barrier_camera_stamps) == {"onboard", "observer"}
+            and self._latest_native_clock_ns
+            >= max(self._barrier_camera_stamps.values())
+        ):
             self._epoch = PublicEpoch.from_latest_native_clock(
                 self._latest_native_clock_ns
             )
-        return 0
+            return 0
+        return None
+
+    def accept_camera(self, stream: object, native_timestamp_ns: object) -> int | None:
+        if stream not in {"onboard", "observer"} or not isinstance(stream, str):
+            raise AdapterFault("camera stream must be onboard or observer")
+        native = _native_timestamp(native_timestamp_ns)
+        if self._epoch is not None:
+            return self._epoch.rebase(native)
+        if self._activation_requested:
+            previous = self._barrier_camera_stamps.get(stream)
+            if previous is None or native > previous:
+                self._barrier_camera_stamps[stream] = native
+        return None
 
     def rebase_sample(self, native_timestamp_ns: object) -> int | None:
         if self._epoch is None:
