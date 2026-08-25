@@ -101,6 +101,12 @@ class MavlinkAdapter:
                 armed=self._armed,
                 landed=self._landed,
             )
+        if kind == "STATUSTEXT":
+            return Telemetry(
+                timestamp_ns,
+                status_text=str(message.text),
+                status_severity=int(message.severity),
+            )
         return None
 
 __all__ = ["MavlinkAdapter"]

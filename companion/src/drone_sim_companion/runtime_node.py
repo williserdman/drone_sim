@@ -235,7 +235,7 @@ def main() -> int:
         Clock,
         "/clock",
         clock_callback,
-        QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+        QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE),
     )
     node.create_subscription(
         RunState,

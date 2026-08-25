@@ -46,6 +46,27 @@ def test_pre_run_heartbeat_makes_runtime_ready_without_starting_mission() -> Non
     ]
 
 
+def test_running_mavlink_status_text_is_emitted_without_changing_policy() -> None:
+    records = []
+    controller = MissionController(FakeVehicle(), lambda *record: records.append(record))
+
+    controller.consume(
+        Telemetry(
+            23_000_000_000,
+            status_text="PreArm: Compass not calibrated",
+            status_severity=3,
+        )
+    )
+
+    assert controller.state.phase is MissionPhase.WAIT_HEARTBEAT
+    assert records == [
+        (
+            "mavlink_status_text",
+            23_000_000_000,
+            {"severity": 3, "text": "PreArm: Compass not calibrated"},
+        )
+    ]
+
 def test_fake_vehicle_receives_the_complete_controlled_descent_sequence() -> None:
     vehicle = FakeVehicle()
     records: list[tuple[str, int, dict[str, object]]] = []

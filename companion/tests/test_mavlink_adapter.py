@@ -148,3 +148,17 @@ def test_landed_state_is_preserved_across_later_heartbeat() -> None:
     assert landed is not None and landed.landed is True
     assert disarmed is not None
     assert disarmed.armed is False and disarmed.landed is True
+
+
+def test_statustext_is_preserved_as_simulation_stamped_diagnostics() -> None:
+    connection = FakeConnection(
+        [Message("STATUSTEXT", severity=3, text="PreArm: Compass not calibrated")]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    diagnostic = adapter.poll(23_000_000_000)
+
+    assert diagnostic is not None
+    assert diagnostic.timestamp_ns == 23_000_000_000
+    assert diagnostic.status_text == "PreArm: Compass not calibrated"
+    assert diagnostic.status_severity == 3

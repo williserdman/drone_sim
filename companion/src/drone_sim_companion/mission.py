@@ -46,6 +46,8 @@ class Telemetry:
     vertical_speed_m_s: float | None = None
     landed: bool | None = None
     ack: Ack | None = None
+    status_text: str | None = None
+    status_severity: int | None = None
 
 
 @dataclass(frozen=True)

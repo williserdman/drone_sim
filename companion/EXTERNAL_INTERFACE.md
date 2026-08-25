@@ -4,7 +4,7 @@
 
 - Gazebo camera frames on `/camera/onboard/image_raw` through ROS 2 image
   transport at 20 frames per simulated second, using best-effort QoS depth 5
-- Authoritative `/clock` using best-effort QoS depth 1 with `use_sim_time=true`
+- Authoritative frame-aligned `/clock` using reliable QoS depth 1000
 
 Each frame correlates with `simulation_interfaces/msg/FrameMetadata`, which
 carries `run_id`, `frame_id`, stream identity, and a simulation capture
@@ -13,7 +13,7 @@ timestamp.
 ## MAVLink interface
 
 - Output: flight and mission commands to ArduPilot SITL
-- Input: vehicle telemetry, modes, and command acknowledgements
+- Input: vehicle telemetry, modes, command acknowledgements, and `STATUSTEXT`
 - Production endpoint: `tcp:ardupilot-sitl:5760` on the Compose network
 
 The `descent_v1` command sequence is `GUIDED`, arm, take off to 1.5 m,
@@ -21,6 +21,9 @@ and `LAND`. Every transition requires the ordered positive command ACK and
 observed vehicle state; a command send is logged only after PyMAVLink accepts
 it. Negative ACKs, unexpected ACKs, mode inconsistency, timestamp regression,
 and contact before descent fail the mission without repair.
+MAVLink `STATUSTEXT` is retained as structured `mavlink_status_text` evidence
+with its severity and the latest authoritative simulation timestamp, including
+the exact reason for a normal pre-arm rejection.
 
 Commands derived from imagery retain `source_frame_id` where the adapter permits.
 

@@ -32,6 +32,15 @@ class MissionController:
         previous = self.state
         if previous.phase in {MissionPhase.FAILED, MissionPhase.LANDED}:
             return
+        if telemetry.status_text is not None:
+            self._emit(
+                "mavlink_status_text",
+                telemetry.timestamp_ns,
+                {
+                    "severity": telemetry.status_severity,
+                    "text": telemetry.status_text,
+                },
+            )
         self.observe_readiness(telemetry)
         transition = advance(previous, telemetry)
         for command in transition.commands:
