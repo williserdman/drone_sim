@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from drone_sim_scorekeeper.runtime_node import (
+    _RosBoundary,
     ScorekeeperDriver,
     ground_truth_from_message,
     load_runtime_settings,
@@ -121,6 +123,33 @@ def test_ros_scenario_conversion_and_score_event_output_are_exact():
     assert message.event_type == "score.finalized"
     assert message.value == 100.0
     assert message.evidence_ref == "scoring/events.jsonl#event-4"
+
+
+def test_ros_boundary_flush_uses_jazzy_duration_timeout(monkeypatch):
+    """Jazzy accepts ``timeout=Duration(...)``, not ``timeout_sec=...``."""
+    class Duration:
+        def __init__(self, *, seconds=0, nanoseconds=0):
+            self.seconds = seconds
+            self.nanoseconds = nanoseconds
+
+    duration_module = ModuleType("rclpy.duration")
+    duration_module.Duration = Duration
+    monkeypatch.setitem(sys.modules, "rclpy.duration", duration_module)
+
+    class Publisher:
+        def __init__(self):
+            self.timeout = None
+
+        def wait_for_all_acked(self, timeout):
+            self.timeout = timeout
+            return True
+
+    publisher = Publisher()
+
+    _RosBoundary(node=None, publisher=publisher, errors=[]).flush()
+
+    assert publisher.timeout.seconds == 5.0
+    assert publisher.timeout.nanoseconds == 0
 
 
 def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_path):

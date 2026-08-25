@@ -255,7 +255,9 @@ class _RosBoundary:
         self.publisher.publish(score_event_message(event, ScoreEventMessage))
 
     def flush(self) -> None:
-        if self.publisher.wait_for_all_acked(timeout_sec=5.0) is not True:
+        from rclpy.duration import Duration
+
+        if self.publisher.wait_for_all_acked(timeout=Duration(seconds=5.0)) is not True:
             raise TimeoutError("score event acknowledgement deadline expired")
 
 
