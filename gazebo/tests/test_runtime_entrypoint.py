@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -140,6 +141,46 @@ def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
         "last_json_sim_time_ns": 0,
     }
     assert transport.ready_flight_exchange() == transport.flight_exchange_status()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        subprocess.TimeoutExpired(("gz", "service"), 2.0),
+        type(
+            "UnavailableResult",
+            (),
+            {"returncode": 1, "stdout": "", "stderr": "service unavailable"},
+        )(),
+    ),
+)
+def test_flight_exchange_command_unavailability_is_retryable_not_ready(failure):
+    """A cold status RPC must not terminate an otherwise healthy startup."""
+
+    def run(_argv, **_kwargs):
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+
+    assert transport.ready_flight_exchange() is None
+
+
+def test_flight_exchange_malformed_status_remains_fatal():
+    def run(_argv, **_kwargs):
+        return type(
+            "Result", (), {"returncode": 0, "stdout": "not status data", "stderr": ""}
+        )()
+
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
+    )
+
+    with pytest.raises(TransportError, match="malformed data"):
+        transport.ready_flight_exchange()
 
 
 def test_flight_exchange_readiness_accepts_stable_bounded_bootstrap_snapshot():

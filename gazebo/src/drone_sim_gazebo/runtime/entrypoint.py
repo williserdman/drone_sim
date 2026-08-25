@@ -49,6 +49,10 @@ class TransportError(RuntimeError):
     """Gazebo Transport discovery or world control failed."""
 
 
+class TransportUnavailable(TransportError):
+    """A Gazebo Transport command could not reach its endpoint."""
+
+
 def _validate_flight_status(value: object) -> dict[str, bool | int]:
     if not isinstance(value, dict) or set(value) != _FLIGHT_STATUS_KEYS:
         raise TransportError("ArduPilot status has an invalid field inventory")
@@ -165,9 +169,11 @@ class GazeboTransport:
                 timeout=timeout,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise TransportError(f"Gazebo Transport command failed: {error}") from error
+            raise TransportUnavailable(
+                f"Gazebo Transport command failed: {error}"
+            ) from error
         if result.returncode != 0:
-            raise TransportError(
+            raise TransportUnavailable(
                 f"Gazebo Transport command failed: {result.stderr.strip()}"
             )
         return result
@@ -187,7 +193,7 @@ class GazeboTransport:
                 f"required Gazebo service is missing: {_FLIGHT_STATUS_SERVICE}"
             )
 
-    def flight_exchange_status(self) -> dict[str, bool | int]:
+    def flight_exchange_status(self, *, timeout: float = 2.0) -> dict[str, bool | int]:
         if not self._flight:
             raise TransportError("the passive world has no ArduPilot exchange")
         result = self._command(
@@ -205,7 +211,7 @@ class GazeboTransport:
                 "--req",
                 "",
             ),
-            timeout=2.0,
+            timeout=timeout,
         )
         output = result.stdout.strip()
         if not output.startswith('data: "'):
@@ -217,11 +223,16 @@ class GazeboTransport:
             raise TransportError("ArduPilot status service returned malformed JSON") from error
         return _validate_flight_status(document)
 
-    def flight_exchange_ready(self) -> bool:
-        return self.ready_flight_exchange() is not None
+    def flight_exchange_ready(self, *, timeout: float = 2.0) -> bool:
+        return self.ready_flight_exchange(timeout=timeout) is not None
 
-    def ready_flight_exchange(self) -> dict[str, bool | int] | None:
-        status = self.flight_exchange_status()
+    def ready_flight_exchange(
+        self, *, timeout: float = 2.0
+    ) -> dict[str, bool | int] | None:
+        try:
+            status = self.flight_exchange_status(timeout=timeout)
+        except TransportUnavailable:
+            return None
         return status if _flight_status_ready(status) else None
 
     def _control(self, request: str) -> None:

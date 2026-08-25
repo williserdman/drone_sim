@@ -95,6 +95,9 @@ one JSON state, no frame gaps, and no send errors; those counters
 are preserved in `.status/gazebo-ready.json`. Orchestration alone aggregates this
 fact with durable ArduPilot, companion, artifact, and scorekeeper readiness;
 the Gazebo fact does not claim those peer processes are lifecycle-ready.
+Cold-render status-command timeouts or temporary service unavailability remain
+not-ready observations and are retried within the original startup wall-time
+allowance. Malformed or invalid status replies fail immediately.
 
 On the first valid finalization request the runtime converts the durable intent
 and resolved finalization allowance into one absolute monotonic deadline.

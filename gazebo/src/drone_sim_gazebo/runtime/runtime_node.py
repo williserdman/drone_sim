@@ -117,6 +117,20 @@ def _wait_transport(
     raise TransportError(f"Gazebo endpoints did not become ready: {last_error}")
 
 
+def _probe_flight_exchange(
+    transport: GazeboTransport,
+    *,
+    deadline: float,
+    monotonic=time.monotonic,
+):
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TransportError(
+            "Gazebo flight exchange did not become ready before startup deadline"
+        )
+    return transport.ready_flight_exchange(timeout=min(2.0, remaining))
+
+
 def _start_server_ready(
     server,
     transport: GazeboTransport,
@@ -224,7 +238,9 @@ def main() -> int:
             if not gazebo_ready_seen and adapter.transport_ready():
                 exchange_ready = True
                 if resolved.world_name == "vertical_descent":
-                    flight_exchange = transport.ready_flight_exchange()
+                    flight_exchange = _probe_flight_exchange(
+                        transport, deadline=startup_deadline
+                    )
                     exchange_ready = flight_exchange is not None
                     if flight_exchange is not None:
                         status.record_flight_exchange(flight_exchange)

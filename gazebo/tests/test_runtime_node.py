@@ -1,6 +1,12 @@
+import pytest
+
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
-from drone_sim_gazebo.runtime.runtime_node import _record_adapter_fault, _start_server_ready
+from drone_sim_gazebo.runtime.runtime_node import (
+    _probe_flight_exchange,
+    _record_adapter_fault,
+    _start_server_ready,
+)
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -16,6 +22,33 @@ class Server:
 
     def stop(self, deadline):
         self.stopped.append(deadline)
+
+
+class FlightTransport:
+    def __init__(self, result=None):
+        self.result = result
+        self.timeouts = []
+
+    def ready_flight_exchange(self, *, timeout):
+        self.timeouts.append(timeout)
+        return self.result
+
+
+def test_flight_exchange_probe_uses_only_remaining_startup_budget():
+    transport = FlightTransport(result={"online": True})
+
+    assert _probe_flight_exchange(
+        transport, deadline=10.25, monotonic=lambda: 10.0
+    ) == {"online": True}
+    assert transport.timeouts == [pytest.approx(0.25)]
+
+
+def test_flight_exchange_probe_fails_after_existing_startup_deadline():
+    transport = FlightTransport()
+
+    with pytest.raises(TransportError, match="startup deadline"):
+        _probe_flight_exchange(transport, deadline=10.0, monotonic=lambda: 10.0)
+    assert transport.timeouts == []
 
 
 def test_transport_discovery_failure_stops_started_server():

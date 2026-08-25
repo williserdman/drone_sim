@@ -55,6 +55,9 @@ For `vertical_descent`, transport discovery additionally requires the
 plugin-owned `/model/iris/ardupilot/status` service. The runtime will not emit
 its local `GazeboReady` event until received-servo, motor-command-update, and
 sent-JSON counters prove one bounded paused round trip, with no frame gaps or
-send errors. `GazeboReadyStatus` freezes the stable exact counters into the durable
-Gazebo fact. This is the strongest truth available inside the Gazebo boundary;
-aggregate current-run peer readiness remains an orchestration responsibility.
+send errors. A status-command timeout or unavailable service remains an unready
+probe and is retried only within the existing startup deadline; malformed or
+invalid status remains an immediate transport failure. `GazeboReadyStatus`
+freezes the stable exact counters into the durable Gazebo fact. This is the
+strongest truth available inside the Gazebo boundary; aggregate current-run
+peer readiness remains an orchestration responsibility.
