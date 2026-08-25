@@ -15,6 +15,7 @@ _HEIGHT = 240
 _ENCODING = "rgb8"
 _STEP = 960
 _PAYLOAD_BYTES = 230_400
+_UNMATCHED_FRAME_CAPACITY = 2
 
 
 class AdapterFault(RuntimeError):
@@ -259,8 +260,8 @@ class AdapterModel:
             )
             for stream in _STREAMS
         }
-        self._unmatched_frames: dict[str, PublicFrame | None] = {
-            stream: None for stream in _STREAMS
+        self._unmatched_frames: dict[str, deque[PublicFrame]] = {
+            stream: deque() for stream in _STREAMS
         }
         self._pending_pairs: deque[tuple[int, int]] = deque()
         self._paired_frames = 0
@@ -279,7 +280,7 @@ class AdapterModel:
             and self._paired_frames == self._expected_frames
             and self._ground_truth_samples == self._expected_frames
             and not self._pending_pairs
-            and all(frame is None for frame in self._unmatched_frames.values())
+            and all(not frames for frames in self._unmatched_frames.values())
         )
 
     def _raise_if_faulted(self) -> None:
@@ -307,13 +308,15 @@ class AdapterModel:
         stream = _validate_stream(stream)
         if len(self._pending_pairs) == 2:
             raise AdapterFault("camera-pair lookahead buffer is full")
-        if self._unmatched_frames[stream] is not None:
-            raise AdapterFault(f"{stream} camera already has one unmatched frame")
+        frames = self._unmatched_frames[stream]
+        if len(frames) == _UNMATCHED_FRAME_CAPACITY:
+            raise AdapterFault(f"{stream} camera lookahead buffer is full")
 
         sequence = self._sequences[stream]
         sample = sequence._preflight(sample)
         other_stream = "observer" if stream == "onboard" else "onboard"
-        other = self._unmatched_frames[other_stream]
+        other_frames = self._unmatched_frames[other_stream]
+        other = other_frames[0] if other_frames else None
         if other is not None:
             if other.frame_id != sequence.accepted_frames:
                 raise AdapterFault("camera pair IDs do not match")
@@ -321,11 +324,11 @@ class AdapterModel:
                 raise AdapterFault("camera pair timestamps do not match")
 
         frame = sequence.accept(sample)
-        self._unmatched_frames[stream] = frame
+        frames.append(frame)
         if other is not None:
             self._pending_pairs.append((frame.frame_id, frame.sim_timestamp_ns))
-            self._unmatched_frames["onboard"] = None
-            self._unmatched_frames["observer"] = None
+            frames.popleft()
+            other_frames.popleft()
         return frame
 
     def camera_pair_complete(self, frame_id: int, stamp_ns: int) -> bool:

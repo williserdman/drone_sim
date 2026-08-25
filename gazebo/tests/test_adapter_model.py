@@ -266,12 +266,34 @@ def test_adapter_latches_malformed_frame_before_any_public_output():
     assert str(replacement.value) == str(rejected.value) == str(frozen.value)
 
 
-def test_adapter_bounds_each_unmatched_stream_to_one_frame():
+@pytest.mark.parametrize("leading_stream", ["onboard", "observer"])
+def test_adapter_pairs_exact_frames_when_one_camera_callback_leads_by_one(
+    leading_stream,
+):
     adapter = AdapterModel(run_id=RUN_ID, expected_frames=2)
-    adapter.accept_frame("onboard", native_image(stamp_ns=50_000_000))
+    trailing_stream = "observer" if leading_stream == "onboard" else "onboard"
 
-    with pytest.raises(AdapterFault):
-        adapter.accept_frame("onboard", native_image(stamp_ns=100_000_000))
+    first = adapter.accept_frame(leading_stream, native_image(50_000_000))
+    second = adapter.accept_frame(leading_stream, native_image(100_000_000))
+    trailing_first = adapter.accept_frame(trailing_stream, native_image(50_000_000))
+    trailing_second = adapter.accept_frame(trailing_stream, native_image(100_000_000))
+
+    assert (first.frame_id, second.frame_id) == (0, 1)
+    assert (trailing_first.frame_id, trailing_second.frame_id) == (0, 1)
+    assert adapter.camera_pair_complete(0, 50_000_000)
+    assert adapter.camera_pair_complete(1, 100_000_000)
+    adapter.accept_ground_truth(native_ground_truth(50_000_000))
+    adapter.accept_ground_truth(native_ground_truth(100_000_000))
+    assert adapter.complete
+
+
+def test_adapter_rejects_a_two_frame_camera_callback_lead_without_dropping():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=3)
+    adapter.accept_frame("onboard", native_image(stamp_ns=50_000_000))
+    adapter.accept_frame("onboard", native_image(stamp_ns=100_000_000))
+
+    with pytest.raises(AdapterFault, match="onboard camera lookahead buffer is full"):
+        adapter.accept_frame("onboard", native_image(stamp_ns=150_000_000))
 
 
 def test_adapter_buffers_one_lookahead_pair_while_prior_pair_awaits_truth():
