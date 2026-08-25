@@ -54,7 +54,7 @@ Lockstep acceptance requires runtime evidence that actuator outputs advance one-
 
 ## Mission
 
-The first real companion is a small event-driven PyMAVLink module outside the nested legacy repository:
+The first real companion is a small event-driven PyMAVLink module outside the nested legacy repository. Before the public mission epoch, it passively observes heartbeat and `MAV_SYS_STATUS_PREARM_CHECK`; it issues no command until `RUNNING` and the first public clock have both been observed:
 
 ```text
 wait heartbeat
@@ -74,10 +74,13 @@ Keep the existing durable status and quiescence protocol and add current-run fac
 - `gazebo-ready`
 - `ardupilot-ready`
 - `companion-ready`
+- `mission-ready`
 - `mission-finished`
 - `score-finished`
 
-`READY` requires artifact recorders, Gazebo endpoints/native recording, active ArduPilot–Gazebo exchange, and the companion's successful MAVLink TCP connection. One controlled Gazebo step establishes the first `/clock`; only `RUNNING` unpauses normal simulation. The mission still requires the first ArduPilot heartbeat after `RUNNING` before it issues any flight command, because paused lockstep SITL cannot schedule a pre-run heartbeat.
+`READY` requires artifact recorders, Gazebo endpoints/native recording, active ArduPilot–Gazebo exchange, and the companion's successful MAVLink TCP connection. `READY` starts a private unscored warmup: Gazebo and ArduPilot advance in lockstep, while public `/clock`, cameras, ground truth, scenario, score, and mission commands remain inactive. The companion writes `mission-ready={run_id,ready:true,heartbeat_observed:true,prearm_checks_healthy:true}` exactly once after it has passively observed both facts. Orchestration publishes `RUNNING` only after `ardupilot-ready`, `companion-ready`, and `mission-ready` are durable.
+
+At `RUNNING`, the Gazebo adapter floors the latest native Gazebo time to the preceding 50 ms camera epoch, publishes public `/clock=0`, and rebases later public timestamps against that epoch without resetting Gazebo or ArduPilot. Queued native samples at or before the epoch are discarded. The first public camera pair and ground-truth sample is frame 0 at 50 ms; frame 1199 is at 60.000 seconds. Native Gazebo state/log timestamps remain unchanged and include warmup. This makes host-sensitive flight-controller initialization visible diagnostically but unable to consume the fixed scored interval.
 
 `COMPLETED` requires all of:
 
@@ -91,7 +94,7 @@ source-finished + mission-finished(LANDED) + score-finished
 
 For duration `D` seconds, `N = 20 * D`:
 
-- `/clock`: native monotonic simulation clock with all frame stamps represented;
+- `/clock`: zero-based, monotonic public simulation time rebased from native Gazebo time, with `0` at mission activation and every frame stamp represented;
 - `/simulation/run_state`: lifecycle samples through terminal transition;
 - `/simulation/artifact_status`: recorder readiness/finalization samples;
 - `/simulation/ground_truth`: exactly `N` aligned samples;

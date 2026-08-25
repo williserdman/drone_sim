@@ -108,13 +108,43 @@ Require Compose startup, paused-first behavior, endpoint readiness, exact 50,000
   ```
 
 - Add durable current-run readiness for Gazebo, ArduPilot exchange, companion heartbeat, and artifacts.
-- Make `READY` require all four; preserve one controlled first step and Gazebo-owned `/clock`.
+- Keep `companion-ready` as the bounded MAVLink TCP infrastructure fact. Add exact durable `mission-ready={run_id,ready:true,heartbeat_observed:true,prearm_checks_healthy:true}` after passive heartbeat and prearm observation.
+- Make `READY` start private Gazebo–ArduPilot lockstep warmup without public physical evidence or mission commands. Publish `RUNNING` only after `mission-ready` is durable.
+- At `RUNNING`, activate a zero-based public epoch without resetting Gazebo or ArduPilot: floor the latest native clock to the 50 ms camera grid, publish `/clock=0`, discard queued samples through the epoch, and rebase later public samples. Require frame 0 at 50 ms and frame 1199 at 60.000 seconds.
 - Add `mission-finished` and `score-finished`; require them with `source-finished` before `COMPLETED`.
 - Carry one absolute monotonic finalization deadline without restarting it.
 - Use a 60.0 simulated-second default (`1,200` frames per camera); the first
   physical 30-second run proved too short for cold ArduCopter initialization.
 - Preserve the fixed ten-topic bag and exactly seven structured module logs.
 - Ensure failed/aborted runs still preserve partial evidence and teardown Compose resources.
+
+## Critical warmup implementation wave
+
+### Warmup A: Gazebo private warmup and public epoch
+
+**Owns:** `gazebo/**`
+
+- Add tests proving `READY` unpauses without activating public output and `RUNNING` activates output without a second unpause.
+- Split `SetPaused(False)` from a new explicit `ActivateOutput` runtime action.
+- Add a pure 50 ms epoch mapper used by the ROS adapter. During warmup cache native clock only; at activation publish zero and rebase image, metadata, ground-truth, contact, and subsequent clock stamps.
+- Prove native `49.05 ... 109.00` maps to public `0.05 ... 60.00`, with 1,200 aligned frames and no warmup publications.
+
+### Warmup B: passive mission readiness
+
+**Owns:** `companion/**` excluding `companion/comp2026`.
+
+- Add tests proving heartbeat alone and prearm health alone are insufficient, both facts write `mission-ready` exactly once, and no vehicle command is sent before `RUNNING` plus public clock.
+- Extend the passive telemetry path to latch heartbeat and prearm health without advancing mission policy.
+- Preserve `companion-ready` as TCP readiness and write the exact durable `mission-ready` document through the existing runtime protocol.
+
+### Warmup C: orchestration integration
+
+**Owns:** `artifacts/src/artifacts/runtime_protocol.py`, `orchestration/**`, interface documentation, and integration tests.
+
+- Validate the exact current-run `mission-ready` schema and reject stale or partial facts.
+- For Phase 3, gate `RUNNING` on `ardupilot-ready`, `companion-ready`, and `mission-ready` without requiring a pre-run public clock. Preserve Phase 2 clock-triggered behavior.
+- Use the existing overall run wall deadline for warmup; do not reinterpret `startup_wall_seconds`, which remains the infrastructure-discovery bound.
+- Verify lifecycle ordering, exact public epoch, teardown, and failed-run preservation before the next production run.
 
 ## Milestone 2 — first ArduPilot-controlled flight
 
@@ -147,7 +177,7 @@ Run the actual read-only scorekeeper over live ground truth. Require `complete=t
 
 ## Milestone 5 — verified maximum-score run
 
-- Freeze seed, world, 30-second duration, rules file, images, and supply pins.
+- Freeze seed, world, 60-second public duration, rules file, images, and supply pins.
 - Inspect the lowest failed rule from score events, ground truth, ArduPilot/companion logs, and both videos.
 - Change only companion mission parameters/timing or recorded ArduPilot parameters.
 - Rebuild only the affected image and rerun; preserve every completed attempt.
