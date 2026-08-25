@@ -84,6 +84,14 @@ class MavlinkAdapter:
                 timestamp_ns,
                 ack=Ack(command, result == mavlink.MAV_RESULT_ACCEPTED, result),
             )
+        if kind == "SYS_STATUS":
+            prearm_bit = int(mavlink.MAV_SYS_STATUS_PREARM_CHECK)
+            enabled = bool(int(message.onboard_control_sensors_enabled) & prearm_bit)
+            healthy = bool(int(message.onboard_control_sensors_health) & prearm_bit)
+            return Telemetry(
+                timestamp_ns,
+                prearm_checks_healthy=enabled and healthy,
+            )
         if kind == "GLOBAL_POSITION_INT":
             return Telemetry(
                 timestamp_ns,

@@ -24,6 +24,7 @@ def observation(
     vertical_speed_m_s: float | None = None,
     landed: bool | None = None,
     ack: Ack | None = None,
+    prearm_checks_healthy: bool | None = None,
 ) -> Telemetry:
     return Telemetry(
         timestamp_ns=timestamp_ns,
@@ -34,6 +35,7 @@ def observation(
         vertical_speed_m_s=vertical_speed_m_s,
         landed=landed,
         ack=ack,
+        prearm_checks_healthy=prearm_checks_healthy,
     )
 
 
@@ -48,11 +50,12 @@ def drive_to_descent() -> tuple[MissionState, list[CommandKind]]:
         observation(0, heartbeat=True, mode="STABILIZE", armed=False),
         accepted(50_000_000, CommandKind.SET_GUIDED),
         observation(100_000_000, heartbeat=True, mode="GUIDED", armed=False),
-        accepted(150_000_000, CommandKind.ARM),
-        observation(200_000_000, heartbeat=True, mode="GUIDED", armed=True),
-        accepted(250_000_000, CommandKind.TAKEOFF),
-        observation(300_000_000, mode="GUIDED", armed=True, altitude_m=1.40),
-        accepted(350_000_000, CommandKind.LAND),
+        observation(150_000_000, prearm_checks_healthy=True),
+        accepted(200_000_000, CommandKind.ARM),
+        observation(250_000_000, heartbeat=True, mode="GUIDED", armed=True),
+        accepted(300_000_000, CommandKind.TAKEOFF),
+        observation(350_000_000, mode="GUIDED", armed=True, altitude_m=1.40),
+        accepted(400_000_000, CommandKind.LAND),
     )
     for event in events:
         transition = advance(state, event)
@@ -165,6 +168,30 @@ def test_guided_mode_cannot_change_after_it_is_confirmed() -> None:
     )
     assert result.state.phase is MissionPhase.FAILED
     assert "mode changed" in result.state.failure_reason
+
+
+def test_arm_waits_for_enabled_and_healthy_prearm_status() -> None:
+    state = MissionState.initial()
+    state = advance(
+        state, observation(0, heartbeat=True, mode="STABILIZE", armed=False)
+    ).state
+    state = advance(state, accepted(50_000_000, CommandKind.SET_GUIDED)).state
+    guided = advance(
+        state, observation(100_000_000, heartbeat=True, mode="GUIDED", armed=False)
+    )
+
+    assert guided.state.phase is MissionPhase.WAIT_PREARM_READY
+    assert guided.commands == ()
+    waiting = advance(
+        guided.state, observation(150_000_000, prearm_checks_healthy=False)
+    )
+    assert waiting.state.phase is MissionPhase.WAIT_PREARM_READY
+    assert waiting.commands == ()
+    ready = advance(
+        waiting.state, observation(200_000_000, prearm_checks_healthy=True)
+    )
+    assert ready.state.phase is MissionPhase.WAIT_ARM_ACK
+    assert [command.kind for command in ready.commands] == [CommandKind.ARM]
 
 
 @pytest.mark.parametrize(

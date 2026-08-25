@@ -19,7 +19,10 @@ timestamp.
 The `descent_v1` command sequence is `GUIDED`, arm, take off to 1.5 m,
 and `LAND`. Every transition requires the ordered positive command ACK and
 observed vehicle state; a command send is logged only after PyMAVLink accepts
-it. Negative ACKs, unexpected ACKs, mode inconsistency, timestamp regression,
+it. The first heartbeat establishes liveness but does not establish arming
+readiness: after GUIDED is observed, ARM waits for the
+`MAV_SYS_STATUS_PREARM_CHECK` bit to be both enabled and healthy in
+`SYS_STATUS`. Negative ACKs, unexpected ACKs, mode inconsistency, timestamp regression,
 and contact before descent fail the mission without repair.
 MAVLink `STATUSTEXT` is retained as structured `mavlink_status_text` evidence
 with its severity and the latest authoritative simulation timestamp, including

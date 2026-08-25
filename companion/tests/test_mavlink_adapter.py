@@ -53,6 +53,7 @@ def mavutil() -> SimpleNamespace:
         MAV_RESULT_IN_PROGRESS=5,
         MAV_LANDED_STATE_ON_GROUND=1,
         MAV_DATA_STREAM_ALL=0,
+        MAV_SYS_STATUS_PREARM_CHECK=0x10000000,
     )
     return SimpleNamespace(
         mavlink=constants,
@@ -162,3 +163,31 @@ def test_statustext_is_preserved_as_simulation_stamped_diagnostics() -> None:
     assert diagnostic.timestamp_ns == 23_000_000_000
     assert diagnostic.status_text == "PreArm: Compass not calibrated"
     assert diagnostic.status_severity == 3
+
+
+def test_sys_status_requires_prearm_check_enabled_and_healthy() -> None:
+    prearm = 0x10000000
+    connection = FakeConnection(
+        [
+            Message(
+                "SYS_STATUS",
+                onboard_control_sensors_enabled=0,
+                onboard_control_sensors_health=0,
+            ),
+            Message(
+                "SYS_STATUS",
+                onboard_control_sensors_enabled=prearm,
+                onboard_control_sensors_health=0,
+            ),
+            Message(
+                "SYS_STATUS",
+                onboard_control_sensors_enabled=prearm,
+                onboard_control_sensors_health=prearm,
+            ),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    assert adapter.poll(1).prearm_checks_healthy is False
+    assert adapter.poll(2).prearm_checks_healthy is False
+    assert adapter.poll(3).prearm_checks_healthy is True

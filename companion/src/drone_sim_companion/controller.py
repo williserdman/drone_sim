@@ -48,9 +48,14 @@ class MissionController:
         self.state = transition.state
         if (
             previous.phase is MissionPhase.WAIT_GUIDED_MODE
-            and transition.state.phase is MissionPhase.WAIT_ARM_ACK
+            and transition.state.phase is MissionPhase.WAIT_PREARM_READY
         ):
             self._emit("mode_confirmed", telemetry.timestamp_ns, {"mode": "GUIDED"})
+        if (
+            previous.phase is MissionPhase.WAIT_PREARM_READY
+            and transition.state.phase is MissionPhase.WAIT_ARM_ACK
+        ):
+            self._emit("prearm_checks_healthy", telemetry.timestamp_ns, {})
         if (
             previous.phase is MissionPhase.WAIT_ARMED
             and transition.state.phase is MissionPhase.WAIT_TAKEOFF_ACK

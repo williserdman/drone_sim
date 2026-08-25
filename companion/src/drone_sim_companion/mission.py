@@ -18,6 +18,7 @@ class MissionPhase(str, Enum):
     WAIT_HEARTBEAT = "WAIT_HEARTBEAT"
     WAIT_GUIDED_ACK = "WAIT_GUIDED_ACK"
     WAIT_GUIDED_MODE = "WAIT_GUIDED_MODE"
+    WAIT_PREARM_READY = "WAIT_PREARM_READY"
     WAIT_ARM_ACK = "WAIT_ARM_ACK"
     WAIT_ARMED = "WAIT_ARMED"
     WAIT_TAKEOFF_ACK = "WAIT_TAKEOFF_ACK"
@@ -48,6 +49,7 @@ class Telemetry:
     ack: Ack | None = None
     status_text: str | None = None
     status_severity: int | None = None
+    prearm_checks_healthy: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,10 @@ def _validate(event: Telemetry) -> str | None:
     ):
         if value is not None and (not isinstance(value, (int, float)) or not math.isfinite(value)):
             return f"invalid {name}"
+    if event.prearm_checks_healthy is not None and not isinstance(
+        event.prearm_checks_healthy, bool
+    ):
+        return "invalid prearm status"
     return None
 
 
@@ -183,6 +189,10 @@ def advance(state: MissionState, event: Telemetry) -> Transition:
 
     if state.phase is MissionPhase.WAIT_GUIDED_MODE:
         if event.mode != "GUIDED":
+            return Transition(current)
+        return Transition(replace(current, phase=MissionPhase.WAIT_PREARM_READY))
+    if state.phase is MissionPhase.WAIT_PREARM_READY:
+        if event.prearm_checks_healthy is not True:
             return Transition(current)
         return _command(current, event, CommandKind.ARM, MissionPhase.WAIT_ARM_ACK)
     if state.phase is MissionPhase.WAIT_ARMED:
