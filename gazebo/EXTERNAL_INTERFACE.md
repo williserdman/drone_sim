@@ -24,14 +24,16 @@ entity and private topic child are named `iris`.
 | `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Reliable, volatile, depth 10 |
 
 All run-scoped outputs carry `run_id`. Each image has matching metadata with a
-stream-local contiguous frame ID and an identical native simulation timestamp.
+stream-local contiguous frame ID and an identical public simulation timestamp.
 Both streams are fixed at `320x240`, `rgb8`, and 20 simulated Hz. Each accepted
-camera pair has one ground-truth sample at the same native timestamp. The
+camera pair has one ground-truth sample at the same public timestamp. The
 onboard public image is the exact stream later consumed by companion vision and
-artifacts. Before `RUNNING`, `/clock` relays the controlled readiness step.
-During the run it publishes the native camera epochs at 20 simulated Hz, which
-guarantees that every recorded frame timestamp has matching durable clock
-evidence even when the host is slower than real time.
+artifacts. Before `RUNNING`, none of these topics publishes warmup evidence.
+At `RUNNING`, `/clock` publishes zero exactly once. The adapter floors the
+latest private native clock to the preceding 50 ms camera epoch, drops queued
+native samples at or before that epoch, and rebases every later clock, image,
+metadata, ground-truth, and contact timestamp. Frame 0 is therefore at public
+50 ms; for a 60 second run, frame 1199 is at public 60.000 seconds.
 
 `GroundTruth.pose` and its linear and angular velocity are expressed in the
 Gazebo world frame using ENU axes. `GroundTruth.in_contact` is true when the
@@ -43,8 +45,9 @@ The runtime consumes the current run's resolved configuration, lifecycle state,
 artifact readiness, and finalization request. It starts the server paused and
 releases no simulation sample before its private endpoints, native recorder,
 bridges, public publishers, and artifact recorders are ready. After `READY`,
-one controlled step establishes the first `/clock`; the server unpauses only
-after observing the current run's `RUNNING` state.
+the server unpauses so Gazebo and ArduPilot can advance in private lockstep,
+while the adapter only caches the latest native clock. `RUNNING` explicitly
+activates public output without issuing another unpause or resetting Gazebo.
 
 The Phase 2 synthetic source consumes the transport-only
 `/simulation/camera_pair_ack` contract documented by artifacts. The production
@@ -97,7 +100,10 @@ frames. Its stable online counters must show at least two motor-command updates,
 one JSON state, no frame gaps, and no send errors; those counters
 are preserved in `.status/gazebo-ready.json`. Orchestration alone aggregates this
 fact with durable ArduPilot, companion, artifact, and scorekeeper readiness;
-the Gazebo fact does not claim those peer processes are lifecycle-ready.
+the Gazebo fact does not claim those peer processes are lifecycle-ready. Once
+the aggregate lifecycle reaches `READY`, the unpaused exchange is private
+warmup and remains visible only in native Gazebo state/log time until the
+public epoch is activated at `RUNNING`.
 Cold-render status-command timeouts or temporary service unavailability remain
 not-ready observations and are retried within the original startup wall-time
 allowance. Malformed or invalid status replies fail immediately.

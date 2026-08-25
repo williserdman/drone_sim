@@ -147,6 +147,11 @@ class SetPaused:
 
 
 @dataclass(frozen=True)
+class ActivateOutput:
+    pass
+
+
+@dataclass(frozen=True)
 class WriteSourceFinished:
     sim_timestamp_ns: int
 
@@ -195,6 +200,7 @@ RuntimeAction: TypeAlias = (
     PublishGazeboReady
     | RequestSteps
     | SetPaused
+    | ActivateOutput
     | WriteSourceFinished
     | WriteRuntimeFailure
     | BeginFinalization
@@ -330,7 +336,7 @@ class RuntimeModel:
         self._artifacts_ready = False
         self._gazebo_ready = False
         self._gazebo_ready_published = False
-        self._step_requested = False
+        self._warmup_started = False
         self._lifecycle_state = "STARTING"
         self._paused = True
         self._source_summary: AdapterSummary | None = None
@@ -385,7 +391,7 @@ class RuntimeModel:
         if state == "STARTING" and self._lifecycle_state == "STARTING":
             return ()
         if state == "READY":
-            if self._lifecycle_state == "READY" and self._step_requested:
+            if self._lifecycle_state == "READY" and self._warmup_started:
                 return ()
             if not self._gazebo_ready_published:
                 return self._failure("READY received before Gazebo readiness publication")
@@ -394,20 +400,20 @@ class RuntimeModel:
                     f"invalid lifecycle transition {self._lifecycle_state} -> READY"
                 )
             self._lifecycle_state = "READY"
-            self._step_requested = True
-            return (RequestSteps(1),)
-        if state == "RUNNING":
-            if self._lifecycle_state == "RUNNING":
-                return ()
-            if not self._step_requested or self._lifecycle_state != "READY":
-                return self._failure(
-                    "RUNNING received before the controlled readiness step"
-                )
-            self._lifecycle_state = "RUNNING"
+            self._warmup_started = True
             if self._paused:
                 self._paused = False
                 return (SetPaused(False),)
             return ()
+        if state == "RUNNING":
+            if self._lifecycle_state == "RUNNING":
+                return ()
+            if not self._warmup_started or self._lifecycle_state != "READY":
+                return self._failure(
+                    "RUNNING received before the controlled readiness step"
+                )
+            self._lifecycle_state = "RUNNING"
+            return (ActivateOutput(),)
         if state == "FINALIZING":
             self._lifecycle_state = "FINALIZING"
             self._finalization_preempted = True
@@ -630,6 +636,7 @@ __all__ = [
     "ServerStopFailed",
     "ServerStopped",
     "SetPaused",
+    "ActivateOutput",
     "StopServer",
     "WriteQuiescence",
     "WriteRuntimeFailure",

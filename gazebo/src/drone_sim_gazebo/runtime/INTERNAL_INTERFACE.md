@@ -9,12 +9,13 @@ accepted completion summary, and the one native artifact summary; it has no
 callback or sample queue.
 
 Action order carries part of the interface. Readiness publication precedes the
-controlled step; unpause follows that step and `RUNNING`; pause precedes
-source-finished and normal finalization; a first failure is written before
-best-effort pause and `BeginFinalization`; and `WriteQuiescence` follows a
-completed `StopServer` observation. A bare `FINALIZING` state pauses and closes
-the normal path immediately, while the typed durable finalization request
-supplies terminal intent, reason, and the absolute stop deadline.
+`READY` unpause that starts private warmup; `RUNNING` then emits only explicit
+public-output activation. Pause precedes source-finished and normal
+finalization; a first failure is written before best-effort pause and
+`BeginFinalization`; and `WriteQuiescence` follows a completed `StopServer`
+observation. A bare `FINALIZING` state pauses and closes the normal path
+immediately, while the typed durable finalization request supplies terminal
+intent, reason, and the absolute stop deadline.
 
 A `COMPLETED` request is itself invalid until `_source_summary` contains the
 exact accepted `AdapterSummary`; the failure write and failed begin action are
@@ -37,7 +38,7 @@ repository lifecycle contract. Once quiescence is returned, only identical
 server-stop/finalization observations and terminal lifecycle repeats are
 idempotent; all other current-run use raises `RuntimeModelError`.
 
-The model validates that completion timestamps describe the fixed native
+The model validates that completion timestamps describe the fixed public
 cadence but never samples time or invents an output timestamp. Infrastructure
 timeout is an explicit caller fact. The process boundary alone consumes the
 deadline through an injected monotonic clock. The current durable finalization
@@ -50,6 +51,11 @@ finalization intent to one absolute monotonic deadline. `ActionExecutor`
 applies pure actions in order. `ChildSupervisor` launches bridge wrappers in
 new sessions and terminates their process groups before calling
 `GazeboServer.stop` with the same deadline.
+
+`SetPaused(False)` has no adapter side effect. `ActivateOutput` has no Gazebo
+world-control side effect. This separation lets `READY` advance the private
+Gazebo-ArduPilot exchange while `RUNNING` establishes the public epoch without
+another unpause or a world reset.
 
 For `vertical_descent`, transport discovery additionally requires the
 plugin-owned `/model/iris/ardupilot/status` service. The runtime will not emit

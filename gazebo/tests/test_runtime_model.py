@@ -9,6 +9,7 @@ import pytest
 
 from drone_sim_gazebo.ros_adapter import AdapterSummary
 from drone_sim_gazebo.runtime import (
+    ActivateOutput,
     AdapterCompleted,
     ArtifactsReady,
     BeginFinalization,
@@ -70,13 +71,13 @@ def _running_model(*, expected_frames: int = 2) -> RuntimeModel:
     model = RuntimeModel(run_id=RUN_ID, expected_frames=expected_frames)
     assert model.accept(ArtifactsReady(RUN_ID)) == ()
     assert model.accept(GazeboReady(RUN_ID)) == (PublishGazeboReady(),)
-    assert model.accept(RunStateEvent(RUN_ID, "READY")) == (RequestSteps(1),)
-    assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == (SetPaused(False),)
+    assert model.accept(RunStateEvent(RUN_ID, "READY")) == (SetPaused(False),)
+    assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == (ActivateOutput(),)
     return model
 
 
 @pytest.mark.parametrize("first", [ArtifactsReady, GazeboReady])
-def test_runtime_releases_one_step_only_after_both_readiness_facts(first):
+def test_ready_unpauses_private_warmup_and_running_only_activates_public_output(first):
     model = RuntimeModel(run_id=RUN_ID, expected_frames=40)
     second = GazeboReady if first is ArtifactsReady else ArtifactsReady
 
@@ -84,9 +85,11 @@ def test_runtime_releases_one_step_only_after_both_readiness_facts(first):
     assert model.accept(first(RUN_ID)) == ()
     assert model.accept(second(RUN_ID)) == (PublishGazeboReady(),)
     assert model.accept(second(RUN_ID)) == ()
-    assert model.accept(RunStateEvent(RUN_ID, "READY")) == (RequestSteps(1),)
+    assert model.accept(RunStateEvent(RUN_ID, "READY")) == (SetPaused(False),)
     assert model.accept(RunStateEvent(RUN_ID, "READY")) == ()
-    assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == (SetPaused(False),)
+    running_actions = model.accept(RunStateEvent(RUN_ID, "RUNNING"))
+    assert running_actions == (ActivateOutput(),)
+    assert not any(isinstance(action, SetPaused) for action in running_actions)
     assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == ()
 
 
@@ -466,6 +469,7 @@ def test_runtime_values_reject_noncanonical_numbers_terminal_data_and_paths(fact
 
 def test_runtime_actions_events_and_native_summary_are_frozen(tmp_path: Path):
     values = [
+        ActivateOutput(),
         PublishGazeboReady(),
         RequestSteps(1),
         SetPaused(True),

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from drone_sim_gazebo.runtime import (
+    ActivateOutput,
     BeginFinalization,
     PublishGazeboReady,
     RequestSteps,
@@ -114,7 +115,7 @@ def test_action_executor_maps_readiness_control_and_durable_facts(tmp_path):
     ]
 
 
-def test_unpause_activates_public_adapter_before_world_can_advance(tmp_path):
+def test_unpause_does_not_activate_public_output_during_private_warmup(tmp_path):
     ordering = []
     executor, _protocol, _status, transport, *_ = _executor(
         tmp_path, activate_output=lambda: ordering.append("activate")
@@ -129,7 +130,19 @@ def test_unpause_activates_public_adapter_before_world_can_advance(tmp_path):
 
     executor.apply((SetPaused(False),))
 
-    assert ordering == ["activate", ("pause", False)]
+    assert ordering == [("pause", False)]
+
+
+def test_explicit_activate_output_action_does_not_unpause_a_second_time(tmp_path):
+    ordering = []
+    executor, _protocol, _status, transport, *_ = _executor(
+        tmp_path, activate_output=lambda: ordering.append("activate")
+    )
+
+    executor.apply((ActivateOutput(),))
+
+    assert ordering == ["activate"]
+    assert transport.calls == []
 
 
 def test_stop_uses_same_absolute_deadline_for_children_and_server(tmp_path):

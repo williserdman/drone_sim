@@ -12,6 +12,8 @@ from drone_sim_gazebo.ros_adapter import (
     CameraSequence,
     NativeGroundTruth,
     NativeImage,
+    OutputEpochGate,
+    PublicEpoch,
     PublicFrame,
     PublicGroundTruth,
 )
@@ -19,6 +21,7 @@ from drone_sim_gazebo.ros_adapter import (
 
 RUN_ID = "00000000-0000-4000-8000-000000000404"
 RGB_PAYLOAD = bytes(320 * 240 * 3)
+INTERVAL_NS = 50_000_000
 
 
 def native_image(stamp_ns: int = 50_000_000, **changes: object) -> NativeImage:
@@ -53,6 +56,91 @@ def accept_pair(adapter: AdapterModel, stamp_ns: int) -> tuple[PublicFrame, Publ
     onboard = adapter.accept_frame("onboard", native_image(stamp_ns))
     observer = adapter.accept_frame("observer", native_image(stamp_ns))
     return onboard, observer
+
+
+def test_public_epoch_floors_latest_native_clock_and_drops_queued_epoch_samples():
+    epoch = PublicEpoch.from_latest_native_clock(49_099_999_999)
+
+    assert epoch.native_epoch_ns == 49_050_000_000
+    assert epoch.rebase(49_000_000_000) is None
+    assert epoch.rebase(49_050_000_000) is None
+    assert epoch.rebase(49_050_000_001) == 1
+
+
+def test_public_epoch_maps_exactly_1200_native_frames_to_50_ms_through_60_seconds():
+    epoch = PublicEpoch.from_latest_native_clock(49_025_000_000)
+
+    public_stamps = tuple(
+        epoch.rebase(49_000_000_000 + frame_number * INTERVAL_NS)
+        for frame_number in range(1, 1_201)
+    )
+
+    assert len(public_stamps) == 1_200
+    assert public_stamps[0] == 50_000_000
+    assert public_stamps[-1] == 60_000_000_000
+    assert all(
+        later - earlier == INTERVAL_NS
+        for earlier, later in zip(public_stamps, public_stamps[1:])
+    )
+
+
+def test_output_epoch_gate_caches_latest_warmup_clock_without_public_output():
+    gate = OutputEpochGate()
+
+    assert gate.accept_clock(49_050_000_000) is None
+    assert gate.accept_clock(49_099_999_999) is None
+    assert gate.accept_clock(49_075_000_000) is None
+    assert gate.rebase_sample(49_100_000_000) is None
+
+    assert gate.activate() == 0
+    assert gate.native_epoch_ns == 49_050_000_000
+
+
+def test_output_epoch_gate_drops_epoch_queue_and_rebases_all_later_native_stamps():
+    gate = OutputEpochGate()
+    gate.accept_clock(49_075_000_000)
+    gate.activate()
+
+    assert gate.accept_clock(49_050_000_000) is None
+    assert gate.rebase_sample(49_050_000_000) is None
+    assert gate.accept_clock(49_051_000_000) == 1_000_000
+    assert gate.rebase_sample(49_100_000_000) == 50_000_000
+
+
+def test_output_epoch_gate_refuses_activation_without_a_native_clock():
+    with pytest.raises(AdapterFault, match="native clock"):
+        OutputEpochGate().activate()
+
+
+def test_offset_native_run_assigns_frame_zero_at_50_ms_and_frame_1199_at_60_seconds():
+    epoch = PublicEpoch.from_latest_native_clock(49_025_000_000)
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=1_200)
+    first_frame = None
+    last_frame = None
+
+    for frame_number in range(1, 1_201):
+        native_stamp = 49_000_000_000 + frame_number * INTERVAL_NS
+        public_stamp = epoch.rebase(native_stamp)
+        assert public_stamp is not None
+        onboard, _observer = accept_pair(adapter, public_stamp)
+        adapter.accept_ground_truth(native_ground_truth(public_stamp))
+        if first_frame is None:
+            first_frame = onboard
+        last_frame = onboard
+
+    assert (first_frame.frame_id, first_frame.sim_timestamp_ns) == (0, 50_000_000)
+    assert (last_frame.frame_id, last_frame.sim_timestamp_ns) == (
+        1_199,
+        60_000_000_000,
+    )
+    assert adapter.freeze() == AdapterSummary(
+        onboard_frames=1_200,
+        observer_frames=1_200,
+        paired_frames=1_200,
+        ground_truth_samples=1_200,
+        first_sim_timestamp_ns=50_000_000,
+        last_sim_timestamp_ns=60_000_000_000,
+    )
 
 
 def test_camera_sequence_assigns_contiguous_ids_and_preserves_native_stamp():

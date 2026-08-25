@@ -7,13 +7,14 @@ facts and applies the returned actions; it may not bypass their order.
 
 Current-run `ArtifactsReady` and private `GazeboReady` are both required before
 one `PublishGazeboReady`. One current-run `READY` then returns exactly one
-`RequestSteps(1)`, and the following current-run `RUNNING` returns one
-`SetPaused(False)`. Duplicates and canonical stale-run facts return no actions.
+`SetPaused(False)` to start private lockstep warmup. The following current-run
+`RUNNING` returns exactly one `ActivateOutput` and never returns a second
+unpause. Duplicates and canonical stale-run facts return no actions.
 
 `AdapterCompleted` carries the frozen Task 4 `AdapterSummary`. Success requires
 exactly the configured, aligned onboard, observer, paired, and ground-truth
-counts and the fixed native 50 ms cadence. The model pauses before returning
-`WriteSourceFinished` with the summary's unchanged last native timestamp.
+counts and the fixed public 50 ms cadence. The model pauses before returning
+`WriteSourceFinished` with the summary's last zero-based public timestamp.
 
 `ChildExited` carries a bounded canonical identity for server, bridge, image
 bridge, or adapter children, and its exact identity is retained in the first
@@ -42,3 +43,6 @@ durable finalization request receives one absolute deadline computed from the
 resolved run allowance, and every later stop stage reuses it. Bridge process
 groups stop before the exact `GazeboServer`; one valid native summary is fed
 back as `ServerStopped` before Gazebo quiescence is written.
+`ActionExecutor` maps `SetPaused` only to Gazebo world control and maps
+`ActivateOutput` only to the ROS adapter, keeping warmup release and public
+activation as separate effects.

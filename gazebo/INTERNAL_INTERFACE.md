@@ -38,4 +38,8 @@ server.
 `ros_adapter.aggregation` retains at most one odometry, one contact, and one
 completed truth value. `ros_adapter.live` joins that truth to the current
 camera pair before the public ROS node publishes it. Private sensor QoS may be
-best effort; public QoS remains exactly the external table.
+best effort; public QoS remains exactly the external table. The pure
+`OutputEpochGate` caches only the greatest native clock observed during
+warmup. Its immutable `PublicEpoch` floors that clock to the 50 ms grid and is
+the single mapping used for clock, cameras, odometry, and contact after
+activation.

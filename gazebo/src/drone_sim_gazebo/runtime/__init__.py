@@ -1,6 +1,7 @@
 """Pure Gazebo lifecycle transition model."""
 
 from .model import (
+    ActivateOutput,
     AdapterCompleted,
     ArtifactsReady,
     BeginFinalization,
@@ -26,6 +27,7 @@ from .model import (
 
 
 __all__ = [
+    "ActivateOutput",
     "AdapterCompleted",
     "ArtifactsReady",
     "BeginFinalization",

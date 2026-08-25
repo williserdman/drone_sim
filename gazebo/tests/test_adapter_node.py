@@ -68,8 +68,8 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         rclpy.shutdown()
 
 
-def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_until_activation():
-    """Removing the activation gate must reintroduce the 1 ms readiness-step sample fault."""
+def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activation():
+    """Warmup time must not leak into the fixed public mission interval."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")
     from nav_msgs.msg import Odometry
@@ -159,49 +159,50 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
             ),
         )
 
-        readiness_clock = Clock()
-        _set_stamp(readiness_clock.clock, 1_000_000)
-        adapter._accept_clock(readiness_clock)
-        adapter._accept_image("onboard", image(1_000_000))
-        adapter._accept_image("observer", image(1_000_000))
-        adapter._accept_odometry(odometry(1_000_000))
-        adapter._accept_contacts(contacts(1_000_000))
-        _spin_until(observer, lambda: clocks == [1_000_000])
+        warmup_clock = Clock()
+        _set_stamp(warmup_clock.clock, 49_025_000_000)
+        adapter._accept_clock(warmup_clock)
+        adapter._accept_image("onboard", image(49_000_000_000))
+        adapter._accept_image("observer", image(49_000_000_000))
+        adapter._accept_odometry(odometry(49_000_000_000))
+        adapter._accept_contacts(contacts(49_000_000_000))
+        rclpy.spin_once(observer, timeout_sec=0.1)
 
+        assert clocks == []
         assert images == []
         assert truths == []
         assert faults == []
         assert completions == []
 
         adapter.activate_output()
-        # Samples published by the readiness step may already be queued in a
-        # different DDS reader and execute after the RUNNING callback.
-        adapter._accept_image("onboard", image(1_000_000))
-        adapter._accept_image("observer", image(1_000_000))
-        adapter._accept_odometry(odometry(1_000_000))
-        adapter._accept_contacts(contacts(1_000_000))
+        _spin_until(observer, lambda: clocks == [0])
+        # Samples at the floored epoch may already be queued in a different
+        # DDS reader and execute after the RUNNING callback.
+        adapter._accept_image("onboard", image(49_000_000_000))
+        adapter._accept_image("observer", image(49_000_000_000))
+        adapter._accept_odometry(odometry(49_000_000_000))
+        adapter._accept_contacts(contacts(49_000_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
         assert images == []
         assert truths == []
         assert faults == []
         assert completions == []
 
-        adapter._accept_image("onboard", image(50_000_000))
-        adapter._accept_image("observer", image(50_000_000))
-        for timestamp_ns in range(2_000_000, 50_000_000, 1_000_000):
-            adapter._accept_contacts(contacts(timestamp_ns, in_contact=True))
-        adapter._accept_odometry(odometry(50_000_000))
+        adapter._accept_image("onboard", image(49_050_000_000))
+        adapter._accept_image("observer", image(49_050_000_000))
+        adapter._accept_contacts(contacts(49_050_000_000, in_contact=True))
+        adapter._accept_odometry(odometry(49_050_000_000))
         _spin_until(observer, lambda: len(images) == 2 and truths == [50_000_000])
 
         assert images == [50_000_000, 50_000_000]
-        _spin_until(observer, lambda: clocks == [1_000_000, 50_000_000])
+        _spin_until(observer, lambda: clocks == [0, 50_000_000])
         delayed_clock = Clock()
-        _set_stamp(delayed_clock.clock, 49_000_000)
+        _set_stamp(delayed_clock.clock, 49_025_000_000)
         adapter._accept_clock(delayed_clock)
-        _set_stamp(delayed_clock.clock, 50_000_000)
+        _set_stamp(delayed_clock.clock, 49_050_000_000)
         adapter._accept_clock(delayed_clock)
         rclpy.spin_once(observer, timeout_sec=0.1)
-        assert clocks == [1_000_000, 50_000_000]
+        assert clocks == [0, 50_000_000]
         assert faults == []
         assert len(completions) == 1
 
@@ -209,10 +210,10 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
         # executor when the exact final frame completes the adapter.  Those
         # queued callbacks belong after the completed run boundary and must
         # be discarded rather than mutating the frozen adapter.
-        adapter._accept_image("onboard", image(100_000_000))
-        adapter._accept_image("observer", image(100_000_000))
-        adapter._accept_contacts(contacts(100_000_000))
-        adapter._accept_odometry(odometry(100_000_000))
+        adapter._accept_image("onboard", image(49_100_000_000))
+        adapter._accept_image("observer", image(49_100_000_000))
+        adapter._accept_contacts(contacts(49_100_000_000))
+        adapter._accept_odometry(odometry(49_100_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
 
         assert faults == []
@@ -222,12 +223,12 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
 
         adapter.freeze_output()
         frozen_clock = Clock()
-        _set_stamp(frozen_clock.clock, 100_000_000)
+        _set_stamp(frozen_clock.clock, 49_100_000_000)
         adapter._accept_clock(frozen_clock)
-        adapter._accept_image("onboard", image(100_000_000))
+        adapter._accept_image("onboard", image(49_100_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
 
-        assert clocks == [1_000_000, 50_000_000]
+        assert clocks == [0, 50_000_000]
         assert images == [50_000_000, 50_000_000]
         assert truths == [50_000_000]
     finally:

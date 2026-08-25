@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .aggregation import AggregationFault, NativeOdometry
+from .epoch import OutputEpochGate
 from .live import LiveAdapter
 from .model import AdapterFault, AdapterSummary, NativeImage, PublicFrame, PublicGroundTruth
 from .topics import contact_topic_for_world
@@ -73,8 +74,7 @@ class GazeboAdapterNode(_node_base()):
         self._completion_reported = False
         self._faulted = False
         self._output_active = False
-        self._run_started = False
-        self._inactive_clock_ns: int | None = None
+        self._output_epoch = OutputEpochGate()
         self._last_public_clock_ns: int | None = None
         self._clock_type = Clock
         self._image_type = Image
@@ -153,10 +153,15 @@ class GazeboAdapterNode(_node_base()):
         self._output_active = False
 
     def activate_output(self) -> None:
-        """Begin accepting physical samples after the readiness-only step."""
-        if not self._faulted:
-            self._run_started = True
+        """Publish public zero and open the rebased physical sample epoch."""
+        if self._faulted or self._output_active:
+            return
+        try:
+            public_zero_ns = self._output_epoch.activate()
+            self._publish_clock(public_zero_ns)
             self._output_active = True
+        except (AdapterFault, ValueError, TypeError) as error:
+            self._fail(error)
 
     def _publish_clock(self, timestamp_ns: int, message=None) -> None:
         if (
@@ -181,10 +186,9 @@ class GazeboAdapterNode(_node_base()):
             return
         try:
             timestamp_ns = _nanoseconds(message.clock)
-            if self._run_started:
-                return
-            self._inactive_clock_ns = timestamp_ns
-            self._publish_clock(timestamp_ns, message)
+            public_timestamp_ns = self._output_epoch.accept_clock(timestamp_ns)
+            if public_timestamp_ns is not None:
+                self._publish_clock(public_timestamp_ns)
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
@@ -193,15 +197,13 @@ class GazeboAdapterNode(_node_base()):
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
-            if (
-                self._inactive_clock_ns is not None
-                and timestamp_ns <= self._inactive_clock_ns
-            ):
+            public_timestamp_ns = self._output_epoch.rebase_sample(timestamp_ns)
+            if public_timestamp_ns is None:
                 return
             output = self._live.accept_image(
                 stream,
                 NativeImage(
-                    sim_timestamp_ns=timestamp_ns,
+                    sim_timestamp_ns=public_timestamp_ns,
                     width=message.width,
                     height=message.height,
                     encoding=message.encoding,
@@ -218,16 +220,14 @@ class GazeboAdapterNode(_node_base()):
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
-            if (
-                self._inactive_clock_ns is not None
-                and timestamp_ns <= self._inactive_clock_ns
-            ):
+            public_timestamp_ns = self._output_epoch.rebase_sample(timestamp_ns)
+            if public_timestamp_ns is None:
                 return
             pose = message.pose.pose
             twist = message.twist.twist
             output = self._live.accept_odometry(
                 NativeOdometry(
-                    sim_timestamp_ns=timestamp_ns,
+                    sim_timestamp_ns=public_timestamp_ns,
                     position_xyz=_vector3(pose.position),
                     orientation_xyzw=_quaternion(pose.orientation),
                     linear_velocity_xyz=_vector3(twist.linear),
@@ -243,13 +243,11 @@ class GazeboAdapterNode(_node_base()):
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
-            if (
-                self._inactive_clock_ns is not None
-                and timestamp_ns <= self._inactive_clock_ns
-            ):
+            public_timestamp_ns = self._output_epoch.rebase_sample(timestamp_ns)
+            if public_timestamp_ns is None:
                 return
             output = self._live.accept_contact(
-                timestamp_ns, bool(message.contacts)
+                public_timestamp_ns, bool(message.contacts)
             )
             self._publish(output)
         except (AdapterFault, AggregationFault, ValueError, TypeError) as error:

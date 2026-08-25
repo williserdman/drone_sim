@@ -45,5 +45,11 @@ arrival order but releases ground truth only when the pure model reports the
 same current camera pair.
 
 `GazeboAdapterNode` is the only ROS-dependent adapter class. It republishes the
-private native clock through the sole public `/clock` publisher, publishes the
-fixed camera/metadata/truth contract, and has no camera-ack subscription.
+private native clock through the sole public `/clock` publisher after mapping
+it through `OutputEpochGate`, publishes the fixed camera/metadata/truth
+contract, and has no camera-ack subscription. During warmup the gate retains
+only the greatest observed native clock. `activate()` creates an immutable
+`PublicEpoch` by flooring that clock to `50,000,000` ns, and returns public
+zero. `rebase_sample()` returns no value through the epoch and otherwise the
+native-minus-epoch timestamp used identically for images, metadata, odometry,
+contact, ground truth, and later clock samples.

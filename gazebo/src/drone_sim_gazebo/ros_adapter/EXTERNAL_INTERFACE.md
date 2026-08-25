@@ -6,8 +6,8 @@ values to the fixed public interfaces below.
 
 Each public run has exactly the `onboard` and `observer` camera streams. Every
 image is `320x240`, `rgb8`, has step `960`, contains `230400` bytes, and keeps
-its positive native Gazebo timestamp unchanged in both the image header and
-frame metadata. Frame IDs are contiguous per stream from zero and capture
+its positive zero-based public timestamp in both the image header and frame
+metadata. Frame IDs are contiguous per stream from zero and capture
 timestamps advance by exactly `50,000,000` ns. Camera delivery is reliable at
 the ROS boundary; this model never sleeps, drops, retimes, repairs, or creates
 a sample.
@@ -32,3 +32,9 @@ The production ROS node consumes only private Gazebo-to-ROS bridge topics.
 Clock, odometry, contact, and both cameras are one-way inputs; no public topic
 is bridged back into Gazebo. Callback-order alignment is bounded to the one
 current timestamp, and adapter output freezes before bridge/server shutdown.
+Before activation, the node caches the greatest native clock but publishes no
+clock, camera, metadata, ground-truth, or contact-derived output. Activation
+floors that clock to the preceding 50 ms boundary, publishes public `/clock=0`,
+and rebases every later native input against that epoch. Inputs at or before
+the epoch are discarded as queued warmup. Native Gazebo recording remains
+unchanged and is never reset.

@@ -12,6 +12,7 @@ import time
 from uuid import UUID, uuid4
 
 from .model import (
+    ActivateOutput,
     BeginFinalization,
     PublishGazeboReady,
     RequestSteps,
@@ -331,9 +332,9 @@ class ActionExecutor:
             elif isinstance(action, RequestSteps):
                 self._transport.request_steps(action.count)
             elif isinstance(action, SetPaused):
-                if not action.paused:
-                    self._activate_output()
                 self._transport.set_paused(action.paused)
+            elif isinstance(action, ActivateOutput):
+                self._activate_output()
             elif isinstance(action, WriteSourceFinished):
                 self._protocol.write_status(
                     "source-finished",

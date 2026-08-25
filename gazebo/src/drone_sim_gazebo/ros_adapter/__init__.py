@@ -11,6 +11,7 @@ from .model import (
     PublicGroundTruth,
 )
 from .aggregation import AggregationFault, NativeOdometry, PrivateTruthAggregator
+from .epoch import FRAME_INTERVAL_NS, OutputEpochGate, PublicEpoch
 from .live import LiveAdapter
 
 
@@ -27,4 +28,7 @@ __all__ = [
     "NativeOdometry",
     "PrivateTruthAggregator",
     "LiveAdapter",
+    "FRAME_INTERVAL_NS",
+    "OutputEpochGate",
+    "PublicEpoch",
 ]
