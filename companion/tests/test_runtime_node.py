@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,15 +11,107 @@ from drone_sim_companion.runtime_node import (
 )
 
 
-def test_runtime_config_uses_compose_network_mavlink_endpoint() -> None:
+RUN_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def write_resolved_config(
+    run_directory: Path,
+    *,
+    run_id: str = RUN_ID,
+    startup_wall_seconds: object = 120,
+) -> Path:
+    config_path = run_directory / "configuration/run.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "startup_wall_seconds": startup_wall_seconds,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_runtime_config_uses_resolved_run_startup_deadline(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory)
+
     config = RuntimeConfig.from_environment(
         {
-            "SIM_RUN_ID": "00000000-0000-4000-8000-000000000001",
-            "SIM_RUN_DIRECTORY": "/runs/00000000-0000-4000-8000-000000000001",
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
         }
     )
+
     assert config.mavlink_endpoint == "tcp:ardupilot-sitl:5760"
-    assert config.startup_timeout_seconds == 60.0
+    assert config.startup_timeout_seconds == 120.0
+
+
+def test_runtime_config_preserves_explicit_startup_timeout_override() -> None:
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": f"/runs/{RUN_ID}",
+            "SIM_COMPANION_STARTUP_TIMEOUT_SECONDS": "17.5",
+        }
+    )
+
+    assert config.startup_timeout_seconds == 17.5
+
+
+def test_runtime_config_rejects_config_outside_current_run(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(tmp_path / "another-run")
+
+    with pytest.raises(ValueError, match="run's resolved configuration"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
+
+
+def test_runtime_config_rejects_stale_run_configuration(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(
+        run_directory,
+        run_id="00000000-0000-4000-8000-000000000002",
+    )
+
+    with pytest.raises(ValueError, match="run_id must match SIM_RUN_ID"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
+
+
+@pytest.mark.parametrize("startup_wall_seconds", [True, 0, -1, 1.5, "120"])
+def test_runtime_config_rejects_invalid_resolved_startup_deadline(
+    tmp_path: Path,
+    startup_wall_seconds: object,
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(
+        run_directory,
+        startup_wall_seconds=startup_wall_seconds,
+    )
+
+    with pytest.raises(ValueError, match="startup_wall_seconds must be a positive integer"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -26,7 +119,7 @@ def test_runtime_config_uses_compose_network_mavlink_endpoint() -> None:
     [
         {"SIM_RUN_ID": "bad", "SIM_RUN_DIRECTORY": "/runs/bad"},
         {
-            "SIM_RUN_ID": "00000000-0000-4000-8000-000000000001",
+            "SIM_RUN_ID": RUN_ID,
             "SIM_RUN_DIRECTORY": "/runs/x",
             "SIM_COMPANION_STARTUP_TIMEOUT_SECONDS": "0",
         },

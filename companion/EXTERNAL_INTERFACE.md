@@ -28,6 +28,15 @@ Commands derived from imagery retain `source_frame_id` where the adapter permits
 
 Mission logic is frame- or event-triggered in simulation time. Duplicate frames are idempotently ignored, missing frames are diagnosed, stale `run_id` data is ignored, and loss of `/clock` prevents new simulated decisions. Wall time measures computation and infrastructure health only.
 
+The MAVLink connection and first-heartbeat infrastructure deadline uses the
+current run's resolved `startup_wall_seconds` from `SIM_CONFIG_PATH`. The
+snapshot path must be the absolute
+`SIM_RUN_DIRECTORY/configuration/run.json`, its `run_id` must match
+`SIM_RUN_ID`, and the deadline must be a positive integer. Tests may override
+this wall-time bound explicitly with
+`SIM_COMPANION_STARTUP_TIMEOUT_SECONDS`; the override does not alter any
+simulation-time mission deadline.
+
 MAVLink messages are correlated with the latest authoritative `/clock` value.
 Ground truth retains its native message timestamp. Equal timestamps are ordered
 by receipt; a lower timestamp than the preceding mission input is rejected.

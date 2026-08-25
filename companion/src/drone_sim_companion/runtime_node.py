@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -37,13 +38,38 @@ class RuntimeConfig:
             raise ValueError("SIM_RUN_ID must be a canonical UUID") from error
         if str(parsed) != run_id:
             raise ValueError("SIM_RUN_ID must be a canonical UUID")
-        timeout = float(environment.get("SIM_COMPANION_STARTUP_TIMEOUT_SECONDS", "60"))
-        if timeout <= 0:
-            raise ValueError("SIM_COMPANION_STARTUP_TIMEOUT_SECONDS must be positive")
+        run_directory = Path(environment["SIM_RUN_DIRECTORY"])
+        timeout_override = environment.get("SIM_COMPANION_STARTUP_TIMEOUT_SECONDS")
+        if timeout_override is not None:
+            timeout = float(timeout_override)
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError("SIM_COMPANION_STARTUP_TIMEOUT_SECONDS must be positive")
+        else:
+            config_path = Path(environment["SIM_CONFIG_PATH"])
+            if not run_directory.is_absolute() or not config_path.is_absolute():
+                raise ValueError("run and config paths must be absolute")
+            if config_path != run_directory / "configuration/run.json":
+                raise ValueError("SIM_CONFIG_PATH must be the run's resolved configuration")
+            try:
+                document = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError("SIM_CONFIG_PATH must contain readable JSON") from error
+            if not isinstance(document, dict):
+                raise ValueError("SIM_CONFIG_PATH must contain a JSON object")
+            if document.get("run_id") != run_id:
+                raise ValueError("resolved configuration run_id must match SIM_RUN_ID")
+            startup_wall_seconds = document.get("startup_wall_seconds")
+            if (
+                isinstance(startup_wall_seconds, bool)
+                or not isinstance(startup_wall_seconds, int)
+                or startup_wall_seconds <= 0
+            ):
+                raise ValueError("startup_wall_seconds must be a positive integer")
+            timeout = float(startup_wall_seconds)
         endpoint = environment.get("SIM_MAVLINK_ENDPOINT", "tcp:ardupilot-sitl:5760")
         if endpoint != "tcp:ardupilot-sitl:5760":
             raise ValueError("production MAVLink endpoint must be tcp:ardupilot-sitl:5760")
-        return cls(run_id, Path(environment["SIM_RUN_DIRECTORY"]), endpoint, timeout)
+        return cls(run_id, run_directory, endpoint, timeout)
 
 
 def stamp_ns(stamp: Any) -> int:
