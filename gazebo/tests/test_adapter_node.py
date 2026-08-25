@@ -74,7 +74,7 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
     pytest.importorskip("simulation_interfaces.msg")
     from nav_msgs.msg import Odometry
     from rclpy.qos import QoSProfile, ReliabilityPolicy
-    from ros_gz_interfaces.msg import Contacts
+    from ros_gz_interfaces.msg import Contact, Contacts
     from rosgraph_msgs.msg import Clock
     from sensor_msgs.msg import Image
     from simulation_interfaces.msg import GroundTruth
@@ -138,9 +138,11 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
         message.pose.pose.orientation.w = 1.0
         return message
 
-    def contacts(timestamp_ns):
+    def contacts(timestamp_ns, *, in_contact=False):
         message = Contacts()
         _set_stamp(message.header.stamp, timestamp_ns)
+        if in_contact:
+            message.contacts.append(Contact())
         return message
 
     try:
@@ -186,8 +188,9 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
 
         adapter._accept_image("onboard", image(50_000_000))
         adapter._accept_image("observer", image(50_000_000))
+        for timestamp_ns in range(2_000_000, 50_000_000, 1_000_000):
+            adapter._accept_contacts(contacts(timestamp_ns, in_contact=True))
         adapter._accept_odometry(odometry(50_000_000))
-        adapter._accept_contacts(contacts(50_000_000))
         _spin_until(observer, lambda: len(images) == 2 and truths == [50_000_000])
 
         assert images == [50_000_000, 50_000_000]

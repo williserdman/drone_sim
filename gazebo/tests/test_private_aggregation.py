@@ -35,6 +35,45 @@ def test_exact_odometry_and_contact_stamp_produce_one_ground_truth():
     assert aggregator.take(STAMP) is None
 
 
+def test_physics_rate_contact_samples_are_downsampled_at_odometry_stamp():
+    aggregator = PrivateTruthAggregator()
+
+    for stamp_ns in range(1_000_000, STAMP, 1_000_000):
+        assert aggregator.accept_contact(stamp_ns, True) is None
+
+    truth = aggregator.accept_odometry(_odometry())
+
+    assert truth is not None
+    assert truth.sim_timestamp_ns == STAMP
+    assert truth.in_contact is True
+
+
+def test_contact_samples_for_next_epoch_can_arrive_before_completed_truth_is_taken():
+    aggregator = PrivateTruthAggregator()
+    aggregator.accept_contact(STAMP, True)
+    truth = aggregator.accept_odometry(_odometry())
+
+    for stamp_ns in range(STAMP + 1_000_000, STAMP * 2, 1_000_000):
+        assert aggregator.accept_contact(stamp_ns, True) is None
+
+    assert aggregator.take(STAMP) is truth
+    next_truth = aggregator.accept_odometry(_odometry(STAMP * 2))
+    assert next_truth is not None
+    assert next_truth.sim_timestamp_ns == STAMP * 2
+    assert next_truth.in_contact is True
+
+
+def test_contact_timeline_advancing_past_odometry_proves_no_contact_at_epoch():
+    aggregator = PrivateTruthAggregator()
+    aggregator.accept_odometry(_odometry())
+
+    truth = aggregator.accept_contact(STAMP + 1_000_000, True)
+
+    assert truth is not None
+    assert truth.sim_timestamp_ns == STAMP
+    assert truth.in_contact is False
+
+
 def test_advancing_odometry_closes_missing_contact_as_false_without_growth():
     aggregator = PrivateTruthAggregator()
     aggregator.accept_odometry(_odometry())
@@ -46,12 +85,12 @@ def test_advancing_odometry_closes_missing_contact_as_false_without_growth():
     assert aggregator.take(STAMP) is truth
 
 
-def test_truth_aggregation_rejects_mismatched_native_stamps():
+def test_truth_aggregation_rejects_nonadvancing_contact_stamps():
     aggregator = PrivateTruthAggregator()
-    aggregator.accept_odometry(_odometry())
+    aggregator.accept_contact(STAMP, True)
 
-    with pytest.raises(AggregationFault, match="timestamps do not align"):
-        aggregator.accept_contact(STAMP * 2, False)
+    with pytest.raises(AggregationFault, match="contact timestamps must advance"):
+        aggregator.accept_contact(STAMP, False)
 
 
 def test_completed_truth_must_be_consumed_before_next_native_sample():
@@ -60,4 +99,4 @@ def test_completed_truth_must_be_consumed_before_next_native_sample():
     aggregator.accept_odometry(_odometry())
 
     with pytest.raises(AggregationFault, match="awaits camera pair"):
-        aggregator.accept_contact(STAMP * 2, False)
+        aggregator.accept_odometry(_odometry(STAMP * 2))

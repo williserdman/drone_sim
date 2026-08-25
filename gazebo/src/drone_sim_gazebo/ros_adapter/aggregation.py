@@ -8,6 +8,9 @@ import math
 from .model import NativeGroundTruth
 
 
+TRUTH_PERIOD_NS = 50_000_000
+
+
 class AggregationFault(RuntimeError):
     """Private physical-truth samples cannot form one aligned value."""
 
@@ -25,6 +28,11 @@ def _stamp(value: object) -> int:
     if type(value) is not int or value <= 0:
         raise AggregationFault("native timestamp must be a positive integer")
     return value
+
+
+def _contact_epoch(stamp_ns: int) -> int:
+    """Map a positive contact event into its 20 Hz truth interval."""
+    return ((stamp_ns + TRUTH_PERIOD_NS - 1) // TRUTH_PERIOD_NS) * TRUTH_PERIOD_NS
 
 
 def _vector(value: object, length: int, name: str) -> tuple[float, ...]:
@@ -58,10 +66,16 @@ class PrivateTruthAggregator:
 
     def __init__(self) -> None:
         self._odometry: NativeOdometry | None = None
-        self._contact: tuple[int, bool] | None = None
+        self._contact_epochs: dict[int, bool] = {}
+        self._last_contact_stamp: int | None = None
         self._completed: NativeGroundTruth | None = None
 
     def _complete(self, odometry: NativeOdometry, in_contact: bool) -> NativeGroundTruth:
+        self._contact_epochs = {
+            epoch: state
+            for epoch, state in self._contact_epochs.items()
+            if epoch > odometry.sim_timestamp_ns
+        }
         self._completed = NativeGroundTruth(
             sim_timestamp_ns=odometry.sim_timestamp_ns,
             position_xyz=odometry.position_xyz,
@@ -73,15 +87,20 @@ class PrivateTruthAggregator:
         return self._completed
 
     def _combine(self) -> NativeGroundTruth | None:
-        if self._odometry is None or self._contact is None:
+        if self._odometry is None:
             return None
-        if self._odometry.sim_timestamp_ns != self._contact[0]:
-            raise AggregationFault("odometry and contact timestamps do not align")
         odometry = self._odometry
-        contact = self._contact
-        self._odometry = None
-        self._contact = None
-        return self._complete(odometry, contact[1])
+        stamp = odometry.sim_timestamp_ns
+        if stamp in self._contact_epochs:
+            self._odometry = None
+            return self._complete(odometry, self._contact_epochs[stamp])
+        if (
+            self._last_contact_stamp is not None
+            and _contact_epoch(self._last_contact_stamp) > stamp
+        ):
+            self._odometry = None
+            return self._complete(odometry, False)
+        return None
 
     def _require_completion_slot(self) -> None:
         if self._completed is not None:
@@ -102,12 +121,16 @@ class PrivateTruthAggregator:
     def accept_contact(
         self, sim_timestamp_ns: int, in_contact: bool
     ) -> NativeGroundTruth | None:
-        self._require_completion_slot()
-        if self._contact is not None:
-            raise AggregationFault("one unmatched contact sample is already buffered")
         if type(in_contact) is not bool:
             raise AggregationFault("contact state must be a boolean")
-        self._contact = (_stamp(sim_timestamp_ns), in_contact)
+        stamp = _stamp(sim_timestamp_ns)
+        if self._last_contact_stamp is not None and stamp <= self._last_contact_stamp:
+            raise AggregationFault("contact timestamps must advance")
+        self._last_contact_stamp = stamp
+        epoch = _contact_epoch(stamp)
+        self._contact_epochs[epoch] = self._contact_epochs.get(epoch, False) or in_contact
+        if self._completed is not None:
+            return None
         return self._combine()
 
     def take(self, sim_timestamp_ns: int) -> NativeGroundTruth | None:
