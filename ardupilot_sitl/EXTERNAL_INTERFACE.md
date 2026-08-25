@@ -9,8 +9,10 @@
 
 The SITL process reports its own readiness only after the JSON exchange is
 active and its MAVLink TCP listener is bound. Production orchestration also
-requires the companion to observe an actual heartbeat before aggregate
-readiness; a bound socket alone is not heartbeat evidence.
+requires the companion to observe an actual heartbeat and healthy prearm state
+before `RUNNING`; a bound socket alone is not flight-readiness evidence. The
+parameter overlay passively emits `SYS_STATUS` at 1 Hz during warmup so prearm
+readiness can be observed without changing arming checks.
 
 ## Gazebo adapter seam
 

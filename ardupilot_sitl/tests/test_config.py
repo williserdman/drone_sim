@@ -24,6 +24,10 @@ def test_descent_parameters_disable_rc_flight_mode_override() -> None:
     assert _descent_parameters()["FLTMODE_CH"] == "0"
 
 
+def test_descent_parameters_enable_passive_extended_status_readiness() -> None:
+    assert _descent_parameters()["MAV1_EXT_STAT"] == "1"
+
+
 def test_descent_parameters_mark_sitl_accelerometers_calibrated() -> None:
     parameters = _descent_parameters()
 
