@@ -83,6 +83,36 @@ def test_live_adapter_accepts_next_camera_pair_before_odometry_closes_prior_trut
     assert adapter.complete is True
 
 
+def test_live_adapter_preserves_truth_when_odometry_leads_pending_camera_callbacks():
+    adapter = LiveAdapter(run_id=RUN_ID, expected_frames=2)
+
+    assert adapter.accept_contact(50_000_000, False) == ()
+    assert adapter.accept_odometry(_odom(50_000_000)) == ()
+    assert adapter.accept_odometry(_odom(100_000_000)) == ()
+    assert adapter.accept_contact(51_000_000, True) == ()
+
+    observed = []
+    for stamp in (50_000_000, 100_000_000):
+        observed.extend(adapter.accept_image("onboard", _image(stamp)))
+        observed.extend(adapter.accept_image("observer", _image(stamp)))
+
+    truth_stamps = [
+        value.sim_timestamp_ns
+        for value in observed
+        if hasattr(value, "vehicle_id")
+    ]
+    truth_contact_states = [
+        value.in_contact for value in observed if hasattr(value, "vehicle_id")
+    ]
+    frame_stamps = [
+        value.sim_timestamp_ns for value in observed if hasattr(value, "stream")
+    ]
+    assert truth_stamps == [50_000_000, 100_000_000]
+    assert truth_contact_states == [False, True]
+    assert frame_stamps == [50_000_000, 50_000_000, 100_000_000, 100_000_000]
+    assert adapter.complete is True
+
+
 def test_live_adapter_retains_exact_twenty_hz_native_timestamps():
     adapter = LiveAdapter(run_id=RUN_ID, expected_frames=2)
     observed = []

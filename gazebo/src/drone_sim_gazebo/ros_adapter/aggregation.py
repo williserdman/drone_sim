@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import math
 
@@ -9,6 +10,7 @@ from .model import NativeGroundTruth
 
 
 TRUTH_PERIOD_NS = 50_000_000
+_COMPLETED_CAPACITY = 2
 
 
 class AggregationFault(RuntimeError):
@@ -62,21 +64,23 @@ def _odometry(value: object) -> NativeOdometry:
 
 
 class PrivateTruthAggregator:
-    """Hold at most one unmatched native input and one completed truth sample."""
+    """Hold one native input and one completed-truth epoch of lookahead."""
 
     def __init__(self) -> None:
         self._odometry: NativeOdometry | None = None
+        self._last_odometry_stamp: int | None = None
         self._contact_epochs: dict[int, bool] = {}
         self._last_contact_stamp: int | None = None
-        self._completed: NativeGroundTruth | None = None
+        self._completed: deque[NativeGroundTruth] = deque()
 
     def _complete(self, odometry: NativeOdometry, in_contact: bool) -> NativeGroundTruth:
+        self._require_completion_capacity()
         self._contact_epochs = {
             epoch: state
             for epoch, state in self._contact_epochs.items()
             if epoch > odometry.sim_timestamp_ns
         }
-        self._completed = NativeGroundTruth(
+        completed = NativeGroundTruth(
             sim_timestamp_ns=odometry.sim_timestamp_ns,
             position_xyz=odometry.position_xyz,
             orientation_xyzw=odometry.orientation_xyzw,
@@ -84,7 +88,8 @@ class PrivateTruthAggregator:
             angular_velocity_xyz=odometry.angular_velocity_xyz,
             in_contact=in_contact,
         )
-        return self._completed
+        self._completed.append(completed)
+        return completed
 
     def _combine(self) -> NativeGroundTruth | None:
         if self._odometry is None:
@@ -102,17 +107,21 @@ class PrivateTruthAggregator:
             return self._complete(odometry, False)
         return None
 
-    def _require_completion_slot(self) -> None:
-        if self._completed is not None:
-            raise AggregationFault("completed ground truth awaits camera pair")
+    def _require_completion_capacity(self) -> None:
+        if len(self._completed) == _COMPLETED_CAPACITY:
+            raise AggregationFault("completed ground truth lookahead is full")
 
     def accept_odometry(self, sample: object) -> NativeGroundTruth | None:
-        self._require_completion_slot()
+        self._require_completion_capacity()
         odometry = _odometry(sample)
+        if (
+            self._last_odometry_stamp is not None
+            and odometry.sim_timestamp_ns <= self._last_odometry_stamp
+        ):
+            raise AggregationFault("odometry timestamps must advance")
+        self._last_odometry_stamp = odometry.sim_timestamp_ns
         if self._odometry is not None:
             previous = self._odometry
-            if odometry.sim_timestamp_ns <= previous.sim_timestamp_ns:
-                raise AggregationFault("odometry timestamps must advance")
             self._odometry = odometry
             return self._complete(previous, False)
         self._odometry = odometry
@@ -129,16 +138,12 @@ class PrivateTruthAggregator:
         self._last_contact_stamp = stamp
         epoch = _contact_epoch(stamp)
         self._contact_epochs[epoch] = self._contact_epochs.get(epoch, False) or in_contact
-        if self._completed is not None:
-            return None
         return self._combine()
 
     def take(self, sim_timestamp_ns: int) -> NativeGroundTruth | None:
         stamp = _stamp(sim_timestamp_ns)
-        if self._completed is None:
+        if not self._completed:
             return None
-        if self._completed.sim_timestamp_ns != stamp:
+        if self._completed[0].sim_timestamp_ns != stamp:
             raise AggregationFault("ground truth does not align with the camera pair")
-        completed = self._completed
-        self._completed = None
-        return completed
+        return self._completed.popleft()

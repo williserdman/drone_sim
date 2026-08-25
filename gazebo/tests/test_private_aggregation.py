@@ -93,10 +93,33 @@ def test_truth_aggregation_rejects_nonadvancing_contact_stamps():
         aggregator.accept_contact(STAMP, False)
 
 
-def test_completed_truth_must_be_consumed_before_next_native_sample():
+def test_truth_lookahead_rejects_nonadvancing_odometry_stamps():
     aggregator = PrivateTruthAggregator()
     aggregator.accept_contact(STAMP, False)
     aggregator.accept_odometry(_odometry())
 
-    with pytest.raises(AggregationFault, match="awaits camera pair"):
-        aggregator.accept_odometry(_odometry(STAMP * 2))
+    with pytest.raises(AggregationFault, match="odometry timestamps must advance"):
+        aggregator.accept_odometry(_odometry())
+
+
+def test_completed_truth_lookahead_is_bounded_to_two_camera_epochs():
+    aggregator = PrivateTruthAggregator()
+    aggregator.accept_contact(STAMP, False)
+    aggregator.accept_odometry(_odometry())
+    aggregator.accept_contact(STAMP * 2, False)
+    second = aggregator.accept_odometry(_odometry(STAMP * 2))
+
+    assert second is not None
+    assert aggregator.take(STAMP).sim_timestamp_ns == STAMP
+    assert aggregator.take(STAMP * 2) is second
+
+
+def test_completed_truth_lookahead_rejects_a_third_camera_epoch():
+    aggregator = PrivateTruthAggregator()
+    aggregator.accept_contact(STAMP, False)
+    aggregator.accept_odometry(_odometry())
+    aggregator.accept_contact(STAMP * 2, False)
+    aggregator.accept_odometry(_odometry(STAMP * 2))
+
+    with pytest.raises(AggregationFault, match="lookahead is full"):
+        aggregator.accept_odometry(_odometry(STAMP * 3))
