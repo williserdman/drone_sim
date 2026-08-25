@@ -3,11 +3,34 @@ from types import SimpleNamespace
 
 import pytest
 
+import artifacts.runtime_node as runtime_node
 from artifacts.runtime_node import AggregateArtifactsRuntime, FaultAwareRecorder
 from artifacts.validation import ValidationStatus
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+
+
+def test_durable_finalize_request_latches_one_nonrestarting_deadline_without_ros_event():
+    now = {"value": 10.0}
+    request = {
+        "run_id": RUN_ID,
+        "requested_terminal": "FAILED",
+        "reason": "compose_child_exited",
+    }
+
+    class Protocol:
+        def read_finalize_request(self):
+            return request
+
+    latch = runtime_node.FinalizationRequestLatch(
+        120.0,
+        monotonic=lambda: now["value"],
+    )
+
+    assert latch.poll(Protocol()) == ("FAILED", 130.0)
+    now["value"] = 100.0
+    assert latch.poll(Protocol()) == ("FAILED", 130.0)
 
 
 class FakeProtocol:

@@ -86,6 +86,12 @@ uses the remaining budget of one shared bounded deadline measured by a
 monotonic wall clock, writes the manifest atomically, and explicitly records
 missing or invalid artifacts.
 
+The artifacts runtime polls the authoritative
+`.control/finalize-request.json` directly and latches its deadline on first
+observation. Delivery of the ROS `FINALIZING` sample is retained for lifecycle
+observation but is not the recorder-shutdown trigger, so callback delivery
+cannot leave live recorders waiting until the host deadline.
+
 Host capture and `ArtifactSession` expose optional cooperative deadline checks
 without changing existing callers. Parsing, per-line routing, file chunks,
 tree entries, optional inventory, manifest encoding, and publication boundaries

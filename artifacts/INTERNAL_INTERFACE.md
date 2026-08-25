@@ -28,7 +28,9 @@ child cannot mutate either named snapshot.
 ## Finalization barrier
 
 Recorder adapters start before the first `/clock` and publish aggregate
-readiness. On `FINALIZING`, the session waits for
+readiness. The aggregate runtime polls the durable finalize request rather
+than gating shutdown on its ROS `FINALIZING` callback. On first observation it
+latches one absolute deadline, then waits for
 `.status/runtime-frozen.json`, drains callbacks, closes FFmpeg inputs, stops
 rosbag2 with escalation bounded by the remaining shared finalization budget,
 validates recorder-local output, and atomically writes

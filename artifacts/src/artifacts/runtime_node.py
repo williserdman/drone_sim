@@ -24,6 +24,44 @@ _FAULTS = frozenset({"", "clock_stall_after_5", "observer_encoder_after_5"})
 _STARTUP_MISSING = ["onboard", "observer", "rosbag"]
 
 
+class _FinalizationProtocol(Protocol):
+    def read_finalize_request(self) -> dict[str, Any] | None: ...
+
+
+class FinalizationRequestLatch:
+    """Poll durable finalization intent and assign one absolute deadline."""
+
+    def __init__(
+        self,
+        finalization_seconds: float,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if (
+            isinstance(finalization_seconds, bool)
+            or not isinstance(finalization_seconds, (int, float))
+            or finalization_seconds <= 0
+        ):
+            raise ValueError("finalization_seconds must be positive")
+        self._seconds = float(finalization_seconds)
+        self._monotonic = monotonic
+        self._request: dict[str, Any] | None = None
+        self._deadline: float | None = None
+
+    def poll(self, protocol: _FinalizationProtocol) -> tuple[str, float] | None:
+        document = protocol.read_finalize_request()
+        if document is None:
+            if self._request is None:
+                return None
+        elif self._request is None:
+            self._request = dict(document)
+            self._deadline = self._monotonic() + self._seconds
+        elif document != self._request:
+            raise RuntimeError("finalization request changed after it was latched")
+        assert self._request is not None and self._deadline is not None
+        return self._request["requested_terminal"], self._deadline
+
+
 class _Protocol(Protocol):
     def write_status(self, name: str, document: Mapping[str, Any]) -> Any: ...
     def read_status(self, name: str) -> dict[str, Any] | None: ...
@@ -607,8 +645,7 @@ def main() -> None:
         )
 
     last_sim_timestamp_ns = 0
-    requested_outcome: str | None = None
-    finalization_deadline: float | None = None
+    finalization = FinalizationRequestLatch(finalization_seconds)
     saw_current_run_starting = False
     quiescent = False
 
@@ -743,8 +780,7 @@ def main() -> None:
     runtime_ref.append(runtime)
 
     def state_callback(message: Any) -> None:
-        nonlocal requested_outcome, finalization_deadline, last_sim_timestamp_ns
-        nonlocal saw_current_run_starting
+        nonlocal last_sim_timestamp_ns, saw_current_run_starting
         if message.run_id != run_id:
             return
         if message.state == RunState.STARTING:
@@ -752,11 +788,6 @@ def main() -> None:
         last_sim_timestamp_ns = int(message.sim_timestamp.sec) * 1_000_000_000 + int(
             message.sim_timestamp.nanosec
         )
-        if message.state == RunState.FINALIZING and requested_outcome is None:
-            request = protocol.read_finalize_request()
-            if request is not None:
-                requested_outcome = request["requested_terminal"]
-                finalization_deadline = time.monotonic() + finalization_seconds
 
     node.create_subscription(RunState, "/simulation/run_state", state_callback, qos)
     emit_log("starting")
@@ -771,7 +802,9 @@ def main() -> None:
                     emit_log("ready")
             elif not runtime.finalization_started:
                 runtime.check_health()
-            if requested_outcome is not None and finalization_deadline is not None:
+            finalization_request = finalization.poll(protocol)
+            if finalization_request is not None:
+                requested_outcome, finalization_deadline = finalization_request
                 report = runtime.finalize(requested_outcome, deadline=finalization_deadline)
                 if report is not None or runtime.finalization_started:
                     quiescent = True
@@ -790,6 +823,7 @@ if __name__ == "__main__":
 __all__ = [
     "AggregateArtifactsRuntime",
     "FaultAwareRecorder",
+    "FinalizationRequestLatch",
     "main",
     "publish_artifact_status",
 ]
