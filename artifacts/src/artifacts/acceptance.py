@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -52,16 +52,14 @@ _LOG_FIELDS = {
 }
 _ARTIFACTS_RUNTIME_IMAGE = "drone-sim-artifacts-runtime:phase2"
 _FRAME_INTERVAL_NS = 50_000_000
-_PHASE3_IMAGE_NAMES = frozenset(
-    {
-        "drone-sim-orchestration-runtime:phase2",
-        "drone-sim-artifacts-runtime:phase2",
-        "drone-sim-companion-runtime:phase3",
-        "drone-sim-ardupilot-runtime:phase3",
-        "drone-sim-gazebo-runtime:phase3",
-        "drone-sim-electromagnet-runtime:phase3",
-        "drone-sim-scorekeeper-runtime:phase3",
-    }
+_PHASE3_IMAGE_NAMES = (
+    "drone-sim-orchestration-runtime:phase2",
+    "drone-sim-artifacts-runtime:phase2",
+    "drone-sim-companion-runtime:phase3",
+    "drone-sim-ardupilot-runtime:phase3",
+    "drone-sim-gazebo-runtime:phase3",
+    "drone-sim-electromagnet-runtime:phase3",
+    "drone-sim-scorekeeper-runtime:phase3",
 )
 
 
@@ -90,6 +88,26 @@ class BundleAcceptanceReport:
 
 ComposeResources = Callable[[str], Sequence[str]]
 SemanticCheck = Callable[[Path, str, int, str], PhysicalBagEvidence]
+
+
+def _parse_boolean(value: str) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
+def _parse_image_digest(value: str) -> tuple[str, str]:
+    name, separator, digest = value.partition("=")
+    if (
+        not separator
+        or not name
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise argparse.ArgumentTypeError("expected IMAGE=64-lowercase-hex-digest")
+    return name, digest
 
 
 def _exact_dict(value: object, keys: set[str], label: str) -> dict[str, Any]:
@@ -232,19 +250,40 @@ def _validate_config(run_directory: Path, run_id: str) -> tuple[dict[str, Any], 
     return document, contract.expected_camera_frames
 
 
-def _validate_phase3_provenance(manifest: dict[str, Any]) -> None:
+def _validate_phase3_provenance(
+    manifest: dict[str, Any],
+    *,
+    expected_source_revision: str,
+    expected_source_dirty: bool,
+    expected_image_digests: Mapping[str, str],
+) -> None:
     sources = manifest["source_revisions"]
-    if len(sources) != 1 or sources[0]["name"] != "drone_sim":
-        raise BundleAcceptanceError("manifest source provenance is incomplete")
+    if sources != [
+        {
+            "name": "drone_sim",
+            "revision": expected_source_revision,
+            "dirty": expected_source_dirty,
+        }
+    ]:
+        raise BundleAcceptanceError(
+            "manifest source provenance does not match external expectation"
+        )
     images = manifest["image_digests"]
     names = {record["name"] for record in images}
     digests = {record["digest"] for record in images}
     if (
         len(images) != len(_PHASE3_IMAGE_NAMES)
-        or names != _PHASE3_IMAGE_NAMES
+        or names != set(_PHASE3_IMAGE_NAMES)
         or len(digests) != len(images)
     ):
         raise BundleAcceptanceError("manifest image provenance is incomplete")
+    actual_image_digests = {
+        record["name"]: record["digest"] for record in images
+    }
+    if actual_image_digests != dict(expected_image_digests):
+        raise BundleAcceptanceError(
+            "manifest image provenance does not match external expectation"
+        )
 
 
 def _validate_simulation_timing(
@@ -459,8 +498,13 @@ def semantic_container_command(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
+    expected_source_revision: str,
+    expected_source_dirty: bool,
+    expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
 ) -> tuple[str, ...]:
+    if set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES):
+        raise ValueError("expected_image_digests must contain exact Phase 3 image names")
     command = (
         "docker",
         "run",
@@ -480,6 +524,18 @@ def semantic_container_command(
         "--rules-path",
         "/rules/descent_v1.json",
         "--semantic-only",
+        "--expected-source-revision",
+        expected_source_revision,
+        "--expected-source-dirty",
+        str(expected_source_dirty).lower(),
+        *(
+            argument
+            for name in _PHASE3_IMAGE_NAMES
+            for argument in (
+                "--expected-image-digest",
+                f"{name}={expected_image_digests[name]}",
+            )
+        ),
     )
     return command + (("--require-maximum-score",) if require_maximum_score else ())
 
@@ -488,6 +544,9 @@ def inspect_phase3_via_container(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
+    expected_source_revision: str,
+    expected_source_dirty: bool,
+    expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
     runner: Callable[..., Any] = subprocess.run,
     compose_resources: ComposeResources | None = None,
@@ -497,6 +556,9 @@ def inspect_phase3_via_container(
             semantic_container_command(
                 run_directory,
                 rules_path=rules_path,
+                expected_source_revision=expected_source_revision,
+                expected_source_dirty=expected_source_dirty,
+                expected_image_digests=expected_image_digests,
                 require_maximum_score=require_maximum_score,
             )
         ),
@@ -599,6 +661,9 @@ def inspect_phase3_semantics(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
+    expected_source_revision: str,
+    expected_source_dirty: bool,
+    expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
     semantic_check: SemanticCheck = _production_semantic_check,
 ) -> BundleAcceptanceReport:
@@ -615,7 +680,12 @@ def inspect_phase3_semantics(
         raise BundleAcceptanceError("manifest is not a completed schema-v1 run")
     if manifest.get("incomplete_paths") != []:
         raise BundleAcceptanceError("completed manifest contains incomplete artifacts")
-    _validate_phase3_provenance(manifest)
+    _validate_phase3_provenance(
+        manifest,
+        expected_source_revision=expected_source_revision,
+        expected_source_dirty=expected_source_dirty,
+        expected_image_digests=expected_image_digests,
+    )
 
     configuration, expected_frames = _validate_config(directory, run_id)
     _validate_simulation_timing(manifest, expected_frames)
@@ -675,6 +745,9 @@ def inspect_phase3_bundle(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
+    expected_source_revision: str,
+    expected_source_dirty: bool,
+    expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
     compose_resources: ComposeResources = docker_compose_resources,
     semantic_check: SemanticCheck = _production_semantic_check,
@@ -683,6 +756,9 @@ def inspect_phase3_bundle(
     report = inspect_phase3_semantics(
         run_directory,
         rules_path=rules_path,
+        expected_source_revision=expected_source_revision,
+        expected_source_dirty=expected_source_dirty,
+        expected_image_digests=expected_image_digests,
         require_maximum_score=require_maximum_score,
         semantic_check=semantic_check,
     )
@@ -699,6 +775,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("run_directory", type=Path)
     parser.add_argument("--rules-path", type=Path)
     parser.add_argument("--require-maximum-score", action="store_true")
+    parser.add_argument("--expected-source-revision")
+    parser.add_argument("--expected-source-dirty", type=_parse_boolean)
+    parser.add_argument(
+        "--expected-image-digest", type=_parse_image_digest, action="append", default=[]
+    )
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--semantic-only", action="store_true")
     modes.add_argument("--inventory-only", action="store_true")
@@ -726,6 +807,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if arguments.rules_path is None:
             parser.error("--rules-path is required for semantic acceptance")
+        expected_image_digests = dict(arguments.expected_image_digest)
+        if (
+            arguments.expected_source_revision is None
+            or arguments.expected_source_dirty is None
+            or len(arguments.expected_image_digest) != len(_PHASE3_IMAGE_NAMES)
+            or set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES)
+        ):
+            parser.error(
+                "semantic acceptance requires the expected source revision, dirty "
+                "state, and exact seven Phase 3 image digests"
+            )
         inspector = (
             inspect_phase3_semantics
             if arguments.semantic_only
@@ -734,6 +826,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = inspector(
             arguments.run_directory,
             rules_path=arguments.rules_path,
+            expected_source_revision=arguments.expected_source_revision,
+            expected_source_dirty=arguments.expected_source_dirty,
+            expected_image_digests=expected_image_digests,
             require_maximum_score=arguments.require_maximum_score,
         )
     except BundleAcceptanceError as error:

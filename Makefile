@@ -12,6 +12,15 @@ test-phase2:
 
 inspect-phase3:
 	test -n "$(RUN_DIRECTORY)"
-	uv run python -m artifacts.acceptance "$(RUN_DIRECTORY)" --rules-path scorekeeper/rules/descent_v1.json $(if $(filter 1 true yes,$(REQUIRE_MAXIMUM_SCORE)),--require-maximum-score,)
+	test -n "$(EXPECTED_SOURCE_REVISION)"
+	test -n "$(EXPECTED_SOURCE_DIRTY)"
+	test -n "$(ORCHESTRATION_IMAGE_DIGEST)"
+	test -n "$(ARTIFACTS_IMAGE_DIGEST)"
+	test -n "$(COMPANION_IMAGE_DIGEST)"
+	test -n "$(ARDUPILOT_IMAGE_DIGEST)"
+	test -n "$(GAZEBO_IMAGE_DIGEST)"
+	test -n "$(ELECTROMAGNET_IMAGE_DIGEST)"
+	test -n "$(SCOREKEEPER_IMAGE_DIGEST)"
+	uv run python -m artifacts.acceptance "$(RUN_DIRECTORY)" --rules-path scorekeeper/rules/descent_v1.json --expected-source-revision "$(EXPECTED_SOURCE_REVISION)" --expected-source-dirty "$(EXPECTED_SOURCE_DIRTY)" --expected-image-digest "drone-sim-orchestration-runtime:phase2=$(ORCHESTRATION_IMAGE_DIGEST)" --expected-image-digest "drone-sim-artifacts-runtime:phase2=$(ARTIFACTS_IMAGE_DIGEST)" --expected-image-digest "drone-sim-companion-runtime:phase3=$(COMPANION_IMAGE_DIGEST)" --expected-image-digest "drone-sim-ardupilot-runtime:phase3=$(ARDUPILOT_IMAGE_DIGEST)" --expected-image-digest "drone-sim-gazebo-runtime:phase3=$(GAZEBO_IMAGE_DIGEST)" --expected-image-digest "drone-sim-electromagnet-runtime:phase3=$(ELECTROMAGNET_IMAGE_DIGEST)" --expected-image-digest "drone-sim-scorekeeper-runtime:phase3=$(SCOREKEEPER_IMAGE_DIGEST)" $(if $(filter 1 true yes,$(REQUIRE_MAXIMUM_SCORE)),--require-maximum-score,)
 
 test: test-unit test-foundation test-phase2

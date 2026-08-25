@@ -83,6 +83,14 @@ Completed Phase 3 provenance contains exactly one source revision named
 `drone_sim` and exactly one uniquely digested image record for each of the
 seven image names configured by the production Compose file. Substituted,
 missing, extra, or digest-aliased image records are not accepted.
+Semantic acceptance compares those manifest values with provenance captured
+independently by the caller before inspection. The host CLI requires
+`--expected-source-revision`, `--expected-source-dirty=true|false`, and one
+`--expected-image-digest=IMAGE=SHA256` option for each exact Phase 3 image.
+SHA256 values are the lowercase 64-hex Docker image IDs without the
+`sha256:` prefix. The host forwards the values as arguments to the isolated,
+read-only semantic container; the manifest and module logs are never used as
+the authority for their own expected provenance.
 
 Every owned process log line has `run_id`, `module`, `severity`, `event`,
 `sim_timestamp`, and `wall_timestamp`; event-specific values are nested under

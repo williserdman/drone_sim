@@ -36,6 +36,19 @@ PHASE3_IMAGE_NAMES = (
     "drone-sim-electromagnet-runtime:phase3",
     "drone-sim-scorekeeper-runtime:phase3",
 )
+EXPECTED_SOURCE_REVISION = "abc123"
+EXPECTED_SOURCE_DIRTY = False
+EXPECTED_IMAGE_DIGESTS = {
+    name: f"{index + 1:064x}" for index, name in enumerate(PHASE3_IMAGE_NAMES)
+}
+
+
+def _expected_provenance_kwargs():
+    return {
+        "expected_source_revision": EXPECTED_SOURCE_REVISION,
+        "expected_source_dirty": EXPECTED_SOURCE_DIRTY,
+        "expected_image_digests": EXPECTED_IMAGE_DIGESTS,
+    }
 
 
 def _completed_bundle(
@@ -237,10 +250,14 @@ def _completed_bundle(
             sim_end_ns=2_000_000_000,
             wall_started_at=now,
             wall_ended_at=now,
-            source_revisions=(SourceRevision("drone_sim", "abc123", False),),
+            source_revisions=(
+                SourceRevision(
+                    "drone_sim", EXPECTED_SOURCE_REVISION, EXPECTED_SOURCE_DIRTY
+                ),
+            ),
             image_digests=tuple(
-                ImageDigest(name, f"{index + 1:064x}")
-                for index, name in enumerate(PHASE3_IMAGE_NAMES)
+                ImageDigest(name, EXPECTED_IMAGE_DIGESTS[name])
+                for name in PHASE3_IMAGE_NAMES
             ),
             configuration_records=(ConfigurationRecord("configuration/run.json", config_sha),),
             achieved_score=achieved,
@@ -327,6 +344,7 @@ def test_acceptance_inspector_accepts_complete_partial_bundle_read_only(tmp_path
     report = inspect_phase3_bundle(
         tmp_path,
         rules_path=RULES_PATH,
+        **_expected_provenance_kwargs(),
         compose_resources=lambda _project: (),
         semantic_check=lambda *_args: _physical_evidence(tmp_path, achieved=60.0),
     )
@@ -350,6 +368,7 @@ def test_acceptance_inspector_optionally_requires_maximum_score(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             require_maximum_score=True,
             compose_resources=lambda _project: (),
             semantic_check=lambda *_args: _physical_evidence(tmp_path, achieved=60.0),
@@ -365,6 +384,7 @@ def test_acceptance_inspector_rejects_leftover_compose_resources(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: ("container:deadbeef",),
             semantic_check=lambda *_args: _physical_evidence(tmp_path, achieved=60.0),
         )
@@ -378,12 +398,61 @@ def test_acceptance_inspector_accepts_maximum_score_when_required(tmp_path):
     report = inspect_phase3_bundle(
         tmp_path,
         rules_path=RULES_PATH,
+        **_expected_provenance_kwargs(),
         require_maximum_score=True,
         compose_resources=lambda _project: (),
         semantic_check=lambda *_args: _physical_evidence(tmp_path, achieved=100.0),
     )
 
     assert report.achieved_score == 100.0
+
+
+def test_acceptance_rejects_source_revision_not_matching_external_expectation(
+    tmp_path,
+):
+    """Manifest revision text is evidence, not its own provenance authority."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
+
+    _completed_bundle(tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source_revisions"][0]["revision"] = "substituted"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BundleAcceptanceError, match="source provenance"):
+        inspect_phase3_bundle(
+            tmp_path,
+            rules_path=RULES_PATH,
+            compose_resources=lambda _project: (),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
+            ),
+            **_expected_provenance_kwargs(),
+        )
+
+
+def test_acceptance_rejects_image_digest_not_matching_external_expectation(
+    tmp_path,
+):
+    """Distinct valid manifest digests cannot substitute for inspected image IDs."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
+
+    _completed_bundle(tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["image_digests"][0]["digest"] = "f" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BundleAcceptanceError, match="image provenance"):
+        inspect_phase3_bundle(
+            tmp_path,
+            rules_path=RULES_PATH,
+            compose_resources=lambda _project: (),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
+            ),
+            **_expected_provenance_kwargs(),
+        )
 
 
 def test_acceptance_rejects_completed_manifest_with_wrong_simulation_timing(tmp_path):
@@ -404,6 +473,7 @@ def test_acceptance_rejects_completed_manifest_with_wrong_simulation_timing(tmp_
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0
@@ -442,6 +512,7 @@ def test_acceptance_rejects_incomplete_phase3_provenance(tmp_path, mutation):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0
@@ -459,6 +530,7 @@ def test_acceptance_inspector_rejects_changed_artifact_checksum(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda _run, _run_id, _frames: None,
         )
@@ -474,6 +546,7 @@ def test_acceptance_inspector_rejects_eighth_module_log(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda _run, _run_id, _frames: None,
         )
@@ -488,6 +561,7 @@ def test_acceptance_requires_digest_bound_physical_evidence(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda _run, _run_id, _frames, _checksum: None,
         )
@@ -505,6 +579,7 @@ def test_acceptance_rehashes_optional_manifest_artifacts(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0
@@ -525,6 +600,7 @@ def test_acceptance_applies_complete_manifest_domain_invariants(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0
@@ -555,6 +631,7 @@ def test_acceptance_requires_completed_companion_flight_evidence(tmp_path):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0
@@ -573,6 +650,7 @@ def test_semantic_inspector_container_command_uses_pinned_image_and_read_only_mo
     command = semantic_container_command(
         bundle,
         rules_path=rules,
+        **_expected_provenance_kwargs(),
         require_maximum_score=True,
     )
 
@@ -595,8 +673,35 @@ def test_semantic_inspector_container_command_uses_pinned_image_and_read_only_mo
         "--rules-path",
         "/rules/descent_v1.json",
         "--semantic-only",
+        "--expected-source-revision",
+        EXPECTED_SOURCE_REVISION,
+        "--expected-source-dirty",
+        "false",
+        *(
+            argument
+            for name in PHASE3_IMAGE_NAMES
+            for argument in (
+                "--expected-image-digest",
+                f"{name}={EXPECTED_IMAGE_DIGESTS[name]}",
+            )
+        ),
         "--require-maximum-score",
     )
+
+
+def test_semantic_container_command_rejects_nonexact_expected_image_map(tmp_path):
+    from artifacts.acceptance import semantic_container_command
+
+    expected = {**EXPECTED_IMAGE_DIGESTS, "unrelated:image": "f" * 64}
+
+    with pytest.raises(ValueError, match="exact Phase 3 image names"):
+        semantic_container_command(
+            tmp_path / "run",
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=expected,
+        )
 
 
 def test_host_inventory_uses_exact_label_filtered_read_only_docker_commands():
@@ -660,6 +765,7 @@ def test_host_acceptance_runs_semantics_in_container_then_inventories_compose(tm
     report = inspect_phase3_via_container(
         tmp_path / "run",
         rules_path=tmp_path / "descent_v1.json",
+        **_expected_provenance_kwargs(),
         runner=runner,
         compose_resources=lambda project: projects.append(project) or (),
     )
@@ -667,7 +773,9 @@ def test_host_acceptance_runs_semantics_in_container_then_inventories_compose(tm
     assert report.run_id == RUN_ID
     assert calls[0][0] == list(
         semantic_container_command(
-            tmp_path / "run", rules_path=tmp_path / "descent_v1.json"
+            tmp_path / "run",
+            rules_path=tmp_path / "descent_v1.json",
+            **_expected_provenance_kwargs(),
         )
     )
     assert calls[0][1] == {
@@ -681,6 +789,49 @@ def test_host_acceptance_runs_semantics_in_container_then_inventories_compose(tm
     assert projects == ["drone-sim-" + RUN_ID.replace("-", "")]
 
 
+def test_semantic_cli_passes_external_expected_provenance(tmp_path, monkeypatch):
+    """The isolated semantic process receives expectations from its caller."""
+    import artifacts.acceptance as acceptance
+
+    calls = []
+
+    def inspector(run_directory, **kwargs):
+        calls.append((run_directory, kwargs))
+        return acceptance.BundleAcceptanceReport(
+            RUN_ID, 100.0, 100.0, "drone-sim-" + RUN_ID.replace("-", ""), "b" * 64
+        )
+
+    monkeypatch.setattr(acceptance, "inspect_phase3_semantics", inspector)
+    arguments = [
+        str(tmp_path / "run"),
+        "--rules-path",
+        str(RULES_PATH),
+        "--semantic-only",
+        "--expected-source-revision",
+        EXPECTED_SOURCE_REVISION,
+        "--expected-source-dirty",
+        "false",
+    ]
+    for name in PHASE3_IMAGE_NAMES:
+        arguments.extend(
+            ["--expected-image-digest", f"{name}={EXPECTED_IMAGE_DIGESTS[name]}"]
+        )
+
+    assert acceptance.main(arguments) == 0
+    assert calls == [
+        (
+            tmp_path / "run",
+            {
+                "rules_path": RULES_PATH,
+                "expected_source_revision": EXPECTED_SOURCE_REVISION,
+                "expected_source_dirty": EXPECTED_SOURCE_DIRTY,
+                "expected_image_digests": EXPECTED_IMAGE_DIGESTS,
+                "require_maximum_score": False,
+            },
+        )
+    ]
+
+
 def test_make_inspect_phase3_invokes_host_orchestrator_cli_exactly(tmp_path):
     root = Path(__file__).parents[2]
     run_directory = tmp_path / "run"
@@ -692,6 +843,22 @@ def test_make_inspect_phase3_invokes_host_orchestrator_cli_exactly(tmp_path):
             "inspect-phase3",
             f"RUN_DIRECTORY={run_directory}",
             "REQUIRE_MAXIMUM_SCORE=1",
+            f"EXPECTED_SOURCE_REVISION={EXPECTED_SOURCE_REVISION}",
+            "EXPECTED_SOURCE_DIRTY=false",
+            "ORCHESTRATION_IMAGE_DIGEST="
+            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[0]],
+            "ARTIFACTS_IMAGE_DIGEST="
+            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[1]],
+            "COMPANION_IMAGE_DIGEST="
+            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[2]],
+            "ARDUPILOT_IMAGE_DIGEST="
+            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[3]],
+            "GAZEBO_IMAGE_DIGEST="
+            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[4]],
+            "ELECTROMAGNET_IMAGE_DIGEST="
+            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[5]],
+            "SCOREKEEPER_IMAGE_DIGEST="
+            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[6]],
         ],
         cwd=root,
         capture_output=True,
@@ -700,11 +867,23 @@ def test_make_inspect_phase3_invokes_host_orchestrator_cli_exactly(tmp_path):
     )
 
     assert result.returncode == 0
-    assert result.stdout.splitlines() == [
+    lines = result.stdout.splitlines()
+    assert lines[:10] == [
         f'test -n "{run_directory}"',
-        (
-            f'uv run python -m artifacts.acceptance "{run_directory}" '
-            "--rules-path scorekeeper/rules/descent_v1.json "
-            "--require-maximum-score"
-        ),
+        f'test -n "{EXPECTED_SOURCE_REVISION}"',
+        'test -n "false"',
+        *(f'test -n "{EXPECTED_IMAGE_DIGESTS[name]}"' for name in PHASE3_IMAGE_NAMES),
     ]
+    command = lines[10]
+    assert command.startswith(
+        f'uv run python -m artifacts.acceptance "{run_directory}" '
+        "--rules-path scorekeeper/rules/descent_v1.json "
+    )
+    assert '--expected-source-revision "abc123"' in command
+    assert '--expected-source-dirty "false"' in command
+    for name in PHASE3_IMAGE_NAMES:
+        assert (
+            f'--expected-image-digest "{name}={EXPECTED_IMAGE_DIGESTS[name]}"'
+            in command
+        )
+    assert command.endswith("--require-maximum-score")
