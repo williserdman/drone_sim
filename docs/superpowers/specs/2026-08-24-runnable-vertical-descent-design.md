@@ -104,6 +104,11 @@ For duration `D` seconds, `N = 20 * D`:
 
 The bag remains the fixed ten-topic public contract. MAVLink commands, ACKs, telemetry, and ArduPilot JSON frame counters are preserved initially in companion/ArduPilot structured logs rather than expanding the bag.
 
+Camera publishers and the private rosbag subscriptions use reliable, volatile,
+100-sample histories. At 20 simulated Hz this retains five simulated seconds
+through a bounded host-side writer stall; exact frame acceptance still fails
+closed on any loss.
+
 The production artifact runtime derives `N` from resolved configuration. It does not use the Phase 2 hard-coded 40-frame assumption and does not require `/simulation/camera_pair_ack` to advance production physics.
 
 ## Scoring
@@ -166,5 +171,8 @@ Do not gate the vertical slice on:
 - byte-identical encoded MP4 output across rendering hosts;
 - legacy FM2/FM3, precision vision, LiDAR, payload/dropper, or active magnet physics;
 - multi-vehicle support, GUI, distributed observability backends, or network-partition stress.
+- a reusable Phase 3 slowdown-injection flag and normalized two-run comparator;
+- launch-time provenance snapshots and external pinning of every canonical
+  configuration field and the acceptance-validator image.
 
 Do not defer simulation-time continuity, lockstep loss behavior, exact 20 sim FPS, artifact closure, scoring provenance, or safe preservation of the workspace and completed run.

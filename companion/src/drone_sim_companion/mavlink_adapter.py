@@ -52,6 +52,19 @@ class MavlinkAdapter:
             rate_hz,
             1,
         )
+        self._connection.mav.command_long_send(
+            self._connection.target_system,
+            self._connection.target_component,
+            self._mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+            0,
+            245,  # EXTENDED_SYS_STATE
+            1_000_000 // rate_hz,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
 
     def poll(self, timestamp_ns: int) -> Telemetry | None:
         message = self._connection.recv_match(blocking=False)

@@ -47,6 +47,7 @@ def mavutil() -> SimpleNamespace:
         MAV_CMD_COMPONENT_ARM_DISARM=400,
         MAV_CMD_NAV_TAKEOFF=22,
         MAV_CMD_NAV_LAND=21,
+        MAV_CMD_SET_MESSAGE_INTERVAL=511,
         MAV_MODE_FLAG_CUSTOM_MODE_ENABLED=1,
         MAV_MODE_FLAG_SAFETY_ARMED=128,
         MAV_RESULT_ACCEPTED=0,
@@ -79,11 +80,14 @@ def test_commands_translate_to_exact_mavlink_long_commands() -> None:
     ]
 
 
-def test_telemetry_stream_request_is_explicit_and_simulation_neutral() -> None:
+def test_telemetry_request_keeps_generic_stream_and_requests_landed_state() -> None:
     connection = FakeConnection()
     adapter = MavlinkAdapter(connection, mavutil())
     adapter.request_telemetry(rate_hz=10)
     assert connection.mav.stream_calls == [(1, 1, 0, 10, 1)]
+    assert connection.mav.calls == [
+        (1, 1, 511, 0, 245, 100_000, 0, 0, 0, 0, 0),
+    ]
 
 
 def test_mavlink_messages_are_stamped_with_current_simulation_time() -> None:

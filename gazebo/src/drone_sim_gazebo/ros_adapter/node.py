@@ -82,7 +82,7 @@ class GazeboAdapterNode(_node_base()):
         self._ground_truth_type = GroundTruth
         self._image_publishers = {
             stream: self.create_publisher(
-                Image, f"/camera/{stream}/image_raw", _qos(5, reliable=True)
+                Image, f"/camera/{stream}/image_raw", _qos(100, reliable=True)
             )
             for stream in ("onboard", "observer")
         }
@@ -90,7 +90,7 @@ class GazeboAdapterNode(_node_base()):
             stream: self.create_publisher(
                 FrameMetadata,
                 f"/camera/{stream}/frame_metadata",
-                _qos(5, reliable=True),
+                _qos(100, reliable=True),
             )
             for stream in ("onboard", "observer")
         }

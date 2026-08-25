@@ -17,3 +17,18 @@ This ledger records work intentionally excluded from the critical path to a veri
 - Add a truthful cross-container lockstep-stall detector that observes real Gazebo/JSON progress without interpreting ArduPilot's 1.1-second servo-retransmission warning as peer loss. Until then, authoritative Gazebo child/adapter failures remain immediate and a silent live stall is bounded by the run's host-wall deadline.
 - **Promoted from deferred on run `305f7421-6bbc-4d5f-8a83-c5ba50b9338c`:** under severe host contention the upstream Gazebo plugin repeatedly drained multiple sequential actuator packets and retained only the newest, producing real frame gaps and corrupting one-for-one lockstep evidence. Process at most one sequential frame per physics update, preserve exact-duplicate resend recovery, and diagnose a true jump beyond `current + 1` before the next scored run.
 - Remove the companion controller's legacy `ready` alias and consolidate its duplicated mission-readiness conjunction after the public interface and winning-run evidence are stable.
+- Add a repository-owned Phase 3 slowdown-injection control and normalized
+  two-run comparator. The vertical slice may use a reversible, run-scoped
+  Docker resource constraint and independently compare the preserved bundles.
+- Snapshot source revision/dirty state and active-container image IDs at launch
+  rather than resolving mutable worktree/tag state during finalization.
+- Externally pin the canonical world, vehicle, mission, scenario, seed, RTF,
+  duration, and acceptance-validator image in the semantic inspection command.
+  The current winning-run procedure verifies these separately without treating
+  the missing abstraction as simulation evidence.
+- Add the planned `test-phase3` integration target and Phase 3 verification
+  document after the runnable maximum-score and slowdown bundles are preserved.
+- Make the acceptance target's nested `make -n` test ignore GNU Make's inherited
+  directory-tracing lines. It passes standalone but is non-hermetic when run
+  beneath `make test-unit`; this does not affect the operator or acceptance
+  command itself.

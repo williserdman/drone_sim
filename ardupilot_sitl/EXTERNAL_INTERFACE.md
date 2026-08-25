@@ -40,6 +40,16 @@ defaults require the small non-zero offsets so its two simulated
 accelerometers are recognized as calibrated. The mission uses ordinary
 GUIDED-mode arming and never sends the force-arm magic value.
 
+The overlay sets the pinned Copter 4.7 parameter `LAND_SPD_MS=0.05`, making
+the final LAND-stage vertical target 0.05 m/s. Copter 4.7 renamed the legacy
+centimetres-per-second `LAND_SPEED` parameter to the metres-per-second
+`LAND_SPD_MS`; the runtime uses the new name directly because every run wipes
+SITL storage. This target keeps 50% command-speed headroom below the frozen
+0.1 m/s first-contact stability ceiling. It is below the upstream parameter
+metadata's recommended 0.3 m/s minimum, but the pinned defaults-file loader
+accepts the float without clamping and the LAND controller applies its
+absolute value directly as the final descent limit.
+
 ## Failure behavior
 
 Loss of either required peer is reported. Loss of the Gazebo exchange prevents continued simulated progress; malformed or unsupported MAVLink commands receive the protocol-defined rejection where available.

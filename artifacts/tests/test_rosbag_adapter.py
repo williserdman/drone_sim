@@ -168,6 +168,7 @@ def test_private_recorder_qos_retains_both_artifact_startup_statuses():
     ground_truth = override.split("/simulation/ground_truth:", 1)[1].split(
         "/simulation/scenario_events:", 1
     )[0]
+    camera = override.split("/camera/onboard/image_raw:", 1)[1]
 
     assert "history: keep_last" in artifact_status
     assert "depth: 2" in artifact_status
@@ -182,6 +183,11 @@ def test_private_recorder_qos_retains_both_artifact_startup_statuses():
     assert "depth: 10" in ground_truth
     assert "reliability: reliable" in ground_truth
     assert "depth: 1" in run_state
+    # A five-sample writer/reader history lost two observer metadata samples
+    # when the MCAP writer briefly fell behind.  Five simulated seconds of
+    # camera history keeps the exact 20 Hz evidence intact through a bounded
+    # host-side recording stall.
+    assert "depth: 100" in camera
     assert (
         "COPY artifacts/recording-qos.yaml /etc/drone_sim/recording-qos.yaml"
         in dockerfile

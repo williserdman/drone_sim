@@ -28,6 +28,15 @@ def test_descent_parameters_enable_passive_extended_status_readiness() -> None:
     assert _descent_parameters()["MAV1_EXT_STAT"] == "1"
 
 
+def test_descent_parameters_leave_first_contact_speed_headroom() -> None:
+    parameters = _descent_parameters()
+
+    assert "LAND_SPD_MS" in parameters
+    final_descent_speed_mps = float(parameters["LAND_SPD_MS"])
+
+    assert 0.0 < final_descent_speed_mps <= 0.05
+
+
 def test_descent_parameters_mark_sitl_accelerometers_calibrated() -> None:
     parameters = _descent_parameters()
 

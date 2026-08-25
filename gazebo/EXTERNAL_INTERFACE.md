@@ -17,10 +17,10 @@ entity and private topic child are named `iris`.
 | Topic | Type | QoS |
 | --- | --- | --- |
 | `/clock` | `rosgraph_msgs/msg/Clock` | Reliable, volatile, depth 1000 |
-| `/camera/onboard/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
-| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
-| `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
-| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
+| `/camera/onboard/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 100 |
+| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 100 |
+| `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 100 |
+| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 100 |
 | `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Reliable, volatile, depth 10 |
 
 All run-scoped outputs carry `run_id`. Each image has matching metadata with a
@@ -28,7 +28,9 @@ stream-local contiguous frame ID and an identical public simulation timestamp.
 Both streams are fixed at `320x240`, `rgb8`, and 20 simulated Hz. Each accepted
 camera pair has one ground-truth sample at the same public timestamp. The
 onboard public image is the exact stream later consumed by companion vision and
-artifacts. Before `RUNNING`, none of these topics publishes warmup evidence.
+artifacts. Camera history retains five simulated seconds so a bounded host-side
+MCAP writer stall cannot evict unacknowledged archival evidence. Before
+`RUNNING`, none of these topics publishes warmup evidence.
 `RUNNING` arms a native-source barrier: after both camera streams have crossed
 it and the private clock has reached their greatest stamp, the adapter floors
 that clock to the preceding 50 ms camera epoch and publishes `/clock=0`

@@ -30,7 +30,7 @@
   durability: volatile
 /camera/onboard/image_raw: &image_qos
   history: keep_last
-  depth: 5
+  depth: 100
   reliability: reliable
   durability: volatile
 /camera/onboard/frame_metadata: *image_qos

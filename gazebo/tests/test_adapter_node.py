@@ -31,10 +31,10 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
     graph = rclpy.create_node("gazebo_adapter_contract_observer")
     expected = {
         "/clock": (ReliabilityPolicy.RELIABLE, 1000),
-        "/camera/onboard/image_raw": (ReliabilityPolicy.RELIABLE, 5),
-        "/camera/onboard/frame_metadata": (ReliabilityPolicy.RELIABLE, 5),
-        "/camera/observer/image_raw": (ReliabilityPolicy.RELIABLE, 5),
-        "/camera/observer/frame_metadata": (ReliabilityPolicy.RELIABLE, 5),
+        "/camera/onboard/image_raw": (ReliabilityPolicy.RELIABLE, 100),
+        "/camera/onboard/frame_metadata": (ReliabilityPolicy.RELIABLE, 100),
+        "/camera/observer/image_raw": (ReliabilityPolicy.RELIABLE, 100),
+        "/camera/observer/frame_metadata": (ReliabilityPolicy.RELIABLE, 100),
         "/simulation/ground_truth": (ReliabilityPolicy.RELIABLE, 10),
     }
     try:
