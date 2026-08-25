@@ -153,9 +153,10 @@ def test_downstream_patch_bounds_paused_bootstrap_to_one_round_trip():
     patch = PLUGIN_PATCH.read_text(encoding="utf-8")
 
     assert (
-        "if (_info.paused && this->dataPtr->motorUpdates.load() < 2)"
+        "if (_info.paused && this->dataPtr->motorUpdates.load() < 1)"
         in patch
     )
+    assert "this->dataPtr->motorUpdates.load() < 2" not in patch
     assert "this->ReceiveServoPacket();" in patch
     assert "this->CreateStateJSON(initialPausedState ? 0.0 : t, _ecm);" in patch
     assert "this->dataPtr->initialStateSent = true;" in patch

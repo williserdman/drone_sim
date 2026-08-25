@@ -67,8 +67,8 @@ def _validate_flight_status(value: object) -> dict[str, bool | int]:
 def _flight_status_ready(status: Mapping[str, bool | int]) -> bool:
     return bool(
         status["online"]
-        and status["servo_packets_received"] >= 2
-        and status["motor_updates"] >= 2
+        and status["servo_packets_received"] >= 1
+        and status["motor_updates"] >= 1
         and status["json_states_sent"] >= 1
         and status["servo_frame_gaps"] == 0
         and status["json_send_errors"] == 0

@@ -57,13 +57,13 @@ PHASE3_SERVICES = (
 )
 FLIGHT_EXCHANGE = {
     "online": True,
-    "servo_packets_received": 2,
-    "motor_updates": 2,
+    "servo_packets_received": 1,
+    "motor_updates": 1,
     "duplicate_servo_packets": 0,
     "servo_frame_gaps": 0,
-    "json_states_sent": 2,
+    "json_states_sent": 1,
     "json_send_errors": 0,
-    "last_servo_frame": 1,
+    "last_servo_frame": 0,
     "last_json_sim_time_ns": 0,
 }
 
@@ -87,9 +87,7 @@ def test_gazebo_ready_accepts_the_exact_live_flight_exchange_evidence():
         lambda value: value.update(servo_packets_received=True),
         lambda value: value.update(last_servo_frame=-1),
         lambda value: value.update(servo_packets_received=0),
-        lambda value: value.update(servo_packets_received=1),
         lambda value: value.update(motor_updates=0),
-        lambda value: value.update(motor_updates=1),
         lambda value: value.update(json_states_sent=0),
         lambda value: value.update(servo_frame_gaps=1),
         lambda value: value.update(json_send_errors=1),

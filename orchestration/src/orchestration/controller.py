@@ -486,8 +486,8 @@ class RunController:
                 type(exchange[key]) is not int or exchange[key] < 0
                 for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
             )
-            or exchange["servo_packets_received"] < 2
-            or exchange["motor_updates"] < 2
+            or exchange["servo_packets_received"] < 1
+            or exchange["motor_updates"] < 1
             or exchange["json_states_sent"] < 1
             or exchange["servo_frame_gaps"] != 0
             or exchange["json_send_errors"] != 0

@@ -93,7 +93,7 @@ index 8309c37..2250d09 100755
 +        // Bootstrap the JSON peer without advancing simulation physics. Gazebo
 +        // continues system updates while paused, so accept only the initial
 +        // servo datagram here; motor forces remain in the unpaused path below.
-+        if (_info.paused && this->dataPtr->motorUpdates.load() < 2)
++        if (_info.paused && this->dataPtr->motorUpdates.load() < 1)
 +        {
 +            this->ReceiveServoPacket();
 +        }

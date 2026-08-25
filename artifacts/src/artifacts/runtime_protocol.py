@@ -135,8 +135,8 @@ def _valid_flight_exchange(value: Any) -> bool:
             type(value[key]) is int and value[key] >= 0
             for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
         )
-        and value["servo_packets_received"] >= 2
-        and value["motor_updates"] >= 2
+        and value["servo_packets_received"] >= 1
+        and value["motor_updates"] >= 1
         and value["json_states_sent"] >= 1
         and value["servo_frame_gaps"] == 0
         and value["json_send_errors"] == 0
