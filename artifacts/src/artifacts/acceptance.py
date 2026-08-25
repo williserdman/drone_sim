@@ -435,23 +435,30 @@ def _validate_production_log_evidence(
         raise BundleAcceptanceError("ArduPilot JSON exchange evidence is incomplete")
 
     gazebo = documents_by_module["gazebo"]
-    required_actions = {
+    required_action_sequence = (
         "PublishGazeboReady",
-        "RequestSteps",
+        "SetPaused",
+        "ActivateOutput",
         "SetPaused",
         "WriteSourceFinished",
         "BeginFinalization",
         "StopServer",
         "WriteQuiescence",
-    }
-    actions = {
+    )
+    actions = [
         row["fields"].get("action")
         for row in gazebo
         if row["event"] == "runtime_action" and isinstance(row["fields"], dict)
-    }
+    ]
+    required_index = 0
+    for action in actions:
+        if action == required_action_sequence[required_index]:
+            required_index += 1
+            if required_index == len(required_action_sequence):
+                break
     if not (
         any(row["event"] == "runtime_started" for row in gazebo)
-        and required_actions.issubset(actions)
+        and required_index == len(required_action_sequence)
         and any(row["event"] == "runtime_quiescent" for row in gazebo)
     ):
         raise BundleAcceptanceError("Gazebo runtime action evidence is incomplete")

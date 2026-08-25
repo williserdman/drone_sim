@@ -95,6 +95,11 @@ SHA256 values are the lowercase 64-hex Docker image IDs without the
 read-only semantic container; the manifest and module logs are never used as
 the authority for their own expected provenance.
 
+Completed Phase 3 log acceptance requires the Gazebo runtime's public-epoch
+`ActivateOutput` action together with its readiness, pause, source-finished,
+finalization, stop, and quiescence actions. The legacy private `RequestSteps`
+action is not evidence that public camera and ground-truth output was enabled.
+
 Every owned process log line has `run_id`, `module`, `severity`, `event`,
 `sim_timestamp`, and `wall_timestamp`; event-specific values are nested under
 `fields` by the Phase 1 serializer.

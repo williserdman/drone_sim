@@ -15,6 +15,12 @@ This ledger records work intentionally excluded from the critical path to a veri
 - Classify a zero-budget Compose health probe at the startup deadline as the configured startup-deadline cause instead of leaking `subprocess.TimeoutExpired`; this currently obscures diagnostics but does not change the terminal result.
 - Retry or otherwise harden transient pre-ready Gazebo flight-status service RPC failures only if another production run reproduces the unretained `Host unreachable` wrapper path seen once during startup.
 - Add a truthful cross-container lockstep-stall detector that observes real Gazebo/JSON progress without interpreting ArduPilot's 1.1-second servo-retransmission warning as peer loss. Until then, authoritative Gazebo child/adapter failures remain immediate and a silent live stall is bounded by the run's host-wall deadline.
+- Persist the ArduPilot-Gazebo plugin's final exchange counters, not only its
+  startup readiness snapshot, so acceptance can independently prove zero
+  actuator-frame gaps and JSON send errors across the complete public epoch.
+  The current slice proves the lockstep implementation, live controlled
+  flight, exact simulation-time grid, and clean SITL shutdown, but does not
+  claim a frozen final counter snapshot.
 - **Promoted from deferred on run `305f7421-6bbc-4d5f-8a83-c5ba50b9338c`:** under severe host contention the upstream Gazebo plugin repeatedly drained multiple sequential actuator packets and retained only the newest, producing real frame gaps and corrupting one-for-one lockstep evidence. Process at most one sequential frame per physics update, preserve exact-duplicate resend recovery, and diagnose a true jump beyond `current + 1` before the next scored run.
 - Remove the companion controller's legacy `ready` alias and consolidate its duplicated mission-readiness conjunction after the public interface and winning-run evidence are stable.
 - Add a repository-owned Phase 3 slowdown-injection control and normalized

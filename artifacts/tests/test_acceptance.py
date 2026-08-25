@@ -126,7 +126,8 @@ def _completed_bundle(
     ]
     gazebo_actions = (
         "PublishGazeboReady",
-        "RequestSteps",
+        "SetPaused",
+        "ActivateOutput",
         "SetPaused",
         "WriteSourceFinished",
         "BeginFinalization",
@@ -628,6 +629,93 @@ def test_acceptance_requires_completed_companion_flight_evidence(tmp_path):
     _completed_bundle(tmp_path, log_mutator=remove_land_ack)
 
     with pytest.raises(BundleAcceptanceError, match="companion flight evidence"):
+        inspect_phase3_bundle(
+            tmp_path,
+            rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
+            compose_resources=lambda _project: (),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
+            ),
+        )
+
+
+def test_acceptance_rejects_legacy_step_request_without_public_output_activation(
+    tmp_path,
+):
+    """Private-step evidence cannot substitute for activating the public epoch."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
+
+    def replace_activation_with_legacy_step_request(run_directory: Path) -> None:
+        gazebo_log = run_directory / "logs/gazebo.jsonl"
+        rows = [json.loads(line) for line in gazebo_log.read_text().splitlines()]
+        replaced = 0
+        for row in rows:
+            if row["event"] == "runtime_action" and row["fields"] == {
+                "action": "ActivateOutput"
+            }:
+                row["fields"] = {"action": "RequestSteps"}
+                replaced += 1
+        assert replaced == 1
+        gazebo_log.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+
+    _completed_bundle(
+        tmp_path, log_mutator=replace_activation_with_legacy_step_request
+    )
+
+    with pytest.raises(BundleAcceptanceError, match="Gazebo runtime action evidence"):
+        inspect_phase3_bundle(
+            tmp_path,
+            rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
+            compose_resources=lambda _project: (),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
+            ),
+        )
+
+
+def test_acceptance_rejects_public_activation_before_warmup_unpause(tmp_path):
+    """Public output cannot activate before READY starts private warmup."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
+
+    def reverse_warmup_and_activation(run_directory: Path) -> None:
+        gazebo_log = run_directory / "logs/gazebo.jsonl"
+        rows = [json.loads(line) for line in gazebo_log.read_text().splitlines()]
+        pause_index = next(
+            index
+            for index, row in enumerate(rows)
+            if row["event"] == "runtime_action"
+            and row["fields"] == {"action": "SetPaused"}
+        )
+        activation_index = next(
+            index
+            for index, row in enumerate(rows)
+            if row["event"] == "runtime_action"
+            and row["fields"] == {"action": "ActivateOutput"}
+        )
+        if pause_index < activation_index:
+            activation = rows.pop(activation_index)
+            rows.insert(pause_index, activation)
+        action_rows = [
+            row
+            for row in rows
+            if row["event"] == "runtime_action"
+            and row["fields"].get("action") in {"SetPaused", "ActivateOutput"}
+        ]
+        assert [row["fields"]["action"] for row in action_rows[:2]] == [
+            "ActivateOutput",
+            "SetPaused",
+        ]
+        gazebo_log.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+
+    _completed_bundle(tmp_path, log_mutator=reverse_warmup_and_activation)
+
+    with pytest.raises(BundleAcceptanceError, match="Gazebo runtime action evidence"):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
