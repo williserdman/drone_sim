@@ -148,11 +148,14 @@ def test_official_plugin_supply_is_pinned_to_the_reviewed_harmonic_revision():
     }
 
 
-def test_downstream_patch_preserves_pause_and_only_bootstraps_json_exchange():
-    """SITL readiness must not require a physics step before RUNNING."""
+def test_downstream_patch_bounds_paused_bootstrap_to_one_round_trip():
+    """Paused readiness must not keep advancing SITL before RUNNING."""
     patch = PLUGIN_PATCH.read_text(encoding="utf-8")
 
-    assert "if (_info.paused)" in patch
+    assert (
+        "if (_info.paused && this->dataPtr->motorUpdates.load() < 2)"
+        in patch
+    )
     assert "this->ReceiveServoPacket();" in patch
     assert "this->CreateStateJSON(initialPausedState ? 0.0 : t, _ecm);" in patch
     assert "this->dataPtr->initialStateSent = true;" in patch

@@ -21,8 +21,9 @@ nor its siblings writes the aggregate runtime freeze or terminal manifest.
 For `vertical_descent/iris_flight`, the downstream-patched plugin owns the
 private UDP sensor/actuator lockstep seam and
 `/model/iris/ardupilot/status`. Runtime readiness requires servo, motor-update,
-and JSON-send counters to advance across distinct polls with no frame gaps or
-send errors before it freezes the observed counts into `gazebo-ready`.
+and JSON-send counters to prove one bounded paused round trip with no frame gaps
+or send errors before it freezes the stable observed counts into
+`gazebo-ready`.
 Orchestration owns aggregate peer readiness. No internal API exposes
 electromagnet force mutation or an in-process world reset.
 
