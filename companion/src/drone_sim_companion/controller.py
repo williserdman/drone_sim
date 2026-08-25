@@ -15,18 +15,43 @@ class VehicleCommands(Protocol):
 EventSink = Callable[[str, int, dict[str, object]], None]
 
 
+def mission_policy_active(*, mission_running: bool, public_clock_observed: bool) -> bool:
+    return mission_running and public_clock_observed
+
+
 class MissionController:
     def __init__(self, vehicle: VehicleCommands, emit: EventSink) -> None:
         self._vehicle = vehicle
         self._emit = emit
         self.state = MissionState.initial()
-        self.ready = False
+        self._heartbeat_observed = False
+        self._prearm_checks_healthy = False
+
+    @property
+    def heartbeat_observed(self) -> bool:
+        return self._heartbeat_observed
+
+    @property
+    def prearm_checks_healthy(self) -> bool:
+        return self._prearm_checks_healthy
+
+    @property
+    def mission_ready(self) -> bool:
+        return self._heartbeat_observed and self._prearm_checks_healthy
+
+    @property
+    def ready(self) -> bool:
+        """Backward-compatible heartbeat-liveness fact."""
+        return self._heartbeat_observed
 
     def observe_readiness(self, telemetry: Telemetry) -> None:
-        """Latch the infrastructure heartbeat without advancing mission policy."""
-        if telemetry.heartbeat and not self.ready:
-            self.ready = True
+        """Latch passive telemetry facts without advancing mission policy."""
+        if telemetry.heartbeat and not self._heartbeat_observed:
+            self._heartbeat_observed = True
             self._emit("heartbeat_observed", telemetry.timestamp_ns, {})
+        if telemetry.prearm_checks_healthy is True and not self._prearm_checks_healthy:
+            self._prearm_checks_healthy = True
+            self._emit("prearm_checks_healthy", telemetry.timestamp_ns, {})
 
     def consume(self, telemetry: Telemetry) -> None:
         previous = self.state
@@ -52,11 +77,6 @@ class MissionController:
         ):
             self._emit("mode_confirmed", telemetry.timestamp_ns, {"mode": "GUIDED"})
         if (
-            previous.phase is MissionPhase.WAIT_PREARM_READY
-            and transition.state.phase is MissionPhase.WAIT_ARM_ACK
-        ):
-            self._emit("prearm_checks_healthy", telemetry.timestamp_ns, {})
-        if (
             previous.phase is MissionPhase.WAIT_ARMED
             and transition.state.phase is MissionPhase.WAIT_TAKEOFF_ACK
         ):
@@ -75,12 +95,21 @@ def process_telemetry(
     telemetry: Telemetry,
     *,
     mission_running: bool,
+    public_clock_observed: bool,
 ) -> None:
     """Separate pre-clock readiness from RUNNING mission transitions."""
-    if mission_running:
+    if mission_policy_active(
+        mission_running=mission_running,
+        public_clock_observed=public_clock_observed,
+    ):
         controller.consume(telemetry)
     else:
         controller.observe_readiness(telemetry)
 
 
-__all__ = ["MissionController", "VehicleCommands", "process_telemetry"]
+__all__ = [
+    "MissionController",
+    "VehicleCommands",
+    "mission_policy_active",
+    "process_telemetry",
+]

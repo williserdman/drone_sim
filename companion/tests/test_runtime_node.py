@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,9 @@ from drone_sim_companion.runtime_node import (
     RuntimeConfig,
     connect_mavlink,
 )
+from drone_sim_companion.controller import MissionController
+from drone_sim_companion.lifecycle import CompanionLifecycle
+from drone_sim_companion.mission import CommandKind, Telemetry
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -213,3 +217,55 @@ def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> N
         == "connected"
     )
     assert pauses == [0.1, 0.1]
+
+
+def test_runtime_wires_passive_facts_to_durable_mission_readiness() -> None:
+    class Protocol:
+        def __init__(self) -> None:
+            self.statuses: list[tuple[str, dict[str, object]]] = []
+
+        def write_status(self, name: str, document: dict[str, object]) -> None:
+            self.statuses.append((name, document))
+
+        def write_quiescence(self, _module: str) -> None:
+            pass
+
+    class Vehicle:
+        def __init__(self) -> None:
+            self.sent: list[tuple[CommandKind, float | None]] = []
+
+        def send(self, command: CommandKind, altitude_m: float | None) -> None:
+            self.sent.append((command, altitude_m))
+
+    protocol = Protocol()
+    lifecycle = CompanionLifecycle(run_id=RUN_ID, protocol=protocol, stream=StringIO())
+    vehicle = Vehicle()
+    controller = MissionController(vehicle, lifecycle.emit)
+
+    runtime_node.process_runtime_telemetry(
+        controller,
+        lifecycle,
+        Telemetry(10, prearm_checks_healthy=True),
+        mission_running=False,
+        public_clock_observed=False,
+    )
+    runtime_node.process_runtime_telemetry(
+        controller,
+        lifecycle,
+        Telemetry(20, heartbeat=True, mode="STABILIZE", armed=False),
+        mission_running=False,
+        public_clock_observed=False,
+    )
+
+    assert protocol.statuses == [
+        (
+            "mission-ready",
+            {
+                "run_id": RUN_ID,
+                "ready": True,
+                "heartbeat_observed": True,
+                "prearm_checks_healthy": True,
+            },
+        )
+    ]
+    assert vehicle.sent == []

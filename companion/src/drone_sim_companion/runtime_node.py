@@ -12,14 +12,14 @@ import sys
 import time
 from collections.abc import Callable
 from typing import Any, Mapping
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from artifacts.runtime_protocol import RuntimeProtocol
 
-from .controller import MissionController, process_telemetry
+from .controller import MissionController, mission_policy_active, process_telemetry
 from .lifecycle import CompanionLifecycle
 from .mavlink_adapter import MavlinkAdapter
-from .mission import MissionPhase, MissionState
+from .mission import MissionPhase, MissionState, Telemetry
 
 
 @dataclass(frozen=True)
@@ -115,48 +115,16 @@ def first_heartbeat_wall_failure(
     return "MAVLink heartbeat was unavailable before the overall run wall failsafe"
 
 
-def _atomic_status(path: Path, document: dict[str, object]) -> None:
-    payload = (
-        json.dumps(document, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if path.read_bytes() == payload:
-            return
-        raise RuntimeError(f"status {path.name} conflicts with its durable value")
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-            0o644,
-        )
-        os.write(descriptor, payload)
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
-        os.replace(temporary, path)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
 class _ProductionProtocol:
-    """Use the shared control/quiescence protocol plus the new vertical statuses."""
+    """Restrict companion-owned writes through the shared runtime protocol."""
 
     def __init__(self, config: RuntimeConfig) -> None:
         self._runtime = RuntimeProtocol(config.run_directory, config.run_id)
-        self._status = config.run_directory / ".status"
 
     def write_status(self, name: str, document: dict[str, object]) -> None:
-        if name not in {"companion-ready", "mission-finished"}:
+        if name not in {"companion-ready", "mission-ready", "mission-finished"}:
             raise ValueError("companion does not own that status")
-        _atomic_status(self._status / f"{name}.json", document)
+        self._runtime.write_status(name, document)
 
     def write_quiescence(self, module: str) -> Any:
         return self._runtime.write_quiescence(module)
@@ -166,6 +134,26 @@ class _ProductionProtocol:
 
     def close(self) -> None:
         self._runtime.close()
+
+
+def process_runtime_telemetry(
+    controller: MissionController,
+    lifecycle: CompanionLifecycle,
+    telemetry: Telemetry,
+    *,
+    mission_running: bool,
+    public_clock_observed: bool,
+) -> None:
+    process_telemetry(
+        controller,
+        telemetry,
+        mission_running=mission_running,
+        public_clock_observed=public_clock_observed,
+    )
+    lifecycle.observe_mission_readiness(
+        heartbeat_observed=controller.heartbeat_observed,
+        prearm_checks_healthy=controller.prearm_checks_healthy,
+    )
 
 
 def main() -> int:
@@ -262,14 +250,25 @@ def main() -> int:
                         )
                         if telemetry is None:
                             break
-                        process_telemetry(
+                        process_runtime_telemetry(
                             controller,
+                            lifecycle,
                             telemetry,
                             mission_running=mission_running,
+                            public_clock_observed=latest_clock_ns is not None,
                         )
                 except Exception as error:
                     failure = f"MAVLink processing failed: {error}"
-            if controller.ready and not telemetry_requested and failure is None:
+            policy_active = mission_policy_active(
+                mission_running=mission_running,
+                public_clock_observed=latest_clock_ns is not None,
+            )
+            if (
+                policy_active
+                and controller.heartbeat_observed
+                and not telemetry_requested
+                and failure is None
+            ):
                 vehicle.request_telemetry(rate_hz=10)
                 lifecycle.emit("telemetry_requested", latest_clock_ns, {"rate_hz": 10})
                 telemetry_requested = True
@@ -287,7 +286,7 @@ def main() -> int:
                 exit_code = 1
                 break
             heartbeat_failure = first_heartbeat_wall_failure(
-                heartbeat_observed=controller.ready,
+                heartbeat_observed=controller.heartbeat_observed,
                 wall_now=time.monotonic(),
                 overall_wall_deadline=overall_wall_deadline,
             )
@@ -322,5 +321,6 @@ __all__ = [
     "connect_mavlink",
     "first_heartbeat_wall_failure",
     "main",
+    "process_runtime_telemetry",
     "stamp_ns",
 ]

@@ -23,6 +23,7 @@ class CompanionLifecycle:
         self._protocol = protocol
         self._stream = stream
         self._ready = False
+        self._mission_ready = False
         self._terminal = False
         self._quiescent = False
 
@@ -63,6 +64,26 @@ class CompanionLifecycle:
             },
         )
         self._ready = True
+
+    def observe_mission_readiness(
+        self,
+        *,
+        heartbeat_observed: bool,
+        prearm_checks_healthy: bool,
+    ) -> None:
+        if self._mission_ready or not (heartbeat_observed and prearm_checks_healthy):
+            return
+        self._protocol.write_status(
+            "mission-ready",
+            {
+                "run_id": self._run_id,
+                "ready": True,
+                "heartbeat_observed": True,
+                "prearm_checks_healthy": True,
+            },
+        )
+        self.emit("mission_ready", None, {})
+        self._mission_ready = True
 
     def observe_terminal(self, state: MissionState) -> None:
         if self._terminal or state.phase not in {MissionPhase.LANDED, MissionPhase.FAILED}:

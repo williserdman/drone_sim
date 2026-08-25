@@ -25,6 +25,7 @@ def test_pre_run_heartbeat_makes_runtime_ready_without_starting_mission() -> Non
         controller,
         Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False),
         mission_running=False,
+        public_clock_observed=False,
     )
 
     assert controller.ready
@@ -36,6 +37,7 @@ def test_pre_run_heartbeat_makes_runtime_ready_without_starting_mission() -> Non
         controller,
         Telemetry(50_000_000, heartbeat=True, mode="STABILIZE", armed=False),
         mission_running=True,
+        public_clock_observed=True,
     )
 
     assert controller.state.phase is MissionPhase.WAIT_GUIDED_ACK
@@ -44,6 +46,80 @@ def test_pre_run_heartbeat_makes_runtime_ready_without_starting_mission() -> Non
         "heartbeat_observed",
         "command_issued",
     ]
+
+
+def test_pre_run_readiness_latches_heartbeat_and_prearm_health_independently() -> None:
+    vehicle = FakeVehicle()
+    records: list[tuple[str, int, dict[str, object]]] = []
+    controller = MissionController(
+        vehicle, lambda name, stamp, fields: records.append((name, stamp, fields))
+    )
+
+    process_telemetry(
+        controller,
+        Telemetry(10, prearm_checks_healthy=True),
+        mission_running=False,
+        public_clock_observed=False,
+    )
+
+    assert not controller.heartbeat_observed
+    assert controller.prearm_checks_healthy
+    assert not controller.mission_ready
+    assert vehicle.sent == []
+
+    process_telemetry(
+        controller,
+        Telemetry(20, heartbeat=True, mode="STABILIZE", armed=False),
+        mission_running=False,
+        public_clock_observed=False,
+    )
+    process_telemetry(
+        controller,
+        Telemetry(30, prearm_checks_healthy=False),
+        mission_running=False,
+        public_clock_observed=False,
+    )
+
+    assert controller.heartbeat_observed
+    assert controller.prearm_checks_healthy
+    assert controller.mission_ready
+    assert vehicle.sent == []
+    assert records == [
+        ("prearm_checks_healthy", 10, {}),
+        ("heartbeat_observed", 20, {}),
+    ]
+
+
+def test_mission_commands_require_running_and_the_first_public_clock() -> None:
+    vehicle = FakeVehicle()
+    controller = MissionController(vehicle, lambda *_record: None)
+    heartbeat = Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False)
+
+    process_telemetry(
+        controller,
+        heartbeat,
+        mission_running=True,
+        public_clock_observed=False,
+    )
+    process_telemetry(
+        controller,
+        heartbeat,
+        mission_running=False,
+        public_clock_observed=True,
+    )
+
+    assert controller.state.phase is MissionPhase.WAIT_HEARTBEAT
+    assert vehicle.sent == []
+
+    process_telemetry(
+        controller,
+        heartbeat,
+        mission_running=True,
+        public_clock_observed=True,
+    )
+
+    assert controller.state.phase is MissionPhase.WAIT_GUIDED_ACK
+    assert vehicle.sent == [(CommandKind.SET_GUIDED, None)]
 
 
 def test_running_mavlink_status_text_is_emitted_without_changing_policy() -> None:

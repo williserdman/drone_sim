@@ -19,11 +19,13 @@ timestamp.
 The `descent_v1` command sequence is `GUIDED`, arm, take off to 1.5 m,
 and `LAND`. Every transition requires the ordered positive command ACK and
 observed vehicle state; a command send is logged only after PyMAVLink accepts
-it. The first heartbeat establishes liveness but does not establish arming
-readiness: after GUIDED is observed, ARM waits for the
-`MAV_SYS_STATUS_PREARM_CHECK` bit to be both enabled and healthy in
-`SYS_STATUS`. Negative ACKs, unexpected ACKs, mode inconsistency, timestamp regression,
-and contact before descent fail the mission without repair.
+it. During private warmup, the companion passively and independently latches
+the first heartbeat and the first `SYS_STATUS` in which
+`MAV_SYS_STATUS_PREARM_CHECK` is both enabled and healthy. Neither fact alone
+establishes mission readiness. After GUIDED is observed, ARM still waits for a
+healthy prearm observation in the ordered mission telemetry. Negative ACKs,
+unexpected ACKs, mode inconsistency, timestamp regression, and contact before
+descent fail the mission without repair.
 MAVLink `STATUSTEXT` is retained as structured `mavlink_status_text` evidence
 with its severity and the latest authoritative simulation timestamp, including
 the exact reason for a normal pre-arm rejection.
@@ -50,14 +52,23 @@ simulation-time mission deadline.
 MAVLink messages are correlated with the latest authoritative `/clock` value.
 Ground truth retains its native message timestamp. Equal timestamps are ordered
 by receipt; a lower timestamp than the preceding mission input is rejected.
+Before the first public `/clock`, passive MAVLink observations use timestamp zero
+and cannot advance mission policy. The companion sends no flight command or
+telemetry-stream request until both the current run is `RUNNING` and at least one
+public clock sample has been received.
 
 ## Durable lifecycle
 
 - `.status/companion-ready.json` records a successful connection to the fixed
   MAVLink TCP endpoint. This transport fact can be published while simulation
   is paused; it does not claim that a heartbeat has already been emitted.
-- Mission policy still waits for the first ArduPilot heartbeat after `RUNNING`
-  before issuing `GUIDED` or any other flight command.
+- `.status/mission-ready.json` is written exactly once after both passive facts
+  have been latched and is exactly
+  `{run_id,ready:true,heartbeat_observed:true,prearm_checks_healthy:true}`.
+  Heartbeat-only or healthy-prearm-only telemetry cannot create it, and creating
+  it sends no command to the vehicle.
+- Mission policy cannot issue `GUIDED` or any other flight command until both
+  `RUNNING` and the first public `/clock` sample have been observed.
 - `.status/mission-finished.json` is written only after actual landed/disarmed
   success and is exactly `{run_id,finished:true,sim_timestamp_ns,outcome:"LANDED"}`.
   Failures remain structured failure evidence and can never create or repair
