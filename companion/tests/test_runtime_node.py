@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.runtime_node import (
     RuntimeConfig,
     connect_mavlink,
@@ -19,6 +20,7 @@ def write_resolved_config(
     *,
     run_id: str = RUN_ID,
     startup_wall_seconds: object = 120,
+    max_wall_seconds: object = 3600,
 ) -> Path:
     config_path = run_directory / "configuration/run.json"
     config_path.parent.mkdir(parents=True)
@@ -27,6 +29,7 @@ def write_resolved_config(
             {
                 "run_id": run_id,
                 "startup_wall_seconds": startup_wall_seconds,
+                "max_wall_seconds": max_wall_seconds,
             }
         ),
         encoding="utf-8",
@@ -48,18 +51,39 @@ def test_runtime_config_uses_resolved_run_startup_deadline(tmp_path: Path) -> No
 
     assert config.mavlink_endpoint == "tcp:ardupilot-sitl:5760"
     assert config.startup_timeout_seconds == 120.0
+    assert config.max_wall_seconds == 3600.0
 
 
-def test_runtime_config_preserves_explicit_startup_timeout_override() -> None:
+def test_runtime_config_preserves_explicit_startup_timeout_override(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory)
     config = RuntimeConfig.from_environment(
         {
             "SIM_RUN_ID": RUN_ID,
-            "SIM_RUN_DIRECTORY": f"/runs/{RUN_ID}",
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
             "SIM_COMPANION_STARTUP_TIMEOUT_SECONDS": "17.5",
         }
     )
 
     assert config.startup_timeout_seconds == 17.5
+    assert config.max_wall_seconds == 3600.0
+
+
+def test_first_heartbeat_ignores_startup_wall_deadline_after_transport_connects() -> None:
+    assert (
+        runtime_node.first_heartbeat_wall_failure(
+            heartbeat_observed=False,
+            wall_now=120.0,
+            overall_wall_deadline=3600.0,
+        )
+        is None
+    )
+    assert runtime_node.first_heartbeat_wall_failure(
+        heartbeat_observed=False,
+        wall_now=3600.0,
+        overall_wall_deadline=3600.0,
+    ) == "MAVLink heartbeat was unavailable before the overall run wall failsafe"
 
 
 def test_runtime_config_rejects_config_outside_current_run(tmp_path: Path) -> None:
@@ -105,6 +129,27 @@ def test_runtime_config_rejects_invalid_resolved_startup_deadline(
     )
 
     with pytest.raises(ValueError, match="startup_wall_seconds must be a positive integer"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
+
+
+@pytest.mark.parametrize("max_wall_seconds", [True, 0, -1, 1.5, "3600"])
+def test_runtime_config_rejects_invalid_overall_wall_failsafe(
+    tmp_path: Path,
+    max_wall_seconds: object,
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(
+        run_directory,
+        max_wall_seconds=max_wall_seconds,
+    )
+
+    with pytest.raises(ValueError, match="max_wall_seconds must be a positive integer"):
         RuntimeConfig.from_environment(
             {
                 "SIM_RUN_ID": RUN_ID,

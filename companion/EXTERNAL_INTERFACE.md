@@ -28,12 +28,16 @@ Commands derived from imagery retain `source_frame_id` where the adapter permits
 
 Mission logic is frame- or event-triggered in simulation time. Duplicate frames are idempotently ignored, missing frames are diagnosed, stale `run_id` data is ignored, and loss of `/clock` prevents new simulated decisions. Wall time measures computation and infrastructure health only.
 
-The MAVLink connection and first-heartbeat infrastructure deadline uses the
-current run's resolved `startup_wall_seconds` from `SIM_CONFIG_PATH`. The
-snapshot path must be the absolute
+The MAVLink TCP connection deadline uses the current run's resolved
+`startup_wall_seconds` from `SIM_CONFIG_PATH`. After that transport connects,
+the first heartbeat is not subject to the startup wall deadline: ArduPilot boot
+continues in lockstep simulation time, so a slow host cannot reduce its
+simulated boot allowance. The configured simulation duration and mission
+evidence provide the deterministic bound; `max_wall_seconds` remains the
+run-level infrastructure failsafe. The snapshot path must be the absolute
 `SIM_RUN_DIRECTORY/configuration/run.json`, its `run_id` must match
-`SIM_RUN_ID`, and the deadline must be a positive integer. Tests may override
-this wall-time bound explicitly with
+`SIM_RUN_ID`, and both wall bounds must be positive integers. Tests may override
+the connection bound explicitly with
 `SIM_COMPANION_STARTUP_TIMEOUT_SECONDS`; the override does not alter any
 simulation-time mission deadline.
 
