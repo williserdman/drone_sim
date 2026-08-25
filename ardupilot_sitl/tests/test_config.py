@@ -10,16 +10,53 @@ from drone_sim_ardupilot.config import RuntimeConfig, resolve_gazebo_address
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 
 
-def test_descent_parameters_disable_rc_flight_mode_override() -> None:
+def _descent_parameters() -> dict[str, str]:
     parameter_file = Path(__file__).parents[1] / "params/descent.parm"
-    parameters = {
+    return {
         name: value
         for line in parameter_file.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
         for name, value in (line.split(),)
     }
 
-    assert parameters["FLTMODE_CH"] == "0"
+
+def test_descent_parameters_disable_rc_flight_mode_override() -> None:
+    assert _descent_parameters()["FLTMODE_CH"] == "0"
+
+
+def test_descent_parameters_mark_sitl_accelerometers_calibrated() -> None:
+    parameters = _descent_parameters()
+
+    assert {
+        name: parameters[name]
+        for name in (
+            "INS_ACCOFFS_X",
+            "INS_ACCOFFS_Y",
+            "INS_ACCOFFS_Z",
+            "INS_ACCSCAL_X",
+            "INS_ACCSCAL_Y",
+            "INS_ACCSCAL_Z",
+            "INS_ACC2OFFS_X",
+            "INS_ACC2OFFS_Y",
+            "INS_ACC2OFFS_Z",
+            "INS_ACC2SCAL_X",
+            "INS_ACC2SCAL_Y",
+            "INS_ACC2SCAL_Z",
+        )
+    } == {
+        "INS_ACCOFFS_X": "0.001",
+        "INS_ACCOFFS_Y": "0.001",
+        "INS_ACCOFFS_Z": "0.001",
+        "INS_ACCSCAL_X": "1.001",
+        "INS_ACCSCAL_Y": "1.001",
+        "INS_ACCSCAL_Z": "1.001",
+        "INS_ACC2OFFS_X": "0.001",
+        "INS_ACC2OFFS_Y": "0.001",
+        "INS_ACC2OFFS_Z": "0.001",
+        "INS_ACC2SCAL_X": "1.001",
+        "INS_ACC2SCAL_Y": "1.001",
+        "INS_ACC2SCAL_Z": "1.001",
+    }
 
 
 def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_path: Path) -> None:

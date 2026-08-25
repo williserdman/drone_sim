@@ -31,6 +31,13 @@ infrastructure startup the wrapper resolves the Docker service name once and
 passes that IPv4 address to ArduPilot; failure to resolve is a startup failure.
 This resolution does not schedule or advance simulated time.
 
+The parameter overlay retains normal ArduPilot pre-arm enforcement. Its
+accelerometer offsets and scale factors are the calibration markers from the
+pinned upstream `Tools/autotest/default_params/copter.parm`; ArduPilot's SITL
+defaults require the small non-zero offsets so its two simulated
+accelerometers are recognized as calibrated. The mission uses ordinary
+GUIDED-mode arming and never sends the force-arm magic value.
+
 ## Failure behavior
 
 Loss of either required peer is reported. Loss of the Gazebo exchange prevents continued simulated progress; malformed or unsupported MAVLink commands receive the protocol-defined rejection where available.
