@@ -63,7 +63,7 @@ def test_running_mavlink_status_text_is_emitted_without_changing_policy() -> Non
         (
             "mavlink_status_text",
             23_000_000_000,
-            {"severity": 3, "text": "PreArm: Compass not calibrated"},
+            {"status_severity": 3, "text": "PreArm: Compass not calibrated"},
         )
     ]
 

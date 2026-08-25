@@ -37,7 +37,7 @@ class MissionController:
                 "mavlink_status_text",
                 telemetry.timestamp_ns,
                 {
-                    "severity": telemetry.status_severity,
+                    "status_severity": telemetry.status_severity,
                     "text": telemetry.status_text,
                 },
             )
