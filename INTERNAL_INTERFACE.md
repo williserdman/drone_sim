@@ -75,7 +75,7 @@ Phase 3 `gazebo-ready.json`, `runtime-running.json`, `source-finished.json`,
 `runtime-failure.json`, `runtime-frozen.json`, `artifacts-final.json`, and
 `terminal-notified.json` under `.status/`. The ROS orchestration runtime writes `runtime-running.json`
 after the first valid clock and, for Phase 3, after validated durable ArduPilot
-JSON/MAVLink and companion-heartbeat readiness. It publishes `RUNNING` with
+JSON/MAVLink and companion transport readiness. It publishes `RUNNING` with
 that unchanged first clock stamp; the host uses the durable signal to update
 operator state without treating wall time as simulation progress.
 

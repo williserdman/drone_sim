@@ -43,8 +43,10 @@ reports completeness.
 
 Under `phase3`, startup also requires current-run `gazebo-ready`,
 `ardupilot-ready`, and `companion-ready` facts. The latter two prove live
-Gazebo JSON exchange, the fixed internal MAVLink endpoint, and a consumed
-heartbeat before the host accepts the production stack as ready.
+Gazebo JSON exchange, the fixed internal MAVLink endpoint, and the companion's
+successful TCP transport connection before the host accepts the production
+stack as ready. The first heartbeat remains a post-`RUNNING` mission gate
+because paused lockstep SITL cannot schedule it during startup.
 The production server remains paused through endpoint discovery, bridge and
 adapter startup, native-recorder startup, and artifact readiness. Orchestration
 publishes `READY`, allows exactly one first step, persists `RUNNING` from the

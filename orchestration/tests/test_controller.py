@@ -87,7 +87,9 @@ def test_gazebo_ready_accepts_the_exact_live_flight_exchange_evidence():
         lambda value: value.update(servo_packets_received=True),
         lambda value: value.update(last_servo_frame=-1),
         lambda value: value.update(servo_packets_received=0),
+        lambda value: value.update(servo_packets_received=1),
         lambda value: value.update(motor_updates=0),
+        lambda value: value.update(motor_updates=1),
         lambda value: value.update(json_states_sent=0),
         lambda value: value.update(servo_frame_gaps=1),
         lambda value: value.update(json_send_errors=1),
@@ -103,6 +105,30 @@ def test_gazebo_ready_rejects_malformed_or_unready_flight_exchange(mutate):
                 "run_id": RUN_ID,
                 "ready": True,
                 "flight_exchange": exchange,
+            }
+        )
+
+
+def test_companion_ready_accepts_connected_transport_without_claiming_heartbeat() -> None:
+    RunController._validate_companion_ready(
+        {
+            "run_id": RUN_ID,
+            "ready": True,
+            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+            "mavlink_transport_connected": True,
+        }
+    )
+
+
+@pytest.mark.parametrize("connected", [False, 1, 0, None])
+def test_companion_ready_rejects_transport_without_truthful_connection(connected) -> None:
+    with pytest.raises(ProtocolFileError, match="companion-ready status is invalid"):
+        RunController._validate_companion_ready(
+            {
+                "run_id": RUN_ID,
+                "ready": True,
+                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
+                "mavlink_transport_connected": connected,
             }
         )
 
@@ -479,7 +505,7 @@ class FakeCompose:
                 "run_id": RUN_ID,
                 "ready": True,
                 "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-                "heartbeat_sim_timestamp_ns": 0,
+                "mavlink_transport_connected": True,
             },
             "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
             "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},

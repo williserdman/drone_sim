@@ -486,8 +486,8 @@ class RunController:
                 type(exchange[key]) is not int or exchange[key] < 0
                 for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
             )
-            or exchange["servo_packets_received"] < 1
-            or exchange["motor_updates"] < 1
+            or exchange["servo_packets_received"] < 2
+            or exchange["motor_updates"] < 2
             or exchange["json_states_sent"] < 1
             or exchange["servo_frame_gaps"] != 0
             or exchange["json_send_errors"] != 0
@@ -507,20 +507,17 @@ class RunController:
 
     @staticmethod
     def _validate_companion_ready(document: Mapping[str, Any]) -> None:
-        stamp = document.get("heartbeat_sim_timestamp_ns")
         if (
             set(document)
             != {
                 "run_id",
                 "ready",
                 "mavlink_endpoint",
-                "heartbeat_sim_timestamp_ns",
+                "mavlink_transport_connected",
             }
             or document["ready"] is not True
             or document["mavlink_endpoint"] != "tcp://ardupilot-sitl:5760"
-            or isinstance(stamp, bool)
-            or not isinstance(stamp, int)
-            or stamp < 0
+            or document["mavlink_transport_connected"] is not True
         ):
             raise ProtocolFileError("companion-ready status is invalid")
 

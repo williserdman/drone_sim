@@ -18,7 +18,7 @@ class Protocol:
         self.quiescence.append(module)
 
 
-def test_lifecycle_persists_readiness_landed_completion_and_silence_boundary() -> None:
+def test_lifecycle_persists_transport_readiness_landed_completion_and_silence_boundary() -> None:
     protocol = Protocol()
     stream = StringIO()
     lifecycle = CompanionLifecycle(
@@ -26,8 +26,8 @@ def test_lifecycle_persists_readiness_landed_completion_and_silence_boundary() -
         protocol=protocol,
         stream=stream,
     )
-    lifecycle.mark_ready(50)
-    lifecycle.mark_ready(100)
+    lifecycle.mark_transport_ready()
+    lifecycle.mark_transport_ready()
     lifecycle.observe_terminal(MissionState(MissionPhase.LANDED, last_timestamp_ns=500))
     lifecycle.finalize(550)
     before = stream.getvalue()
@@ -40,7 +40,7 @@ def test_lifecycle_persists_readiness_landed_completion_and_silence_boundary() -
                 "run_id": "00000000-0000-4000-8000-000000000001",
                 "ready": True,
                 "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-                "heartbeat_sim_timestamp_ns": 50,
+                "mavlink_transport_connected": True,
             },
         ),
         (

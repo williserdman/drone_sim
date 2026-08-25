@@ -135,8 +135,8 @@ def _valid_flight_exchange(value: Any) -> bool:
             type(value[key]) is int and value[key] >= 0
             for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
         )
-        and value["servo_packets_received"] >= 1
-        and value["motor_updates"] >= 1
+        and value["servo_packets_received"] >= 2
+        and value["motor_updates"] >= 2
         and value["json_states_sent"] >= 1
         and value["servo_frame_gaps"] == 0
         and value["json_send_errors"] == 0
@@ -171,11 +171,11 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
                 "run_id",
                 "ready",
                 "mavlink_endpoint",
-                "heartbeat_sim_timestamp_ns",
+                "mavlink_transport_connected",
             }
             and document["ready"] is True
             and document["mavlink_endpoint"] == "tcp://ardupilot-sitl:5760"
-            and _nonnegative_integer(document["heartbeat_sim_timestamp_ns"])
+            and document["mavlink_transport_connected"] is True
         )
     elif name == "runtime-running":
         valid = (

@@ -77,7 +77,7 @@ Keep the existing durable status and quiescence protocol and add current-run fac
 - `mission-finished`
 - `score-finished`
 
-`READY` requires artifact recorders, Gazebo endpoints/native recording, active ArduPilot–Gazebo exchange, and a companion MAVLink heartbeat. One controlled Gazebo step establishes the first `/clock`; only `RUNNING` unpauses normal simulation.
+`READY` requires artifact recorders, Gazebo endpoints/native recording, active ArduPilot–Gazebo exchange, and the companion's successful MAVLink TCP connection. One controlled Gazebo step establishes the first `/clock`; only `RUNNING` unpauses normal simulation. The mission still requires the first ArduPilot heartbeat after `RUNNING` before it issues any flight command, because paused lockstep SITL cannot schedule a pre-run heartbeat.
 
 `COMPLETED` requires all of:
 

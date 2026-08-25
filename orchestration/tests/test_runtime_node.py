@@ -336,7 +336,7 @@ def test_phase3_first_clock_remains_ready_until_durable_flight_peers_are_ready()
         "run_id": RUN_ID,
         "ready": True,
         "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-        "heartbeat_sim_timestamp_ns": 0,
+        "mavlink_transport_connected": True,
     }
     assert runtime.poll() is False
 

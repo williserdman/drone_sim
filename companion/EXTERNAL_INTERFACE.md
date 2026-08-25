@@ -34,8 +34,11 @@ by receipt; a lower timestamp than the preceding mission input is rejected.
 
 ## Durable lifecycle
 
-- `.status/companion-ready.json` records the first heartbeat simulation stamp
-  and the fixed MAVLink endpoint.
+- `.status/companion-ready.json` records a successful connection to the fixed
+  MAVLink TCP endpoint. This transport fact can be published while simulation
+  is paused; it does not claim that a heartbeat has already been emitted.
+- Mission policy still waits for the first ArduPilot heartbeat after `RUNNING`
+  before issuing `GUIDED` or any other flight command.
 - `.status/mission-finished.json` is written only after actual landed/disarmed
   success and is exactly `{run_id,finished:true,sim_timestamp_ns,outcome:"LANDED"}`.
   Failures remain structured failure evidence and can never create or repair

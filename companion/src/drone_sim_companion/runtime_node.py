@@ -150,6 +150,7 @@ def main() -> int:
         lifecycle.finalize(None)
         protocol.close()
         return 1
+    lifecycle.mark_transport_ready()
     vehicle = MavlinkAdapter(connection, mavutil)
     controller = MissionController(vehicle, lifecycle.emit)
     rclpy.init()
@@ -221,7 +222,6 @@ def main() -> int:
                     failure = f"MAVLink processing failed: {error}"
             if controller.ready and not telemetry_requested and failure is None:
                 vehicle.request_telemetry(rate_hz=10)
-                lifecycle.mark_ready(latest_clock_ns or 0)
                 lifecycle.emit("telemetry_requested", latest_clock_ns, {"rate_hz": 10})
                 telemetry_requested = True
             lifecycle.observe_terminal(controller.state)

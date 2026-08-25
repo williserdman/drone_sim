@@ -44,17 +44,24 @@ class CompanionLifecycle:
             ),
         )
 
-    def mark_ready(self, timestamp_ns: int) -> None:
+    def mark_transport_ready(self) -> None:
         if self._ready:
             return
         document: dict[str, object] = {
             "run_id": self._run_id,
             "ready": True,
             "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-            "heartbeat_sim_timestamp_ns": timestamp_ns,
+            "mavlink_transport_connected": True,
         }
         self._protocol.write_status("companion-ready", document)
-        self.emit("ready", timestamp_ns, {"mavlink_endpoint": document["mavlink_endpoint"]})
+        self.emit(
+            "ready",
+            None,
+            {
+                "mavlink_endpoint": document["mavlink_endpoint"],
+                "mavlink_transport_connected": True,
+            },
+        )
         self._ready = True
 
     def observe_terminal(self, state: MissionState) -> None:
