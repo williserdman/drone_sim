@@ -95,6 +95,13 @@ motor-force update. Its private `/model/iris/ardupilot/status` service is
 advertised only after UDP bind and reports exchange, motor-update, gap, send
 error, last-frame, and last-sim-time counters.
 
+Each lockstep receive consumes exactly one UDP servo datagram. A queued burst
+of sequential frames is therefore applied one motor update and one controlled
+physics step at a time; the plugin never drains the queue to its newest frame.
+The existing receive loop consumes exact duplicates by resending the prior
+JSON state, then stops at the first sequential packet. A genuinely lone
+forward jump remains accepted with its missing-frame count reported.
+
 Flight-local readiness fails closed until the bounded paused bootstrap has
 accepted the initial servo frame, sent one simulation-time-zero JSON state, and
 accepted the resulting servo frame. The paused exchange then stops consuming

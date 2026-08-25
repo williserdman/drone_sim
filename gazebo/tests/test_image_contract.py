@@ -99,6 +99,8 @@ def test_test_target_proves_harmonic_bridge_and_pinned_plugin_offline():
     assert "gz sim --versions" in image_test
     assert "ros2 pkg prefix ros_gz_bridge" in image_test
     assert "ArduPilotPlugin" in image_test
+    assert "DRONE_SIM_REAL_PLUGIN_TEST=1" in image_test
+    assert "test_plugin_udp.py" in image_test
     assert 'CMD ["/opt/drone_sim/image-tests/test_gazebo_image"]' in dockerfile
 
 

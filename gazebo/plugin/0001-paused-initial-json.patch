@@ -132,7 +132,30 @@ index 8309c37..2250d09 100755
      }
  }
  
-@@ -1578,10 +1650,13 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+@@ -1434,22 +1506,2 @@ ssize_t getServoPacket(
+     _sock.get_client_address(_fcu_address, _fcu_port_out);
+-
+-    // drain the socket in the case we're backed up
+-    int counter = 0;
+-    while (true)
+-    {
+-        TServoPacket last_pkt;
+-        auto recvSize_last = _sock.recv(&last_pkt, sizeof(TServoPacket), 0ul);
+-        if (recvSize_last == -1)
+-        {
+-            break;
+-        }
+-        counter++;
+-        _pkt = last_pkt;
+-        recvSize = recvSize_last;
+-    }
+-    if (counter > 0)
+-    {
+-        gzwarn << "[" << _modelName << "] "
+-               << "Drained n packets: " << counter << "\n";
+-    }
+     return recvSize;
+@@ -1578,10 +1630,13 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
          return false;
      }
  
@@ -146,7 +169,7 @@ index 8309c37..2250d09 100755
  
          gzlog << "[" << this->dataPtr->modelName << "] "
              << "Connected to ArduPilot controller @ "
-@@ -1602,6 +1677,7 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+@@ -1602,6 +1657,7 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
      // check for duplicate frame
      else if (pkt_frame_count == this->dataPtr->fcu_frame_count)
      {
@@ -154,7 +177,7 @@ index 8309c37..2250d09 100755
          gzwarn << "Duplicate input frame\n";
  
          // for lock-step resend last state rather than ignore
-@@ -1617,6 +1693,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+@@ -1617,6 +1673,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
      else if (pkt_frame_count != this->dataPtr->fcu_frame_count + 1
          && this->dataPtr->arduPilotOnline)
      {
@@ -163,7 +186,7 @@ index 8309c37..2250d09 100755
          gzwarn << "Missed "
              << pkt_frame_count - this->dataPtr->fcu_frame_count
              << " input frames\n";
-@@ -1624,11 +1702,13 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+@@ -1624,11 +1682,13 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
  
      // update frame count
      this->dataPtr->fcu_frame_count = pkt_frame_count;
@@ -177,7 +200,7 @@ index 8309c37..2250d09 100755
  
      return true;
  }
-@@ -1721,12 +1801,16 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+@@ -1721,12 +1781,16 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
      gz::msgs::IMU imuMsg;
      {
          std::lock_guard<std::mutex> lock(this->dataPtr->imuMsgMutex);
@@ -197,7 +220,7 @@ index 8309c37..2250d09 100755
      }
  
      // it is assumed that the imu orientation conforms to the
-@@ -2019,21 +2103,30 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+@@ -2019,21 +2083,30 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
  
      // get JSON
      this->dataPtr->json_str = "\n" + std::string(s.GetString()) + "\n";

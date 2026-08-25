@@ -147,7 +147,7 @@ def test_official_plugin_supply_is_pinned_to_the_reviewed_harmonic_revision():
         "downstream_patches": [
             {
                 "path": "gazebo/plugin/0001-paused-initial-json.patch",
-                "purpose": "exchange initial sensor JSON while simulation stays paused",
+                "purpose": "bootstrap paused JSON and preserve one-for-one UDP lockstep",
             }
         ],
         "gazebo_release": "harmonic",

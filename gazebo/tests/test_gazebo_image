@@ -50,3 +50,5 @@ if ldd /opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so | grep -q 'not found'
   exit 1
 fi
 python3 -m pytest -q /opt/drone_sim/source/tests/test_adapter_node.py
+DRONE_SIM_REAL_PLUGIN_TEST=1 \
+  python3 -m pytest -q /opt/drone_sim/source/tests/test_plugin_udp.py

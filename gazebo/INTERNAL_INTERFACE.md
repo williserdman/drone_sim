@@ -24,6 +24,10 @@ private UDP sensor/actuator lockstep seam and
 and JSON-send counters to prove one bounded paused round trip with no frame gaps
 or send errors before it freezes the stable observed counts into
 `gazebo-ready`.
+The downstream plugin patch removes upstream receive-queue draining: one
+`ReceiveServoPacket` call owns one datagram, while the unchanged `PreUpdate`
+loop handles duplicates and terminates on the first sequential frame. This is
+the one-for-one boundary between motor updates and controlled physics steps.
 Orchestration owns aggregate peer readiness. No internal API exposes
 electromagnet force mutation or an in-process world reset.
 
