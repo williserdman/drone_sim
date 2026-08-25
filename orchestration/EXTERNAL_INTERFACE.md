@@ -27,8 +27,10 @@ selects `phase3`. Phase 2 rejects a `simulation` object. Phase 3 requires:
 - `target_real_time_factor`: exactly `0.1`.
 
 The repository default selects the `vertical_descent` world, `iris_flight`
-vehicle, controlled-descent mission, inactive `descent_v1` scenario, and 30.0
-simulated seconds, yielding exactly 600 frames per camera.
+vehicle, controlled-descent mission, inactive `descent_v1` scenario, and 60.0
+simulated seconds, yielding exactly 1,200 frames per camera. Production evidence
+showed that the earlier 30-second window could end before cold ArduCopter
+application initialization completed.
 
 The resolved snapshot normalizes the selector and simulation values, includes
 them in `config_sha256`, and derives the expected per-stream frame count before

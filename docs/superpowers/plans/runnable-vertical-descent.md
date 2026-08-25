@@ -111,7 +111,8 @@ Require Compose startup, paused-first behavior, endpoint readiness, exact 50,000
 - Make `READY` require all four; preserve one controlled first step and Gazebo-owned `/clock`.
 - Add `mission-finished` and `score-finished`; require them with `source-finished` before `COMPLETED`.
 - Carry one absolute monotonic finalization deadline without restarting it.
-- Use a 30.0 simulated-second default (`600` frames per camera) for the first full run.
+- Use a 60.0 simulated-second default (`1,200` frames per camera); the first
+  physical 30-second run proved too short for cold ArduCopter initialization.
 - Preserve the fixed ten-topic bag and exactly seven structured module logs.
 - Ensure failed/aborted runs still preserve partial evidence and teardown Compose resources.
 

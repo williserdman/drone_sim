@@ -65,7 +65,7 @@ wait heartbeat
   -> observe descent, contact, landed state, and disarm
 ```
 
-Mission transitions are driven by MAVLink telemetry stamped/correlated with ROS simulation time. Wall deadlines only fail unavailable infrastructure. The initial full-run configuration uses 30 simulated seconds, producing exactly 600 frames per camera; it may be lengthened on the exact 50 ms grid if live SITL evidence proves 30 seconds insufficient.
+Mission transitions are driven by MAVLink telemetry stamped/correlated with ROS simulation time. Wall deadlines only fail unavailable infrastructure. The initial full-run configuration used 30 simulated seconds and produced exactly 600 frames per camera. Physical cold-start evidence showed ArduCopter application initialization could outlast that horizon, so the production default is 60 simulated seconds, producing exactly 1,200 frames per camera on the same 50 ms grid.
 
 ## Lifecycle
 

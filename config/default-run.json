@@ -16,7 +16,7 @@
   "runtime_profile": "phase3",
   "simulation": {
     "seed": 1,
-    "duration_sim_seconds": 30.0,
+    "duration_sim_seconds": 60.0,
     "target_real_time_factor": 0.1
   }
 }

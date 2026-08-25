@@ -82,10 +82,10 @@ def test_resolve_default_template_returns_frozen_phase_3_configuration():
     assert resolved.runtime_profile == "phase3"
     assert resolved.simulation == config_module.SimulationConfig(
         seed=1,
-        duration_ns=30_000_000_000,
+        duration_ns=60_000_000_000,
         target_real_time_factor=0.1,
     )
-    assert resolved.expected_camera_frames == 600
+    assert resolved.expected_camera_frames == 1200
     assert resolved.recording == RecordingConfig(
         width_px=320,
         height_px=240,
@@ -479,7 +479,7 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
         "runtime_profile": "phase3",
         "scenario": "descent_v1",
         "simulation": {
-            "duration_sim_seconds": 30.0,
+            "duration_sim_seconds": 60.0,
             "seed": 1,
             "target_real_time_factor": 0.1,
         },
