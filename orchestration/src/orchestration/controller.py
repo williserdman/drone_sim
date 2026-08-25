@@ -522,6 +522,22 @@ class RunController:
             raise ProtocolFileError("companion-ready status is invalid")
 
     @staticmethod
+    def _validate_mission_ready(document: Mapping[str, Any]) -> None:
+        if (
+            set(document)
+            != {
+                "run_id",
+                "ready",
+                "heartbeat_observed",
+                "prearm_checks_healthy",
+            }
+            or document["ready"] is not True
+            or document["heartbeat_observed"] is not True
+            or document["prearm_checks_healthy"] is not True
+        ):
+            raise ProtocolFileError("mission-ready status is invalid")
+
+    @staticmethod
     def _validate_running(document: Mapping[str, Any]) -> int:
         if set(document) != {"run_id", "state", "sim_timestamp_ns"}:
             raise ProtocolFileError("runtime-running status is invalid")
@@ -1015,6 +1031,18 @@ class RunController:
                         if companion_ready is not None:
                             self._validate_companion_ready(companion_ready)
                     overall_deadline = mono_started + config.max_wall_seconds
+                    if primary is None and config.runtime_profile == "phase3":
+                        mission_ready, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "mission-ready",
+                            overall_deadline,
+                            TerminalCause("mission_stall", "mission_readiness_stall"),
+                        )
+                        if mission_ready is not None:
+                            self._validate_mission_ready(mission_ready)
                     if primary is None:
                         running, primary = self._wait_for(
                             store,

@@ -131,6 +131,22 @@ def test_companion_ready_rejects_transport_without_truthful_connection(connected
         )
 
 
+def test_mission_ready_requires_heartbeat_and_healthy_prearm_checks() -> None:
+    valid = {
+        "run_id": RUN_ID,
+        "ready": True,
+        "heartbeat_observed": True,
+        "prearm_checks_healthy": True,
+    }
+    RunController._validate_mission_ready(valid)
+
+    for field in ("heartbeat_observed", "prearm_checks_healthy"):
+        document = dict(valid)
+        document[field] = False
+        with pytest.raises(ProtocolFileError, match="mission-ready status is invalid"):
+            RunController._validate_mission_ready(document)
+
+
 def _topology(profile: str):
     ownership = tuple(
         zip(PHASE3_SERVICES if profile == "phase3" else SERVICES, MODULES, strict=True)
@@ -417,6 +433,7 @@ class TraceStore(StatusStore):
             "gazebo-ready",
             "ardupilot-ready",
             "companion-ready",
+            "mission-ready",
             "runtime-running",
             "source-finished",
             "mission-finished",
@@ -504,6 +521,12 @@ class FakeCompose:
                 "ready": True,
                 "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
                 "mavlink_transport_connected": True,
+            },
+            "mission-ready": {
+                "run_id": RUN_ID,
+                "ready": True,
+                "heartbeat_observed": True,
+                "prearm_checks_healthy": True,
             },
             "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
             "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},
@@ -1012,6 +1035,7 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
             "runtime-running",
             "ardupilot-ready",
             "companion-ready",
+            "mission-ready",
             "source-finished",
             "mission-finished",
             "score-finished",
@@ -1036,7 +1060,8 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
     assert trace.index("wait artifacts-ready") < trace.index("wait gazebo-ready")
     assert trace.index("wait gazebo-ready") < trace.index("wait ardupilot-ready")
     assert trace.index("wait ardupilot-ready") < trace.index("wait companion-ready")
-    assert trace.index("wait companion-ready") < trace.index("wait runtime-running")
+    assert trace.index("wait companion-ready") < trace.index("wait mission-ready")
+    assert trace.index("wait mission-ready") < trace.index("wait runtime-running")
     assert trace.index("wait source-finished") < trace.index("wait mission-finished")
     assert trace.index("wait mission-finished") < trace.index("wait score-finished")
     assert trace.index("wait score-finished") < trace.index("request FINALIZING")
@@ -1059,6 +1084,7 @@ def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
             "runtime-running",
             "ardupilot-ready",
             "companion-ready",
+            "mission-ready",
             "source-finished",
             "mission-finished",
             "score-finished",
@@ -1097,6 +1123,7 @@ def test_phase3_completed_run_requires_native_state_tlog(tmp_path):
             "runtime-running",
             "ardupilot-ready",
             "companion-ready",
+            "mission-ready",
             "source-finished",
             "mission-finished",
             "score-finished",

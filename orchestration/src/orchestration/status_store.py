@@ -39,6 +39,7 @@ _RUNTIME_STATUS_NAMES = frozenset(
         "gazebo-ready",
         "ardupilot-ready",
         "companion-ready",
+        "mission-ready",
         "runtime-running",
         "source-finished",
         "mission-finished",

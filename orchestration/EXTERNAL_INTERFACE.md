@@ -44,16 +44,19 @@ Every terminal cause enters `FINALIZING`, after which the artifacts module
 reports completeness.
 
 Under `phase3`, startup also requires current-run `gazebo-ready`,
-`ardupilot-ready`, and `companion-ready` facts. The latter two prove live
-Gazebo JSON exchange, the fixed internal MAVLink endpoint, and the companion's
-successful TCP transport connection before the host accepts the production
-stack as ready. The first heartbeat remains a post-`RUNNING` mission gate
-because paused lockstep SITL cannot schedule it during startup.
+`ardupilot-ready`, and `companion-ready` facts. They prove live Gazebo JSON
+exchange, the fixed internal MAVLink endpoint, and the companion's successful
+TCP transport connection before the host accepts the production stack as
+infrastructure-ready. `companion-ready` deliberately does not claim a
+heartbeat.
 The production server remains paused through endpoint discovery, bridge and
 adapter startup, native-recorder startup, and artifact readiness. Orchestration
-publishes `READY`, allows exactly one first step, persists `RUNNING` from the
-first valid clock, and only then permits unpause. Production Gazebo does not
-consume `/simulation/camera_pair_ack`.
+then publishes `READY` and Gazebo unpauses into a private lockstep warmup. Public
+clock, camera, ground-truth, scenario, score, and mission-command output remain
+inactive. The companion passively latches heartbeat and healthy prearm status
+and writes exact `mission-ready`; only then does orchestration publish and
+persist `RUNNING`. Gazebo activates a rebased zero-based public epoch at that
+boundary. Production Gazebo does not consume `/simulation/camera_pair_ack`.
 
 Lifecycle states use the fixed order `CREATED`, `STARTING`, `READY`, `RUNNING`,
 `FINALIZING`, `COMPLETED`, `FAILED`, and `ABORTED`. The orchestrator publishes
@@ -65,7 +68,7 @@ infrastructure barrier makes the full four-sample lifecycle archival record
 deterministic without advancing simulation time.
 
 The Phase 3 barrier instead requires the real `artifacts_runtime`,
-`drone_sim_companion`, `gazebo_runtime`, `drone_sim_electromagnet`, and
+`drone_sim_companion`, `drone_sim_gazebo_lifecycle`, `drone_sim_electromagnet`, and
 `drone_sim_scorekeeper` subscriptions plus the rosbag recorder. ArduPilot SITL
 does not subscribe to RunState and is gated only by its truthful durable
 readiness fact.
@@ -79,7 +82,7 @@ invalid relative paths.
 
 The run directory also carries the durable wall-time control/status protocol:
 `.control/finalize-request.json`, `.control/terminal-committed.json`, and
-`.status/{operator-state,artifacts-ready,gazebo-ready,ardupilot-ready,companion-ready,runtime-running,source-finished,mission-finished,score-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
+`.status/{operator-state,artifacts-ready,gazebo-ready,ardupilot-ready,companion-ready,mission-ready,runtime-running,source-finished,mission-finished,score-finished,runtime-failure,runtime-frozen,artifacts-final,terminal-notified}.json`.
 Each file is atomically replaced only after file and directory `fsync`.
 
 For `phase3`, `source-finished` is not mission success. A completed run also
@@ -94,10 +97,12 @@ scorekeeper. Each stops publishers and stdout before its marker. Orchestration
 alone waits for all six markers and atomically publishes aggregate
 `runtime-frozen.json`; artifacts trusts only that aggregate.
 
+`mission-ready.json` is exactly
+`{run_id,ready:true,heartbeat_observed:true,prearm_checks_healthy:true}`.
 `runtime-running.json` contains the current `run_id`, fixed state `RUNNING`, and
-the nonnegative first-clock simulation timestamp in integer nanoseconds. The
-runtime writes it immediately after the corresponding ROS publication. It is
-the host controller's authoritative durable evidence for reporting `RUNNING`.
+zero as the public simulation epoch in integer nanoseconds. The runtime writes
+it immediately after the corresponding ROS publication. It is the host
+controller's authoritative durable evidence for reporting `RUNNING`.
 
 ## Timing
 

@@ -52,6 +52,12 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
             "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
             "mavlink_transport_connected": True,
         },
+        "mission-ready": {
+            "run_id": RUN_ID,
+            "ready": True,
+            "heartbeat_observed": True,
+            "prearm_checks_healthy": True,
+        },
         "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
         "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},
         "mission-finished": {
@@ -91,6 +97,7 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
         ("gazebo-ready", {"run_id": RUN_ID, "ready": False}),
         ("ardupilot-ready", {"run_id": RUN_ID, "ready": True, "json_exchange": False, "mavlink_endpoint": "tcp://ardupilot-sitl:5760"}),
         ("companion-ready", {"run_id": RUN_ID, "ready": True, "mavlink_endpoint": "tcp://ardupilot-sitl:5760", "mavlink_transport_connected": False}),
+        ("mission-ready", {"run_id": RUN_ID, "ready": True, "heartbeat_observed": True, "prearm_checks_healthy": False}),
         ("runtime-running", {"run_id": RUN_ID, "state": "READY", "sim_timestamp_ns": 0}),
         ("runtime-running", {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": True}),
         ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": -1}),

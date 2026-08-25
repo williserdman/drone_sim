@@ -83,13 +83,14 @@ The production RunState discovery barrier requires only actual ROS consumers:
 artifacts, companion, Gazebo, electromagnet, scorekeeper, and the rosbag
 recorder. ArduPilot SITL has no RunState subscription and is deliberately not
 invented as a ROS node; `.status/ardupilot-ready.json` remains its durable
-startup gate. After the one controlled first clock, the Phase 3 runtime remains
-`READY` until the current-run `ardupilot-ready.json` and
-`companion-ready.json` validate. It then publishes `RUNNING`, writes
-`runtime-running.json` at that unchanged first clock stamp, and allows Gazebo
-to unpause. The host waits for those two durable peers before waiting for
-`runtime-running.json`, so host scheduling cannot consume simulated mission
-time before the flight stack is ready.
+startup gate. Phase 3 publishes `READY` after infrastructure readiness, which
+lets Gazebo and ArduPilot advance in private lockstep warmup. The runtime stays
+`READY` until current-run `ardupilot-ready.json`, `companion-ready.json`, and
+exact `mission-ready.json` all validate. It then publishes `RUNNING` and writes
+`runtime-running.json` at public time zero. Gazebo activates and rebases the
+public evidence epoch only at that boundary, so host-sensitive controller boot
+cannot consume simulated mission time. Phase 2 retains its clock-triggered
+transition because it has no durable flight-readiness tuple.
 
 `ComposeRuntime` pins the absolute repository `compose.yaml`, disables implicit
 `.env` loading, removes ambient Compose file/env-file/profile/project

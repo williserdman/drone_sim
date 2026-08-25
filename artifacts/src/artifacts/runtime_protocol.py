@@ -30,6 +30,7 @@ _STATUS_NAMES = frozenset(
         "gazebo-ready",
         "ardupilot-ready",
         "companion-ready",
+        "mission-ready",
         "runtime-running",
         "source-finished",
         "mission-finished",
@@ -176,6 +177,19 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
             and document["ready"] is True
             and document["mavlink_endpoint"] == "tcp://ardupilot-sitl:5760"
             and document["mavlink_transport_connected"] is True
+        )
+    elif name == "mission-ready":
+        valid = (
+            set(document)
+            == {
+                "run_id",
+                "ready",
+                "heartbeat_observed",
+                "prearm_checks_healthy",
+            }
+            and document["ready"] is True
+            and document["heartbeat_observed"] is True
+            and document["prearm_checks_healthy"] is True
         )
     elif name == "runtime-running":
         valid = (

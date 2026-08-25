@@ -88,7 +88,11 @@ def _phase3_runtime():
         protocol=protocol,
         publish=published.append,
         diagnostic=diagnostics.append,
-        required_durable_readiness=("ardupilot-ready", "companion-ready"),
+        required_durable_readiness=(
+            "ardupilot-ready",
+            "companion-ready",
+            "mission-ready",
+        ),
         require_gazebo_ready=True,
     )
     return runtime, protocol, published, diagnostics
@@ -312,14 +316,12 @@ def test_phase3_gazebo_readiness_waits_for_artifact_status():
     assert [item.state for item in published] == ["STARTING", "READY"]
 
 
-def test_phase3_first_clock_remains_ready_until_durable_flight_peers_are_ready():
+def test_phase3_enters_running_after_durable_flight_readiness_without_public_clock():
     runtime, protocol, published, _ = _phase3_runtime()
     runtime.start()
     runtime.accept_artifact_status(RUN_ID, True)
     protocol.readable_statuses["gazebo-ready"] = GAZEBO_READY
     assert runtime.poll() is False
-    runtime.accept_clock(0)
-
     assert [item.state for item in published] == ["STARTING", "READY"]
     assert protocol.statuses == []
 
@@ -337,6 +339,15 @@ def test_phase3_first_clock_remains_ready_until_durable_flight_peers_are_ready()
         "ready": True,
         "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
         "mavlink_transport_connected": True,
+    }
+    assert runtime.poll() is False
+    assert [item.state for item in published] == ["STARTING", "READY"]
+
+    protocol.readable_statuses["mission-ready"] = {
+        "run_id": RUN_ID,
+        "ready": True,
+        "heartbeat_observed": True,
+        "prearm_checks_healthy": True,
     }
     assert runtime.poll() is False
 

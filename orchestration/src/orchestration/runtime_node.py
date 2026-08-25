@@ -172,7 +172,11 @@ class OrchestrationRuntime:
         self._protocol = protocol
         self._publish = publish
         self._diagnostic = diagnostic
-        allowed_readiness = {"ardupilot-ready", "companion-ready"}
+        allowed_readiness = {
+            "ardupilot-ready",
+            "companion-ready",
+            "mission-ready",
+        }
         if (
             len(required_durable_readiness) != len(set(required_durable_readiness))
             or any(name not in allowed_readiness for name in required_durable_readiness)
@@ -251,7 +255,7 @@ class OrchestrationRuntime:
         )
 
     def _flight_peers_ready(self) -> bool:
-        return self._clock_observed and all(
+        return all(
             self._protocol.read_status(name) is not None
             for name in self._required_durable_readiness
         )
@@ -368,7 +372,7 @@ def main() -> None:
             "stale_input", runtime.last_sim_timestamp_ns, detail=detail
         ),
         required_durable_readiness=(
-            ("ardupilot-ready", "companion-ready")
+            ("ardupilot-ready", "companion-ready", "mission-ready")
             if config.get("runtime_profile") == "phase3"
             else ()
         ),
