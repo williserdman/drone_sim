@@ -68,6 +68,11 @@ def _event(run_id: str, name: str, *, fields=None, sim_timestamp_ns=None) -> Non
     )
 
 
+def _record_adapter_fault(run_id: str, inbox, reason: str) -> None:
+    _event(run_id, "adapter_fault", fields={"reason": reason})
+    inbox.append(ChildExited(run_id, "adapter", 1))
+
+
 def _lifecycle_node(run_id: str, inbox: deque):
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -182,7 +187,7 @@ def main() -> int:
         expected_frames=config.expected_camera_frames,
         world_name=resolved.world_name,
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
-        on_fault=lambda _reason: inbox.append(ChildExited(run_id, "adapter", 1)),
+        on_fault=lambda reason: _record_adapter_fault(run_id, inbox, reason),
     )
     lifecycle = _lifecycle_node(run_id, inbox)
     ros_executor = SingleThreadedExecutor()
@@ -203,6 +208,7 @@ def main() -> int:
         transport=transport,
         children=children,
         server=server,
+        activate_output=adapter.activate_output,
         observe=lambda action: _event(
             run_id, "runtime_action", fields={"action": type(action).__name__}
         ),

@@ -69,7 +69,7 @@ class Server:
         return self.summary
 
 
-def _executor(tmp_path):
+def _executor(tmp_path, *, activate_output=lambda: None):
     summary = NativeArtifactSummary(
         tmp_path / RUN_ID / "gazebo/server.log",
         tmp_path / RUN_ID / "gazebo/state/state.tlog",
@@ -86,6 +86,7 @@ def _executor(tmp_path):
         transport=transport,
         children=children,
         server=server,
+        activate_output=activate_output,
     )
     return executor, protocol, status, transport, children, server, summary
 
@@ -111,6 +112,24 @@ def test_action_executor_maps_readiness_control_and_durable_facts(tmp_path):
         ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000}),
         ("runtime-failure", {"run_id": RUN_ID, "module": "gazebo", "reason": "broken", "diagnostic_paths": ["gazebo/server.log.partial"]}),
     ]
+
+
+def test_unpause_activates_public_adapter_before_world_can_advance(tmp_path):
+    ordering = []
+    executor, _protocol, _status, transport, *_ = _executor(
+        tmp_path, activate_output=lambda: ordering.append("activate")
+    )
+    original = transport.set_paused
+
+    def record_unpause(paused):
+        ordering.append(("pause", paused))
+        original(paused)
+
+    transport.set_paused = record_unpause
+
+    executor.apply((SetPaused(False),))
+
+    assert ordering == ["activate", ("pause", False)]
 
 
 def test_stop_uses_same_absolute_deadline_for_children_and_server(tmp_path):

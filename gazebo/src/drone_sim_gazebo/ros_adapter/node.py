@@ -72,6 +72,8 @@ class GazeboAdapterNode(_node_base()):
         self._on_fault = on_fault or (lambda _reason: None)
         self._completion_reported = False
         self._faulted = False
+        self._output_active = False
+        self._inactive_clock_ns: int | None = None
         self._image_type = Image
         self._metadata_type = FrameMetadata
         self._ground_truth_type = GroundTruth
@@ -145,24 +147,43 @@ class GazeboAdapterNode(_node_base()):
 
     def freeze_output(self) -> None:
         self._faulted = True
+        self._output_active = False
+
+    def activate_output(self) -> None:
+        """Begin accepting physical samples after the readiness-only step."""
+        if not self._faulted:
+            self._output_active = True
 
     def _fail(self, error: Exception) -> None:
         if not self._faulted:
             self._faulted = True
+            self._output_active = False
             self._on_fault(str(error))
 
     def _accept_clock(self, message) -> None:
-        if not self._faulted:
-            self._clock_publisher.publish(message)
-
-    def _accept_image(self, stream: str, message) -> None:
         if self._faulted:
             return
         try:
+            if not self._output_active:
+                self._inactive_clock_ns = _nanoseconds(message.clock)
+            self._clock_publisher.publish(message)
+        except (AdapterFault, ValueError, TypeError) as error:
+            self._fail(error)
+
+    def _accept_image(self, stream: str, message) -> None:
+        if self._faulted or not self._output_active:
+            return
+        try:
+            timestamp_ns = _nanoseconds(message.header.stamp)
+            if (
+                self._inactive_clock_ns is not None
+                and timestamp_ns <= self._inactive_clock_ns
+            ):
+                return
             output = self._live.accept_image(
                 stream,
                 NativeImage(
-                    sim_timestamp_ns=_nanoseconds(message.header.stamp),
+                    sim_timestamp_ns=timestamp_ns,
                     width=message.width,
                     height=message.height,
                     encoding=message.encoding,
@@ -175,14 +196,20 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_odometry(self, message) -> None:
-        if self._faulted:
+        if self._faulted or not self._output_active:
             return
         try:
+            timestamp_ns = _nanoseconds(message.header.stamp)
+            if (
+                self._inactive_clock_ns is not None
+                and timestamp_ns <= self._inactive_clock_ns
+            ):
+                return
             pose = message.pose.pose
             twist = message.twist.twist
             output = self._live.accept_odometry(
                 NativeOdometry(
-                    sim_timestamp_ns=_nanoseconds(message.header.stamp),
+                    sim_timestamp_ns=timestamp_ns,
                     position_xyz=_vector3(pose.position),
                     orientation_xyzw=_quaternion(pose.orientation),
                     linear_velocity_xyz=_vector3(twist.linear),
@@ -194,11 +221,17 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_contacts(self, message) -> None:
-        if self._faulted:
+        if self._faulted or not self._output_active:
             return
         try:
+            timestamp_ns = _nanoseconds(message.header.stamp)
+            if (
+                self._inactive_clock_ns is not None
+                and timestamp_ns <= self._inactive_clock_ns
+            ):
+                return
             output = self._live.accept_contact(
-                _nanoseconds(message.header.stamp), bool(message.contacts)
+                timestamp_ns, bool(message.contacts)
             )
             self._publish(output)
         except (AdapterFault, AggregationFault, ValueError, TypeError) as error:

@@ -1,5 +1,9 @@
 from drone_sim_gazebo.runtime.entrypoint import TransportError
-from drone_sim_gazebo.runtime.runtime_node import _start_server_ready
+from drone_sim_gazebo.runtime.model import ChildExited
+from drone_sim_gazebo.runtime.runtime_node import _record_adapter_fault, _start_server_ready
+
+
+RUN_ID = "11111111-1111-4111-8111-111111111111"
 
 
 class Server:
@@ -36,3 +40,23 @@ def test_transport_discovery_failure_stops_started_server():
 
     assert server.started == 1
     assert server.stopped == [15.0]
+
+
+def test_adapter_fault_retains_exact_reason_in_structured_log(monkeypatch):
+    events = []
+    inbox = []
+    monkeypatch.setattr(
+        "drone_sim_gazebo.runtime.runtime_node._event",
+        lambda run_id, name, **values: events.append((run_id, name, values)),
+    )
+
+    _record_adapter_fault(RUN_ID, inbox, "odometry and contact timestamps do not align")
+
+    assert events == [
+        (
+            RUN_ID,
+            "adapter_fault",
+            {"fields": {"reason": "odometry and contact timestamps do not align"}},
+        )
+    ]
+    assert inbox == [ChildExited(RUN_ID, "adapter", 1)]

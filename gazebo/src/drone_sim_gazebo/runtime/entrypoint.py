@@ -312,6 +312,7 @@ class ActionExecutor:
         transport: GazeboTransport,
         children,
         server,
+        activate_output: Callable[[], None],
         observe: Callable[[object], None] | None = None,
     ) -> None:
         self._run_id = run_id
@@ -320,6 +321,7 @@ class ActionExecutor:
         self._transport = transport
         self._children = children
         self._server = server
+        self._activate_output = activate_output
         self._observe = observe or (lambda _action: None)
 
     def apply(self, actions: tuple[object, ...]) -> tuple[object, ...]:
@@ -331,6 +333,8 @@ class ActionExecutor:
             elif isinstance(action, RequestSteps):
                 self._transport.request_steps(action.count)
             elif isinstance(action, SetPaused):
+                if not action.paused:
+                    self._activate_output()
                 self._transport.set_paused(action.paused)
             elif isinstance(action, WriteSourceFinished):
                 self._protocol.write_status(
