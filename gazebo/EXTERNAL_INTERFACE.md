@@ -16,19 +16,22 @@ entity and private topic child are named `iris`.
 
 | Topic | Type | QoS |
 | --- | --- | --- |
-| `/clock` | `rosgraph_msgs/msg/Clock` | Best effort, volatile, depth 1 |
+| `/clock` | `rosgraph_msgs/msg/Clock` | Reliable, volatile, depth 1000 |
 | `/camera/onboard/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
 | `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
 | `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
 | `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
-| `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Best effort, volatile, depth 10 |
+| `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Reliable, volatile, depth 10 |
 
 All run-scoped outputs carry `run_id`. Each image has matching metadata with a
 stream-local contiguous frame ID and an identical native simulation timestamp.
 Both streams are fixed at `320x240`, `rgb8`, and 20 simulated Hz. Each accepted
 camera pair has one ground-truth sample at the same native timestamp. The
 onboard public image is the exact stream later consumed by companion vision and
-artifacts.
+artifacts. Before `RUNNING`, `/clock` relays the controlled readiness step.
+During the run it publishes the native camera epochs at 20 simulated Hz, which
+guarantees that every recorded frame timestamp has matching durable clock
+evidence even when the host is slower than real time.
 
 `GroundTruth.pose` and its linear and angular velocity are expressed in the
 Gazebo world frame using ENU axes. `GroundTruth.in_contact` is true when the

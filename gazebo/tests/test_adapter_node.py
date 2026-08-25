@@ -30,12 +30,12 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
     adapter = GazeboAdapterNode(run_id=RUN_ID, expected_frames=2)
     graph = rclpy.create_node("gazebo_adapter_contract_observer")
     expected = {
-        "/clock": (ReliabilityPolicy.BEST_EFFORT, 1),
+        "/clock": (ReliabilityPolicy.RELIABLE, 1000),
         "/camera/onboard/image_raw": (ReliabilityPolicy.RELIABLE, 5),
         "/camera/onboard/frame_metadata": (ReliabilityPolicy.RELIABLE, 5),
         "/camera/observer/image_raw": (ReliabilityPolicy.RELIABLE, 5),
         "/camera/observer/frame_metadata": (ReliabilityPolicy.RELIABLE, 5),
-        "/simulation/ground_truth": (ReliabilityPolicy.BEST_EFFORT, 10),
+        "/simulation/ground_truth": (ReliabilityPolicy.RELIABLE, 10),
     }
     try:
         deadline = time.monotonic() + 5.0
@@ -194,6 +194,14 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
         _spin_until(observer, lambda: len(images) == 2 and truths == [50_000_000])
 
         assert images == [50_000_000, 50_000_000]
+        _spin_until(observer, lambda: clocks == [1_000_000, 50_000_000])
+        delayed_clock = Clock()
+        _set_stamp(delayed_clock.clock, 49_000_000)
+        adapter._accept_clock(delayed_clock)
+        _set_stamp(delayed_clock.clock, 50_000_000)
+        adapter._accept_clock(delayed_clock)
+        rclpy.spin_once(observer, timeout_sec=0.1)
+        assert clocks == [1_000_000, 50_000_000]
         assert faults == []
         assert len(completions) == 1
 
@@ -219,7 +227,7 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
         adapter._accept_image("onboard", image(100_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
 
-        assert clocks == [1_000_000]
+        assert clocks == [1_000_000, 50_000_000]
         assert images == [50_000_000, 50_000_000]
         assert truths == [50_000_000]
     finally:

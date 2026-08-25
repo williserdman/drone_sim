@@ -3,8 +3,8 @@
   ros_type_name: "rosgraph_msgs/msg/Clock"
   gz_type_name: "gz.msgs.Clock"
   direction: "GZ_TO_ROS"
-  publisher_queue: 1
-  subscriber_queue: 1
+  publisher_queue: 1000
+  subscriber_queue: 1000
   lazy: false
 - ros_topic_name: "/gazebo/private/iris/odometry"
   gz_topic_name: "/gazebo/private/iris/odometry"

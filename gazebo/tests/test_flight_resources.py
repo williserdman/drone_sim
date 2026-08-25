@@ -128,6 +128,16 @@ def test_flight_runtime_routes_contact_bridge_to_the_selected_world():
     )
 
 
+def test_flight_clock_bridge_has_a_bounded_reliable_delivery_queue():
+    bridge = (ROOT / "gazebo/config/bridge-flight.yaml").read_text(encoding="utf-8")
+    clock = bridge.split(
+        '- ros_topic_name: "/gazebo/private/clock"', 1
+    )[1].split('- ros_topic_name: "/gazebo/private/iris/odometry"', 1)[0]
+
+    assert "publisher_queue: 1000" in clock
+    assert "subscriber_queue: 1000" in clock
+
+
 def test_official_plugin_supply_is_pinned_to_the_reviewed_harmonic_revision():
     """A floating plugin source could silently change the JSON and lockstep seam."""
     provenance = json.loads(PLUGIN_PROVENANCE.read_text(encoding="utf-8"))

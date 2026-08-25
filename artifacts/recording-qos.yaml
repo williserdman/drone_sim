@@ -1,7 +1,7 @@
 /clock: &clock_qos
   history: keep_last
-  depth: 1
-  reliability: best_effort
+  depth: 1000
+  reliability: reliable
   durability: volatile
 /simulation/run_state: &latched_state_qos
   history: keep_last
@@ -16,7 +16,7 @@
 /simulation/ground_truth:
   history: keep_last
   depth: 10
-  reliability: best_effort
+  reliability: reliable
   durability: volatile
 /simulation/scenario_events:
   history: keep_last

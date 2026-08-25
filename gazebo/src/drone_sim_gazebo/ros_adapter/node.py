@@ -73,7 +73,10 @@ class GazeboAdapterNode(_node_base()):
         self._completion_reported = False
         self._faulted = False
         self._output_active = False
+        self._run_started = False
         self._inactive_clock_ns: int | None = None
+        self._last_public_clock_ns: int | None = None
+        self._clock_type = Clock
         self._image_type = Image
         self._metadata_type = FrameMetadata
         self._ground_truth_type = GroundTruth
@@ -92,16 +95,16 @@ class GazeboAdapterNode(_node_base()):
             for stream in ("onboard", "observer")
         }
         self._ground_truth_publisher = self.create_publisher(
-            GroundTruth, "/simulation/ground_truth", _qos(10, reliable=False)
+            GroundTruth, "/simulation/ground_truth", _qos(10, reliable=True)
         )
         self._clock_publisher = self.create_publisher(
-            Clock, "/clock", _qos(1, reliable=False)
+            Clock, "/clock", _qos(1000, reliable=True)
         )
         self.create_subscription(
             Clock,
             "/gazebo/private/clock",
             self._accept_clock,
-            _qos(1, reliable=False),
+            _qos(1000, reliable=True),
         )
         for stream in ("onboard", "observer"):
             self.create_subscription(
@@ -152,7 +155,20 @@ class GazeboAdapterNode(_node_base()):
     def activate_output(self) -> None:
         """Begin accepting physical samples after the readiness-only step."""
         if not self._faulted:
+            self._run_started = True
             self._output_active = True
+
+    def _publish_clock(self, timestamp_ns: int, message=None) -> None:
+        if (
+            self._last_public_clock_ns is not None
+            and timestamp_ns <= self._last_public_clock_ns
+        ):
+            return
+        if message is None:
+            message = self._clock_type()
+            _set_stamp(message.clock, timestamp_ns)
+        self._clock_publisher.publish(message)
+        self._last_public_clock_ns = timestamp_ns
 
     def _fail(self, error: Exception) -> None:
         if not self._faulted:
@@ -164,9 +180,11 @@ class GazeboAdapterNode(_node_base()):
         if self._faulted:
             return
         try:
-            if not self._output_active:
-                self._inactive_clock_ns = _nanoseconds(message.clock)
-            self._clock_publisher.publish(message)
+            timestamp_ns = _nanoseconds(message.clock)
+            if self._run_started:
+                return
+            self._inactive_clock_ns = timestamp_ns
+            self._publish_clock(timestamp_ns, message)
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
@@ -240,6 +258,7 @@ class GazeboAdapterNode(_node_base()):
     def _publish(self, output) -> None:
         for value in output:
             if isinstance(value, PublicFrame):
+                self._publish_clock(value.sim_timestamp_ns)
                 image = self._image_type()
                 _set_stamp(image.header.stamp, value.header_timestamp_ns)
                 image.header.frame_id = f"camera/{value.stream}"
