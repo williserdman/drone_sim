@@ -51,6 +51,18 @@ _LOG_FIELDS = {
     "fields",
 }
 _ARTIFACTS_RUNTIME_IMAGE = "drone-sim-artifacts-runtime:phase2"
+_FRAME_INTERVAL_NS = 50_000_000
+_PHASE3_IMAGE_NAMES = frozenset(
+    {
+        "drone-sim-orchestration-runtime:phase2",
+        "drone-sim-artifacts-runtime:phase2",
+        "drone-sim-companion-runtime:phase3",
+        "drone-sim-ardupilot-runtime:phase3",
+        "drone-sim-gazebo-runtime:phase3",
+        "drone-sim-electromagnet-runtime:phase3",
+        "drone-sim-scorekeeper-runtime:phase3",
+    }
+)
 
 
 class BundleAcceptanceError(RuntimeError):
@@ -218,6 +230,35 @@ def _validate_config(run_directory: Path, run_id: str) -> tuple[dict[str, Any], 
     if not contract.physical_run:
         raise BundleAcceptanceError("configuration does not select physical validation")
     return document, contract.expected_camera_frames
+
+
+def _validate_phase3_provenance(manifest: dict[str, Any]) -> None:
+    sources = manifest["source_revisions"]
+    if len(sources) != 1 or sources[0]["name"] != "drone_sim":
+        raise BundleAcceptanceError("manifest source provenance is incomplete")
+    images = manifest["image_digests"]
+    names = {record["name"] for record in images}
+    digests = {record["digest"] for record in images}
+    if (
+        len(images) != len(_PHASE3_IMAGE_NAMES)
+        or names != _PHASE3_IMAGE_NAMES
+        or len(digests) != len(images)
+    ):
+        raise BundleAcceptanceError("manifest image provenance is incomplete")
+
+
+def _validate_simulation_timing(
+    manifest: dict[str, Any], expected_camera_frames: int
+) -> None:
+    duration_ns = expected_camera_frames * _FRAME_INTERVAL_NS
+    if manifest["simulation_timing"] != {
+        "start_ns": 0,
+        "end_ns": duration_ns,
+        "duration_ns": duration_ns,
+    }:
+        raise BundleAcceptanceError(
+            "manifest simulation timing does not match the configured public epoch"
+        )
 
 
 def _validate_manifest_inventory(run_directory: Path, manifest: dict[str, Any]) -> None:
@@ -574,12 +615,10 @@ def inspect_phase3_semantics(
         raise BundleAcceptanceError("manifest is not a completed schema-v1 run")
     if manifest.get("incomplete_paths") != []:
         raise BundleAcceptanceError("completed manifest contains incomplete artifacts")
-    if not isinstance(manifest.get("source_revisions"), list) or not manifest["source_revisions"]:
-        raise BundleAcceptanceError("manifest has no source revision evidence")
-    if not isinstance(manifest.get("image_digests"), list) or not manifest["image_digests"]:
-        raise BundleAcceptanceError("manifest has no image digest evidence")
+    _validate_phase3_provenance(manifest)
 
     configuration, expected_frames = _validate_config(directory, run_id)
+    _validate_simulation_timing(manifest, expected_frames)
     configurations = manifest.get("configurations")
     if configurations != [
         {

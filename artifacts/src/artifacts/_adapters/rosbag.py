@@ -1005,6 +1005,45 @@ class RosbagValidator:
                     ValidationStatus.INVALID,
                     "rosbag ground truth is not aligned to both configured camera streams",
                 )
+            if self.physical_run:
+                expected_duration_ns = (
+                    self.expected_camera_frames * _FRAME_INTERVAL_NS
+                )
+                expected_grid = list(
+                    range(
+                        _FRAME_INTERVAL_NS,
+                        expected_duration_ns + _FRAME_INTERVAL_NS,
+                        _FRAME_INTERVAL_NS,
+                    )
+                )
+                if ground_truth_timestamps != expected_grid:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag physical camera and ground truth do not match the "
+                        "configured public frame grid",
+                    )
+                clock_timestamps = timestamps["/clock"]
+                if (
+                    clock_timestamps[0] != 0
+                    or clock_timestamps[-1] != expected_duration_ns
+                ):
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag physical clock bounds do not match the configured "
+                        "public duration",
+                    )
+                lifecycle_timestamps = [
+                    _timestamp_ns(message.sim_timestamp) for message in run_states
+                ]
+                if lifecycle_timestamps != [0, 0, 0, expected_duration_ns]:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag physical lifecycle timestamps do not match the "
+                        "configured public epoch",
+                    )
 
         diagnostics = tuple(
             RosbagTopicDiagnostic(

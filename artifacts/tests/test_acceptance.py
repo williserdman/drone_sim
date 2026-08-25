@@ -27,6 +27,15 @@ from artifacts.validation import validate_tree
 
 RUN_ID = "00000000-0000-4000-8000-000000000606"
 RULES_PATH = Path(__file__).parents[2] / "scorekeeper/rules/descent_v1.json"
+PHASE3_IMAGE_NAMES = (
+    "drone-sim-orchestration-runtime:phase2",
+    "drone-sim-artifacts-runtime:phase2",
+    "drone-sim-companion-runtime:phase3",
+    "drone-sim-ardupilot-runtime:phase3",
+    "drone-sim-gazebo-runtime:phase3",
+    "drone-sim-electromagnet-runtime:phase3",
+    "drone-sim-scorekeeper-runtime:phase3",
+)
 
 
 def _completed_bundle(
@@ -229,7 +238,10 @@ def _completed_bundle(
             wall_started_at=now,
             wall_ended_at=now,
             source_revisions=(SourceRevision("drone_sim", "abc123", False),),
-            image_digests=(ImageDigest("phase3", "a" * 64),),
+            image_digests=tuple(
+                ImageDigest(name, f"{index + 1:064x}")
+                for index, name in enumerate(PHASE3_IMAGE_NAMES)
+            ),
             configuration_records=(ConfigurationRecord("configuration/run.json", config_sha),),
             achieved_score=achieved,
             maximum_available_score=100.0,
@@ -372,6 +384,69 @@ def test_acceptance_inspector_accepts_maximum_score_when_required(tmp_path):
     )
 
     assert report.achieved_score == 100.0
+
+
+def test_acceptance_rejects_completed_manifest_with_wrong_simulation_timing(tmp_path):
+    """A completed bundle must bind manifest time to the configured public epoch."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
+
+    _completed_bundle(tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["simulation_timing"] = {
+        "start_ns": 50_000_000,
+        "end_ns": 2_050_000_000,
+        "duration_ns": 2_000_000_000,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BundleAcceptanceError, match="simulation timing"):
+        inspect_phase3_bundle(
+            tmp_path,
+            rules_path=RULES_PATH,
+            compose_resources=lambda _project: (),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda manifest: manifest["source_revisions"][0].update(name="other"),
+        lambda manifest: manifest["image_digests"].pop(),
+        lambda manifest: manifest["image_digests"][0].update(name="other:image"),
+        lambda manifest: manifest["image_digests"][1].update(
+            digest=manifest["image_digests"][0]["digest"]
+        ),
+    ),
+    ids=(
+        "wrong-source",
+        "missing-image",
+        "wrong-image-name",
+        "duplicate-image-digest",
+    ),
+)
+def test_acceptance_rejects_incomplete_phase3_provenance(tmp_path, mutation):
+    """A nonempty provenance list is insufficient for a seven-service run."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
+
+    _completed_bundle(tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutation(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BundleAcceptanceError, match="provenance"):
+        inspect_phase3_bundle(
+            tmp_path,
+            rules_path=RULES_PATH,
+            compose_resources=lambda _project: (),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
+            ),
+        )
 
 
 def test_acceptance_inspector_rejects_changed_artifact_checksum(tmp_path):

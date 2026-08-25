@@ -581,7 +581,7 @@ def _valid_physical_messages():
         BagMessage(
             "/simulation/score_events",
             _custom_message(
-                0,
+                50_000_000,
                 event_id=index,
                 event_type=f"descent.{rule_id}",
                 value=value,
@@ -597,7 +597,7 @@ def _valid_physical_messages():
         BagMessage(
             "/simulation/score_events",
             _custom_message(
-                0,
+                50_000_000,
                 event_id=4,
                 event_type="score.finalized",
                 value=60.0,
@@ -624,7 +624,12 @@ def _valid_physical_messages():
         BagMessage("/simulation/run_state", _run_state(0, 2), 103),
         BagMessage("/clock", SimpleNamespace(clock=_stamp(0)), 104),
         BagMessage("/simulation/run_state", _run_state(0, 3), 105),
-        BagMessage("/simulation/ground_truth", _ground_truth(0), 106),
+        BagMessage(
+            "/clock", SimpleNamespace(clock=_stamp(50_000_000)), 106
+        ),
+        BagMessage(
+            "/simulation/ground_truth", _ground_truth(50_000_000), 107
+        ),
         BagMessage(
             "/simulation/scenario_events",
             _custom_message(
@@ -633,24 +638,28 @@ def _valid_physical_messages():
                 magnet_id="descent-v1-magnet",
                 state="INACTIVE",
             ),
-            107,
+            108,
         ),
         *score_events,
-        BagMessage("/camera/onboard/image_raw", _physical_image(0), 120),
+        BagMessage(
+            "/camera/onboard/image_raw", _physical_image(50_000_000), 120
+        ),
         BagMessage(
             "/camera/onboard/frame_metadata",
-            _custom_message(0, frame_id=0, stream="onboard"),
+            _custom_message(50_000_000, frame_id=0, stream="onboard"),
             121,
         ),
-        BagMessage("/camera/observer/image_raw", _physical_image(0), 122),
+        BagMessage(
+            "/camera/observer/image_raw", _physical_image(50_000_000), 122
+        ),
         BagMessage(
             "/camera/observer/frame_metadata",
-            _custom_message(0, frame_id=0, stream="observer"),
+            _custom_message(50_000_000, frame_id=0, stream="observer"),
             123,
         ),
         BagMessage(
             "/simulation/run_state",
-            _run_state(0, 4, reason="mission_complete"),
+            _run_state(50_000_000, 4, reason="mission_complete"),
             124,
         ),
     ]
@@ -760,14 +769,14 @@ def test_physical_bag_requires_ground_truth_aligned_to_both_cameras(tmp_path):
         if item.topic == "/camera/observer/frame_metadata"
     )
     messages[image_index] = replace(
-        messages[image_index], message=_physical_image(50_000_000)
+        messages[image_index], message=_physical_image(100_000_000)
     )
     messages[metadata_index] = replace(
         messages[metadata_index],
-        message=_custom_message(50_000_000, frame_id=0, stream="observer"),
+        message=_custom_message(100_000_000, frame_id=0, stream="observer"),
     )
     messages.append(
-        BagMessage("/clock", SimpleNamespace(clock=_stamp(50_000_000)), 200)
+        BagMessage("/clock", SimpleNamespace(clock=_stamp(100_000_000)), 200)
     )
     backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
 
@@ -797,6 +806,95 @@ def test_physical_bag_accepts_explicit_production_evidence_contract(tmp_path):
     ).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.VALID
+
+
+def test_physical_bag_rejects_camera_and_ground_truth_epoch_starting_at_zero(
+    tmp_path,
+):
+    """A contiguous count must not hide an off-by-one public epoch."""
+    messages = _valid_physical_messages()
+    for item in messages:
+        if item.topic == "/simulation/ground_truth":
+            item.message.sim_timestamp = _stamp(0)
+        elif item.topic.endswith("/image_raw"):
+            item.message.header.stamp = _stamp(0)
+        elif item.topic.endswith("/frame_metadata"):
+            item.message.sim_timestamp = _stamp(0)
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "public frame grid" in result.detail
+
+
+def test_physical_bag_rejects_clock_not_ending_at_configured_duration(tmp_path):
+    """Frame coverage alone must not accept a clock that overruns the run."""
+    messages = _valid_physical_messages()
+    clock_indices = [
+        index for index, item in enumerate(messages) if item.topic == "/clock"
+    ]
+    messages.insert(
+        clock_indices[-1] + 1,
+        BagMessage(
+            "/clock",
+            SimpleNamespace(clock=_stamp(100_000_000)),
+            106,
+        ),
+    )
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "clock bounds" in result.detail
+
+
+def test_physical_bag_rejects_clock_not_beginning_at_public_zero(tmp_path):
+    """A complete clock must retain the explicit public-zero activation sample."""
+    messages = _valid_physical_messages()
+    first_clock_index = next(
+        index for index, item in enumerate(messages) if item.topic == "/clock"
+    )
+    messages.pop(first_clock_index)
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "clock bounds" in result.detail
+
+
+def test_physical_bag_rejects_finalizing_before_configured_duration(tmp_path):
+    """Lifecycle evidence must bind FINALIZING to the physical source horizon."""
+    messages = _valid_physical_messages()
+    finalizing_index = [
+        index for index, item in enumerate(messages)
+        if item.topic == "/simulation/run_state"
+    ][-1]
+    messages[finalizing_index] = replace(
+        messages[finalizing_index],
+        message=_run_state(0, 4, reason="mission_complete"),
+    )
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "lifecycle timestamps" in result.detail
+
+
+def test_physical_bag_rejects_running_after_public_zero(tmp_path):
+    """RUNNING must identify the zero point of the public simulation epoch."""
+    messages = _valid_physical_messages()
+    running_index = [
+        index for index, item in enumerate(messages)
+        if item.topic == "/simulation/run_state"
+    ][2]
+    messages[running_index] = replace(
+        messages[running_index], message=_run_state(50_000_000, 3)
+    )
+
+    result = _validate_physical_messages(tmp_path, messages)
+
+    assert result.status is ValidationStatus.INVALID
+    assert "lifecycle timestamps" in result.detail
 
 
 def test_physical_bag_returns_immutable_digest_bound_decoded_evidence(tmp_path):

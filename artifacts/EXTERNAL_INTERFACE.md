@@ -40,6 +40,12 @@ For every non-Phase-2 physical profile, the artifact runtime derives the exact
 camera count from `simulation.duration_sim_seconds * 20` on the 50 ms grid.
 It neither creates nor discovers `/simulation/camera_pair_ack`; recorder
 readiness and physics advancement are independent of that synthetic transport.
+Completed Phase 3 acceptance binds this configured cadence to the recorded
+evidence: `/clock` spans exactly zero through the configured duration, both
+camera streams and matching ground truth occupy exactly 50 ms through that
+duration, `RUNNING` is stamped at zero, and `FINALIZING` is stamped at the
+duration. Manifest `start_ns`, `end_ns`, and `duration_ns` must describe that
+same public epoch exactly.
 
 ## Outputs
 
@@ -72,6 +78,11 @@ For a physical profile, the coordinator constructs `ArtifactSession` with
 `gazebo/state/` must be a nonempty safe tree containing a nonempty regular
 `state.tlog`. The default preserves the Phase 2 synthetic-state contract;
 placeholders cannot satisfy completed physical-run validation.
+
+Completed Phase 3 provenance contains exactly one source revision named
+`drone_sim` and exactly one uniquely digested image record for each of the
+seven image names configured by the production Compose file. Substituted,
+missing, extra, or digest-aliased image records are not accepted.
 
 Every owned process log line has `run_id`, `module`, `severity`, `event`,
 `sim_timestamp`, and `wall_timestamp`; event-specific values are nested under
