@@ -147,7 +147,7 @@ def test_official_plugin_supply_is_pinned_to_the_reviewed_harmonic_revision():
         "downstream_patches": [
             {
                 "path": "gazebo/plugin/0001-paused-initial-json.patch",
-                "purpose": "bootstrap paused JSON and preserve one-for-one UDP lockstep",
+                "purpose": "bootstrap paused JSON, bound duplicate recovery, and preserve one-for-one UDP lockstep",
             }
         ],
         "gazebo_release": "harmonic",
@@ -171,3 +171,13 @@ def test_downstream_patch_bounds_paused_bootstrap_to_one_round_trip():
     assert "this->CreateStateJSON(initialPausedState ? 0.0 : t, _ecm);" in patch
     assert "this->dataPtr->initialStateSent = true;" in patch
     assert "ApplyMotorForces" not in patch
+
+
+def test_downstream_patch_bounds_duplicate_recovery_to_one_per_burst():
+    """Queued duplicate frames must not amplify JSON into new SITL frames."""
+    patch = PLUGIN_PATCH.read_text(encoding="utf-8")
+
+    assert "public: bool duplicateRecoverySent{false};" in patch
+    assert "!this->dataPtr->duplicateRecoverySent" in patch
+    assert "this->dataPtr->duplicateRecoverySent = true;" in patch
+    assert patch.count("this->dataPtr->duplicateRecoverySent = false;") == 2

@@ -16,12 +16,15 @@ index 8309c37..2250d09 100755
  #include <chrono>
  #include <functional>
  #include <memory>
-@@ -368,6 +371,20 @@ class gz::sim::systems::ArduPilotPluginPrivate
+@@ -368,6 +371,23 @@ class gz::sim::systems::ArduPilotPluginPrivate
    /// \brief Last sent JSON string, so we can resend if needed.
    public: std::string json_str;
  
 +  /// \brief True after the paused startup state has been sent once.
 +  public: bool initialStateSent{false};
++
++  /// \brief Whether this contiguous duplicate burst sent recovery state.
++  public: bool duplicateRecoverySent{false};
 +
 +  /// \brief Lock-free observations exposed by the readiness status service.
 +  public: std::atomic<bool> statusOnline{false};
@@ -37,7 +40,7 @@ index 8309c37..2250d09 100755
    /// \brief A copy of the most recently received signal.
    public: int signal{0};
  
-@@ -517,9 +534,47 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
+@@ -517,9 +537,47 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
    this->dataPtr->isNoTimeSync =
      sdfClone->Get("no_time_sync", this->dataPtr->isNoTimeSync).first;
  
@@ -86,7 +89,7 @@ index 8309c37..2250d09 100755
    // Add the signal handler
    this->dataPtr->sigHandler.AddCallback(
        std::bind(
-@@ -1197,6 +1252,14 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
+@@ -1197,6 +1255,14 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
      }
      else
      {
@@ -101,7 +104,7 @@ index 8309c37..2250d09 100755
          // Update the control surfaces.
          if (!_info.paused && _info.simTime >
              this->dataPtr->lastControllerUpdateTime)
-@@ -1238,16 +1301,25 @@ void gz::sim::systems::ArduPilotPlugin::PostUpdate(
+@@ -1238,16 +1304,25 @@ void gz::sim::systems::ArduPilotPlugin::PostUpdate(
  {
      std::lock_guard<std::mutex> lock(this->dataPtr->mutex);
  
@@ -132,7 +135,7 @@ index 8309c37..2250d09 100755
      }
  }
  
-@@ -1434,22 +1506,2 @@ ssize_t getServoPacket(
+@@ -1434,22 +1509,2 @@ ssize_t getServoPacket(
      _sock.get_client_address(_fcu_address, _fcu_port_out);
 -
 -    // drain the socket in the case we're backed up
@@ -155,7 +158,15 @@ index 8309c37..2250d09 100755
 -               << "Drained n packets: " << counter << "\n";
 -    }
      return recvSize;
-@@ -1578,10 +1630,13 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+@@ -1523,6 +1578,7 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     // didn't receive a packet, increment timeout count if online, then return
+     if (recvSize == -1)
+     {
++        this->dataPtr->duplicateRecoverySent = false;
+         if (this->dataPtr->arduPilotOnline)
+         {
+             if (++this->dataPtr->connectionTimeoutCount >
+@@ -1578,10 +1634,13 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
          return false;
      }
  
@@ -169,7 +180,7 @@ index 8309c37..2250d09 100755
  
          gzlog << "[" << this->dataPtr->modelName << "] "
              << "Connected to ArduPilot controller @ "
-@@ -1602,6 +1657,7 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+@@ -1602,12 +1661,14 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
      // check for duplicate frame
      else if (pkt_frame_count == this->dataPtr->fcu_frame_count)
      {
@@ -177,7 +188,16 @@ index 8309c37..2250d09 100755
          gzwarn << "Duplicate input frame\n";
  
          // for lock-step resend last state rather than ignore
-@@ -1617,6 +1673,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+-        if (this->dataPtr->isLockStep)
++        if (this->dataPtr->isLockStep &&
++            !this->dataPtr->duplicateRecoverySent)
+         {
+             this->SendState();
++            this->dataPtr->duplicateRecoverySent = true;
+         }
+-
+         return false;
+@@ -1617,6 +1678,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
      else if (pkt_frame_count != this->dataPtr->fcu_frame_count + 1
          && this->dataPtr->arduPilotOnline)
      {
@@ -186,7 +206,7 @@ index 8309c37..2250d09 100755
          gzwarn << "Missed "
              << pkt_frame_count - this->dataPtr->fcu_frame_count
              << " input frames\n";
-@@ -1624,11 +1682,13 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+@@ -1624,11 +1687,14 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
  
      // update frame count
      this->dataPtr->fcu_frame_count = pkt_frame_count;
@@ -194,13 +214,14 @@ index 8309c37..2250d09 100755
  
      // reset the connection timeout so we don't accumulate
      this->dataPtr->connectionTimeoutCount = 0;
++    this->dataPtr->duplicateRecoverySent = false;
  
      this->UpdateMotorCommands(pkt_pwm);
 +    this->dataPtr->motorUpdates.fetch_add(1);
  
      return true;
  }
-@@ -1721,12 +1781,16 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+@@ -1721,12 +1787,16 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
      gz::msgs::IMU imuMsg;
      {
          std::lock_guard<std::mutex> lock(this->dataPtr->imuMsgMutex);
@@ -220,7 +241,7 @@ index 8309c37..2250d09 100755
      }
  
      // it is assumed that the imu orientation conforms to the
-@@ -2019,21 +2083,30 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+@@ -2019,21 +2089,30 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
  
      // get JSON
      this->dataPtr->json_str = "\n" + std::string(s.GetString()) + "\n";

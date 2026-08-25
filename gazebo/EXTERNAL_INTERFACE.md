@@ -98,9 +98,12 @@ error, last-frame, and last-sim-time counters.
 Each lockstep receive consumes exactly one UDP servo datagram. A queued burst
 of sequential frames is therefore applied one motor update and one controlled
 physics step at a time; the plugin never drains the queue to its newest frame.
-The existing receive loop consumes exact duplicates by resending the prior
-JSON state, then stops at the first sequential packet. A genuinely lone
-forward jump remains accepted with its missing-frame count reported.
+The existing receive loop consumes exact duplicates but sends the prior JSON
+state at most once for a contiguous duplicate burst, then stops at the first
+sequential packet. An empty receive (queue timeout) or an accepted sequential
+packet re-arms that recovery, so a lost recovery can be retried without turning
+queued duplicates into a feedback burst. A genuinely lone forward jump remains
+accepted with its missing-frame count reported.
 
 Flight-local readiness fails closed until the bounded paused bootstrap has
 accepted the initial servo frame, sent one simulation-time-zero JSON state, and

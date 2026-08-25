@@ -26,8 +26,10 @@ or send errors before it freezes the stable observed counts into
 `gazebo-ready`.
 The downstream plugin patch removes upstream receive-queue draining: one
 `ReceiveServoPacket` call owns one datagram, while the unchanged `PreUpdate`
-loop handles duplicates and terminates on the first sequential frame. This is
-the one-for-one boundary between motor updates and controlled physics steps.
+loop handles duplicates and terminates on the first sequential frame. A
+contiguous duplicate burst sends at most one recovery JSON; an empty receive or
+accepted sequential frame re-arms recovery. This is the one-for-one boundary
+between motor updates and controlled physics steps without duplicate feedback.
 Orchestration owns aggregate peer readiness. No internal API exposes
 electromagnet force mutation or an in-process world reset.
 

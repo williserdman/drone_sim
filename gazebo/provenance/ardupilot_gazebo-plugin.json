@@ -3,7 +3,7 @@
   "downstream_patches": [
     {
       "path": "gazebo/plugin/0001-paused-initial-json.patch",
-      "purpose": "bootstrap paused JSON and preserve one-for-one UDP lockstep"
+      "purpose": "bootstrap paused JSON, bound duplicate recovery, and preserve one-for-one UDP lockstep"
     }
   ],
   "gazebo_release": "harmonic",

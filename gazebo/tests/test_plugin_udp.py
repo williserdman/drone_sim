@@ -181,22 +181,32 @@ class PluginHarness:
         return status
 
     def step(self) -> None:
-        result = self._command(
-            "gz",
-            "service",
-            "-s",
-            _CONTROL_SERVICE,
-            "--reqtype",
-            "gz.msgs.WorldControl",
-            "--reptype",
-            "gz.msgs.Boolean",
-            "--timeout",
-            "5000",
-            "--req",
-            "pause: true, multi_step: 1",
-            timeout=8.0,
+        process = self.start_step()
+        stdout, stderr = process.communicate(timeout=8.0)
+        assert process.returncode == 0, stderr
+        assert "true" in stdout.lower(), stdout
+
+    def start_step(self) -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            (
+                "gz",
+                "service",
+                "-s",
+                _CONTROL_SERVICE,
+                "--reqtype",
+                "gz.msgs.WorldControl",
+                "--reptype",
+                "gz.msgs.Boolean",
+                "--timeout",
+                "5000",
+                "--req",
+                "pause: true, multi_step: 1",
+            ),
+            env=self._environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-        assert "true" in result.stdout.lower(), result.stdout
 
     def wait_for_motor_update(self, baseline: int) -> dict[str, bool | int]:
         return self._wait_for_status(
@@ -239,6 +249,69 @@ def test_duplicate_then_sequential_packet_resends_json_and_updates_once():
         assert status["last_servo_frame"] == current + 1
         assert status["servo_frame_gaps"] == baseline["servo_frame_gaps"] == 0
         assert len(recovery_and_step_json) == 2
+
+
+def test_contiguous_duplicate_burst_sends_only_one_recovery_json():
+    with PluginHarness() as harness:
+        baseline = harness.bootstrap()
+        current = int(baseline["last_servo_frame"])
+
+        harness.send(current, current, current, current, current + 1)
+        harness.step()
+        expected_json_states = int(baseline["json_states_sent"]) + 2
+        status = harness._wait_for_status(
+            lambda value: value["motor_updates"]
+            >= int(baseline["motor_updates"]) + 1
+            and value["json_states_sent"] >= expected_json_states
+        )
+
+        assert status["servo_packets_received"] == (
+            int(baseline["servo_packets_received"]) + 5
+        )
+        assert status["duplicate_servo_packets"] == (
+            int(baseline["duplicate_servo_packets"]) + 4
+        )
+        assert status["motor_updates"] == int(baseline["motor_updates"]) + 1
+        assert status["last_servo_frame"] == current + 1
+        assert status["servo_frame_gaps"] == baseline["servo_frame_gaps"] == 0
+        assert status["json_states_sent"] == expected_json_states
+
+
+def test_duplicate_recovery_rearms_after_receive_timeout():
+    with PluginHarness() as harness:
+        baseline = harness.bootstrap()
+        current = int(baseline["last_servo_frame"])
+        baseline_json_states = int(baseline["json_states_sent"])
+
+        harness.send(current)
+        step = harness.start_step()
+        try:
+            # The first duplicate gets one recovery. With no reply queued, the
+            # plugin's receive timeout path eventually sends its normal retry.
+            assert len(harness.receive_json(2, timeout=5.0)) == 2
+            harness.send(current, current + 1)
+            stdout, stderr = step.communicate(timeout=8.0)
+        finally:
+            if step.poll() is None:
+                step.terminate()
+                step.wait(timeout=5.0)
+
+        assert step.returncode == 0, stderr
+        assert "true" in stdout.lower(), stdout
+        expected_json_states = baseline_json_states + 4
+        status = harness._wait_for_status(
+            lambda value: value["motor_updates"]
+            >= int(baseline["motor_updates"]) + 1
+            and value["json_states_sent"] >= expected_json_states
+        )
+
+        assert status["duplicate_servo_packets"] == (
+            int(baseline["duplicate_servo_packets"]) + 2
+        )
+        assert status["motor_updates"] == int(baseline["motor_updates"]) + 1
+        assert status["last_servo_frame"] == current + 1
+        assert status["servo_frame_gaps"] == baseline["servo_frame_gaps"] == 0
+        assert status["json_states_sent"] == expected_json_states
 
 
 def test_lone_forward_jump_remains_diagnosed_as_a_real_gap():
