@@ -12,16 +12,11 @@ from typing import Any
 from .config import RuntimeConfig, resolve_gazebo_address
 from .runtime import (
     DiagnosticInventory,
-    DurableLifecycle,
     EventWriter,
     OutputFacts,
     SITLProcess,
     atomic_document,
-    json_peer_loss_is_fatal,
 )
-
-
-_TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
 
 
 def _control_matches(path: Path, run_id: str) -> bool:
@@ -30,68 +25,6 @@ def _control_matches(path: Path, run_id: str) -> bool:
     except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     return isinstance(document, dict) and document.get("run_id") == run_id
-
-
-def _read_document(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-
-
-def _nonnegative_integer(value: Any) -> bool:
-    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
-
-
-def _running_matches(document: Any, run_id: str) -> bool:
-    return (
-        isinstance(document, dict)
-        and set(document) == {"run_id", "state", "sim_timestamp_ns"}
-        and document["run_id"] == run_id
-        and document["state"] == "RUNNING"
-        and _nonnegative_integer(document["sim_timestamp_ns"])
-    )
-
-
-def _source_finished_matches(document: Any, run_id: str) -> bool:
-    return (
-        isinstance(document, dict)
-        and set(document) == {"run_id", "finished", "sim_timestamp_ns"}
-        and document["run_id"] == run_id
-        and document["finished"] is True
-        and _nonnegative_integer(document["sim_timestamp_ns"])
-    )
-
-
-def _finalize_matches(document: Any, run_id: str) -> bool:
-    return (
-        isinstance(document, dict)
-        and set(document) == {"run_id", "requested_terminal", "reason"}
-        and document["run_id"] == run_id
-        and document["requested_terminal"] in _TERMINAL_STATES
-        and isinstance(document["reason"], str)
-        and bool(document["reason"])
-    )
-
-
-def read_durable_lifecycle(
-    run_directory: Path,
-    run_id: str,
-    *,
-    requested_stop: bool = False,
-) -> DurableLifecycle:
-    return DurableLifecycle(
-        running=_running_matches(
-            _read_document(run_directory / ".status/runtime-running.json"), run_id
-        ),
-        source_finished=_source_finished_matches(
-            _read_document(run_directory / ".status/source-finished.json"), run_id
-        ),
-        finalize_started=requested_stop
-        or _finalize_matches(
-            _read_document(run_directory / ".control/finalize-request.json"), run_id
-        ),
-    )
 
 
 def _diagnostic_paths(run_directory: Path, working_directory: Path) -> list[str]:
@@ -140,17 +73,7 @@ def main() -> int:
         if record is not None:
             stream_name, line = record
             writer.emit("sitl_output", stream_name=stream_name, line=line)
-            missing_json_after_exchange = facts.observe(line)
-            if missing_json_after_exchange and json_peer_loss_is_fatal(
-                missing_json_after_exchange=missing_json_after_exchange,
-                lifecycle=read_durable_lifecycle(
-                    run_directory,
-                    run_id,
-                    requested_stop=requested_stop,
-                ),
-            ):
-                failure_reason = "Gazebo JSON peer stopped advancing after exchange began"
-                break
+            facts.observe(line)
             if facts.ready and not ready_written:
                 atomic_document(
                     run_directory / ".status/ardupilot-ready.json",

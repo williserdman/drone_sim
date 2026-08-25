@@ -22,33 +22,11 @@ class OutputFacts:
     def ready(self) -> bool:
         return self.json_exchange and self.mavlink_listening
 
-    def observe(self, line: str) -> bool:
+    def observe(self, line: str) -> None:
         if "bind port 5760" in line:
             self.mavlink_listening = True
         if "JSON received:" in line:
             self.json_exchange = True
-        return (
-            self.json_exchange
-            and "No JSON sensor message received, resending servos" in line
-        )
-
-
-@dataclass(frozen=True)
-class DurableLifecycle:
-    running: bool
-    source_finished: bool = False
-    finalize_started: bool = False
-
-
-def json_peer_loss_is_fatal(
-    *, missing_json_after_exchange: bool, lifecycle: DurableLifecycle
-) -> bool:
-    return (
-        missing_json_after_exchange
-        and lifecycle.running
-        and not lifecycle.source_finished
-        and not lifecycle.finalize_started
-    )
 
 
 class EventWriter:

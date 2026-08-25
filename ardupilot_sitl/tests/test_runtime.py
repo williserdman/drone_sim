@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import sys
 
-import drone_sim_ardupilot.runtime as runtime_module
 from drone_sim_ardupilot.runtime import (
     DiagnosticInventory,
     EventWriter,
@@ -72,44 +71,13 @@ def test_output_facts_require_json_exchange_and_mavlink_listener() -> None:
     assert facts.ready
 
 
-def test_output_facts_do_not_latch_peer_loss_without_lifecycle_context() -> None:
+def test_output_facts_keep_readiness_after_json_resend_diagnostic() -> None:
     facts = OutputFacts()
     facts.observe("bind port 5760 for 0")
     facts.observe("JSON received:")
-    missing_json_after_exchange = facts.observe(
-        "No JSON sensor message received, resending servos"
-    )
+    facts.observe("No JSON sensor message received, resending servos")
 
-    assert missing_json_after_exchange is True
     assert facts.ready
-
-
-def test_missing_json_is_not_fatal_before_durable_running() -> None:
-    assert not runtime_module.json_peer_loss_is_fatal(
-        missing_json_after_exchange=True,
-        lifecycle=runtime_module.DurableLifecycle(running=False),
-    )
-
-
-def test_missing_json_fails_closed_during_durable_running() -> None:
-    assert runtime_module.json_peer_loss_is_fatal(
-        missing_json_after_exchange=True,
-        lifecycle=runtime_module.DurableLifecycle(running=True),
-    )
-
-
-def test_missing_json_is_not_fatal_after_source_finished() -> None:
-    assert not runtime_module.json_peer_loss_is_fatal(
-        missing_json_after_exchange=True,
-        lifecycle=runtime_module.DurableLifecycle(running=True, source_finished=True),
-    )
-
-
-def test_missing_json_is_not_fatal_after_finalize_started() -> None:
-    assert not runtime_module.json_peer_loss_is_fatal(
-        missing_json_after_exchange=True,
-        lifecycle=runtime_module.DurableLifecycle(running=True, finalize_started=True),
-    )
 
 
 def test_sitl_process_captures_both_streams_and_stops_boundedly(tmp_path: Path) -> None:

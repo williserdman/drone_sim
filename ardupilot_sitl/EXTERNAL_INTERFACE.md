@@ -35,13 +35,15 @@ This resolution does not schedule or advance simulated time.
 
 Loss of either required peer is reported. Loss of the Gazebo exchange prevents continued simulated progress; malformed or unsupported MAVLink commands receive the protocol-defined rejection where available.
 
-After an established exchange, ArduPilot's first JSON resend diagnostic fails
-the runtime closed only while the current run is durably `RUNNING`. The same
-diagnostic is an expected infrastructure pause before `RUNNING` and after the
-current run's `source-finished` or finalization request. Owned evidence is
-preserved under `ardupilot_sitl/` in the run directory: DataFlash `logs/*.BIN`,
-SITL storage, and `failure.json`. Structured module events wrap third-party
-stdout and stderr so the public container stream remains parseable JSON Lines.
+ArduPilot's JSON resend diagnostic is preserved as structured child output but
+is not classified as peer loss: upstream emits it after a bounded wall-time
+receive wait and retransmits the current servo packet so a slow lockstep peer
+can recover. Gazebo reports authoritative server, bridge, and adapter failures;
+an otherwise silent exchange stall is bounded by the run's host-wall deadline.
+Neither mechanism advances simulation time. Owned evidence is preserved under
+`ardupilot_sitl/` in the run directory: DataFlash `logs/*.BIN`, SITL storage,
+and `failure.json`. Structured module events wrap third-party stdout and stderr
+so the public container stream remains parseable JSON Lines.
 
 For Phase 2 synthetic finalization, the stub stops publisher/log output before
 writing `.status/quiescence/ardupilot_sitl.json` with exact current-run
