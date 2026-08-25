@@ -197,6 +197,21 @@ def test_live_ros_node_relays_readiness_clock_but_discards_physical_samples_unti
         assert faults == []
         assert len(completions) == 1
 
+        # DDS may already have delivered the next physical samples to the
+        # executor when the exact final frame completes the adapter.  Those
+        # queued callbacks belong after the completed run boundary and must
+        # be discarded rather than mutating the frozen adapter.
+        adapter._accept_image("onboard", image(100_000_000))
+        adapter._accept_image("observer", image(100_000_000))
+        adapter._accept_contacts(contacts(100_000_000))
+        adapter._accept_odometry(odometry(100_000_000))
+        rclpy.spin_once(observer, timeout_sec=0.1)
+
+        assert faults == []
+        assert len(completions) == 1
+        assert images == [50_000_000, 50_000_000]
+        assert truths == [50_000_000]
+
         adapter.freeze_output()
         frozen_clock = Clock()
         _set_stamp(frozen_clock.clock, 100_000_000)

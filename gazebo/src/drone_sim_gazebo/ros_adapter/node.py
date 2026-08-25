@@ -282,4 +282,5 @@ class GazeboAdapterNode(_node_base()):
                 self._ground_truth_publisher.publish(truth)
         if self._live.complete and not self._completion_reported:
             self._completion_reported = True
+            self._output_active = False
             self._on_completed(self._live.freeze())
