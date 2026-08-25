@@ -14,9 +14,11 @@ The fixed ROS subscriptions are `/clock` at best-effort depth 1,
 `/simulation/artifact_status` at reliable transient-local depth 2,
 `/simulation/ground_truth` at best-effort depth 10,
 `/simulation/scenario_events` and `/simulation/score_events` at reliable depth
-100. The live video pipelines request camera topics at reliable depth 5; the
-private rosbag recorder requests the same topics at reliable depth 100 so a
-bounded writer stall cannot lose exact evidence. The metadata topics are `/camera/onboard/frame_metadata` and
+100. The live video pipelines request camera topics at reliable, volatile depth
+100 for physical production profiles and retain reliable, volatile depth 5 for
+synthetic Phase 2. The private rosbag recorder requests the same topics at
+reliable depth 100 so a bounded writer stall cannot lose exact evidence. The
+metadata topics are `/camera/onboard/frame_metadata` and
 `/camera/observer/frame_metadata`, both using
 `simulation_interfaces/msg/FrameMetadata`. The exact private rosbag subscriber
 overrides are stored in `artifacts/recording-qos.yaml`. The public

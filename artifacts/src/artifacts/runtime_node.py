@@ -639,7 +639,7 @@ def main() -> None:
 
     def camera_recorder_qos() -> QoSProfile:
         return QoSProfile(
-            depth=5,
+            depth=100 if recording_contract.physical_run else 5,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )

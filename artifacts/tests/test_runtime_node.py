@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,178 @@ from artifacts.validation import ValidationStatus
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+
+
+@pytest.mark.parametrize(
+    ("physical_run", "expected_depth"),
+    [(True, 100), (False, 5)],
+    ids=["physical-production", "synthetic-phase2"],
+)
+def test_production_runtime_requests_profile_specific_reliable_volatile_camera_qos(
+    monkeypatch, tmp_path, physical_run, expected_depth
+):
+    reliability = SimpleNamespace(RELIABLE=object())
+    durability = SimpleNamespace(TRANSIENT_LOCAL=object(), VOLATILE=object())
+
+    class QoSProfile:
+        def __init__(self, *, depth, reliability, durability):
+            self.depth = depth
+            self.reliability = reliability
+            self.durability = durability
+
+    class Publisher:
+        def publish(self, _message):
+            pass
+
+        def wait_for_all_acked(self, *, timeout):
+            del timeout
+            return True
+
+    class ProductionNode:
+        instances = []
+
+        def __init__(self, name):
+            self.name = name
+            self.subscriptions = []
+            self.instances.append(self)
+
+        def create_publisher(self, _message_type, _topic, _qos):
+            return Publisher()
+
+        def create_subscription(self, message_type, topic, callback, qos):
+            subscription = SimpleNamespace(
+                message_type=message_type,
+                topic=topic,
+                callback=callback,
+                qos_profile=qos,
+            )
+            self.subscriptions.append(subscription)
+            return subscription
+
+        def destroy_node(self):
+            pass
+
+    class Protocol:
+        def __init__(self, _run_directory, _run_id):
+            pass
+
+        def close(self):
+            pass
+
+    class BagRecorder:
+        def __init__(self, _run_directory):
+            pass
+
+        def start(self):
+            pass
+
+    class StreamRecorder:
+        def __init__(self, _run_directory, *, stream, **_kwargs):
+            self.stream = stream
+            self.frame_count = 0
+            self.is_ready = False
+
+        def start(self, *, deadline):
+            del deadline
+            self.is_ready = True
+
+    class Validator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class ArtifactStatus:
+        pass
+
+    class FrameMetadata:
+        pass
+
+    class RunState:
+        STARTING = 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rclpy",
+        SimpleNamespace(init=lambda: None, ok=lambda: False, shutdown=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "rclpy.duration",
+        SimpleNamespace(Duration=lambda **_kwargs: object()),
+    )
+    monkeypatch.setitem(sys.modules, "rclpy.node", SimpleNamespace(Node=ProductionNode))
+    monkeypatch.setitem(
+        sys.modules,
+        "rclpy.qos",
+        SimpleNamespace(
+            DurabilityPolicy=durability,
+            QoSProfile=QoSProfile,
+            ReliabilityPolicy=reliability,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "simulation_interfaces.msg",
+        SimpleNamespace(
+            ArtifactStatus=ArtifactStatus,
+            FrameMetadata=FrameMetadata,
+            RunState=RunState,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules, "sensor_msgs.msg", SimpleNamespace(Image=type("Image", (), {}))
+    )
+    monkeypatch.setattr(runtime_node, "RuntimeProtocol", Protocol)
+    monkeypatch.setattr(runtime_node, "RosbagRecorder", BagRecorder)
+    monkeypatch.setattr(runtime_node, "RosbagValidator", Validator)
+    monkeypatch.setattr(runtime_node, "VideoStreamRecorder", StreamRecorder)
+    monkeypatch.setattr(runtime_node, "VideoValidator", Validator)
+    monkeypatch.setattr(
+        runtime_node,
+        "resolve_recording_runtime_config",
+        lambda _config: SimpleNamespace(
+            expected_camera_frames=1_200,
+            physical_run=physical_run,
+            synthetic_camera_ack=not physical_run,
+        ),
+    )
+    monkeypatch.setattr(runtime_node, "write_event", lambda *_args, **_kwargs: None)
+
+    config_path = tmp_path / "run.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "config_sha256": "a" * 64,
+                "finalization_wall_seconds": 120,
+                "startup_wall_seconds": 120,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
+    monkeypatch.setenv("SIM_RUN_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("SIM_CONFIG_PATH", str(config_path))
+
+    runtime_node.main()
+
+    camera_topics = {
+        "/camera/onboard/image_raw",
+        "/camera/onboard/frame_metadata",
+        "/camera/observer/image_raw",
+        "/camera/observer/frame_metadata",
+    }
+    subscriptions = [
+        subscription
+        for subscription in ProductionNode.instances[0].subscriptions
+        if subscription.topic in camera_topics
+    ]
+    assert {subscription.topic for subscription in subscriptions} == camera_topics
+    assert len(subscriptions) == 4
+    assert all(
+        subscription.qos_profile.depth == expected_depth
+        and subscription.qos_profile.reliability is reliability.RELIABLE
+        and subscription.qos_profile.durability is durability.VOLATILE
+        for subscription in subscriptions
+    )
 
 
 def test_durable_finalize_request_latches_one_nonrestarting_deadline_without_ros_event():

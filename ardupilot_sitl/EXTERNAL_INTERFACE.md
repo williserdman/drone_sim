@@ -40,15 +40,23 @@ defaults require the small non-zero offsets so its two simulated
 accelerometers are recognized as calibrated. The mission uses ordinary
 GUIDED-mode arming and never sends the force-arm magic value.
 
-The overlay sets the pinned Copter 4.7 parameter `LAND_SPD_MS=0.05`, making
-the final LAND-stage vertical target 0.05 m/s. Copter 4.7 renamed the legacy
+The overlay sets the pinned Copter 4.7 parameter `LAND_SPD_MS=0.10`, making
+the final LAND-stage vertical target 0.10 m/s. Copter 4.7 renamed the legacy
 centimetres-per-second `LAND_SPEED` parameter to the metres-per-second
 `LAND_SPD_MS`; the runtime uses the new name directly because every run wipes
-SITL storage. This target keeps 50% command-speed headroom below the frozen
-0.1 m/s first-contact stability ceiling. It is below the upstream parameter
-metadata's recommended 0.3 m/s minimum, but the pinned defaults-file loader
-accepts the float without clamping and the LAND controller applies its
-absolute value directly as the final descent limit.
+SITL storage.
+
+The selected target balances first-contact speed against prompt post-contact
+unloading. Preserved run `62e27049-3cd7-4d4d-8798-1290c8b29a78` used 0.05
+m/s and first contacted at 0.022855 m/s, but the target advanced only about 5
+mm per 0.1 s and just 5 of the frozen window's 11 samples remained in contact.
+The 0.10 m/s target doubles that post-contact advance. Comparison with the
+preserved 0.5 m/s baseline infers first-contact speed near 0.07 m/s, below the
+frozen 0.1 m/s limit, but the next production run remains authoritative. This
+value is below the upstream parameter metadata's recommended 0.3 m/s minimum;
+the pinned defaults-file loader accepts the float without clamping and the
+LAND controller applies its absolute value directly as the final descent
+limit.
 
 ## Failure behavior
 
