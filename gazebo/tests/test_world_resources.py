@@ -19,6 +19,8 @@ MODEL = MODEL_RESOURCES / "iris_phase3/model.sdf"
 WORLD = RESOURCES / "worlds/phase3_foundation.sdf"
 
 EXPECTED_RESOURCE_PATHS = (
+    "models/iris_competition/model.config",
+    "models/iris_competition/model.sdf",
     "models/iris_flight/model.config",
     "models/iris_flight/model.sdf",
     "models/iris_phase3/meshes/iris.dae",
@@ -27,6 +29,16 @@ EXPECTED_RESOURCE_PATHS = (
     "models/iris_phase3/meshes/iris_prop_cw.dae",
     "models/iris_phase3/model.config",
     "models/iris_phase3/model.sdf",
+    "models/payload_2/materials/textures/marker_2.png",
+    "models/payload_2/model.config",
+    "models/payload_2/model.sdf",
+    "models/payload_3/materials/textures/marker_3.png",
+    "models/payload_3/model.config",
+    "models/payload_3/model.sdf",
+    "models/payload_4/materials/textures/marker_4.png",
+    "models/payload_4/model.config",
+    "models/payload_4/model.sdf",
+    "worlds/competition_mission.sdf",
     "worlds/phase3_foundation.sdf",
     "worlds/vertical_descent.sdf",
 )

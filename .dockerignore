@@ -1,0 +1,11 @@
+**
+!artifacts/
+!artifacts/**
+!orchestration/
+!orchestration/**
+!gazebo/
+!gazebo/**
+!ros_ws/
+!ros_ws/src/
+!ros_ws/src/simulation_interfaces/
+!ros_ws/src/simulation_interfaces/**

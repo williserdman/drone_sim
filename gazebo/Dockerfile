@@ -43,8 +43,7 @@ RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
         /tmp/harmonic-expected-delta \
     && rm -rf /var/lib/apt/lists/*
 
-COPY gazebo/plugin/CMakeLists.txt /tmp/ardupilot_gazebo-build/CMakeLists.txt
-COPY gazebo/plugin/0001-paused-initial-json.patch /tmp/ardupilot_gazebo-build/0001-paused-initial-json.patch
+COPY gazebo/plugin /tmp/ardupilot_gazebo-build
 RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5" \
     && git init /tmp/ardupilot_gazebo \
     && git -C /tmp/ardupilot_gazebo remote add origin https://github.com/ArduPilot/ardupilot_gazebo.git \
@@ -58,12 +57,18 @@ RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f
         && cmake -S /tmp/ardupilot_gazebo-build \
             -B /tmp/ardupilot_gazebo/build \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_TESTING=ON \
             -DARDUPILOT_GAZEBO_SOURCE=/tmp/ardupilot_gazebo \
-        && cmake --build /tmp/ardupilot_gazebo/build \
-            --target ArduPilotPlugin --parallel 2' \
+        && cmake --build /tmp/ardupilot_gazebo/build --parallel 2 \
+        && ctest --test-dir /tmp/ardupilot_gazebo/build \
+            --output-on-failure' \
     && mkdir -p /opt/drone_sim/gazebo/plugins \
     && cp /tmp/ardupilot_gazebo/build/libArduPilotPlugin.so \
         /opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so \
+    && cp /tmp/ardupilot_gazebo/build/libcwru_payload_command_coordinator.so \
+        /opt/drone_sim/gazebo/plugins/libcwru_payload_command_coordinator.so \
+    && cp /tmp/ardupilot_gazebo/build/libdrone_sim_detachable_joint_system.so \
+        /opt/drone_sim/gazebo/plugins/libdrone_sim_detachable_joint_system.so \
     && printf '%s\n' "${ARDUPILOT_GAZEBO_COMMIT}" \
         > /opt/drone_sim/gazebo/plugins/ardupilot_gazebo-revision.txt \
     && rm -rf /tmp/ardupilot_gazebo

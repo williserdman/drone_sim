@@ -83,6 +83,43 @@ def test_flight_model_has_the_official_four_rotor_json_seam():
     ]
 
 
+def test_competition_generator_preserves_the_validated_flight_motor_layout(tmp_path):
+    """Accepting a changed motor seam would generate an unflyable competition Iris."""
+    import sys
+
+    scripts = ROOT / "gazebo/scripts"
+    sys.path.insert(0, str(scripts))
+    try:
+        from prepare_competition_assets import prepare_assets
+    finally:
+        sys.path.remove(str(scripts))
+
+    prepare_assets(
+        RESOURCES,
+        tmp_path,
+        ROOT / "config/course.yaml",
+        ROOT / "config/scenario.yaml",
+    )
+    source = ET.parse(MODEL).getroot().find("model")
+    generated = ET.parse(
+        tmp_path / "models/iris_competition/model.sdf"
+    ).getroot().find("model")
+
+    source_controls = source.findall("plugin[@name='ArduPilotPlugin']/control")
+    generated_controls = generated.findall(
+        "plugin[@name='ArduPilotPlugin']/control"
+    )
+    assert [node.attrib["channel"] for node in generated_controls] == [
+        node.attrib["channel"] for node in source_controls
+    ] == ["0", "1", "2", "3"]
+    assert [node.findtext("jointName") for node in generated_controls] == [
+        node.findtext("jointName") for node in source_controls
+    ] == [f"rotor_{index}_joint" for index in range(4)]
+    assert [node.findtext("multiplier") for node in generated_controls] == [
+        node.findtext("multiplier") for node in source_controls
+    ] == ["838", "838", "-838", "-838"]
+
+
 def test_flight_world_retains_project_cameras_marker_and_exact_sim_cadence():
     """Replacing the project scene or camera cadence would corrupt public evidence."""
     world = ET.parse(WORLD).getroot().find("world")
