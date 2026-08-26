@@ -80,7 +80,24 @@ Keep the existing durable status and quiescence protocol and add current-run fac
 
 `READY` requires artifact recorders, Gazebo endpoints/native recording, active ArduPilot–Gazebo exchange, and the companion's successful MAVLink TCP connection. `READY` starts a private unscored warmup: Gazebo and ArduPilot advance in lockstep, while public `/clock`, cameras, ground truth, scenario, score, and mission commands remain inactive. The companion writes `mission-ready={run_id,ready:true,heartbeat_observed:true,prearm_checks_healthy:true}` exactly once after it has passively observed both facts. Orchestration publishes `RUNNING` only after `ardupilot-ready`, `companion-ready`, and `mission-ready` are durable.
 
-At `RUNNING`, the Gazebo adapter floors the latest native Gazebo time to the preceding 50 ms camera epoch, publishes public `/clock=0`, and rebases later public timestamps against that epoch without resetting Gazebo or ArduPilot. Queued native samples at or before the epoch are discarded. The first public camera pair and ground-truth sample is frame 0 at 50 ms; frame 1199 is at 60.000 seconds. Native Gazebo state/log timestamps remain unchanged and include warmup. This makes host-sensitive flight-controller initialization visible diagnostically but unable to consume the fixed scored interval.
+Phase 3 requires `simulation.public_epoch_native_sim_seconds`, default `90.0`,
+stored as its exact configured positive integer nanosecond value on the 50 ms
+grid. `RUNNING` arms output before that native target; it never selects or
+slides the epoch from callback timing. Late activation or a reliable native
+clock that skips the exact target fails closed. Native samples at or before the
+target are dropped. A bounded pre-zero queue holds at most two public epochs
+(six validated outputs), faults on overflow, and drains only after `/clock=0`
+is published. The first public camera/truth sample at target + 50 ms maps to
+public 50 ms; frame 1199 is at 60.000 seconds. Native Gazebo state/log
+timestamps remain unchanged and include warmup. READY/private unpause and
+RUNNING/public activation remain separate effects.
+
+Public activation is a causal rendezvous, not a wall-time race. Gazebo first
+confirms the world is paused, runs to the fixed native target, and holds there.
+The companion then sends `SET_GUIDED` at public timestamp zero and writes the
+exact durable `mission-command-delivered` fact. Gazebo releases physics only
+after validating that current-run fact; vehicle ACK remains a later and
+separate mission-policy requirement.
 
 `COMPLETED` requires all of:
 

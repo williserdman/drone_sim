@@ -87,8 +87,8 @@ startup gate. Phase 3 publishes `READY` after infrastructure readiness, which
 lets Gazebo and ArduPilot advance in private lockstep warmup. The runtime stays
 `READY` until current-run `ardupilot-ready.json`, `companion-ready.json`, and
 exact `mission-ready.json` all validate. It then publishes `RUNNING` and writes
-`runtime-running.json` at public time zero. Gazebo activates and rebases the
-public evidence epoch only at that boundary, so host-sensitive controller boot
+`runtime-running.json` at public time zero. Gazebo arms the configured Phase 3
+native epoch before its exact target at that boundary, so host-sensitive controller boot
 cannot consume simulated mission time. Phase 2 retains its clock-triggered
 transition because it has no durable flight-readiness tuple.
 

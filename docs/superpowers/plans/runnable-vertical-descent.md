@@ -110,7 +110,14 @@ Require Compose startup, paused-first behavior, endpoint readiness, exact 50,000
 - Add durable current-run readiness for Gazebo, ArduPilot exchange, companion heartbeat, and artifacts.
 - Keep `companion-ready` as the bounded MAVLink TCP infrastructure fact. Add exact durable `mission-ready={run_id,ready:true,heartbeat_observed:true,prearm_checks_healthy:true}` after passive heartbeat and prearm observation.
 - Make `READY` start private Gazebo–ArduPilot lockstep warmup without public physical evidence or mission commands. Publish `RUNNING` only after `mission-ready` is durable.
-- At `RUNNING`, activate a zero-based public epoch without resetting Gazebo or ArduPilot: floor the latest native clock to the 50 ms camera grid, publish `/clock=0`, discard queued samples through the epoch, and rebase later public samples. Require frame 0 at 50 ms and frame 1199 at 60.000 seconds.
+- Require `simulation.public_epoch_native_sim_seconds` (default `90.0`) as an
+  exact positive integer nanosecond value on the 50 ms grid. At `RUNNING`, arm
+  the zero-based public epoch before that target without resetting Gazebo or
+  ArduPilot. Late activation or a reliable clock that skips the exact target
+  fails closed; drop samples at or before it, publish `/clock=0` before draining
+  a bounded two-public-epoch pre-zero queue (six validated outputs), and map
+  target + 50 ms to public 50 ms. Require frame 0 at 50 ms and frame 1199 at
+  60.000 seconds.
 - Add `mission-finished` and `score-finished`; require them with `source-finished` before `COMPLETED`.
 - Carry one absolute monotonic finalization deadline without restarting it.
 - Use a 60.0 simulated-second default (`1,200` frames per camera); the first
@@ -126,7 +133,10 @@ Require Compose startup, paused-first behavior, endpoint readiness, exact 50,000
 
 - Add tests proving `READY` unpauses without activating public output and `RUNNING` activates output without a second unpause.
 - Split `SetPaused(False)` from a new explicit `ActivateOutput` runtime action.
-- Add a pure 50 ms epoch mapper used by the ROS adapter. During warmup cache native clock only; at activation publish zero and rebase image, metadata, ground-truth, contact, and subsequent clock stamps.
+- Add a pure fixed-target 50 ms epoch mapper used by the ROS adapter. Preserve
+  READY/private unpause versus RUNNING/activation; at activation publish zero
+  and rebase image, metadata, ground-truth, contact, and subsequent clock
+  stamps against the configured target.
 - Prove native `49.05 ... 109.00` maps to public `0.05 ... 60.00`, with 1,200 aligned frames and no warmup publications.
 
 ### Warmup B: passive mission readiness
@@ -136,6 +146,9 @@ Require Compose startup, paused-first behavior, endpoint readiness, exact 50,000
 - Add tests proving heartbeat alone and prearm health alone are insufficient, both facts write `mission-ready` exactly once, and no vehicle command is sent before `RUNNING` plus public clock.
 - Extend the passive telemetry path to latch heartbeat and prearm health without advancing mission policy.
 - Preserve `companion-ready` as TCP readiness and write the exact durable `mission-ready` document through the existing runtime protocol.
+- At the fixed public target, hold Gazebo paused until the companion queues
+  `SET_GUIDED` at timestamp zero and durably writes the exact current-run
+  `mission-command-delivered` fact; release physics only after validation.
 
 ### Warmup C: orchestration integration
 

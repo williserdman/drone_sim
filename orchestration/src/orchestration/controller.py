@@ -63,6 +63,7 @@ _REPORT_KEYS = {
     "semantic",
 }
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_COMPOSE_PS_ATTEMPT_SECONDS = 5.0
 _FLIGHT_EXCHANGE_KEYS = frozenset(
     {
         "online",
@@ -659,9 +660,11 @@ class RunController:
         remaining = self._remaining(deadline, self.monotonic)
         try:
             deadline_check()
-            result = compose.ps(remaining)
+            result = compose.ps(min(remaining, _COMPOSE_PS_ATTEMPT_SECONDS))
             deadline_check()
             return self._ps_cause(result, topology)
+        except subprocess.TimeoutExpired:
+            return None
         except TimeoutError:
             raise
         except Exception as exc:

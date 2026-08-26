@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 
 from .aggregation import AggregationFault, NativeOdometry
@@ -55,6 +56,7 @@ class GazeboAdapterNode(_node_base()):
         *,
         run_id: str,
         expected_frames: int,
+        public_epoch_native_ns: int,
         world_name: str = "phase3_foundation",
         on_completed: Callable[[AdapterSummary], None] | None = None,
         on_fault: Callable[[str], None] | None = None,
@@ -74,7 +76,11 @@ class GazeboAdapterNode(_node_base()):
         self._completion_reported = False
         self._faulted = False
         self._output_active = False
-        self._output_epoch = OutputEpochGate(expected_frames=expected_frames)
+        self._output_epoch = OutputEpochGate(
+            expected_frames=expected_frames,
+            public_epoch_native_ns=public_epoch_native_ns,
+        )
+        self._pre_zero_outputs: deque[object] = deque()
         self._last_public_clock_ns: int | None = None
         self._clock_type = Clock
         self._image_type = Image
@@ -153,10 +159,13 @@ class GazeboAdapterNode(_node_base()):
         self._output_active = False
 
     def activate_output(self) -> None:
-        """Arm the native-source barrier for the rebased public epoch."""
+        """Arm output before the configured native public epoch."""
         if self._faulted or self._output_active or self._completion_reported:
             return
-        self._output_epoch.request_activation()
+        try:
+            self._output_epoch.request_activation()
+        except AdapterFault as error:
+            self._fail(error)
 
     def _publish_clock(self, timestamp_ns: int, message=None) -> None:
         if (
@@ -183,8 +192,14 @@ class GazeboAdapterNode(_node_base()):
             timestamp_ns = _nanoseconds(message.clock)
             public_timestamp_ns = self._output_epoch.accept_clock(timestamp_ns)
             if public_timestamp_ns is not None:
-                self._output_active = True
-                self._publish_clock(public_timestamp_ns)
+                if public_timestamp_ns == 0 and not self._output_active:
+                    self._output_active = True
+                    self._publish_clock(0)
+                    queued = tuple(self._pre_zero_outputs)
+                    self._pre_zero_outputs.clear()
+                    self._publish(queued)
+                elif self._output_active:
+                    self._publish_clock(public_timestamp_ns)
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
@@ -211,12 +226,16 @@ class GazeboAdapterNode(_node_base()):
                     data=bytes(message.data),
                 ),
             )
-            self._publish(output)
+            self._emit(output)
         except (AdapterFault, AggregationFault, ValueError, TypeError) as error:
             self._fail(error)
 
     def _accept_odometry(self, message) -> None:
-        if self._faulted or not self._output_active:
+        if (
+            self._faulted
+            or not self._output_active
+            and not self._output_epoch.activation_pending
+        ):
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
@@ -234,12 +253,16 @@ class GazeboAdapterNode(_node_base()):
                     angular_velocity_xyz=_vector3(twist.angular),
                 )
             )
-            self._publish(output)
+            self._emit(output)
         except (AdapterFault, AggregationFault, ValueError, TypeError) as error:
             self._fail(error)
 
     def _accept_contacts(self, message) -> None:
-        if self._faulted or not self._output_active:
+        if (
+            self._faulted
+            or not self._output_active
+            and not self._output_epoch.activation_pending
+        ):
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
@@ -249,9 +272,19 @@ class GazeboAdapterNode(_node_base()):
             output = self._live.accept_contact(
                 public_timestamp_ns, bool(message.contacts)
             )
-            self._publish(output)
+            self._emit(output)
         except (AdapterFault, AggregationFault, ValueError, TypeError) as error:
             self._fail(error)
+
+    def _emit(self, output) -> None:
+        if not output:
+            return
+        if self._output_active:
+            self._publish(output)
+            return
+        if len(self._pre_zero_outputs) + len(output) > 6:
+            raise AdapterFault("pre-zero output queue exceeded two public epochs")
+        self._pre_zero_outputs.extend(output)
 
     def _publish(self, output) -> None:
         for value in output:

@@ -45,9 +45,16 @@ server.
 completed truth value. `ros_adapter.live` joins that truth to the current
 camera pair before the public ROS node publishes it. Private sensor QoS may be
 best effort; public QoS remains exactly the external table. The pure
-`OutputEpochGate` caches only the greatest native clock observed during
-warmup. After activation is requested, it records a watermark from each camera
-stream and waits for the native clock to reach both before its immutable
-`PublicEpoch` floors that clock to the 50 ms grid. The epoch is the single
-mapping used for clock, cameras, odometry, and contact, and the configured
-frame count caps public clock output at the final frame timestamp.
+`OutputEpochGate` receives the exact configured native target (Phase 3 default
+`90.0` seconds) and arms at `RUNNING` before it. Late activation and a reliable
+clock that skips the target fault closed. Native samples at or before the target
+are dropped; a bounded pre-zero queue holds at most two public epochs (six
+validated frame/truth outputs), faults on overflow, and drains only after
+public `/clock=0` is published. The first target+50 ms camera/truth sample
+maps to public 50 ms. The target is the single mapping origin for clock,
+cameras, odometry, and contact, and the configured frame count caps public
+clock output at the final frame timestamp.
+`runtime.rendezvous.PublicEpochRendezvous` sequences public activation, a
+confirmed paused-world observation, absolute run-to-target control, and the
+durable initial-command delivery fact. Only after the current-run fact matches
+`SET_GUIDED` at public zero does it release the world for the public epoch.

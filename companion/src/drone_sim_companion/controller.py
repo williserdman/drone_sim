@@ -13,6 +13,7 @@ class VehicleCommands(Protocol):
 
 
 EventSink = Callable[[str, int, dict[str, object]], None]
+CommandDeliveredSink = Callable[[CommandKind, int], None]
 
 
 def mission_policy_active(*, mission_running: bool, public_clock_observed: bool) -> bool:
@@ -20,9 +21,15 @@ def mission_policy_active(*, mission_running: bool, public_clock_observed: bool)
 
 
 class MissionController:
-    def __init__(self, vehicle: VehicleCommands, emit: EventSink) -> None:
+    def __init__(
+        self,
+        vehicle: VehicleCommands,
+        emit: EventSink,
+        command_delivered: CommandDeliveredSink | None = None,
+    ) -> None:
         self._vehicle = vehicle
         self._emit = emit
+        self._command_delivered = command_delivered or (lambda _command, _stamp: None)
         self.state = MissionState.initial()
         self._heartbeat_observed = False
         self._prearm_checks_healthy = False
@@ -53,6 +60,22 @@ class MissionController:
             self._prearm_checks_healthy = True
             self._emit("prearm_checks_healthy", telemetry.timestamp_ns, {})
 
+    def begin_mission(self, timestamp_ns: int) -> None:
+        """Start from latched passive readiness at the exact public epoch."""
+        if timestamp_ns != 0:
+            raise ValueError("mission must begin at public simulation time zero")
+        if not self.mission_ready:
+            raise RuntimeError("mission cannot begin before passive readiness")
+        if self.state.phase is not MissionPhase.WAIT_HEARTBEAT:
+            return
+        self.consume(
+            Telemetry(
+                timestamp_ns=timestamp_ns,
+                heartbeat=True,
+                prearm_checks_healthy=True,
+            )
+        )
+
     def consume(self, telemetry: Telemetry) -> None:
         previous = self.state
         if previous.phase in {MissionPhase.FAILED, MissionPhase.LANDED}:
@@ -70,6 +93,7 @@ class MissionController:
         transition = advance(previous, telemetry)
         for command in transition.commands:
             self._vehicle.send(command.kind, command.altitude_m)
+            self._command_delivered(command.kind, command.timestamp_ns)
         self.state = transition.state
         if (
             previous.phase is MissionPhase.WAIT_GUIDED_MODE

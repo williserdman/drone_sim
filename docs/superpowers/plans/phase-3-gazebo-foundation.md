@@ -919,7 +919,8 @@ changing their module logs or lifecycle behavior.
 
 For `phase3`, orchestration waits for both current-run `artifacts-ready` and
 `gazebo-ready` before publishing `READY`. Phase 2 continues to require only
-artifacts readiness. The first clock remains the trigger for `RUNNING`.
+artifacts readiness. Phase 3 `RUNNING` arms the configured fixed native epoch
+before its exact target; it is never selected from the latest clock callback.
 Current wall deadlines and durable-file fallbacks remain unchanged.
 
 Implement `RuntimeReadiness` as a pure idempotent current-run gate in

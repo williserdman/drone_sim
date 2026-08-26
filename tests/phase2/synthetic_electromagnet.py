@@ -33,7 +33,11 @@ def main() -> None:
     publisher = node.create_publisher(
         ScenarioEvent,
         "/simulation/scenario_events",
-        QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
+        QoSProfile(
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        ),
     )
     running = False
     published = False

@@ -55,8 +55,9 @@ then publishes `READY` and Gazebo unpauses into a private lockstep warmup. Publi
 clock, camera, ground-truth, scenario, score, and mission-command output remain
 inactive. The companion passively latches heartbeat and healthy prearm status
 and writes exact `mission-ready`; only then does orchestration publish and
-persist `RUNNING`. Gazebo activates a rebased zero-based public epoch at that
-boundary. Production Gazebo does not consume `/simulation/camera_pair_ack`.
+persist `RUNNING`. Gazebo arms the configured fixed native public epoch (Phase
+3 default `90.0` seconds) before its exact target at that boundary. Production
+Gazebo does not consume `/simulation/camera_pair_ack`.
 
 Lifecycle states use the fixed order `CREATED`, `STARTING`, `READY`, `RUNNING`,
 `FINALIZING`, `COMPLETED`, `FAILED`, and `ABORTED`. The orchestrator publishes
@@ -111,6 +112,8 @@ stalled-host detection, finalization, and forced shutdown and are measured with
 a monotonic clock. Finalization uses one bounded deadline shared across
 quiescence, recorder closure, validation, manifest commit, notification, and
 teardown, with separate bounded manifest and teardown reserves.
+Each Docker Compose process-inventory attempt is capped at five wall seconds;
+a hung CLI probe is retried within the unchanged lifecycle deadline.
 
 ## Failure behavior
 

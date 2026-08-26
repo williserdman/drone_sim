@@ -32,11 +32,13 @@ The production ROS node consumes only private Gazebo-to-ROS bridge topics.
 Clock, odometry, contact, and both cameras are one-way inputs; no public topic
 is bridged back into Gazebo. Callback-order alignment is bounded to the one
 current timestamp, and adapter output freezes before bridge/server shutdown.
-Before activation, the node caches the greatest native clock but publishes no
-clock, camera, metadata, ground-truth, or contact-derived output. Activation
-waits for one post-request watermark from each camera and a native clock at or
-beyond both, then floors that clock to the preceding 50 ms boundary, publishes
-public `/clock=0`, and rebases every later native input against that epoch.
-Inputs at or before the epoch are discarded as queued warmup. Public clock is
-capped at `expected_frames * 50,000,000` ns and closes with adapter completion.
-Native Gazebo recording remains unchanged and is never reset.
+Before activation, the node publishes no clock, camera, metadata, ground-truth,
+or contact-derived output. The required exact configured native target (Phase 3
+default `90.0` seconds) is armed before `RUNNING`; late activation or a
+reliable native clock that skips the target faults closed. Native inputs at or
+before the target are dropped. A bounded pre-zero queue holds at most two
+public epochs (six already-validated frame/truth outputs), faults on overflow,
+and drains only after public `/clock=0` is published. The first camera/truth
+sample at target + 50 ms maps to public 50 ms. Public clock is capped at
+`expected_frames * 50,000,000` ns and closes with adapter completion. Native
+Gazebo recording remains unchanged and is never reset.

@@ -22,6 +22,7 @@ from drone_sim_gazebo.ros_adapter import (
 RUN_ID = "00000000-0000-4000-8000-000000000404"
 RGB_PAYLOAD = bytes(320 * 240 * 3)
 INTERVAL_NS = 50_000_000
+PUBLIC_EPOCH_NATIVE_NS = 90_000_000_000
 
 
 def native_image(stamp_ns: int = 50_000_000, **changes: object) -> NativeImage:
@@ -58,20 +59,20 @@ def accept_pair(adapter: AdapterModel, stamp_ns: int) -> tuple[PublicFrame, Publ
     return onboard, observer
 
 
-def test_public_epoch_floors_latest_native_clock_and_drops_queued_epoch_samples():
-    epoch = PublicEpoch.from_latest_native_clock(49_099_999_999)
+def test_public_epoch_uses_the_configured_native_target_and_drops_earlier_samples():
+    epoch = PublicEpoch(PUBLIC_EPOCH_NATIVE_NS)
 
-    assert epoch.native_epoch_ns == 49_050_000_000
-    assert epoch.rebase(49_000_000_000) is None
-    assert epoch.rebase(49_050_000_000) is None
-    assert epoch.rebase(49_050_000_001) == 1
+    assert epoch.native_epoch_ns == PUBLIC_EPOCH_NATIVE_NS
+    assert epoch.rebase(PUBLIC_EPOCH_NATIVE_NS - 1) is None
+    assert epoch.rebase(PUBLIC_EPOCH_NATIVE_NS) is None
+    assert epoch.rebase(PUBLIC_EPOCH_NATIVE_NS + 1) == 1
 
 
 def test_public_epoch_maps_exactly_1200_native_frames_to_50_ms_through_60_seconds():
-    epoch = PublicEpoch.from_latest_native_clock(49_025_000_000)
+    epoch = PublicEpoch(PUBLIC_EPOCH_NATIVE_NS)
 
     public_stamps = tuple(
-        epoch.rebase(49_000_000_000 + frame_number * INTERVAL_NS)
+        epoch.rebase(PUBLIC_EPOCH_NATIVE_NS + frame_number * INTERVAL_NS)
         for frame_number in range(1, 1_201)
     )
 
@@ -84,96 +85,88 @@ def test_public_epoch_maps_exactly_1200_native_frames_to_50_ms_through_60_second
     )
 
 
-def test_output_epoch_gate_caches_latest_warmup_clock_without_public_output():
-    gate = OutputEpochGate(expected_frames=1_200)
+def test_output_epoch_gate_maps_different_warmup_histories_to_the_same_fixed_epoch():
+    early = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    late = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
 
-    assert gate.accept_clock(49_050_000_000) is None
-    assert gate.accept_clock(49_099_999_999) is None
-    assert gate.accept_clock(49_075_000_000) is None
-    assert gate.rebase_sample(49_100_000_000) is None
+    assert early.accept_clock(45_650_000_000) is None
+    assert late.accept_clock(73_200_000_000) is None
+    early.request_activation()
+    late.request_activation()
 
+    assert early.accept_clock(PUBLIC_EPOCH_NATIVE_NS) == 0
+    assert late.accept_clock(PUBLIC_EPOCH_NATIVE_NS) == 0
+    assert early.native_epoch_ns == PUBLIC_EPOCH_NATIVE_NS
+    assert late.native_epoch_ns == PUBLIC_EPOCH_NATIVE_NS
+
+
+def test_output_epoch_gate_fails_closed_when_activation_is_late():
+    gate = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS)
+
+    with pytest.raises(AdapterFault, match="before the configured native epoch"):
+        gate.request_activation()
+
+
+def test_output_epoch_gate_fails_closed_when_reliable_clock_skips_target():
+    gate = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS - 1_000_000)
     gate.request_activation()
-    assert gate.accept_camera("onboard", 49_100_000_000) is None
-    assert gate.accept_camera("observer", 49_100_000_000) is None
-    assert gate.accept_clock(49_100_000_000) == 0
-    assert gate.native_epoch_ns == 49_100_000_000
+
+    with pytest.raises(AdapterFault, match="skipped configured native epoch"):
+        gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS + 1_000_000)
 
 
 def test_output_epoch_gate_drops_epoch_queue_and_rebases_all_later_native_stamps():
-    gate = OutputEpochGate(expected_frames=1_200)
-    gate.accept_clock(49_075_000_000)
+    gate = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS - INTERVAL_NS)
     gate.request_activation()
-    gate.accept_camera("onboard", 49_050_000_000)
-    gate.accept_camera("observer", 49_050_000_000)
-    assert gate.accept_clock(49_075_000_000) == 0
+    assert gate.accept_camera("onboard", PUBLIC_EPOCH_NATIVE_NS + INTERVAL_NS) == INTERVAL_NS
+    assert gate.rebase_sample(PUBLIC_EPOCH_NATIVE_NS + INTERVAL_NS) == INTERVAL_NS
+    assert gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS) == 0
 
-    assert gate.accept_clock(49_050_000_000) is None
-    assert gate.accept_camera("onboard", 49_050_000_000) is None
-    assert gate.rebase_sample(49_050_000_000) is None
-    assert gate.accept_clock(49_051_000_000) == 1_000_000
-    assert gate.accept_camera("observer", 49_100_000_000) == 50_000_000
-    assert gate.rebase_sample(49_100_000_000) == 50_000_000
-
-
-@pytest.mark.parametrize(
-    "events",
-    [
-        (
-            ("clock", None, 49_075_000_000),
-            ("camera", "onboard", 49_050_000_000),
-            ("camera", "observer", 49_050_000_000),
-            ("clock", None, 49_075_000_000),
-        ),
-        (
-            ("camera", "observer", 49_100_000_000),
-            ("clock", None, 49_075_000_000),
-            ("camera", "onboard", 49_100_000_000),
-            ("clock", None, 49_100_000_000),
-        ),
-    ],
-    ids=["clock-before-cameras", "cameras-bracket-stale-clock"],
-)
-def test_activation_barrier_makes_first_public_frame_50_ms_for_callback_permutations(events):
-    gate = OutputEpochGate(expected_frames=1_200)
-    gate.accept_clock(49_025_000_000)
-    gate.request_activation()
-
-    activation_results = []
-    for kind, stream, stamp in events:
-        if kind == "clock":
-            activation_results.append(gate.accept_clock(stamp))
-        else:
-            activation_results.append(gate.accept_camera(stream, stamp))
-
-    assert activation_results[-1] == 0
-    native_epoch_ns = gate.native_epoch_ns
-    assert native_epoch_ns is not None
-    assert gate.accept_camera("onboard", native_epoch_ns) is None
-    assert gate.accept_camera(
-        "onboard", native_epoch_ns + INTERVAL_NS
-    ) == INTERVAL_NS
+    assert gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS - INTERVAL_NS) is None
+    assert gate.accept_camera("onboard", PUBLIC_EPOCH_NATIVE_NS) is None
+    assert gate.rebase_sample(PUBLIC_EPOCH_NATIVE_NS) is None
+    assert gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS + 1_000_000) == 1_000_000
 
 
 def test_output_epoch_gate_caps_public_clock_at_configured_final_frame():
-    gate = OutputEpochGate(expected_frames=1_200)
-    gate.accept_clock(49_025_000_000)
+    gate = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS - INTERVAL_NS)
     gate.request_activation()
-    gate.accept_camera("onboard", 49_050_000_000)
-    gate.accept_camera("observer", 49_050_000_000)
-    assert gate.accept_clock(49_050_000_000) == 0
+    assert gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS) == 0
 
-    assert gate.accept_clock(109_050_000_000) == 60_000_000_000
-    assert gate.accept_clock(109_100_000_000) is None
+    assert gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS + 60_000_000_000) == 60_000_000_000
+    assert gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS + 60_050_000_000) is None
 
 
 def test_offset_native_run_assigns_frame_zero_at_50_ms_and_frame_1199_at_60_seconds():
-    epoch = PublicEpoch.from_latest_native_clock(49_025_000_000)
+    epoch = PublicEpoch(PUBLIC_EPOCH_NATIVE_NS)
     adapter = AdapterModel(run_id=RUN_ID, expected_frames=1_200)
     first_frame = None
     last_frame = None
 
     for frame_number in range(1, 1_201):
-        native_stamp = 49_000_000_000 + frame_number * INTERVAL_NS
+        native_stamp = PUBLIC_EPOCH_NATIVE_NS + frame_number * INTERVAL_NS
         public_stamp = epoch.rebase(native_stamp)
         assert public_stamp is not None
         onboard, _observer = accept_pair(adapter, public_stamp)

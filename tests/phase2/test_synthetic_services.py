@@ -159,6 +159,7 @@ def test_durable_lifecycle_fallback_is_run_scoped_and_preempts_ack_wait():
         None,
     )
     assert model.running is False
+    assert model.ready is False
 
     apply_durable_lifecycle(
         model,
@@ -166,6 +167,7 @@ def test_durable_lifecycle_fallback_is_run_scoped_and_preempts_ack_wait():
         None,
     )
     assert model.running is True
+    assert model.ready is True
 
     apply_durable_lifecycle(
         model,

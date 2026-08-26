@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from uuid import UUID, uuid4
@@ -157,6 +158,7 @@ class GazeboTransport:
             "iris_ground_contact/contact",
         )
         self._control_service = f"/world/{world_name}/control"
+        self._stats_topic = f"/world/{world_name}/stats"
         self._run = run
 
     def _command(self, argv: tuple[str, ...], *, timeout: float = 5.0):
@@ -261,6 +263,37 @@ class GazeboTransport:
         if type(count) is not int or count <= 0:
             raise ValueError("step count must be a positive integer")
         self._control(f"pause: true, multi_step: {count}")
+
+    def run_to_sim_time(self, target_ns: int) -> None:
+        if type(target_ns) is not int or target_ns <= 0:
+            raise ValueError("target simulation time must be a positive integer")
+        seconds, nanoseconds = divmod(target_ns, 1_000_000_000)
+        self._control(
+            f"run_to_sim_time {{ sec: {seconds} nsec: {nanoseconds} }}"
+        )
+
+    def paused_sim_time_ns(self) -> int | None:
+        result = self._command(
+            ("gz", "topic", "-e", "-t", self._stats_topic, "-n", "1"),
+            timeout=5.0,
+        )
+        output = result.stdout
+        paused = re.search(r"^paused:\s*(true|false)\s*$", output, re.MULTILINE)
+        sim_time = re.search(r"sim_time\s*\{(?P<body>.*?)\}", output, re.DOTALL)
+        if paused is None or sim_time is None:
+            raise TransportError("Gazebo world statistics were malformed")
+        if paused.group(1) != "true":
+            return None
+        body = sim_time.group("body")
+        seconds_match = re.search(r"^\s*sec:\s*(\d+)\s*$", body, re.MULTILINE)
+        nanoseconds_match = re.search(r"^\s*nsec:\s*(\d+)\s*$", body, re.MULTILINE)
+        seconds = int(seconds_match.group(1)) if seconds_match is not None else 0
+        nanoseconds = (
+            int(nanoseconds_match.group(1)) if nanoseconds_match is not None else 0
+        )
+        if nanoseconds >= 1_000_000_000:
+            raise TransportError("Gazebo world statistics contained an invalid time")
+        return seconds * 1_000_000_000 + nanoseconds
 
     def set_paused(self, paused: bool) -> None:
         if type(paused) is not bool:

@@ -25,8 +25,8 @@ the same absolute path explicitly.
   reserved for the Phase 2 infrastructure regression template; the repository
   default selects `phase3`.
 - Phase 3 `simulation` fields: unsigned 32-bit `seed`, positive finite
-  `duration_sim_seconds` on the fixed 50,000,000 ns camera grid, and frozen
-  `target_real_time_factor=0.1`.
+  `duration_sim_seconds` and `public_epoch_native_sim_seconds` on the fixed
+  50,000,000 ns camera grid, and frozen `target_real_time_factor=0.1`.
 - ROS 2 discovery and network configuration
 - Result and log destinations
 
@@ -34,7 +34,7 @@ Recording geometry is exactly `320x240` at 20 FPS with `rgb8` encoding.
 Template and resolved-config validation reject incompatible profile/simulation
 pairs, invalid timing, or other geometry before Compose construction. Phase 3
 derives the expected per-stream frame count from the exact integer-nanosecond
-duration; the default 30.0 simulated seconds yields 600 frames per camera.
+duration; the default 60.0 simulated seconds yields 1,200 frames per camera.
 
 Secret values must be supplied at runtime and must not be committed.
 
@@ -60,16 +60,16 @@ The topic and type inventory remains fixed. Phase 2 test doubles and the Phase
 
 | Topic | Message | QoS |
 | --- | --- | --- |
-| `/clock` | `rosgraph_msgs/msg/Clock` | Best effort, volatile, depth 1 |
+| `/clock` | `rosgraph_msgs/msg/Clock` | Reliable, volatile, depth 1000 |
 | `/simulation/run_state` | `simulation_interfaces/msg/RunState` | Reliable, transient local, depth 1 |
 | `/simulation/artifact_status` | `simulation_interfaces/msg/ArtifactStatus` | Reliable, transient local, depth 1 |
-| `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Best effort, volatile, depth 10 |
-| `/simulation/scenario_events` | `simulation_interfaces/msg/ScenarioEvent` | Reliable, volatile, depth 100 |
+| `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Reliable, volatile, depth 10 |
+| `/simulation/scenario_events` | `simulation_interfaces/msg/ScenarioEvent` | Reliable, transient local, depth 100 |
 | `/simulation/score_events` | `simulation_interfaces/msg/ScoreEvent` | Reliable, volatile, depth 100 |
-| `/camera/onboard/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
-| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
-| `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 5 |
-| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 5 |
+| `/camera/onboard/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 100 |
+| `/camera/onboard/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 100 |
+| `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 100 |
+| `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 100 |
 
 `GroundTruth` binds pose, linear velocity, and angular velocity to the Gazebo
 world frame using ENU axes. Its contact flag describes the Iris carrier's
@@ -117,10 +117,12 @@ A container is ready only when its required process and communication endpoints 
 
 Phase 3 starts a fresh headless Gazebo server paused. Readiness requires the
 server, private transport endpoints, bridges, public publishers, native
-recorder, and artifact recorders before `READY`. The first controlled world
-step establishes `/clock`; only after the current run reaches `RUNNING` may the
-server unpause. The production runtime never waits for or consumes
-`/simulation/camera_pair_ack`.
+recorder, artifact recorders, ArduPilot exchange, MAVLink connection, and
+passive mission readiness before public execution. `READY` begins private
+lockstep warmup. At `RUNNING`, Gazebo pauses at the fixed native epoch and
+releases the public run only after the companion has durably delivered
+`SET_GUIDED` at public timestamp zero. The production runtime never waits for
+or consumes `/simulation/camera_pair_ack`.
 
 ## Clock semantics
 
@@ -136,8 +138,11 @@ Reset is run-scoped replacement: destroy the container/server and start a fresh
 Compose project and Gazebo partition from immutable SDF. There is no public
 in-process reset endpoint.
 
-## Phase 3 exclusions
+## Current MVP boundary
 
-Phase 3 does not implement ArduPilot SITL integration, MAVLink, actuator or
-motor dynamics, NED conversion, ArduPilot-Gazebo lockstep, companion mission or
-vision behavior, electromagnet forces, course policy, or competition scoring.
+The production Phase 3 profile includes ArduPilot SITL, MAVLink mission
+control, Gazebo actuator/sensor lockstep, dual cameras, controlled takeoff and
+landing, complete evidence capture, and the committed `descent_v1` scorekeeper.
+It does not execute the nested `companion/comp2026` repository. Precision
+vision, LiDAR, payload/dropper behavior, active electromagnet physics, and a
+broader competition ruleset remain future work.

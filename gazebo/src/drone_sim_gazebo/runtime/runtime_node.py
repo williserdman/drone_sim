@@ -151,6 +151,51 @@ def _start_server_ready(
         raise
 
 
+class PublicEpochRendezvous:
+    """Hold physics at public zero until the first command is delivered."""
+
+    def __init__(
+        self,
+        *,
+        transport: GazeboTransport,
+        protocol: RuntimeProtocol,
+        public_epoch_native_ns: int,
+        activate_output,
+    ) -> None:
+        self._transport = transport
+        self._protocol = protocol
+        self._target_ns = public_epoch_native_ns
+        self._activate_output = activate_output
+        self._begun = False
+        self._run_to_requested = False
+        self._released = False
+
+    def begin(self) -> None:
+        if self._begun:
+            return
+        self._activate_output()
+        self._transport.set_paused(True)
+        self._begun = True
+
+    def release_if_delivered(self) -> bool:
+        if not self._begun or self._released:
+            return False
+        if not self._run_to_requested:
+            paused_ns = self._transport.paused_sim_time_ns()
+            if paused_ns is None:
+                return False
+            if paused_ns >= self._target_ns:
+                raise TransportError("world paused at or after the public epoch")
+            self._transport.run_to_sim_time(self._target_ns)
+            self._run_to_requested = True
+            return False
+        if self._protocol.read_status("mission-command-delivered") is None:
+            return False
+        self._transport.set_paused(False)
+        self._released = True
+        return True
+
+
 def main() -> int:
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
@@ -199,6 +244,7 @@ def main() -> int:
     adapter = GazeboAdapterNode(
         run_id=run_id,
         expected_frames=config.expected_camera_frames,
+        public_epoch_native_ns=config.simulation.public_epoch_native_ns,
         world_name=resolved.world_name,
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
         on_fault=lambda reason: _record_adapter_fault(run_id, inbox, reason),
@@ -215,6 +261,16 @@ def main() -> int:
             environment=child_environment,
         )
     )
+    epoch_rendezvous = (
+        PublicEpochRendezvous(
+            transport=transport,
+            protocol=protocol,
+            public_epoch_native_ns=config.simulation.public_epoch_native_ns,
+            activate_output=adapter.activate_output,
+        )
+        if resolved.world_name == "vertical_descent"
+        else None
+    )
     action_executor = ActionExecutor(
         run_id=run_id,
         protocol=protocol,
@@ -222,7 +278,11 @@ def main() -> int:
         transport=transport,
         children=children,
         server=server,
-        activate_output=adapter.activate_output,
+        activate_output=(
+            epoch_rendezvous.begin
+            if epoch_rendezvous is not None
+            else adapter.activate_output
+        ),
         observe=lambda action: _event(
             run_id, "runtime_action", fields={"action": type(action).__name__}
         ),
@@ -235,6 +295,8 @@ def main() -> int:
         _event(run_id, "runtime_started", fields={"partition": spec.environment["GZ_PARTITION"]})
         while not quiescent:
             ros_executor.spin_once(timeout_sec=0.05)
+            if epoch_rendezvous is not None and epoch_rendezvous.release_if_delivered():
+                _event(run_id, "public_epoch_released", sim_timestamp_ns=0)
             if not gazebo_ready_seen and adapter.transport_ready():
                 exchange_ready = True
                 if resolved.world_name == "vertical_descent":

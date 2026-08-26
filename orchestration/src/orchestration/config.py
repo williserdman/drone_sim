@@ -34,9 +34,11 @@ _RECORDING_FIELDS = {"width_px", "height_px", "fps", "encoding"}
 _SIMULATION_FIELDS = {
     "seed",
     "duration_sim_seconds",
+    "public_epoch_native_sim_seconds",
     "target_real_time_factor",
 }
 CAMERA_INTERVAL_NS = 50_000_000
+PUBLIC_EPOCH_DEFAULT_NS = 90_000_000_000
 
 PHASE2_OWNERSHIP = (
     ("orchestration-runtime", "orchestration"),
@@ -71,6 +73,7 @@ class SimulationConfig:
     seed: int
     duration_ns: int
     target_real_time_factor: float
+    public_epoch_native_ns: int = PUBLIC_EPOCH_DEFAULT_NS
 
     @property
     def expected_camera_frames(self) -> int:
@@ -199,7 +202,38 @@ def _validate_simulation(document: Any) -> SimulationConfig:
         raise ValueError("target_real_time_factor must be exactly 0.1") from exc
     if not target_decimal.is_finite() or target_decimal != Decimal("0.1"):
         raise ValueError("target_real_time_factor must be exactly 0.1")
-    return SimulationConfig(seed, duration_ns, float(target_decimal))
+    public_epoch = document["public_epoch_native_sim_seconds"]
+    if isinstance(public_epoch, bool) or not isinstance(public_epoch, (int, float)):
+        raise ValueError(
+            "public_epoch_native_sim_seconds must be a positive finite number"
+        )
+    try:
+        public_epoch_decimal = Decimal(str(public_epoch))
+    except InvalidOperation as exc:
+        raise ValueError(
+            "public_epoch_native_sim_seconds must be a positive finite number"
+        ) from exc
+    if not public_epoch_decimal.is_finite() or public_epoch_decimal <= 0:
+        raise ValueError(
+            "public_epoch_native_sim_seconds must be a positive finite number"
+        )
+    epoch_numerator, epoch_denominator = public_epoch_decimal.as_integer_ratio()
+    scaled_epoch_numerator = epoch_numerator * 1_000_000_000
+    if scaled_epoch_numerator % epoch_denominator != 0:
+        raise ValueError(
+            "public_epoch_native_sim_seconds must resolve to exact integer nanoseconds"
+        )
+    public_epoch_native_ns = scaled_epoch_numerator // epoch_denominator
+    if public_epoch_native_ns % CAMERA_INTERVAL_NS != 0:
+        raise ValueError(
+            "public_epoch_native_sim_seconds must be on the 50 ms public grid"
+        )
+    return SimulationConfig(
+        seed,
+        duration_ns,
+        float(target_decimal),
+        public_epoch_native_ns,
+    )
 
 
 def _duration_seconds(duration_ns: int) -> int | float:
@@ -280,6 +314,9 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
         document["simulation"] = {
             "seed": config.simulation.seed,
             "duration_sim_seconds": _duration_seconds(config.simulation.duration_ns),
+            "public_epoch_native_sim_seconds": _duration_seconds(
+                config.simulation.public_epoch_native_ns
+            ),
             "target_real_time_factor": config.simulation.target_real_time_factor,
         }
     return document

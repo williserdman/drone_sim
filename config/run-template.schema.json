@@ -51,12 +51,17 @@
     "simulation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["seed", "duration_sim_seconds", "target_real_time_factor"],
+      "required": ["seed", "duration_sim_seconds", "public_epoch_native_sim_seconds", "target_real_time_factor"],
       "properties": {
         "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
         "duration_sim_seconds": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "public_epoch_native_sim_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "multipleOf": 0.05
         },
         "target_real_time_factor": {"const": 0.1}
       }

@@ -85,6 +85,7 @@ def test_resolve_default_template_returns_frozen_phase_3_configuration():
         duration_ns=60_000_000_000,
         target_real_time_factor=0.1,
     )
+    assert getattr(resolved.simulation, "public_epoch_native_ns", None) == 90_000_000_000
     assert resolved.expected_camera_frames == 1200
     assert resolved.recording == RecordingConfig(
         width_px=320,
@@ -123,6 +124,7 @@ def test_phase3_simulation_config_derives_exact_frame_count(tmp_path):
     value["simulation"] = {
         "seed": 7,
         "duration_sim_seconds": 0.15,
+        "public_epoch_native_sim_seconds": 90.0,
         "target_real_time_factor": 0.1,
     }
 
@@ -142,6 +144,56 @@ def test_phase3_simulation_config_derives_exact_frame_count(tmp_path):
     )
 
 
+def test_phase3_simulation_config_stores_public_epoch_as_exact_nanoseconds(tmp_path):
+    value = _phase2_document()
+    value.update(
+        runtime_profile="phase3",
+        simulation={
+            "seed": 7,
+            "duration_sim_seconds": 0.15,
+            "public_epoch_native_sim_seconds": 90.05,
+            "target_real_time_factor": 0.1,
+        },
+    )
+
+    config = resolve_run_config(
+        _write_template(tmp_path, value),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+
+    assert config.simulation.public_epoch_native_ns == 90_050_000_000
+
+
+@pytest.mark.parametrize(
+    "epoch",
+    [
+        0,
+        -0.05,
+        float("nan"),
+        90.0000000001,
+        90.000000001,
+        90.025,
+    ],
+)
+def test_phase3_simulation_rejects_invalid_public_epoch_values(tmp_path, epoch):
+    value = _phase2_document()
+    value.update(
+        runtime_profile="phase3",
+        simulation={
+            "seed": 1,
+            "duration_sim_seconds": 2.0,
+            "public_epoch_native_sim_seconds": epoch,
+            "target_real_time_factor": 0.1,
+        },
+    )
+
+    with pytest.raises(ValueError):
+        resolve_run_config(
+            _write_template(tmp_path, value),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+
+
 def test_large_finite_integral_duration_normalizes_without_float_overflow(tmp_path):
     duration_seconds = 10**400
     value = _phase2_document()
@@ -150,6 +202,7 @@ def test_large_finite_integral_duration_normalizes_without_float_overflow(tmp_pa
         simulation={
             "seed": 1,
             "duration_sim_seconds": duration_seconds,
+            "public_epoch_native_sim_seconds": 90.0,
             "target_real_time_factor": 0.1,
         },
     )
@@ -180,14 +233,54 @@ def test_runtime_topology_rejects_noncanonical_profile_ownership_pairs(
 @pytest.mark.parametrize(
     "simulation",
     [
-        {"seed": -1, "duration_sim_seconds": 2.0, "target_real_time_factor": 0.1},
-        {"seed": 2**32, "duration_sim_seconds": 2.0, "target_real_time_factor": 0.1},
-        {"seed": 1, "duration_sim_seconds": 0, "target_real_time_factor": 0.1},
-        {"seed": 1, "duration_sim_seconds": 0.075, "target_real_time_factor": 0.1},
-        {"seed": 1, "duration_sim_seconds": 2.0, "target_real_time_factor": 0},
-        {"seed": 1, "duration_sim_seconds": 2.0, "target_real_time_factor": 1.0},
-        {"seed": True, "duration_sim_seconds": 2.0, "target_real_time_factor": 0.1},
-        {"seed": 1, "duration_sim_seconds": float("nan"), "target_real_time_factor": 0.1},
+        {
+            "seed": -1,
+            "duration_sim_seconds": 2.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0.1,
+        },
+        {
+            "seed": 2**32,
+            "duration_sim_seconds": 2.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0.1,
+        },
+        {
+            "seed": 1,
+            "duration_sim_seconds": 0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0.1,
+        },
+        {
+            "seed": 1,
+            "duration_sim_seconds": 0.075,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0.1,
+        },
+        {
+            "seed": 1,
+            "duration_sim_seconds": 2.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0,
+        },
+        {
+            "seed": 1,
+            "duration_sim_seconds": 2.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 1.0,
+        },
+        {
+            "seed": True,
+            "duration_sim_seconds": 2.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0.1,
+        },
+        {
+            "seed": 1,
+            "duration_sim_seconds": float("nan"),
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0.1,
+        },
     ],
 )
 def test_invalid_phase3_timing_is_rejected_before_compose(tmp_path, simulation):
@@ -209,6 +302,7 @@ def test_invalid_phase3_timing_is_rejected_before_compose(tmp_path, simulation):
             "simulation": {
                 "seed": 1,
                 "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
                 "target_real_time_factor": 0.1,
             }
         },
@@ -217,6 +311,7 @@ def test_invalid_phase3_timing_is_rejected_before_compose(tmp_path, simulation):
             "simulation": {
                 "seed": 1,
                 "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
                 "target_real_time_factor": 0.1,
             },
         },
@@ -280,6 +375,32 @@ def test_config_schemas_accept_exact_three_frame_duration(schema_name):
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_config_schemas_accept_public_epoch_on_exact_50_ms_grid(schema_name):
+    document = (
+        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
+        if schema_name == "run-template.schema.json"
+        else _resolved_document()
+    )
+    document["simulation"]["public_epoch_native_sim_seconds"] = 90.0
+
+    _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+@pytest.mark.parametrize("epoch", [0, 90.025, 90.0000000001, 90.000000001])
+def test_config_schemas_reject_invalid_public_epoch_values(schema_name, epoch):
+    document = (
+        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
+        if schema_name == "run-template.schema.json"
+        else _resolved_document()
+    )
+    document["simulation"]["public_epoch_native_sim_seconds"] = epoch
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
 def test_config_schemas_accept_omitted_phase_2_profile(schema_name):
     document = _phase2_document()
     if schema_name == "run.schema.json":
@@ -314,6 +435,7 @@ def test_config_schemas_accept_omitted_phase_2_profile(schema_name):
                 "simulation": {
                     "seed": 1,
                     "duration_sim_seconds": 2.0,
+                    "public_epoch_native_sim_seconds": 90.0,
                     "target_real_time_factor": 0.1,
                 },
             },
@@ -480,6 +602,7 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
         "scenario": "descent_v1",
         "simulation": {
             "duration_sim_seconds": 60.0,
+            "public_epoch_native_sim_seconds": 90.0,
             "seed": 1,
             "target_real_time_factor": 0.1,
         },

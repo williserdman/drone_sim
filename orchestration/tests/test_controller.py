@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -1051,6 +1052,7 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
             simulation={
                 "seed": 9,
                 "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
                 "target_real_time_factor": 0.1,
             },
         )
@@ -1100,6 +1102,7 @@ def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
             simulation={
                 "seed": 9,
                 "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
                 "target_real_time_factor": 0.1,
             },
         )
@@ -1139,6 +1142,7 @@ def test_phase3_completed_run_requires_native_state_tlog(tmp_path):
             simulation={
                 "seed": 9,
                 "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
                 "target_real_time_factor": 0.1,
             },
         )
@@ -1438,6 +1442,28 @@ def test_child_exit_race_enters_failed_finalization(tmp_path):
 
     assert result.state == "FAILED"
     assert result.reason == "compose_child_exited"
+
+
+def test_one_compose_ps_timeout_is_retried_within_the_startup_deadline(tmp_path):
+    controller, _trace, _clock, _holder = _controller(tmp_path)
+    original = FakeCompose.ps
+    timeouts: list[float] = []
+
+    def timeout_once(self, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            raise subprocess.TimeoutExpired(["docker", "compose", "ps"], timeout)
+        return original(self, timeout)
+
+    FakeCompose.ps = timeout_once
+    try:
+        result = controller.start(_template(tmp_path))
+    finally:
+        FakeCompose.ps = original
+
+    assert result.state == "COMPLETED", result.reason
+    assert len(timeouts) >= 2
+    assert timeouts[0] < 45
 
 
 def test_first_observed_abort_wins_runtime_failure_race_and_later_cause_is_diagnostic(tmp_path):

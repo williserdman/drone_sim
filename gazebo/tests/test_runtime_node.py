@@ -3,6 +3,7 @@ import pytest
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
 from drone_sim_gazebo.runtime.runtime_node import (
+    PublicEpochRendezvous,
     _probe_flight_exchange,
     _record_adapter_fault,
     _start_server_ready,
@@ -93,3 +94,75 @@ def test_adapter_fault_retains_exact_reason_in_structured_log(monkeypatch):
         )
     ]
     assert inbox == [ChildExited(RUN_ID, "adapter", 1)]
+
+
+def test_public_epoch_rendezvous_steps_to_target_then_waits_for_delivery_ack():
+    calls = []
+
+    class Transport:
+        def set_paused(self, paused):
+            calls.append(("paused", paused))
+
+        def paused_sim_time_ns(self):
+            calls.append(("stats",))
+            return 44_000_000_000
+
+        def run_to_sim_time(self, target_ns):
+            calls.append(("run_to", target_ns))
+
+    class Protocol:
+        delivered = False
+
+        def read_status(self, name):
+            assert name == "mission-command-delivered"
+            return {"delivered": True} if self.delivered else None
+
+    protocol = Protocol()
+    rendezvous = PublicEpochRendezvous(
+        transport=Transport(),
+        protocol=protocol,
+        public_epoch_native_ns=90_000_000_000,
+        activate_output=lambda: calls.append(("activate",)),
+    )
+
+    rendezvous.begin()
+    assert calls == [
+        ("activate",),
+        ("paused", True),
+    ]
+    assert rendezvous.release_if_delivered() is False
+    assert calls[-2:] == [
+        ("stats",),
+        ("run_to", 90_000_000_000),
+    ]
+    assert rendezvous.release_if_delivered() is False
+    protocol.delivered = True
+    assert rendezvous.release_if_delivered() is True
+    assert calls[-1] == ("paused", False)
+
+
+def test_public_epoch_rendezvous_waits_for_confirmed_pause_before_run_to():
+    calls = []
+
+    class Transport:
+        def set_paused(self, paused):
+            calls.append(("paused", paused))
+
+        def paused_sim_time_ns(self):
+            calls.append(("stats",))
+            return None
+
+        def run_to_sim_time(self, target_ns):
+            calls.append(("run_to", target_ns))
+
+    rendezvous = PublicEpochRendezvous(
+        transport=Transport(),
+        protocol=object(),
+        public_epoch_native_ns=90_000_000_000,
+        activate_output=lambda: calls.append(("activate",)),
+    )
+
+    rendezvous.begin()
+    assert rendezvous.release_if_delivered() is False
+
+    assert calls == [("activate",), ("paused", True), ("stats",)]

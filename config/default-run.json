@@ -17,6 +17,7 @@
   "simulation": {
     "seed": 1,
     "duration_sim_seconds": 60.0,
+    "public_epoch_native_sim_seconds": 90.0,
     "target_real_time_factor": 0.1
   }
 }

@@ -6,6 +6,7 @@ import pytest
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+PUBLIC_EPOCH_NATIVE_NS = 90_000_000_000
 
 
 def _set_stamp(stamp, timestamp_ns):
@@ -27,7 +28,11 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
     from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
 
     rclpy.init()
-    adapter = GazeboAdapterNode(run_id=RUN_ID, expected_frames=2)
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=2,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
     graph = rclpy.create_node("gazebo_adapter_contract_observer")
     expected = {
         "/clock": (ReliabilityPolicy.RELIABLE, 1000),
@@ -68,6 +73,28 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         rclpy.shutdown()
 
 
+def test_live_ros_node_faults_when_pre_zero_outputs_exceed_two_public_epochs():
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from drone_sim_gazebo.ros_adapter import AdapterFault
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=3,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    try:
+        adapter._emit(tuple(object() for _ in range(6)))
+
+        with pytest.raises(AdapterFault, match="two public epochs"):
+            adapter._emit((object(),))
+    finally:
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activation():
     """Warmup time must not leak into the fixed public mission interval."""
     rclpy = pytest.importorskip("rclpy")
@@ -89,6 +116,7 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
     adapter = GazeboAdapterNode(
         run_id=RUN_ID,
         expected_frames=1,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
         on_completed=completions.append,
         on_fault=faults.append,
     )
@@ -160,12 +188,12 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         )
 
         warmup_clock = Clock()
-        _set_stamp(warmup_clock.clock, 49_025_000_000)
+        _set_stamp(warmup_clock.clock, PUBLIC_EPOCH_NATIVE_NS - 50_000_000)
         adapter._accept_clock(warmup_clock)
-        adapter._accept_image("onboard", image(49_000_000_000))
-        adapter._accept_image("observer", image(49_000_000_000))
-        adapter._accept_odometry(odometry(49_000_000_000))
-        adapter._accept_contacts(contacts(49_000_000_000))
+        adapter._accept_image("onboard", image(PUBLIC_EPOCH_NATIVE_NS - 50_000_000))
+        adapter._accept_image("observer", image(PUBLIC_EPOCH_NATIVE_NS - 50_000_000))
+        adapter._accept_odometry(odometry(PUBLIC_EPOCH_NATIVE_NS - 50_000_000))
+        adapter._accept_contacts(contacts(PUBLIC_EPOCH_NATIVE_NS - 50_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
 
         assert clocks == []
@@ -175,11 +203,13 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         assert completions == []
 
         adapter.activate_output()
-        # Newer warmup samples may already be queued in independent DDS
-        # readers when the RUNNING callback requests activation.
-        adapter._accept_image("onboard", image(49_050_000_000))
-        adapter._accept_image("observer", image(49_050_000_000))
-        adapter._accept_clock(warmup_clock)
+        # Independent DDS readers may deliver the first validated public
+        # frame/truth epoch before the reliable native clock reaches target.
+        first_public_native_ns = PUBLIC_EPOCH_NATIVE_NS + 50_000_000
+        adapter._accept_image("onboard", image(first_public_native_ns))
+        adapter._accept_image("observer", image(first_public_native_ns))
+        adapter._accept_contacts(contacts(first_public_native_ns, in_contact=True))
+        adapter._accept_odometry(odometry(first_public_native_ns))
         rclpy.spin_once(observer, timeout_sec=0.1)
         assert clocks == []
         assert images == []
@@ -187,23 +217,21 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         assert faults == []
         assert completions == []
 
-        barrier_clock = Clock()
-        _set_stamp(barrier_clock.clock, 49_075_000_000)
-        adapter._accept_clock(barrier_clock)
-        _spin_until(observer, lambda: clocks == [0])
-
-        adapter._accept_image("onboard", image(49_100_000_000))
-        adapter._accept_image("observer", image(49_100_000_000))
-        adapter._accept_contacts(contacts(49_100_000_000, in_contact=True))
-        adapter._accept_odometry(odometry(49_100_000_000))
-        _spin_until(observer, lambda: len(images) == 2 and truths == [50_000_000])
+        epoch_clock = Clock()
+        _set_stamp(epoch_clock.clock, PUBLIC_EPOCH_NATIVE_NS)
+        adapter._accept_clock(epoch_clock)
+        _spin_until(
+            observer,
+            lambda: clocks == [0, 50_000_000]
+            and len(images) == 2
+            and truths == [50_000_000],
+        )
 
         assert images == [50_000_000, 50_000_000]
-        _spin_until(observer, lambda: clocks == [0, 50_000_000])
         delayed_clock = Clock()
-        _set_stamp(delayed_clock.clock, 49_075_000_000)
+        _set_stamp(delayed_clock.clock, PUBLIC_EPOCH_NATIVE_NS)
         adapter._accept_clock(delayed_clock)
-        _set_stamp(delayed_clock.clock, 49_100_000_000)
+        _set_stamp(delayed_clock.clock, first_public_native_ns)
         adapter._accept_clock(delayed_clock)
         rclpy.spin_once(observer, timeout_sec=0.1)
         assert clocks == [0, 50_000_000]
@@ -219,7 +247,7 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         adapter._accept_contacts(contacts(49_150_000_000))
         adapter._accept_odometry(odometry(49_150_000_000))
         post_completion_clock = Clock()
-        _set_stamp(post_completion_clock.clock, 109_150_000_000)
+        _set_stamp(post_completion_clock.clock, PUBLIC_EPOCH_NATIVE_NS + 100_000_000)
         adapter._accept_clock(post_completion_clock)
         rclpy.spin_once(observer, timeout_sec=0.1)
 
@@ -230,9 +258,9 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
 
         adapter.freeze_output()
         frozen_clock = Clock()
-        _set_stamp(frozen_clock.clock, 109_200_000_000)
+        _set_stamp(frozen_clock.clock, PUBLIC_EPOCH_NATIVE_NS + 150_000_000)
         adapter._accept_clock(frozen_clock)
-        adapter._accept_image("onboard", image(49_150_000_000))
+        adapter._accept_image("onboard", image(PUBLIC_EPOCH_NATIVE_NS + 100_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
 
         assert clocks == [0, 50_000_000]

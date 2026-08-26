@@ -927,6 +927,7 @@ def test_make_inspect_phase3_invokes_host_orchestrator_cli_exactly(tmp_path):
     result = subprocess.run(
         [
             "make",
+            "--no-print-directory",
             "-n",
             "inspect-phase3",
             f"RUN_DIRECTORY={run_directory}",

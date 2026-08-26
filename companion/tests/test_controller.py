@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
 from drone_sim_companion.controller import MissionController, process_telemetry
 from drone_sim_companion.mission import Ack, CommandKind, MissionPhase, Telemetry
 
@@ -120,6 +122,43 @@ def test_mission_commands_require_running_and_the_first_public_clock() -> None:
 
     assert controller.state.phase is MissionPhase.WAIT_GUIDED_ACK
     assert vehicle.sent == [(CommandKind.SET_GUIDED, None)]
+
+
+def test_ready_controller_delivers_initial_command_at_public_zero() -> None:
+    vehicle = FakeVehicle()
+    delivered: list[tuple[CommandKind, int]] = []
+    controller = MissionController(
+        vehicle,
+        lambda *_record: None,
+        command_delivered=lambda command, stamp: delivered.append((command, stamp)),
+    )
+    controller.observe_readiness(Telemetry(12, heartbeat=True))
+    controller.observe_readiness(Telemetry(14, prearm_checks_healthy=True))
+
+    controller.begin_mission(0)
+
+    assert controller.state.phase is MissionPhase.WAIT_GUIDED_ACK
+    assert vehicle.sent == [(CommandKind.SET_GUIDED, None)]
+    assert delivered == [(CommandKind.SET_GUIDED, 0)]
+
+
+def test_initial_delivery_ack_is_not_emitted_when_send_fails() -> None:
+    class BrokenVehicle:
+        def send(self, command: CommandKind, altitude_m: float | None) -> None:
+            raise ConnectionError("MAVLink unavailable")
+
+    delivered: list[tuple[CommandKind, int]] = []
+    controller = MissionController(
+        BrokenVehicle(),
+        lambda *_record: None,
+        command_delivered=lambda command, stamp: delivered.append((command, stamp)),
+    )
+    controller.observe_readiness(Telemetry(12, heartbeat=True, prearm_checks_healthy=True))
+
+    with pytest.raises(ConnectionError, match="unavailable"):
+        controller.begin_mission(0)
+
+    assert delivered == []
 
 
 def test_running_mavlink_status_text_is_emitted_without_changing_policy() -> None:

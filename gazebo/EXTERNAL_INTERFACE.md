@@ -31,13 +31,16 @@ onboard public image is the exact stream later consumed by companion vision and
 artifacts. Camera history retains five simulated seconds so a bounded host-side
 MCAP writer stall cannot evict unacknowledged archival evidence. Before
 `RUNNING`, none of these topics publishes warmup evidence.
-`RUNNING` arms a native-source barrier: after both camera streams have crossed
-it and the private clock has reached their greatest stamp, the adapter floors
-that clock to the preceding 50 ms camera epoch and publishes `/clock=0`
-exactly once. It drops queued native samples at or before that epoch and
-rebases every later clock, image, metadata, ground-truth, and contact
-timestamp. Frame 0 is therefore at public 50 ms; for a 60 second run, frame
-1199 is at public 60.000 seconds, and no later private clock is public.
+`simulation.public_epoch_native_sim_seconds` is required in Phase 3 and
+defaults to `90.0`; its exact configured positive integer-nanosecond value is
+the native activation target. `RUNNING` arms output before that target. If
+activation is late or reliable native `/clock` skips the exact target, the
+adapter fails closed. It drops native samples at or before the target, then
+publishes `/clock=0` before draining a bounded pre-zero queue of at most two
+public epochs (six already-validated frame/truth outputs); overflow faults.
+The first public camera/truth sample at target + 50 ms maps to public 50 ms.
+Frame 0 is therefore at public 50 ms; for a 60 second run, frame 1199 is at
+public 60.000 seconds, and no later private clock is public.
 
 `GroundTruth.pose` and its linear and angular velocity are expressed in the
 Gazebo world frame using ENU axes. `GroundTruth.in_contact` is true when the
@@ -50,8 +53,12 @@ artifact readiness, and finalization request. It starts the server paused and
 releases no simulation sample before its private endpoints, native recorder,
 bridges, public publishers, and artifact recorders are ready. After `READY`,
 the server unpauses so Gazebo and ArduPilot can advance in private lockstep,
-while the adapter only caches the latest native clock. `RUNNING` explicitly
-activates public output without issuing another unpause or resetting Gazebo.
+while the adapter waits for its configured native target. `RUNNING` explicitly
+arms public output and requests a pause. After Transport statistics confirm the
+world is paused, the runtime advances to the exact configured native target,
+holds there while the companion queues `SET_GUIDED` at public zero and writes
+`mission-command-delivered`, then unpauses. It fails closed on an overshot
+target or malformed rendezvous fact and never resets Gazebo or ArduPilot.
 
 The Phase 2 synthetic source consumes the transport-only
 `/simulation/camera_pair_ack` contract documented by artifacts. The production

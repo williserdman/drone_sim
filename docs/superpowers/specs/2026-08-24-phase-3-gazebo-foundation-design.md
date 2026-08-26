@@ -190,6 +190,7 @@ The resolved run configuration gains:
   "simulation": {
     "seed": 1,
     "duration_sim_seconds": 2.0,
+    "public_epoch_native_sim_seconds": 90.0,
     "target_real_time_factor": 0.1
   }
 }
@@ -201,6 +202,9 @@ The resolved run configuration gains:
 - `seed` is an integer from `0` through `4294967295`.
 - `duration_sim_seconds` is a positive finite number whose nanosecond value is
   an exact multiple of the fixed 50,000,000 ns camera interval.
+- `public_epoch_native_sim_seconds` is required in Phase 3 and defaults to
+  `90.0`; its exact positive finite integer-nanosecond value is on the 50 ms
+  grid and is the fixed native activation target.
 - `target_real_time_factor` is frozen at `0.1` in Phase 3. It controls the
   immutable fixture's physics pacing target, not application event timestamps.
 - The existing `320x240`, `rgb8`, 20 FPS recording contract remains frozen.

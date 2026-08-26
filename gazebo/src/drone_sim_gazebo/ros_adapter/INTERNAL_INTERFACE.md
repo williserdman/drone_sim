@@ -47,13 +47,16 @@ same current camera pair.
 `GazeboAdapterNode` is the only ROS-dependent adapter class. It republishes the
 private native clock through the sole public `/clock` publisher after mapping
 it through `OutputEpochGate`, publishes the fixed camera/metadata/truth
-contract, and has no camera-ack subscription. During warmup the gate retains
-only the greatest observed native clock. `request_activation()` starts a
-source barrier; `accept_camera()` records each stream's greatest post-request
-stamp, and `accept_clock()` creates the immutable `PublicEpoch` only when the
-clock has reached both stream watermarks. It floors that clock to
-`50,000,000` ns and returns public zero. `rebase_sample()` returns no value
-through the epoch and otherwise the native-minus-epoch timestamp used
-identically for images, metadata, odometry, contact, ground truth, and later
-clock samples. Clock mapping returns no value beyond the configured final
-frame timestamp or after node completion.
+contract, and has no camera-ack subscription. The gate receives the exact
+configured native target (Phase 3 default `90.0` seconds). `request_activation()`
+arms output before that target; `accept_clock()` requires the reliable clock to
+hit it exactly, otherwise late activation or a skipped target faults closed.
+Native samples at or before the target are dropped. It returns public zero at
+the target. The gate's pre-zero queue is bounded to two public epochs (six
+already-validated outputs) and faults on overflow; it drains only after
+`/clock=0` is published. The first target+50 ms camera/truth sample maps to
+public 50 ms.
+`rebase_sample()` returns no value through the target and otherwise uses
+native-minus-target identically for images, metadata, odometry, contact, ground
+truth, and later clock samples. Clock mapping returns no value beyond the
+configured final frame timestamp or after node completion.

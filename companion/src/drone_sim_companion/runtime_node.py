@@ -122,7 +122,12 @@ class _ProductionProtocol:
         self._runtime = RuntimeProtocol(config.run_directory, config.run_id)
 
     def write_status(self, name: str, document: dict[str, object]) -> None:
-        if name not in {"companion-ready", "mission-ready", "mission-finished"}:
+        if name not in {
+            "companion-ready",
+            "mission-ready",
+            "mission-command-delivered",
+            "mission-finished",
+        }:
             raise ValueError("companion does not own that status")
         self._runtime.write_status(name, document)
 
@@ -189,7 +194,11 @@ def main() -> int:
         return 1
     lifecycle.mark_transport_ready()
     vehicle = MavlinkAdapter(connection, mavutil)
-    controller = MissionController(vehicle, lifecycle.emit)
+    controller = MissionController(
+        vehicle,
+        lifecycle.emit,
+        command_delivered=lifecycle.observe_command_delivery,
+    )
     rclpy.init()
     node = Node("drone_sim_companion", parameter_overrides=[])
     latest_clock_ns: int | None = None
@@ -242,6 +251,21 @@ def main() -> int:
     try:
         while rclpy.ok() and not requested_stop and not finalizing:
             rclpy.spin_once(node, timeout_sec=0.02)
+            policy_active = mission_policy_active(
+                mission_running=mission_running,
+                public_clock_observed=latest_clock_ns is not None,
+            )
+            if (
+                policy_active
+                and latest_clock_ns == 0
+                and controller.mission_ready
+                and controller.state.phase is MissionPhase.WAIT_HEARTBEAT
+                and failure is None
+            ):
+                try:
+                    controller.begin_mission(0)
+                except Exception as error:
+                    failure = f"initial MAVLink command delivery failed: {error}"
             if failure is None:
                 try:
                     for _ in range(100):
@@ -259,10 +283,6 @@ def main() -> int:
                         )
                 except Exception as error:
                     failure = f"MAVLink processing failed: {error}"
-            policy_active = mission_policy_active(
-                mission_running=mission_running,
-                public_clock_observed=latest_clock_ns is not None,
-            )
             if (
                 policy_active
                 and controller.heartbeat_observed

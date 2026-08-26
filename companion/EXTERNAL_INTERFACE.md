@@ -56,6 +56,10 @@ Before the first public `/clock`, passive MAVLink observations use timestamp zer
 and cannot advance mission policy. The companion sends no flight command or
 telemetry-stream request until both the current run is `RUNNING` and at least one
 public clock sample has been received.
+At public zero it queues `SET_GUIDED` to the connected MAVLink transport before
+polling later telemetry, then durably records that delivery. This transport
+delivery fact is distinct from, and does not replace, the later positive
+vehicle command acknowledgement required by mission policy.
 
 ## Durable lifecycle
 
@@ -69,6 +73,9 @@ public clock sample has been received.
   it sends no command to the vehicle.
 - Mission policy cannot issue `GUIDED` or any other flight command until both
   `RUNNING` and the first public `/clock` sample have been observed.
+- `.status/mission-command-delivered.json` is written exactly once after the
+  initial `SET_GUIDED` send returns and is exactly
+  `{run_id,command:"SET_GUIDED",sim_timestamp_ns:0,delivered:true}`.
 - `.status/mission-finished.json` is written only after actual landed/disarmed
   success and is exactly `{run_id,finished:true,sim_timestamp_ns,outcome:"LANDED"}`.
   Failures remain structured failure evidence and can never create or repair

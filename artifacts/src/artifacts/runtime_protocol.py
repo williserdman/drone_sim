@@ -31,6 +31,7 @@ _STATUS_NAMES = frozenset(
         "ardupilot-ready",
         "companion-ready",
         "mission-ready",
+        "mission-command-delivered",
         "runtime-running",
         "source-finished",
         "mission-finished",
@@ -190,6 +191,14 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
             and document["ready"] is True
             and document["heartbeat_observed"] is True
             and document["prearm_checks_healthy"] is True
+        )
+    elif name == "mission-command-delivered":
+        valid = (
+            set(document)
+            == {"run_id", "command", "sim_timestamp_ns", "delivered"}
+            and document["command"] == "SET_GUIDED"
+            and document["sim_timestamp_ns"] == 0
+            and document["delivered"] is True
         )
     elif name == "runtime-running":
         valid = (

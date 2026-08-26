@@ -269,3 +269,32 @@ def test_runtime_wires_passive_facts_to_durable_mission_readiness() -> None:
         )
     ]
     assert vehicle.sent == []
+
+
+def test_initial_command_delivery_is_durable_and_exactly_at_public_zero() -> None:
+    class Protocol:
+        def __init__(self) -> None:
+            self.statuses: list[tuple[str, dict[str, object]]] = []
+
+        def write_status(self, name: str, document: dict[str, object]) -> None:
+            self.statuses.append((name, document))
+
+        def write_quiescence(self, _module: str) -> None:
+            pass
+
+    protocol = Protocol()
+    lifecycle = CompanionLifecycle(run_id=RUN_ID, protocol=protocol, stream=StringIO())
+
+    lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 0)
+
+    assert protocol.statuses == [
+        (
+            "mission-command-delivered",
+            {
+                "run_id": RUN_ID,
+                "command": "SET_GUIDED",
+                "sim_timestamp_ns": 0,
+                "delivered": True,
+            },
+        )
+    ]

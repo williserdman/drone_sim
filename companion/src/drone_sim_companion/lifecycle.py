@@ -8,7 +8,7 @@ from typing import Any, Protocol, TextIO
 
 from artifacts.structured_log import StructuredEvent, write_event
 
-from .mission import MissionPhase, MissionState
+from .mission import CommandKind, MissionPhase, MissionState
 
 
 class LifecycleProtocol(Protocol):
@@ -84,6 +84,19 @@ class CompanionLifecycle:
         )
         self.emit("mission_ready", None, {})
         self._mission_ready = True
+
+    def observe_command_delivery(self, command: CommandKind, timestamp_ns: int) -> None:
+        if command is not CommandKind.SET_GUIDED or timestamp_ns != 0:
+            return
+        self._protocol.write_status(
+            "mission-command-delivered",
+            {
+                "run_id": self._run_id,
+                "command": command.value,
+                "sim_timestamp_ns": timestamp_ns,
+                "delivered": True,
+            },
+        )
 
     def observe_terminal(self, state: MissionState) -> None:
         if self._terminal or state.phase not in {MissionPhase.LANDED, MissionPhase.FAILED}:

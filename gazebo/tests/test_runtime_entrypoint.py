@@ -298,10 +298,32 @@ def test_transport_applies_step_and_pause_with_shell_free_world_control():
     transport = GazeboTransport(environment={"GZ_PARTITION": "p"}, run=run)
     transport.request_steps(1)
     transport.set_paused(False)
+    transport.run_to_sim_time(90_050_000_000)
 
     assert "pause: true, multi_step: 1" in calls[0][0]
     assert "pause: false" in calls[1][0]
+    assert "run_to_sim_time { sec: 90 nsec: 50000000 }" in calls[2][0]
     assert all(call[1]["shell"] is False for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("sim_time {\n  sec: 44\n  nsec: 125000000\n}\npaused: true\n", 44_125_000_000),
+        ("sim_time {\n  sec: 44\n}\npaused: false\n", None),
+    ],
+)
+def test_transport_reads_only_confirmed_paused_integer_world_time(output, expected):
+    def run(argv, **_kwargs):
+        assert ("-t", "/world/phase3_foundation/stats") == (
+            argv[argv.index("-t")],
+            argv[argv.index("-t") + 1],
+        )
+        return type("Result", (), {"returncode": 0, "stdout": output, "stderr": ""})()
+
+    transport = GazeboTransport(environment={"GZ_PARTITION": "p"}, run=run)
+
+    assert transport.paused_sim_time_ns() == expected
 
 
 def test_transport_rejects_negative_world_control_reply():

@@ -27,7 +27,10 @@ private to this module.
 2. Start one fresh headless Gazebo Harmonic server paused with the resolved seed.
 3. Discover private control, clock, camera, pose, contact, and native-recording endpoints.
 4. Start private bridges and the public ROS adapter without releasing a sample.
-5. At `READY`, unpause private Gazebo-ArduPilot warmup; at `RUNNING`, activate the zero-based public epoch without another unpause or reset.
+5. At `READY`, unpause private Gazebo-ArduPilot warmup; at `RUNNING`, arm the
+   configured fixed native public epoch (default `90.0` s) before its exact
+   target, without another unpause or reset. Fail closed on late activation or
+   a skipped target; publish zero before draining the bounded pre-zero queue.
 6. Publish two 20-sim-Hz camera/metadata streams and timestamp-aligned ground truth.
 7. Pause at the configured duration, freeze native evidence, and report source completion.
 8. Finalize within the shared bounded deadline and publish only Gazebo's quiescence marker.

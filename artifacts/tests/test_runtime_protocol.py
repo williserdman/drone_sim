@@ -58,6 +58,12 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
             "heartbeat_observed": True,
             "prearm_checks_healthy": True,
         },
+        "mission-command-delivered": {
+            "run_id": RUN_ID,
+            "command": "SET_GUIDED",
+            "sim_timestamp_ns": 0,
+            "delivered": True,
+        },
         "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
         "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},
         "mission-finished": {
@@ -98,6 +104,8 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
         ("ardupilot-ready", {"run_id": RUN_ID, "ready": True, "json_exchange": False, "mavlink_endpoint": "tcp://ardupilot-sitl:5760"}),
         ("companion-ready", {"run_id": RUN_ID, "ready": True, "mavlink_endpoint": "tcp://ardupilot-sitl:5760", "mavlink_transport_connected": False}),
         ("mission-ready", {"run_id": RUN_ID, "ready": True, "heartbeat_observed": True, "prearm_checks_healthy": False}),
+        ("mission-command-delivered", {"run_id": RUN_ID, "command": "ARM", "sim_timestamp_ns": 0, "delivered": True}),
+        ("mission-command-delivered", {"run_id": RUN_ID, "command": "SET_GUIDED", "sim_timestamp_ns": 1, "delivered": True}),
         ("runtime-running", {"run_id": RUN_ID, "state": "READY", "sim_timestamp_ns": 0}),
         ("runtime-running", {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": True}),
         ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": -1}),

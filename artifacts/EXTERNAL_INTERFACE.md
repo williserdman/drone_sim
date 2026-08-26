@@ -56,7 +56,10 @@ same public epoch exactly.
   `/simulation/artifact_status`
 - Durable `.status/artifacts-ready.json` and `.status/artifacts-final.json`;
   the shared status protocol also validates the production readiness and
-  completion facts owned by Gazebo, ArduPilot, companion, and scorekeeper
+  completion facts owned by Gazebo, ArduPilot, companion, and scorekeeper.
+  This includes the exact one-shot companion rendezvous fact
+  `.status/mission-command-delivered.json` with
+  `{run_id,command:"SET_GUIDED",sim_timestamp_ns:0,delivered:true}`
 - `runs/<run_id>/manifest.json`
 - Onboard and observer MP4 files, ROS 2 bag, logs, Gazebo state, configuration snapshots, and scoring files
 

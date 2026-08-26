@@ -23,6 +23,11 @@ This ledger records work intentionally excluded from the critical path to a veri
   claim a frozen final counter snapshot.
 - **Promoted from deferred on run `305f7421-6bbc-4d5f-8a83-c5ba50b9338c`:** under severe host contention the upstream Gazebo plugin repeatedly drained multiple sequential actuator packets and retained only the newest, producing real frame gaps and corrupting one-for-one lockstep evidence. Process at most one sequential frame per physics update, preserve exact-duplicate resend recovery, and diagnose a true jump beyond `current + 1` before the next scored run.
 - Remove the companion controller's legacy `ready` alias and consolidate its duplicated mission-readiness conjunction after the public interface and winning-run evidence are stable.
+- If future missions require sub-frame determinism for commands after
+  `SET_GUIDED`, replace their current telemetry-poll scheduling with explicit
+  simulation-time rendezvous. The MVP causally aligns only the initial command;
+  later dispatches differed by less than two 50 ms frames across the accepted
+  baseline and slowed runs without changing score or evidence completeness.
 - Add a repository-owned Phase 3 slowdown-injection control and normalized
   two-run comparator. The vertical slice may use a reversible, run-scoped
   Docker resource constraint and independently compare the preserved bundles.
@@ -34,7 +39,3 @@ This ledger records work intentionally excluded from the critical path to a veri
   the missing abstraction as simulation evidence.
 - Add the planned `test-phase3` integration target and Phase 3 verification
   document after the runnable maximum-score and slowdown bundles are preserved.
-- Make the acceptance target's nested `make -n` test ignore GNU Make's inherited
-  directory-tracing lines. It passes standalone but is non-hermetic when run
-  beneath `make test-unit`; this does not affect the operator or acceptance
-  command itself.
