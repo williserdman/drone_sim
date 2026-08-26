@@ -10,7 +10,7 @@
 - Scorekeeper result files
 
 The fixed ROS subscriptions are `/clock` at best-effort depth 1,
-`/simulation/run_state` at reliable transient-local depth 1,
+`/simulation/run_state` at reliable transient-local depth 4,
 `/simulation/artifact_status` at reliable transient-local depth 2,
 `/simulation/ground_truth` at best-effort depth 10,
 `/simulation/scenario_events` and `/simulation/score_events` at reliable depth

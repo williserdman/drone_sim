@@ -51,7 +51,7 @@ The fixed lifecycle state order is `CREATED`, `STARTING`, `READY`, `RUNNING`,
 `FINALIZING`, then one of `COMPLETED`, `FAILED`, or `ABORTED`. All terminal
 causes pass through `FINALIZING`. The lifecycle ROS contract is
 `simulation_interfaces/msg/RunState` on `/simulation/run_state` with reliable,
-transient-local QoS depth 1.
+transient-local QoS depth 4.
 
 ## Fixed ROS 2 contracts
 
@@ -61,7 +61,7 @@ The topic and type inventory remains fixed. Phase 2 test doubles and the Phase
 | Topic | Message | QoS |
 | --- | --- | --- |
 | `/clock` | `rosgraph_msgs/msg/Clock` | Reliable, volatile, depth 1000 |
-| `/simulation/run_state` | `simulation_interfaces/msg/RunState` | Reliable, transient local, depth 1 |
+| `/simulation/run_state` | `simulation_interfaces/msg/RunState` | Reliable, transient local, depth 4 |
 | `/simulation/artifact_status` | `simulation_interfaces/msg/ArtifactStatus` | Reliable, transient local, depth 1 |
 | `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Reliable, volatile, depth 10 |
 | `/simulation/scenario_events` | `simulation_interfaces/msg/ScenarioEvent` | Reliable, transient local, depth 100 |

@@ -323,7 +323,7 @@ def main() -> None:
     rclpy.init()
     node = Node("orchestration_runtime")
     qos = QoSProfile(
-        depth=1,
+        depth=4,
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
     )

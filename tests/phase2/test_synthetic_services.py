@@ -147,6 +147,15 @@ def test_finalization_preempts_wait_for_pair_ack_without_deadlock():
     assert model.finalizing is True
 
 
+def test_running_state_reconstructs_implied_ready_transition():
+    model = SyntheticGazeboModel(RUN_ID, publish=lambda *_args: None)
+
+    model.accept_run_state(RUN_ID, "RUNNING")
+
+    assert model.ready is True
+    assert model.running is True
+
+
 def test_durable_lifecycle_fallback_is_run_scoped_and_preempts_ack_wait():
     model = SyntheticGazeboModel(RUN_ID, publish=lambda *_args: None)
     apply_durable_lifecycle(

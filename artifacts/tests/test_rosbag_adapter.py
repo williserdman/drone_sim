@@ -145,7 +145,7 @@ def test_command_has_absolute_output_qos_node_and_frozen_topic_order(tmp_path):
     assert "--use-sim-time" not in recorder.command()
 
 
-def test_private_recorder_qos_retains_both_artifact_startup_statuses():
+def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
     artifact_root = Path(__file__).parents[1]
     override_path = artifact_root / "recording-qos.yaml"
     dockerfile = (artifact_root / "Dockerfile").read_text(encoding="utf-8")
@@ -182,7 +182,7 @@ def test_private_recorder_qos_retains_both_artifact_startup_statuses():
     assert "reliability: reliable" in clock
     assert "depth: 10" in ground_truth
     assert "reliability: reliable" in ground_truth
-    assert "depth: 1" in run_state
+    assert "depth: 4" in run_state
     # A five-sample writer/reader history lost two observer metadata samples
     # when the MCAP writer briefly fell behind.  Five simulated seconds of
     # camera history keeps the exact 20 Hz evidence intact through a bounded

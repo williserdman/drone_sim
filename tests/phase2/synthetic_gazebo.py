@@ -162,6 +162,7 @@ class SyntheticGazeboModel:
         if state == "READY":
             self.ready = True
         elif state == "RUNNING":
+            self.ready = True
             self.running = True
         elif state == "FINALIZING":
             self.finalizing = True
@@ -242,8 +243,6 @@ def apply_durable_lifecycle(
 ) -> None:
     """Apply current-run durable evidence when a one-shot ROS sample is missed."""
     if running_status is not None:
-        if running_status["state"] == "RUNNING":
-            model.accept_run_state(running_status["run_id"], "READY")
         model.accept_run_state(running_status["run_id"], running_status["state"])
     if finalize_request is not None:
         model.accept_run_state(finalize_request["run_id"], "FINALIZING")

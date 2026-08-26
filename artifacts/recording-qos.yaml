@@ -5,7 +5,7 @@
   durability: volatile
 /simulation/run_state: &latched_state_qos
   history: keep_last
-  depth: 1
+  depth: 4
   reliability: reliable
   durability: transient_local
 /simulation/artifact_status:

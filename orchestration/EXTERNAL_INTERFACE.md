@@ -62,7 +62,7 @@ Gazebo does not consume `/simulation/camera_pair_ack`.
 Lifecycle states use the fixed order `CREATED`, `STARTING`, `READY`, `RUNNING`,
 `FINALIZING`, `COMPLETED`, `FAILED`, and `ABORTED`. The orchestrator publishes
 `simulation_interfaces/msg/RunState` on `/simulation/run_state` with reliable,
-transient-local QoS depth 1. Before its first `STARTING` publication, the Phase
+transient-local QoS depth 4. Before its first `STARTING` publication, the Phase
 2 runtime requires the exact six runtime consumers plus rosbag recorder
 subscription, including exact type and compatible QoS; this bounded
 infrastructure barrier makes the full four-sample lifecycle archival record
