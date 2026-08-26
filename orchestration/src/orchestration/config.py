@@ -359,14 +359,6 @@ _EXPECTED_SCENARIO = {
 }
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _require_source_file(path: Path) -> None:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"competition source must be a regular non-symlink file: {path}")
@@ -387,13 +379,17 @@ def _same_typed_document(actual: Any, expected: Any) -> bool:
     return actual == expected
 
 
-def _validate_source_document(path: Path, expected: dict[str, Any], name: str) -> None:
+def _read_validated_source(
+    path: Path, expected: dict[str, Any], name: str
+) -> bytes:
     try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        payload = path.read_bytes()
+        document = yaml.safe_load(payload)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"invalid {name} configuration: {path}") from exc
     if not _same_typed_document(document, expected):
         raise ValueError(f"{name} configuration does not match the approved schema")
+    return payload
 
 
 def _template_source(template_dir: Path, value: Any, name: str) -> Path:
@@ -416,13 +412,15 @@ def _competition_from_template(
     scenario = _template_source(template_dir, document["scenario"], "scenario")
     _require_source_file(course)
     _require_source_file(scenario)
-    _validate_source_document(course, _EXPECTED_COURSE, "course")
-    _validate_source_document(scenario, _EXPECTED_SCENARIO, "scenario")
+    course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
+    scenario_payload = _read_validated_source(
+        scenario, _EXPECTED_SCENARIO, "scenario"
+    )
     return CompetitionSources(
         course,
         scenario,
-        _file_sha256(course),
-        _file_sha256(scenario),
+        hashlib.sha256(course_payload).hexdigest(),
+        hashlib.sha256(scenario_payload).hexdigest(),
     )
 
 
@@ -447,11 +445,13 @@ def _competition_from_resolved(
     scenario = configuration_dir / "scenario.yaml"
     _require_source_file(course)
     _require_source_file(scenario)
-    _validate_source_document(course, _EXPECTED_COURSE, "course")
-    _validate_source_document(scenario, _EXPECTED_SCENARIO, "scenario")
-    if _file_sha256(course) != document["course_sha256"]:
+    course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
+    scenario_payload = _read_validated_source(
+        scenario, _EXPECTED_SCENARIO, "scenario"
+    )
+    if hashlib.sha256(course_payload).hexdigest() != document["course_sha256"]:
         raise ValueError("course_sha256 does not match the copied configuration")
-    if _file_sha256(scenario) != document["scenario_sha256"]:
+    if hashlib.sha256(scenario_payload).hexdigest() != document["scenario_sha256"]:
         raise ValueError("scenario_sha256 does not match the copied configuration")
     return CompetitionSources(
         course,

@@ -292,6 +292,31 @@ def test_competition_sources_must_be_regular_non_symlink_files(tmp_path):
         resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
 
 
+def test_resolve_hashes_same_source_bytes_that_passed_validation(
+    tmp_path, monkeypatch
+):
+    template = _write_competition_template(tmp_path)
+    course = tmp_path / "course.yaml"
+    approved_payload = course.read_bytes()
+    changed_course = json.loads(json.dumps(COURSE_DOCUMENT))
+    changed_course["waypoints"]["F2"]["x"] = -152.39
+    original_read_text = Path.read_text
+
+    def change_course_after_validation_read(path, *args, **kwargs):
+        payload = original_read_text(path, *args, **kwargs)
+        if path == course:
+            path.write_text(json.dumps(changed_course), encoding="utf-8")
+        return payload
+
+    monkeypatch.setattr(Path, "read_text", change_course_after_validation_read)
+
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+    assert resolved.competition.course_sha256 == hashlib.sha256(
+        approved_payload
+    ).hexdigest()
+
+
 def test_omitted_runtime_profile_resolves_to_frozen_phase_2_compatibility(tmp_path):
     resolved = resolve_run_config(
         _write_template(tmp_path, _phase2_document()),
