@@ -1,0 +1,36 @@
+schema_version: 1
+seed: 2026
+
+vehicle:
+  payload_capacity: 1
+
+camera:
+  width_px: 640
+  height_px: 480
+  update_rate_hz: 20
+  horizontal_fov_rad: 0.60
+  body_position_m: [0.0, 0.0, -0.10]
+
+range_sensor:
+  update_rate_hz: 20
+
+payload_interaction:
+  pickup_max_center_error_m: 0.075
+  settle_position_tolerance_m: 0.01
+  settle_time_s: 1.0
+
+payload_geometry:
+  size_in: [6, 6, 2]
+  mass_lb: 2.5
+  marker_size_mm: 100
+
+payloads:
+  - {aruco_id: 2, color: red, initial: attached}
+  - {aruco_id: 3, color: yellow, initial: WA}
+  - {aruco_id: 4, color: blue, initial: WM}
+
+mission:
+  fm2_drop_zone: F2
+  fm3_cycles:
+    - {pickup_zone: WA, color: yellow, drop_zone: F2}
+    - {pickup_zone: WM, color: blue, drop_zone: F2}

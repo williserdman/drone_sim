@@ -18,7 +18,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     start = commands.add_parser("start")
-    start.add_argument("--config", required=True)
+    start.add_argument("--config")
 
     for name in ("status", "abort", "collect-results"):
         command = commands.add_parser(name)
@@ -56,7 +56,12 @@ def main(
     try:
         controller = controller_factory(event_stream=output)
         if arguments.command == "start":
-            result = controller.start(Path(arguments.config))
+            config = (
+                Path(arguments.config)
+                if arguments.config is not None
+                else Path.cwd() / "config/default-run.json"
+            )
+            result = controller.start(config)
             exit_code = result.exit_code
         else:
             root = _output_root(arguments.output_root)

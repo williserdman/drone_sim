@@ -82,6 +82,16 @@ def test_start_prints_one_final_typed_result_last_and_maps_terminal_exit(state, 
     assert controller.calls == [("start", Path("template.json"))]
 
 
+def test_start_defaults_to_repository_competition_config(tmp_path):
+    controller = FakeController()
+
+    code, _stdout, stderr = _invoke(["start"], controller, cwd=tmp_path)
+
+    assert code == 0
+    assert stderr == ""
+    assert controller.calls == [("start", tmp_path / "config/default-run.json")]
+
+
 @pytest.mark.parametrize("command", ["status", "abort", "collect-results"])
 def test_run_directory_commands_default_to_resolved_invocation_runs_and_print_one_json(
     tmp_path, command
@@ -144,7 +154,7 @@ def test_controlled_controller_failure_exits_two_without_traceback():
 
 @pytest.mark.parametrize(
     "argv",
-    [[], ["unknown"], ["start"], ["status"], ["abort"], ["collect-results"]],
+    [[], ["unknown"], ["status"], ["abort"], ["collect-results"]],
 )
 def test_parse_errors_exit_two_without_python_traceback(argv):
     code, stdout, stderr = _invoke(argv, FakeController())

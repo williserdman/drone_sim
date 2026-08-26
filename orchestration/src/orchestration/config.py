@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import yaml
+
 
 _TEMPLATE_FIELDS = {
     "world",
@@ -23,7 +25,7 @@ _TEMPLATE_FIELDS = {
     "recording",
 }
 _RESOLVED_FIELDS = _TEMPLATE_FIELDS | {"run_id", "config_sha256"}
-_PROFILE_FIELDS = {"runtime_profile", "simulation"}
+_OPTIONAL_FIELDS = {"runtime_profile", "simulation", "competition"}
 _STRING_FIELDS = ("world", "vehicle", "mission", "scenario", "output_root")
 _DEADLINE_FIELDS = (
     "max_wall_seconds",
@@ -36,6 +38,13 @@ _SIMULATION_FIELDS = {
     "duration_sim_seconds",
     "public_epoch_native_sim_seconds",
     "target_real_time_factor",
+}
+_TEMPLATE_COMPETITION_FIELDS = {"course", "scenario"}
+_RESOLVED_COMPETITION_FIELDS = {
+    "course",
+    "scenario",
+    "course_sha256",
+    "scenario_sha256",
 }
 CAMERA_INTERVAL_NS = 50_000_000
 PUBLIC_EPOCH_DEFAULT_NS = 90_000_000_000
@@ -66,6 +75,14 @@ class RecordingConfig:
     height_px: int
     fps: int
     encoding: str
+
+
+@dataclass(frozen=True)
+class CompetitionSources:
+    course_source: Path
+    scenario_source: Path
+    course_sha256: str
+    scenario_sha256: str
 
 
 @dataclass(frozen=True)
@@ -113,6 +130,7 @@ class RunTemplate:
     recording: RecordingConfig
     runtime_profile: str
     simulation: SimulationConfig | None
+    competition: CompetitionSources | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +148,7 @@ class RunConfig:
     runtime_profile: str
     simulation: SimulationConfig | None
     config_sha256: str
+    competition: CompetitionSources | None = None
 
     @property
     def expected_camera_frames(self) -> int:
@@ -153,7 +172,7 @@ def _read_document(path: str | Path) -> dict[str, Any]:
     return document
 
 
-def _validate_recording(document: Any) -> RecordingConfig:
+def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
     if not isinstance(document, dict) or set(document) != _RECORDING_FIELDS:
         raise ValueError("recording configuration has missing or unknown keys")
     width = document["width_px"]
@@ -161,9 +180,15 @@ def _validate_recording(document: Any) -> RecordingConfig:
     if (
         type(width) is not int
         or type(height) is not int
-        or (width, height) != (320, 240)
+        or (width, height) not in {(320, 240), (640, 480)}
     ):
-        raise ValueError("recording dimensions must be exactly 320x240")
+        raise ValueError("recording dimensions must be 320x240 or 640x480")
+    required_dimensions = (640, 480) if mission == "comp2026_auto" else (320, 240)
+    if (width, height) != required_dimensions:
+        raise ValueError(
+            f"{mission} recording dimensions must be exactly "
+            f"{required_dimensions[0]}x{required_dimensions[1]}"
+        )
     if document["fps"] != 20 or isinstance(document["fps"], bool):
         raise ValueError("recording fps must be 20")
     if document["encoding"] != "rgb8":
@@ -195,13 +220,16 @@ def _validate_simulation(document: Any) -> SimulationConfig:
         raise ValueError("simulation duration must contain an integral camera frame count")
     target = document["target_real_time_factor"]
     if isinstance(target, bool) or not isinstance(target, (int, float)):
-        raise ValueError("target_real_time_factor must be exactly 0.1")
+        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25")
     try:
         target_decimal = Decimal(str(target))
     except InvalidOperation as exc:
-        raise ValueError("target_real_time_factor must be exactly 0.1") from exc
-    if not target_decimal.is_finite() or target_decimal != Decimal("0.1"):
-        raise ValueError("target_real_time_factor must be exactly 0.1")
+        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25") from exc
+    if not target_decimal.is_finite() or target_decimal not in {
+        Decimal("0.1"),
+        Decimal("0.25"),
+    }:
+        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25")
     public_epoch = document["public_epoch_native_sim_seconds"]
     if isinstance(public_epoch, bool) or not isinstance(public_epoch, (int, float)):
         raise ValueError(
@@ -247,7 +275,7 @@ def _validate_common(
     document: dict[str, Any], required_fields: set[str]
 ) -> tuple[RecordingConfig, str, SimulationConfig | None]:
     fields = set(document)
-    if not required_fields <= fields or not fields <= required_fields | _PROFILE_FIELDS:
+    if not required_fields <= fields or not fields <= required_fields | _OPTIONAL_FIELDS:
         raise ValueError("run configuration has missing or unknown keys")
     if any(
         not isinstance(document[field], str) or not document[field]
@@ -269,10 +297,171 @@ def _validate_common(
         if "simulation" in document:
             raise ValueError("simulation configuration requires runtime_profile phase3")
         simulation = None
-    return _validate_recording(document["recording"]), runtime_profile, simulation
+    return (
+        _validate_recording(document["recording"], mission=document["mission"]),
+        runtime_profile,
+        simulation,
+    )
 
 
-def _template_from_document(document: dict[str, Any]) -> RunTemplate:
+_EXPECTED_COURSE = {
+    "schema_version": 1,
+    "units": "meters",
+    "origin": "H",
+    "waypoints": {
+        "H": {"x": 0.0, "y": 0.0, "width": 4.572, "height": 4.572, "role": "home"},
+        "L": {"x": -91.44, "y": 0.0, "width": 4.572, "height": 4.572, "role": "landing"},
+        "F2": {"x": -152.40, "y": 0.0, "width": 0.9144, "height": 0.9144, "role": "fire"},
+        "WA": {"x": -45.72, "y": -9.144, "width": 6.096, "height": 6.096, "role": "autonomous_pickup"},
+        "WM": {"x": -45.72, "y": 9.144, "width": 6.096, "height": 6.096, "role": "manual_pickup"},
+    },
+    "attempt": {
+        "duration_seconds": 600,
+        "acquisition_agl_m": 4.572,
+        "transit_agl_m": 10.0,
+        "release_agl_m": 10.0,
+    },
+}
+_EXPECTED_SCENARIO = {
+    "schema_version": 1,
+    "seed": 2026,
+    "vehicle": {"payload_capacity": 1},
+    "camera": {
+        "width_px": 640,
+        "height_px": 480,
+        "update_rate_hz": 20,
+        "horizontal_fov_rad": 0.60,
+        "body_position_m": [0.0, 0.0, -0.10],
+    },
+    "range_sensor": {"update_rate_hz": 20},
+    "payload_interaction": {
+        "pickup_max_center_error_m": 0.075,
+        "settle_position_tolerance_m": 0.01,
+        "settle_time_s": 1.0,
+    },
+    "payload_geometry": {
+        "size_in": [6, 6, 2],
+        "mass_lb": 2.5,
+        "marker_size_mm": 100,
+    },
+    "payloads": [
+        {"aruco_id": 2, "color": "red", "initial": "attached"},
+        {"aruco_id": 3, "color": "yellow", "initial": "WA"},
+        {"aruco_id": 4, "color": "blue", "initial": "WM"},
+    ],
+    "mission": {
+        "fm2_drop_zone": "F2",
+        "fm3_cycles": [
+            {"pickup_zone": "WA", "color": "yellow", "drop_zone": "F2"},
+            {"pickup_zone": "WM", "color": "blue", "drop_zone": "F2"},
+        ],
+    },
+}
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _require_source_file(path: Path) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"competition source must be a regular non-symlink file: {path}")
+
+
+def _same_typed_document(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _same_typed_document(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _same_typed_document(actual_value, expected_value)
+            for actual_value, expected_value in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def _validate_source_document(path: Path, expected: dict[str, Any], name: str) -> None:
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ValueError(f"invalid {name} configuration: {path}") from exc
+    if not _same_typed_document(document, expected):
+        raise ValueError(f"{name} configuration does not match the approved schema")
+
+
+def _template_source(template_dir: Path, value: Any, name: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"competition {name} source must be a relative path")
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"competition {name} source must be a safe relative path")
+    return template_dir / relative
+
+
+def _competition_from_template(
+    document: Any, template_dir: Path
+) -> CompetitionSources | None:
+    if document is None:
+        return None
+    if not isinstance(document, dict) or set(document) != _TEMPLATE_COMPETITION_FIELDS:
+        raise ValueError("competition configuration has missing or unknown keys")
+    course = _template_source(template_dir, document["course"], "course")
+    scenario = _template_source(template_dir, document["scenario"], "scenario")
+    _require_source_file(course)
+    _require_source_file(scenario)
+    _validate_source_document(course, _EXPECTED_COURSE, "course")
+    _validate_source_document(scenario, _EXPECTED_SCENARIO, "scenario")
+    return CompetitionSources(
+        course,
+        scenario,
+        _file_sha256(course),
+        _file_sha256(scenario),
+    )
+
+
+def _competition_from_resolved(
+    document: Any, configuration_dir: Path
+) -> CompetitionSources | None:
+    if document is None:
+        return None
+    if not isinstance(document, dict) or set(document) != _RESOLVED_COMPETITION_FIELDS:
+        raise ValueError("resolved competition configuration has missing or unknown keys")
+    if document["course"] != "course.yaml" or document["scenario"] != "scenario.yaml":
+        raise ValueError("resolved competition sources must use safe artifact names")
+    for field in ("course_sha256", "scenario_sha256"):
+        value = document[field]
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError(f"{field} must be a SHA-256 digest")
+    course = configuration_dir / "course.yaml"
+    scenario = configuration_dir / "scenario.yaml"
+    _require_source_file(course)
+    _require_source_file(scenario)
+    _validate_source_document(course, _EXPECTED_COURSE, "course")
+    _validate_source_document(scenario, _EXPECTED_SCENARIO, "scenario")
+    if _file_sha256(course) != document["course_sha256"]:
+        raise ValueError("course_sha256 does not match the copied configuration")
+    if _file_sha256(scenario) != document["scenario_sha256"]:
+        raise ValueError("scenario_sha256 does not match the copied configuration")
+    return CompetitionSources(
+        course,
+        scenario,
+        document["course_sha256"],
+        document["scenario_sha256"],
+    )
+
+
+def _template_from_document(document: dict[str, Any], template_dir: Path) -> RunTemplate:
     recording, runtime_profile, simulation = _validate_common(
         document, _TEMPLATE_FIELDS
     )
@@ -288,6 +477,7 @@ def _template_from_document(document: dict[str, Any]) -> RunTemplate:
         recording=recording,
         runtime_profile=runtime_profile,
         simulation=simulation,
+        competition=_competition_from_template(document.get("competition"), template_dir),
     )
 
 
@@ -319,6 +509,13 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
             ),
             "target_real_time_factor": config.simulation.target_real_time_factor,
         }
+    if config.competition is not None:
+        document["competition"] = {
+            "course": "course.yaml",
+            "scenario": "scenario.yaml",
+            "course_sha256": config.competition.course_sha256,
+            "scenario_sha256": config.competition.scenario_sha256,
+        }
     return document
 
 
@@ -331,7 +528,11 @@ def resolve_run_config(
     path: str | Path, run_id_factory: Callable[[], UUID] = uuid4
 ) -> RunConfig:
     """Validate an operator template and bind it to one generated run identity."""
-    template = _template_from_document(_read_document(path))
+    source = Path(path).resolve()
+    document = _read_document(source)
+    template = _template_from_document(document, source.parent)
+    if template.mission == "comp2026_auto" and template.competition is None:
+        raise ValueError("comp2026_auto requires competition source configuration")
     generated = run_id_factory()
     if not isinstance(generated, UUID):
         raise ValueError("run_id_factory must return a UUID")
@@ -349,6 +550,7 @@ def resolve_run_config(
         runtime_profile=template.runtime_profile,
         simulation=template.simulation,
         config_sha256="",
+        competition=template.competition,
     )
     return replace(
         unresolved,
@@ -358,7 +560,8 @@ def resolve_run_config(
 
 def load_run_config(path: str | Path) -> RunConfig:
     """Load and verify a resolved immutable run configuration snapshot."""
-    document = _read_document(path)
+    source = Path(path).resolve()
+    document = _read_document(source)
     recording, runtime_profile, simulation = _validate_common(
         document, _RESOLVED_FIELDS
     )
@@ -372,6 +575,9 @@ def load_run_config(path: str | Path) -> RunConfig:
     without_checksum = {key: value for key, value in document.items() if key != "config_sha256"}
     if _checksum(without_checksum) != checksum:
         raise ValueError("config_sha256 does not match the resolved configuration")
+    competition = _competition_from_resolved(document.get("competition"), source.parent)
+    if document["mission"] == "comp2026_auto" and competition is None:
+        raise ValueError("comp2026_auto requires competition source configuration")
     return RunConfig(
         run_id=str(run_uuid),
         world=document["world"],
@@ -386,6 +592,7 @@ def load_run_config(path: str | Path) -> RunConfig:
         runtime_profile=runtime_profile,
         simulation=simulation,
         config_sha256=checksum,
+        competition=competition,
     )
 
 
@@ -393,8 +600,14 @@ def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
     """Durably create the resolved snapshot without overwriting an existing run."""
     configuration_dir = Path(run_dir) / "configuration"
     target = configuration_dir / "run.json"
-    if target.exists():
-        raise FileExistsError(target)
+    course_target = configuration_dir / "course.yaml"
+    scenario_target = configuration_dir / "scenario.yaml"
+    targets = [target]
+    if config.competition is not None:
+        targets.extend((course_target, scenario_target))
+    for candidate in targets:
+        if candidate.exists() or candidate.is_symlink():
+            raise FileExistsError(candidate)
 
     try:
         UUID(config.run_id)
@@ -406,7 +619,27 @@ def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
     persisted = {**document, "config_sha256": config.config_sha256}
     _validate_common(persisted, _RESOLVED_FIELDS)
 
+    source_payloads: tuple[tuple[Path, bytes], ...] = ()
+    if config.competition is not None:
+        _require_source_file(config.competition.course_source)
+        _require_source_file(config.competition.scenario_source)
+        course_payload = config.competition.course_source.read_bytes()
+        scenario_payload = config.competition.scenario_source.read_bytes()
+        if hashlib.sha256(course_payload).hexdigest() != config.competition.course_sha256:
+            raise ValueError("course source changed after run configuration resolution")
+        if hashlib.sha256(scenario_payload).hexdigest() != config.competition.scenario_sha256:
+            raise ValueError("scenario source changed after run configuration resolution")
+        source_payloads = (
+            (course_target, course_payload),
+            (scenario_target, scenario_payload),
+        )
+
     configuration_dir.mkdir(parents=True, exist_ok=True)
+    for destination, payload in source_payloads:
+        with destination.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
     with target.open("x", encoding="utf-8") as stream:
         json.dump(persisted, stream, sort_keys=True, indent=2)
         stream.write("\n")

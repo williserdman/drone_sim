@@ -1,0 +1,23 @@
+{
+  "world": "vertical_descent",
+  "vehicle": "iris_flight",
+  "mission": "controlled_descent",
+  "scenario": "descent_v1",
+  "output_root": "runs",
+  "max_wall_seconds": 3600,
+  "startup_wall_seconds": 120,
+  "finalization_wall_seconds": 120,
+  "recording": {
+    "width_px": 320,
+    "height_px": 240,
+    "fps": 20,
+    "encoding": "rgb8"
+  },
+  "runtime_profile": "phase3",
+  "simulation": {
+    "seed": 1,
+    "duration_sim_seconds": 60.0,
+    "public_epoch_native_sim_seconds": 90.0,
+    "target_real_time_factor": 0.1
+  }
+}

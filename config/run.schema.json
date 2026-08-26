@@ -28,6 +28,7 @@
     "recording": {"$ref": "#/$defs/recording"},
     "runtime_profile": {"enum": ["phase2", "phase3"]},
     "simulation": {"$ref": "#/$defs/simulation"},
+    "competition": {"$ref": "#/$defs/competition"},
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [
@@ -38,6 +39,14 @@
       },
       "then": {"required": ["simulation"]},
       "else": {"not": {"required": ["simulation"]}}
+    },
+    {
+      "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
+      "then": {
+        "required": ["competition"],
+        "properties": {"recording": {"$ref": "#/$defs/competition_recording"}}
+      },
+      "else": {"properties": {"recording": {"$ref": "#/$defs/baseline_recording"}}}
     }
   ],
   "$defs": {
@@ -46,10 +55,39 @@
       "additionalProperties": false,
       "required": ["width_px", "height_px", "fps", "encoding"],
       "properties": {
-        "width_px": {"const": 320},
-        "height_px": {"const": 240},
+        "width_px": {"enum": [320, 640]},
+        "height_px": {"enum": [240, 480]},
         "fps": {"const": 20},
         "encoding": {"const": "rgb8"}
+      },
+      "oneOf": [
+        {"properties": {"width_px": {"const": 320}, "height_px": {"const": 240}}},
+        {"properties": {"width_px": {"const": 640}, "height_px": {"const": 480}}}
+      ]
+    },
+    "competition_recording": {
+      "type": "object",
+      "properties": {
+        "width_px": {"const": 640},
+        "height_px": {"const": 480}
+      }
+    },
+    "baseline_recording": {
+      "type": "object",
+      "properties": {
+        "width_px": {"const": 320},
+        "height_px": {"const": 240}
+      }
+    },
+    "competition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["course", "scenario", "course_sha256", "scenario_sha256"],
+      "properties": {
+        "course": {"const": "course.yaml"},
+        "scenario": {"const": "scenario.yaml"},
+        "course_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "scenario_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "simulation": {
@@ -67,7 +105,7 @@
           "exclusiveMinimum": 0,
           "multipleOf": 0.05
         },
-        "target_real_time_factor": {"const": 0.1}
+        "target_real_time_factor": {"enum": [0.1, 0.25]}
       }
     }
   }

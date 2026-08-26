@@ -1,0 +1,14 @@
+schema_version: 1
+units: meters
+origin: H
+waypoints:
+  H: {x: 0.0, y: 0.0, width: 4.572, height: 4.572, role: home}
+  L: {x: -91.44, y: 0.0, width: 4.572, height: 4.572, role: landing}
+  F2: {x: -152.40, y: 0.0, width: 0.9144, height: 0.9144, role: fire}
+  WA: {x: -45.72, y: -9.144, width: 6.096, height: 6.096, role: autonomous_pickup}
+  WM: {x: -45.72, y: 9.144, width: 6.096, height: 6.096, role: manual_pickup}
+attempt:
+  duration_seconds: 600
+  acquisition_agl_m: 4.572
+  transit_agl_m: 10.0
+  release_agl_m: 10.0
