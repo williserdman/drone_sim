@@ -137,6 +137,7 @@ int main(int argc, char **argv)
         <output_topic>/payload/)" + id + R"(/joint_state</output_topic>
         <initially_attached>)" +
         (_initiallyAttached ? "true" : "false") + R"(</initially_attached>
+        <exclusive_parent>true</exclusive_parent>
       </plugin>)";
   };
   const std::string sdf = std::string{R"(
@@ -231,6 +232,8 @@ int main(int argc, char **argv)
       "stock detach subscription must configure");
 
   auto commands = node.Advertise<gz::msgs::StringMsg>("/payload/3/command");
+  auto payload2Detach =
+      node.Advertise<gz::msgs::Empty>("/payload/2/physical/detach");
   gz::sim::Server server(config);
   auto observer = std::make_shared<PhysicalObserver>();
   Require(server.AddSystem(observer).value_or(false),
@@ -249,6 +252,8 @@ int main(int argc, char **argv)
       "initially detached payload poses must never snap or move");
   Require(WaitFor([&] { return commands.HasConnections(); }),
       "coordinator command subscription must be discoverable");
+  Require(WaitFor([&] { return payload2Detach.HasConnections(); }),
+      "payload 2 stock detach subscription must be discoverable");
 
   auto publish = [&commands](const std::string &_wire)
   {
@@ -264,14 +269,34 @@ int main(int argc, char **argv)
 
   publish("payload-command-v1|A1|attach");
   publish("payload-command-v1|A1|attach");
+  Require(WaitFor([&] { return attachTriggers == 1; }),
+      "duplicate attach must publish one stock trigger");
+  for (int index = 0; index < 20; ++index)
+    Require(server.RunOnce(false), "server must advance occupied attach check");
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    Require(results.empty() && payload3States ==
+        std::vector<std::string>({"detached"}),
+        "an occupied hardpoint must leave payload 3 physically detached");
+  }
+  Require(observer->currentJointCount == 1 &&
+      observer->maximumJointCount == 1,
+      "one hardpoint must never create a second joint component");
+
+  gz::msgs::Empty detachPayload2;
+  Require(payload2Detach.Publish(detachPayload2),
+      "payload 2 stock detach publication must succeed");
   Require(AdvanceUntil(server, [&]
   {
     std::lock_guard<std::mutex> guard(mutex);
-    return results.size() == 1 && payload3States.back() == "attached";
-  }), "duplicate attach must complete after one stock physical transition");
+    return results.size() == 1 && payload2States.back() == "detached" &&
+        payload3States.back() == "attached" &&
+        observer->currentJointCount == 1;
+  }), "pending payload 3 attach must complete after payload 2 detaches");
   Require(attachTriggers == 1, "duplicate attach must publish one stock trigger");
-  Require(observer->currentJointCount == 2,
-      "attach confirmation must correspond to a real second joint component");
+  Require(observer->currentJointCount == 1 &&
+      observer->maximumJointCount == 1,
+      "capacity-one handoff must use exactly one real joint component");
 
   publish("payload-command-v1|A1|attach");
   Require(WaitFor([&] { return resultCount() == 2; }),
@@ -285,10 +310,10 @@ int main(int argc, char **argv)
   {
     std::lock_guard<std::mutex> guard(mutex);
     return results.size() == 3 && payload3States.back() == "detached" &&
-        observer->currentJointCount == 1;
+        observer->currentJointCount == 0;
   }), "duplicate detach must complete after one stock physical transition");
   Require(detachTriggers == 1, "duplicate detach must publish one stock trigger");
-  Require(observer->currentJointCount == 1,
+  Require(observer->currentJointCount == 0,
       "detach confirmation must correspond to removal of the real joint component");
 
   publish("payload-command-v1|D1|detach");
@@ -326,6 +351,9 @@ int main(int argc, char **argv)
     Require(payload3States ==
         std::vector<std::string>({"detached", "attached", "detached"}),
         "payload 3 must expose exactly one transition per accepted action");
+    Require(payload2States ==
+        std::vector<std::string>({"attached", "detached"}),
+        "payload 2 must detach before payload 3 occupies the hardpoint");
     Require(payload4States == std::vector<std::string>({"detached"}),
         "payload 4 must remain observably and physically detached");
   }

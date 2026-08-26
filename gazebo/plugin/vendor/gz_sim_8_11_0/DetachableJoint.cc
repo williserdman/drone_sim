@@ -15,8 +15,9 @@
  *
  */
 
-// Modified for Drone Sim: project-local plugin identity and optional
-// initially-detached state. See gazebo/provenance/gz-sim-detachable-joint.json.
+// Modified for Drone Sim: project-local plugin identity, optional
+// initially-detached state, and opt-in exclusive-parent arbitration. See
+// gazebo/provenance/gz-sim-detachable-joint.json.
 
 #include <vector>
 
@@ -216,6 +217,8 @@ void DetachableJoint::Configure(const Entity &_entity,
       _sdf->Get<bool>("initially_attached", true).first;
   this->attachRequested = initiallyAttached;
   this->publishInitialDetached = !initiallyAttached;
+  this->exclusiveParent =
+      _sdf->Get<bool>("exclusive_parent", false).first;
 
   this->validConfig = true;
 
@@ -335,6 +338,24 @@ void DetachableJoint::PreUpdate(
     // return if attach is not requested.
     if (!this->attachRequested){
       return;
+    }
+
+    if (this->exclusiveParent)
+    {
+      bool parentOccupied = false;
+      _ecm.Each<components::DetachableJoint>(
+          [this, &parentOccupied](
+              const Entity &, const components::DetachableJoint *_joint)
+          {
+            if (_joint->Data().parentLink == this->parentLinkEntity)
+            {
+              parentOccupied = true;
+              return false;
+            }
+            return true;
+          });
+      if (parentOccupied)
+        return;
     }
 
     if (this->childLinkEntity == kNullEntity ||

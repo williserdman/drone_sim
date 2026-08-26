@@ -370,12 +370,12 @@
     <include>
       <uri>model://payload_3</uri>
       <name>payload_3</name>
-      <pose>-45.72 -9.144 0.0254 0 0 0</pose>
+      <pose>-45.72 -9.144 0.0354 0 0 0</pose>
     </include>
     <include>
       <uri>model://payload_4</uri>
       <name>payload_4</name>
-      <pose>-45.72 9.144 0.0254 0 0 0</pose>
+      <pose>-45.72 9.144 0.0354 0 0 0</pose>
     </include>
     <model name="observer_station">
       <pose>-76.2 -100 90 0 0.733 1.570796327</pose>

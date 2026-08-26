@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from importlib.metadata import requires
 from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
 import pytest
+from packaging.requirements import Requirement
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,9 +82,48 @@ def test_generated_competition_world_has_exact_course_and_payload_layout(tmp_pat
     ]
     poses = {node.findtext("name"): node.findtext("pose") for node in world.findall("include")}
     assert poses["payload_2"].split()[:3] == ["0", "0", "0.065"]
-    assert poses["payload_3"].split()[:3] == ["-45.72", "-9.144", "0.0254"]
-    assert poses["payload_4"].split()[:3] == ["-45.72", "9.144", "0.0254"]
+    assert poses["payload_3"].split()[:3] == ["-45.72", "-9.144", "0.0354"]
+    assert poses["payload_4"].split()[:3] == ["-45.72", "9.144", "0.0354"]
     assert "set_pose" not in output.read_text(encoding="utf-8").lower()
+
+
+def test_grounded_payload_bottom_meets_pad_top_without_interpenetration(tmp_path):
+    """A center at ground height embeds each payload through its physical pad."""
+    world = ET.parse(_prepare_assets(tmp_path)).getroot().find("world")
+
+    assert world is not None
+    for zone, marker_id, expected_xy in (
+        ("wa", 3, (-45.72, -9.144)),
+        ("wm", 4, (-45.72, 9.144)),
+    ):
+        pad = world.find(f"model[@name='pad_{zone}']")
+        payload_include = next(
+            node
+            for node in world.findall("include")
+            if node.findtext("name") == f"payload_{marker_id}"
+        )
+        pad_pose = tuple(float(value) for value in pad.findtext("pose").split())
+        pad_size = tuple(
+            float(value)
+            for value in pad.findtext(
+                "link/collision[@name='tarp_collision']/geometry/box/size"
+            ).split()
+        )
+        payload_pose = tuple(
+            float(value) for value in payload_include.findtext("pose").split()
+        )
+        payload_size = tuple(
+            float(value)
+            for value in ET.parse(
+                tmp_path / f"models/payload_{marker_id}/model.sdf"
+            ).findtext(".//collision/geometry/box/size").split()
+        )
+
+        assert payload_pose[:2] == expected_xy
+        assert payload_pose[2] == pytest.approx(0.0354)
+        assert payload_pose[2] - payload_size[2] / 2 == pytest.approx(
+            pad_pose[2] + pad_size[2] / 2
+        )
 
 
 def test_generated_world_uses_exact_pad_footprints_and_physical_systems(tmp_path):
@@ -161,6 +202,16 @@ def test_generated_payload_uses_current_scenario_geometry_and_marker_identity(tm
     assert ids.flatten().tolist() == [3]
 
 
+def test_installed_gazebo_package_declares_its_yaml_runtime_dependency():
+    """A standalone Gazebo package install must bring the loader's YAML parser."""
+    requirement_names = {
+        Requirement(value).name.lower()
+        for value in requires("drone-sim-gazebo") or ()
+    }
+
+    assert "pyyaml" in requirement_names
+
+
 def test_payload_joint_topics_and_initial_states_are_exact(tmp_path):
     """Wrong child names, states, or topics would make commands non-causal."""
     _prepare_assets(tmp_path)
@@ -182,6 +233,7 @@ def test_payload_joint_topics_and_initial_states_are_exact(tmp_path):
         assert joint.findtext("detach_topic") == f"{base}/physical/detach"
         assert joint.findtext("output_topic") == f"{base}/joint_state"
         assert joint.findtext("initially_attached") == expected_initial
+        assert joint.findtext("exclusive_parent") == "true"
         assert coordinator.findtext("physical_state_topic") == f"{base}/joint_state"
         assert coordinator.findtext("result_topic") == f"{base}/result"
         assert coordinator.findtext("stock_attach_topic") == f"{base}/physical/attach"

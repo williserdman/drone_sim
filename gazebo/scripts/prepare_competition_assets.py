@@ -36,6 +36,7 @@ PAYLOAD_MOTOR_TORQUE_NM = 3.4
 PAYLOAD_HARDPOINT_Z_M = -0.13
 VEHICLE_INITIAL_Z_M = 0.195
 POSE_RATE_HZ = 20
+PAD_THICKNESS_M = 0.01
 
 
 def _fmt(value: float) -> str:
@@ -237,6 +238,7 @@ def _add_payload_joints(model: ET.Element, payloads: tuple[Payload, ...]) -> Non
         _text(detachable, "detach_topic", f"{base}/physical/detach")
         _text(detachable, "output_topic", f"{base}/joint_state")
         _text(detachable, "initially_attached", "true" if payload.initial == "attached" else "false")
+        _text(detachable, "exclusive_parent", "true")
 
 
 def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfig) -> None:
@@ -392,9 +394,13 @@ def _add_pad(world: ET.Element, course: CourseConfig, name: str) -> None:
     x_m, y_m = world_xy(course, name)
     model = ET.SubElement(world, "model", {"name": f"pad_{name.lower()}"})
     _text(model, "static", "true")
-    _text(model, "pose", f"{_fmt(x_m)} {_fmt(y_m)} 0.005 0 0 0")
+    _text(
+        model,
+        "pose",
+        f"{_fmt(x_m)} {_fmt(y_m)} {_fmt(PAD_THICKNESS_M / 2)} 0 0 0",
+    )
     link = ET.SubElement(model, "link", {"name": "pad_link"})
-    pad_size = (point.width_m, point.height_m, 0.01)
+    pad_size = (point.width_m, point.height_m, PAD_THICKNESS_M)
     _add_box(link, "collision", "tarp_collision", pad_size, (0, 0, 0))
     _add_box(
         link,
@@ -536,7 +542,7 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
             z_m = VEHICLE_INITIAL_Z_M + PAYLOAD_HARDPOINT_Z_M
         else:
             x_m, y_m = world_xy(course, payload.initial)
-            z_m = scenario.payload_geometry.size_m[2] / 2
+            z_m = PAD_THICKNESS_M + scenario.payload_geometry.size_m[2] / 2
         _text(include, "pose", f"{_fmt(x_m)} {_fmt(y_m)} {_fmt(z_m)} 0 0 0")
 
     _add_observer(world)

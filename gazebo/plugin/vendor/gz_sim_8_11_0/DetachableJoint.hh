@@ -15,8 +15,9 @@
  *
  */
 
-// Modified for Drone Sim: project-local plugin identity and optional
-// initially-detached state. See gazebo/provenance/gz-sim-detachable-joint.json.
+// Modified for Drone Sim: project-local plugin identity, optional
+// initially-detached state, and opt-in exclusive-parent arbitration. See
+// gazebo/provenance/gz-sim-detachable-joint.json.
 
 #ifndef GZ_SIM_SYSTEMS_DETACHABLEJOINT_HH_
 #define GZ_SIM_SYSTEMS_DETACHABLEJOINT_HH_
@@ -72,6 +73,10 @@ namespace gazebo
   /// - `<initially_attached>` (optional): If true, create the fixed joint on
   /// startup. If false, start detached without ever creating a joint.
   /// Defaults to true for compatibility with the upstream system.
+  ///
+  /// - `<exclusive_parent>` (optional): If true, wait to create a joint while
+  /// another detachable joint component uses the same parent link. Defaults
+  /// to false for compatibility with the upstream system.
 
   class DetachableJoint
       : public gz::sim::System,
@@ -152,6 +157,9 @@ namespace gazebo
 
     /// \brief Whether to publish initial detached truth on the first update.
     private: bool publishInitialDetached{false};
+
+    /// \brief Whether this parent link may have only one detachable joint.
+    private: bool exclusiveParent{false};
 
   };
 }

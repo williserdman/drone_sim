@@ -131,7 +131,7 @@ def test_gazebo_project_is_installable_and_reserves_the_runtime_entry_point():
         "name": "drone-sim-gazebo",
         "version": "0.1.0",
         "requires-python": ">=3.12",
-        "dependencies": ["drone-sim-artifacts"],
+        "dependencies": ["drone-sim-artifacts", "PyYAML>=6.0,<7"],
         "scripts": {
             "drone-sim-gazebo-runtime": "drone_sim_gazebo.runtime.runtime_node:main"
         },

@@ -1,7 +1,8 @@
 {
   "downstream_changes": [
     "Rename the class, alias, and library into the drone_sim namespace.",
-    "Add an initially_attached SDF boolean which defaults to true; false publishes detached truth without creating a joint."
+    "Add an initially_attached SDF boolean which defaults to true; false publishes detached truth without creating a joint.",
+    "Add an exclusive_parent SDF boolean which defaults to false; true defers attachment while another detachable joint component uses the same parent link."
   ],
   "installed_library": "/opt/drone_sim/gazebo/plugins/libdrone_sim_detachable_joint_system.so",
   "license": "Apache-2.0",
