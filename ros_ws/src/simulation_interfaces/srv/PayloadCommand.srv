@@ -1,0 +1,12 @@
+string run_id
+uint16 aruco_id
+uint8 ATTACH=1
+uint8 RELEASE=2
+uint8 action
+string command_id
+---
+bool accepted
+string code
+string detail
+string command_id
+uint64 response_sequence
