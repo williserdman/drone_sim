@@ -56,10 +56,15 @@ The `comp2026_auto` branch uses DroneKit 2.9.2 at the same fixed
 `tcp:ardupilot-sitl:5760` endpoint. At public zero it queues the established
 GUIDED transport command and records `mission-command-delivered`, allowing the
 existing Gazebo epoch rendezvous to release. The original worker does not emit
-`FM1/STARTED` or arm until the current run is `RUNNING` and a public clock,
-exact image/metadata pair, downward range, live payload service, heartbeat,
-and `is_armable is True` have all been observed. No QGC or outer retry/state
-machine is introduced.
+`FM1/STARTED` or arm until the current run is `RUNNING` and one atomic refresh
+finds a public clock, an undelivered exact image/metadata pair, a downward range
+that passes `get_distance()`, a currently available payload service, current
+DroneKit heartbeat health, and `is_armable is True`. These dynamic predicates
+do not latch: loss or reversion invalidates readiness before worker release. The
+heartbeat check reads DroneKit's current `last_heartbeat` against
+`DroneControl`'s existing 60-second `heartbeat_timeout`; it does not retain a
+wall observation or add a new timer. No QGC or outer retry/state machine is
+introduced.
 
 ## Timing and ordering
 
@@ -131,9 +136,14 @@ executor, DroneKit connection, and blocked original-mission worker gate are
 initialized. This is intentionally distinct from permission to start the
 mission; the RUNNING-era gate above remains mandatory. Success additionally
 requires the original callback's ordered `HOME/DISARMED` then
-`HOME/COMPLETE`. On exception the companion records the active phase, writes
-current-run runtime failure, and requests best-effort RTL, land, and disarm
-while retaining callbacks until finalization.
+`HOME/COMPLETE`. The first fatal sensor callback or mission exception stops all
+attempt waits and phase emission, prevents terminal success, records the active
+phase, and writes current-run runtime failure. Recovery is owned once and waits
+for the attempt worker to stop before best-effort RTL, land, and disarm.
+Callbacks remain responsive until finalization. Quiescence is written only
+after the worker has terminated, the ROS executor has stopped and joined, and
+the node/DroneKit output producers have closed; a timeout writes failure and no
+quiescence marker.
 
 For Phase 2 synthetic finalization, the stub stops publisher/log output before
 writing `.status/quiescence/companion.json` with exact current-run quiescence

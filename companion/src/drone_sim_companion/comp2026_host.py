@@ -12,6 +12,7 @@ import numpy as np
 
 EARTH_RADIUS_M = 6_378_137.0
 MAX_RANGE_AGE_NS = 500_000_000
+DRONEKIT_HEARTBEAT_TIMEOUT_SECONDS = 60.0
 
 
 class StaleSensorError(RuntimeError):
@@ -429,12 +430,15 @@ class MissionEventEmitter:
         self._next_event_id = 0
         self.last_phase: str | None = None
         self.last_state: str | None = None
+        self._stop_reason: str | None = None
 
     def __call__(self, phase: str, state: str) -> None:
         timestamp_ns = self._clock.timestamp_ns
         if timestamp_ns is None:
             raise StaleSensorError("mission event cannot precede the public clock")
         with self._lock:
+            if self._stop_reason is not None:
+                raise RuntimeError(f"mission event emitter stopped: {self._stop_reason}")
             record = MissionEventRecord(
                 self._run_id,
                 timestamp_ns,
@@ -448,10 +452,71 @@ class MissionEventEmitter:
             self.last_state = state
             self._publish(record)
 
+    def stop(self, reason: str) -> None:
+        with self._lock:
+            if self._stop_reason is None:
+                self._stop_reason = reason or "shutdown"
+
     @property
     def home_complete(self) -> bool:
         with self._lock:
             return self.last_phase == "HOME" and self.last_state == "COMPLETE"
+
+
+class AttemptFailureCoordinator:
+    """Own the first fatal attempt reason, cancellation, and recovery claim."""
+
+    def __init__(self, *, stop_attempt, write_failure, recover) -> None:
+        self._stop_attempt = stop_attempt
+        self._write_failure = write_failure
+        self._recover = recover
+        self._lock = threading.Lock()
+        self._failure_reason: str | None = None
+        self._recovery_claimed = False
+
+    @property
+    def failed(self) -> bool:
+        with self._lock:
+            return self._failure_reason is not None
+
+    @property
+    def failure_reason(self) -> str | None:
+        with self._lock:
+            return self._failure_reason
+
+    def guard_input(self, name: str, operation) -> bool:
+        if self.failed:
+            return False
+        try:
+            operation()
+        except Exception as error:
+            self.fail(f"competition {name} input failed: {error}")
+            return False
+        return not self.failed
+
+    def fail(self, reason: str) -> bool:
+        with self._lock:
+            if self._failure_reason is not None:
+                return False
+            self._failure_reason = reason
+            self._stop_attempt(reason)
+        self._write_failure(reason)
+        return True
+
+    def finish_success(self, operation) -> bool:
+        with self._lock:
+            if self._failure_reason is not None:
+                return False
+            operation()
+            return True
+
+    def recover_once(self) -> bool:
+        with self._lock:
+            if self._failure_reason is None or self._recovery_claimed:
+                return False
+            self._recovery_claimed = True
+        self._recover()
+        return True
 
 
 class Comp2026StartGate:
@@ -462,10 +527,10 @@ class Comp2026StartGate:
         self._process_ready = False
         self._running = False
         self._clock = False
-        self._frame = False
-        self._range = False
-        self._payload_service = False
-        self._heartbeat = False
+        self._frame_ready = False
+        self._range_ready = False
+        self._payload_service_ready = False
+        self._heartbeat_live = False
         self._armable = False
         self._stop_reason: str | None = None
 
@@ -480,27 +545,29 @@ class Comp2026StartGate:
             return self._mission_start_ready()
 
     def mark_process_ready(self) -> None:
-        self._set("_process_ready")
+        self._mark("_process_ready")
 
     def accept_running(self) -> None:
-        self._set("_running")
+        self._mark("_running")
 
     def accept_clock(self) -> None:
-        self._set("_clock")
+        self._mark("_clock")
 
-    def accept_frame(self) -> None:
-        self._set("_frame")
-
-    def accept_range(self) -> None:
-        self._set("_range")
-
-    def accept_payload_service(self) -> None:
-        self._set("_payload_service")
-
-    def accept_vehicle(self, *, heartbeat_observed: bool, armable: bool) -> None:
+    def refresh_live_readiness(
+        self,
+        *,
+        frame_ready: bool,
+        range_ready: bool,
+        payload_service_ready: bool,
+        heartbeat_live: bool,
+        armable: bool,
+    ) -> None:
         with self._condition:
-            self._heartbeat = self._heartbeat or heartbeat_observed
-            self._armable = self._armable or armable
+            self._frame_ready = frame_ready is True
+            self._range_ready = range_ready is True
+            self._payload_service_ready = payload_service_ready is True
+            self._heartbeat_live = heartbeat_live is True
+            self._armable = armable is True
             self._condition.notify_all()
 
     def wait_until_ready(self) -> None:
@@ -516,7 +583,7 @@ class Comp2026StartGate:
             self._stop_reason = reason or "shutdown"
             self._condition.notify_all()
 
-    def _set(self, field: str) -> None:
+    def _mark(self, field: str) -> None:
         with self._condition:
             setattr(self, field, True)
             self._condition.notify_all()
@@ -527,13 +594,49 @@ class Comp2026StartGate:
                 self._process_ready,
                 self._running,
                 self._clock,
-                self._frame,
-                self._range,
-                self._payload_service,
-                self._heartbeat,
+                self._frame_ready,
+                self._range_ready,
+                self._payload_service_ready,
+                self._heartbeat_live,
                 self._armable,
             )
         )
+
+
+def _heartbeat_is_live(last_heartbeat: object) -> bool:
+    return (
+        isinstance(last_heartbeat, (int, float))
+        and not isinstance(last_heartbeat, bool)
+        and math.isfinite(last_heartbeat)
+        and 0.0 <= last_heartbeat <= DRONEKIT_HEARTBEAT_TIMEOUT_SECONDS
+    )
+
+
+def refresh_comp2026_start_gate(
+    gate: Comp2026StartGate,
+    *,
+    frame_source: RosFrameSource,
+    lidar: RosLidar,
+    payload_client: object,
+    vehicle: object,
+) -> None:
+    """Publish one atomic snapshot of every dynamic start predicate."""
+
+    try:
+        lidar.get_distance()
+    except StaleSensorError:
+        range_ready = False
+    else:
+        range_ready = True
+    gate.refresh_live_readiness(
+        frame_ready=frame_source.ready,
+        range_ready=range_ready,
+        payload_service_ready=payload_client.service_is_ready() is True,  # type: ignore[attr-defined]
+        heartbeat_live=_heartbeat_is_live(
+            getattr(vehicle, "last_heartbeat", None)
+        ),
+        armable=getattr(vehicle, "is_armable", False) is True,
+    )
 
 
 def load_course_waypoints(course_path, home: GPSCoord) -> dict[str, GPSCoord]:
@@ -580,6 +683,7 @@ def load_course_waypoints(course_path, home: GPSCoord) -> dict[str, GPSCoord]:
 
 
 __all__ = [
+    "AttemptFailureCoordinator",
     "Comp2026StartGate",
     "GPSCoord",
     "MissionEventEmitter",
@@ -593,5 +697,6 @@ __all__ = [
     "StaleSensorError",
     "horizontal_distance_m",
     "load_course_waypoints",
+    "refresh_comp2026_start_gate",
     "world_xy_to_gps",
 ]

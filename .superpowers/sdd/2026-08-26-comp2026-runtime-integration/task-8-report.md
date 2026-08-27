@@ -223,3 +223,186 @@ competition attempt was not required by the brief and was not fabricated; that
 end-to-end run remains the next integration check. Docker also reports that its
 legacy builder is deprecated, but the exact requested build and all image smoke
 checks completed successfully.
+
+## Fix Round 1
+
+### Status and scope
+
+Resolved all four Important review findings from parent fix base
+`a89f8bd0bc6a220aa0c4e90541358f933a2d606e`. Modified only:
+
+- `.dockerignore`
+- `companion/src/drone_sim_companion/comp2026_host.py`
+- `companion/src/drone_sim_companion/runtime_node.py`
+- `companion/tests/test_comp2026_host.py`
+- `companion/tests/test_runtime_node.py`
+- `companion/EXTERNAL_INTERFACE.md`
+- `companion/INTERNAL_INTERFACE.md`
+- this report
+
+The nested checkout remained exact at
+`2241d00444db6414a5a1c646c8971c84943849a8` with only its preserved untracked
+`docs/`. Parent `SYSTEM_DIAGRAM.md` and the nested checkout remained untracked
+and unstaged in the parent.
+
+### RED evidence
+
+Each behavior was pinned before its production correction:
+
+1. The five readiness-invalidation regressions initially failed collection
+   because `refresh_comp2026_start_gate` did not exist. The previous gate could
+   only OR/latch facts and had no API capable of replacing the live snapshot.
+2. The fatal-input regression initially failed collection because
+   `AttemptFailureCoordinator` did not exist. A callback error therefore had no
+   shared cancellation, success guard, or single recovery claim.
+3. The teardown regressions initially failed collection because
+   `quiesce_comp2026_runtime` did not exist. The old `finally` block wrote
+   quiescence before executor shutdown and after only a bounded worker join.
+4. The old production image failed the artifact-boundary regression with:
+
+   ```text
+   unexpected non-runtime source: drone/missions/fm3.py
+   ```
+
+   The first default-deny rule set also stayed RED: a literal manifest diff found
+   64 files instead of 13 because legacy-Docker directory negations re-admitted
+   descendants. Hierarchical re-exclusion made the scratch context export exact
+   before the second production rebuild.
+
+The heartbeat ruling also received a mutation check. Temporarily changing the
+existing transport-health limit from 60 seconds to 2 seconds produced:
+
+```text
+FAILED test_start_readiness_invalidates_when_current_dronekit_heartbeat_exceeds_existing_timeout
+assert False is True  # current last_heartbeat=2.000001
+```
+
+Restoring the already configured `DroneControl(... heartbeat_timeout=60)`
+interface returned the regression to GREEN.
+
+### Live readiness correction
+
+Process readiness, RUNNING, and first public-clock observation remain durable
+facts. The other five start predicates no longer latch. Every main-loop refresh
+queries and atomically replaces one locked snapshot containing:
+
+- a genuine undelivered image/metadata pair from `RosFrameSource.ready`;
+- current `RosLidar.get_distance()` success, including the 0.5 simulated-second
+  age rule;
+- current payload-service availability;
+- current `vehicle.is_armable is True`; and
+- current DroneKit transport health.
+
+The heartbeat predicate does **not** create or retain a wall timestamp/window.
+It directly reads DroneKit's current `last_heartbeat` value and compares it with
+the exact existing 60-second `heartbeat_timeout` used by the nested
+`DroneControl` connection. Mission freshness and all retained elapsed windows
+remain simulation-time calculations. The test proves 2.000001 seconds is still
+healthy under that existing interface, while 60.000001 is not.
+
+Regression coverage first reaches ready, then independently invalidates on range
+age 500,000,001 simulation nanoseconds, service loss, armability reversion,
+current DroneKit heartbeat timeout, and consumption of the only genuine frame
+pair.
+
+### Fatal-attempt coordination
+
+The first callback or mission failure now owns one reason. It synchronously
+stops/wakes the gate, frame source, payload client, simulation clock, and event
+emitter. Subsequent sensor callbacks skip input acceptance; subsequent nested
+phase emission raises; terminal `mission-finished` is guarded by the same
+failure lock.
+
+Recovery is claimed once only after the original worker has terminated, so RTL,
+LAND, and DISARM cannot compete with original mission flight logic. Repeated
+failures and repeated recovery calls are idempotent. The focused regression
+emits `FM1/STARTED`, injects a fatal image callback error, proves no
+`FM1/COMPLETE` or terminal success can follow, retains only the first exact
+reason, and observes exactly one recovery.
+
+### Truthful teardown
+
+`quiesce_comp2026_runtime` now performs the boundary in this order:
+
+1. stop all attempt waits/output;
+2. require the original worker to terminate;
+3. shut down and join the ROS executor;
+4. destroy the ROS node and close DroneKit;
+5. emit final lifecycle output and write quiescence last.
+
+A real-thread regression asserts both worker and executor are not alive inside
+the finalization callback and verifies producer close precedes quiescence. A
+stuck-worker regression writes exact runtime failure and proves no quiescence
+marker is produced. Executor shutdown failure or a surviving executor thread is
+handled by the same fail-without-quiescence result.
+
+### Exact Docker closure and image
+
+The root context now ignores the entire nested checkout first. It selectively
+unignores parent directories, re-excludes their descendants, then admits only a
+literal 13-file automatic-attempt closure:
+
+```text
+drone/auto_attempt.py
+drone/common_types.py
+drone/control/drone_control.py
+drone/control/mission_info.py
+drone/missions/fm1.py
+drone/missions/fm2.py
+drone/missions/utils.py
+drone/mock_mission.py
+drone/sensors/camera/_camera_manager.py
+drone/sensors/camera/calibration.json
+drone/sensors/camera/camera.py
+drone/timebase.py
+drone/utils/position_smoother.py
+```
+
+The production image matched that manifest byte-for-path with no diff. The lazy
+original-function loader proved FM1=`drone.missions.fm1`,
+FM2=`drone.missions.fm2`, and active FM3=`drone.mock_mission`; an explicit
+`find_spec` check proved incomplete `drone.missions.fm3` is absent.
+
+Final production build:
+
+```text
+$ docker build --target runtime -f companion/Dockerfile \
+    -t drone-sim-companion-comp2026 .
+Successfully built c740226e407a
+Successfully tagged drone-sim-companion-comp2026:latest
+```
+
+Image identity and smoke:
+
+```text
+sha256:c740226e407aaad8ffdf70289f3209379d45ecf001e2a0f9688aa431accbb560
+4.10.0 True dronekit drone.auto_attempt drone.missions.fm1
+drone.missions.fm2 drone.mock_mission drone_sim_companion.runtime_node
+future=1.0.0 dronekit=2.9.2 numpy=2.1.3 opencv=4.10.0.84
+```
+
+### Final GREEN evidence
+
+```text
+$ uv run pytest companion/tests/test_comp2026_host.py \
+    companion/tests/test_runtime_node.py -q
+40 passed
+
+$ uv run pytest companion/tests -q
+72 passed
+
+$ uv run python -m compileall -q \
+    companion/src/drone_sim_companion companion/src/sitecustomize.py
+# exit 0
+
+$ git diff --check
+# exit 0
+```
+
+No epoch, timestamp rebase, activation barrier, pre-zero buffer, lockstep queue,
+cross-service synchronization, retry, new service, or outer mission state
+machine was introduced. The minor review note about applying the resolved
+startup timeout to the nested DroneKit constructor remains deferred because it
+was not required for these Important correctness fixes and changing the nested
+constructor interface would broaden this round. The live seven-service attempt
+also remains the next end-to-end integration check.

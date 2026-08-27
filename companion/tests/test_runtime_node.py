@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from io import StringIO
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -10,6 +11,7 @@ import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.runtime_node import (
     RuntimeConfig,
     connect_mavlink,
+    quiesce_comp2026_runtime,
 )
 from drone_sim_companion.controller import MissionController
 from drone_sim_companion.lifecycle import CompanionLifecycle
@@ -331,3 +333,97 @@ def test_initial_command_delivery_is_durable_and_exactly_at_public_zero() -> Non
             },
         )
     ]
+
+
+def test_comp2026_quiescence_follows_terminated_worker_and_executor() -> None:
+    events: list[str] = []
+    stop_worker = threading.Event()
+    stop_executor = threading.Event()
+
+    def worker_target() -> None:
+        stop_worker.wait()
+        events.append("worker_stopped")
+
+    def executor_target() -> None:
+        stop_executor.wait()
+        events.append("executor_stopped")
+
+    worker = threading.Thread(target=worker_target)
+    executor_thread = threading.Thread(target=executor_target)
+    worker.start()
+    executor_thread.start()
+
+    class Executor:
+        def shutdown(self, *, timeout_sec: float) -> bool:
+            assert timeout_sec == 1.0
+            events.append("stop_executor")
+            stop_executor.set()
+            return True
+
+    def stop_attempt(reason: str) -> None:
+        assert reason == "finalization"
+        events.append("stop_attempt")
+        stop_worker.set()
+
+    def finalize() -> None:
+        assert not worker.is_alive()
+        assert not executor_thread.is_alive()
+        events.append("quiescence")
+
+    failures: list[str] = []
+    assert quiesce_comp2026_runtime(
+        stop_attempt=stop_attempt,
+        mission_worker=worker,
+        executor=Executor(),
+        executor_thread=executor_thread,
+        close_output_producers=lambda: events.append("producers_closed"),
+        finalize=finalize,
+        write_failure=failures.append,
+        timeout_seconds=1.0,
+    ) is True
+
+    assert failures == []
+    assert events.index("worker_stopped") < events.index("stop_executor")
+    assert events.index("executor_stopped") < events.index("producers_closed")
+    assert events[-1] == "quiescence"
+
+
+def test_comp2026_never_writes_quiescence_with_a_surviving_worker() -> None:
+    events: list[str] = []
+
+    class StuckWorker:
+        def join(self, timeout: float) -> None:
+            assert timeout == 1.0
+            events.append("worker_join_timed_out")
+
+        def is_alive(self) -> bool:
+            return True
+
+    class StoppedExecutorThread:
+        def join(self, timeout: float) -> None:
+            assert timeout == 1.0
+            events.append("executor_joined")
+
+        def is_alive(self) -> bool:
+            return False
+
+    class Executor:
+        def shutdown(self, *, timeout_sec: float) -> bool:
+            assert timeout_sec == 1.0
+            events.append("executor_shutdown")
+            return True
+
+    failures: list[str] = []
+    assert quiesce_comp2026_runtime(
+        stop_attempt=lambda _reason: events.append("stop_attempt"),
+        mission_worker=StuckWorker(),
+        executor=Executor(),
+        executor_thread=StoppedExecutorThread(),
+        close_output_producers=lambda: events.append("producers_closed"),
+        finalize=lambda: events.append("quiescence"),
+        write_failure=failures.append,
+        timeout_seconds=1.0,
+    ) is False
+
+    assert failures == ["original mission worker did not stop for finalization"]
+    assert "quiescence" not in events

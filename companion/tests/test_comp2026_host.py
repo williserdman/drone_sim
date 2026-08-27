@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from drone_sim_companion.comp2026_host import (
+    AttemptFailureCoordinator,
     Comp2026StartGate,
     GPSCoord,
     MissionEventEmitter,
@@ -20,6 +21,7 @@ from drone_sim_companion.comp2026_host import (
     RosLidar,
     SimulationClock,
     StaleSensorError,
+    refresh_comp2026_start_gate,
     horizontal_distance_m,
     world_xy_to_gps,
 )
@@ -223,6 +225,42 @@ def test_phase_emitter_preserves_order_and_genuine_clock_timestamp() -> None:
     assert all(event.detail == "automatic attempt" for event in published)
 
 
+def test_fatal_input_prevents_further_phase_or_success_and_recovers_once() -> None:
+    clock = SimulationClock()
+    clock.accept(50_000_000)
+    published: list[object] = []
+    emit = MissionEventEmitter(RUN_ID, clock, published.append)
+    failures: list[str] = []
+    recoveries: list[str] = []
+
+    def stop_attempt(reason: str) -> None:
+        emit.stop(reason)
+
+    coordinator = AttemptFailureCoordinator(
+        stop_attempt=stop_attempt,
+        write_failure=failures.append,
+        recover=lambda: recoveries.append("recovered"),
+    )
+    emit("FM1", "STARTED")
+
+    coordinator.guard_input(
+        "image",
+        lambda: (_ for _ in ()).throw(ValueError("bad image")),
+    )
+
+    with pytest.raises(RuntimeError, match="bad image"):
+        emit("FM1", "COMPLETE")
+    terminal: list[str] = []
+    assert coordinator.finish_success(lambda: terminal.append("mission-finished")) is False
+    assert coordinator.fail("later failure") is False
+    assert coordinator.recover_once() is True
+    assert coordinator.recover_once() is False
+    assert [(event.phase, event.state) for event in published] == [("FM1", "STARTED")]
+    assert terminal == []
+    assert failures == ["competition image input failed: bad image"]
+    assert recoveries == ["recovered"]
+
+
 def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> None:
     gate = Comp2026StartGate()
     gate.mark_process_ready()
@@ -232,14 +270,121 @@ def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> Non
 
     gate.accept_running()
     gate.accept_clock()
-    gate.accept_frame()
-    gate.accept_range()
-    gate.accept_payload_service()
-    gate.accept_vehicle(heartbeat_observed=True, armable=False)
+    gate.refresh_live_readiness(
+        frame_ready=True,
+        range_ready=True,
+        payload_service_ready=True,
+        heartbeat_live=True,
+        armable=False,
+    )
     assert gate.mission_start_ready is False
 
-    gate.accept_vehicle(heartbeat_observed=True, armable=True)
+    gate.refresh_live_readiness(
+        frame_ready=True,
+        range_ready=True,
+        payload_service_ready=True,
+        heartbeat_live=True,
+        armable=True,
+    )
     assert gate.mission_start_ready is True
+
+
+class MutablePayloadService:
+    def __init__(self) -> None:
+        self.ready = True
+
+    def service_is_ready(self) -> bool:
+        return self.ready
+
+
+def live_start_inputs():
+    gate = Comp2026StartGate()
+    gate.mark_process_ready()
+    gate.accept_running()
+    gate.accept_clock()
+    clock = SimulationClock()
+    clock.accept(1_000_000_000)
+    lidar = RosLidar(clock)
+    lidar.accept(
+        SimpleNamespace(ranges=[4.572], range_min=0.1, range_max=30.0),
+        1_000_000_000,
+    )
+    frame_source = RosFrameSource(width_px=640, height_px=480, run_id=RUN_ID)
+    frame_source.accept(metadata(0, 1_000_000_000), rgb_image(1_000_000_000))
+    payload_service = MutablePayloadService()
+    vehicle = SimpleNamespace(last_heartbeat=0.25, is_armable=True)
+    return gate, clock, lidar, frame_source, payload_service, vehicle
+
+
+def refresh_live_start(inputs) -> Comp2026StartGate:
+    gate, _clock, lidar, frame_source, payload_service, vehicle = inputs
+    refresh_comp2026_start_gate(
+        gate,
+        frame_source=frame_source,
+        lidar=lidar,
+        payload_client=payload_service,
+        vehicle=vehicle,
+    )
+    return gate
+
+
+def test_start_readiness_invalidates_when_range_becomes_stale() -> None:
+    inputs = live_start_inputs()
+    gate = refresh_live_start(inputs)
+    assert gate.mission_start_ready is True
+
+    inputs[1].accept(1_500_000_001)
+    refresh_live_start(inputs)
+
+    assert gate.mission_start_ready is False
+
+
+def test_start_readiness_invalidates_when_payload_service_disappears() -> None:
+    inputs = live_start_inputs()
+    gate = refresh_live_start(inputs)
+    assert gate.mission_start_ready is True
+
+    inputs[4].ready = False
+    refresh_live_start(inputs)
+
+    assert gate.mission_start_ready is False
+
+
+def test_start_readiness_invalidates_when_armability_reverts() -> None:
+    inputs = live_start_inputs()
+    gate = refresh_live_start(inputs)
+    assert gate.mission_start_ready is True
+
+    inputs[5].is_armable = False
+    refresh_live_start(inputs)
+
+    assert gate.mission_start_ready is False
+
+
+def test_start_readiness_invalidates_when_current_dronekit_heartbeat_exceeds_existing_timeout() -> None:
+    inputs = live_start_inputs()
+    gate = refresh_live_start(inputs)
+    assert gate.mission_start_ready is True
+
+    inputs[5].last_heartbeat = 2.000_001
+    refresh_live_start(inputs)
+    assert gate.mission_start_ready is True
+
+    inputs[5].last_heartbeat = 60.000_001
+    refresh_live_start(inputs)
+
+    assert gate.mission_start_ready is False
+
+
+def test_start_readiness_requires_an_undelivered_genuine_frame_pair() -> None:
+    inputs = live_start_inputs()
+    gate = refresh_live_start(inputs)
+    assert gate.mission_start_ready is True
+
+    inputs[3].capture_frame()
+    refresh_live_start(inputs)
+
+    assert gate.mission_start_ready is False
 
 
 def test_production_python_can_import_pinned_dronekit_on_python312() -> None:

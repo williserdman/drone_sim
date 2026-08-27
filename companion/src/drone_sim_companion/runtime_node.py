@@ -25,6 +25,7 @@ from .lifecycle import CompanionLifecycle
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
 from .comp2026_host import (
+    AttemptFailureCoordinator,
     Comp2026StartGate,
     GPSCoord,
     MissionEventEmitter,
@@ -35,6 +36,7 @@ from .comp2026_host import (
     RosLidar,
     SimulationClock,
     load_course_waypoints,
+    refresh_comp2026_start_gate,
 )
 
 
@@ -214,6 +216,43 @@ def process_runtime_telemetry(
         heartbeat_observed=controller.heartbeat_observed,
         prearm_checks_healthy=controller.prearm_checks_healthy,
     )
+
+
+def quiesce_comp2026_runtime(
+    *,
+    stop_attempt,
+    mission_worker,
+    executor,
+    executor_thread,
+    close_output_producers,
+    finalize,
+    write_failure,
+    timeout_seconds: float,
+) -> bool:
+    """Stop every competition output producer before durable quiescence."""
+
+    failure: str | None = None
+    stop_attempt("finalization")
+    if mission_worker is not None:
+        mission_worker.join(timeout=timeout_seconds)
+        if mission_worker.is_alive():
+            failure = "original mission worker did not stop for finalization"
+    try:
+        executor_stopped = executor.shutdown(timeout_sec=timeout_seconds)
+    except Exception as error:
+        executor_stopped = False
+        if failure is None:
+            failure = f"ROS executor shutdown failed: {error}"
+    executor_thread.join(timeout=timeout_seconds)
+    if executor_stopped is False or executor_thread.is_alive():
+        if failure is None:
+            failure = "ROS executor did not stop for finalization"
+    close_output_producers()
+    if failure is not None:
+        write_failure(failure)
+        return False
+    finalize()
+    return True
 
 
 def _enable_dronekit_python312_compatibility() -> None:
@@ -515,41 +554,36 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     def clock_callback(message: Any) -> None:
         if not mission_running:
             return
-        try:
+
+        def accept() -> None:
             clock.accept(stamp_ns(message.clock))
             gate.accept_clock()
-        except Exception as error:
-            write_runtime_failure(f"competition clock input failed: {error}")
+
+        attempt_failure.guard_input("clock", accept)
 
     def image_callback(message: Any) -> None:
         if not mission_running:
             return
-        try:
-            frame_source.accept_image(message)
-            if frame_source.ready:
-                gate.accept_frame()
-        except Exception as error:
-            write_runtime_failure(f"competition image input failed: {error}")
+        attempt_failure.guard_input(
+            "image", lambda: frame_source.accept_image(message)
+        )
 
     def metadata_callback(message: Any) -> None:
         if not mission_running:
             return
-        try:
-            frame_source.accept_metadata(message)
-            if frame_source.ready:
-                gate.accept_frame()
-        except Exception as error:
-            write_runtime_failure(f"competition metadata input failed: {error}")
+        attempt_failure.guard_input(
+            "metadata", lambda: frame_source.accept_metadata(message)
+        )
 
     def range_callback(message: Any) -> None:
         if not mission_running:
             return
-        try:
+
+        def accept() -> None:
             timestamp_ns = stamp_ns(message.header.stamp)
             lidar.accept(message, timestamp_ns)
-            gate.accept_range()
-        except Exception as error:
-            write_runtime_failure(f"competition range input failed: {error}")
+
+        attempt_failure.guard_input("range", accept)
 
     def publish_mission_event(record: MissionEventRecord) -> None:
         message = MissionEvent()
@@ -599,6 +633,28 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         {"action": name, "reason": str(error)},
                     )
 
+    def stop_attempt(reason: str) -> None:
+        gate.stop(reason)
+        frame_source.stop(reason)
+        payload_client.stop()
+        clock.stop(reason)
+        emitter.stop(reason)
+
+    def record_attempt_failure(reason: str) -> None:
+        phase = emitter.last_phase or "WAIT_READY"
+        lifecycle.emit(
+            "mission_failed",
+            clock.timestamp_ns,
+            {"phase": phase, "reason": reason},
+        )
+        write_runtime_failure(reason)
+
+    attempt_failure = AttemptFailureCoordinator(
+        stop_attempt=stop_attempt,
+        write_failure=record_attempt_failure,
+        recover=best_effort_recovery,
+    )
+
     def run_original_attempt() -> None:
         try:
             gate.wait_until_ready()
@@ -625,22 +681,18 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 )
             if not emitter.home_complete:
                 raise RuntimeError("original attempt returned without HOME/COMPLETE")
-            lifecycle.observe_terminal(
-                MissionState(
-                    MissionPhase.LANDED,
-                    last_timestamp_ns=clock.timestamp_ns or 0,
+            attempt_failure.finish_success(
+                lambda: lifecycle.observe_terminal(
+                    MissionState(
+                        MissionPhase.LANDED,
+                        last_timestamp_ns=clock.timestamp_ns or 0,
+                    )
                 )
             )
         except Exception as error:
             phase = emitter.last_phase or "WAIT_READY"
             reason = f"original comp2026 mission failed in {phase}: {error}"
-            lifecycle.emit(
-                "mission_failed",
-                clock.timestamp_ns,
-                {"phase": phase, "reason": str(error)},
-            )
-            write_runtime_failure(reason)
-            best_effort_recovery()
+            attempt_failure.fail(reason)
 
     node.create_subscription(
         RunState,
@@ -675,7 +727,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         try:
             controller = DroneControl(config.mavlink_endpoint)
         except Exception as error:
-            write_runtime_failure(f"DroneKit connection failed: {error}")
+            attempt_failure.fail(f"DroneKit connection failed: {error}")
         else:
             lifecycle.mark_transport_ready()
             mission_worker = threading.Thread(
@@ -695,48 +747,59 @@ def _run_comp2026(config: RuntimeConfig) -> int:
 
         while rclpy.ok() and not requested_stop and not finalizing:
             if mission_running and controller is not None:
-                heartbeat = getattr(controller.vehicle, "last_heartbeat", None)
-                gate.accept_vehicle(
-                    heartbeat_observed=(
-                        isinstance(heartbeat, (int, float))
-                        and not isinstance(heartbeat, bool)
-                        and math.isfinite(heartbeat)
-                    ),
-                    armable=getattr(controller.vehicle, "is_armable", False) is True,
-                )
-                if payload_client.service_is_ready():
-                    gate.accept_payload_service()
+                try:
+                    refresh_comp2026_start_gate(
+                        gate,
+                        frame_source=frame_source,
+                        lidar=lidar,
+                        payload_client=payload_client,
+                        vehicle=controller.vehicle,
+                    )
+                except Exception as error:
+                    attempt_failure.fail(
+                        f"competition start readiness failed: {error}"
+                    )
                 if (
                     clock.timestamp_ns == 0
                     and not initial_command_delivered
                     and gate.mission_ready
+                    and not attempt_failure.failed
                 ):
                     controller.vehicle.mode = VehicleMode("GUIDED")
                     lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 0)
                     initial_command_delivered = True
+            if attempt_failure.failed and (
+                mission_worker is None or not mission_worker.is_alive()
+            ):
+                attempt_failure.recover_once()
             if protocol.read_finalize_request() is not None:
                 finalizing = True
             if time.monotonic() >= overall_wall_deadline and not runtime_failure_written:
-                write_runtime_failure("companion exceeded the overall run wall failsafe")
+                attempt_failure.fail("companion exceeded the overall run wall failsafe")
             time.sleep(0.02)
     finally:
-        gate.stop("finalization")
-        frame_source.stop("finalization")
-        payload_client.stop()
-        clock.stop("finalization")
-        if mission_worker is not None:
-            mission_worker.join(timeout=config.finalization_wall_seconds)
-            if mission_worker.is_alive():
-                write_runtime_failure("original mission worker did not stop for finalization")
-        lifecycle.finalize(clock.timestamp_ns)
-        executor.shutdown(timeout_sec=config.finalization_wall_seconds)
-        executor_thread.join(timeout=config.finalization_wall_seconds)
-        node.destroy_node()
-        if controller is not None:
-            try:
-                controller.vehicle.close()
-            except Exception:
-                pass
+        def close_output_producers() -> None:
+            if attempt_failure.failed and (
+                mission_worker is None or not mission_worker.is_alive()
+            ):
+                attempt_failure.recover_once()
+            node.destroy_node()
+            if controller is not None:
+                try:
+                    controller.vehicle.close()
+                except Exception:
+                    pass
+
+        quiesce_comp2026_runtime(
+            stop_attempt=stop_attempt,
+            mission_worker=mission_worker,
+            executor=executor,
+            executor_thread=executor_thread,
+            close_output_producers=close_output_producers,
+            finalize=lambda: lifecycle.finalize(clock.timestamp_ns),
+            write_failure=attempt_failure.fail,
+            timeout_seconds=config.finalization_wall_seconds,
+        )
         protocol.close()
         rclpy.shutdown()
     return exit_code
@@ -759,5 +822,6 @@ __all__ = [
     "first_heartbeat_wall_failure",
     "main",
     "process_runtime_telemetry",
+    "quiesce_comp2026_runtime",
     "stamp_ns",
 ]

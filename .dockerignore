@@ -12,25 +12,33 @@
 /.env
 /.env.*
 
-# The companion image consumes only the original mission's runtime source.
-/companion/comp2026/.git/
-/companion/comp2026/docs/
-/companion/comp2026/tests/
-/companion/comp2026/.gitignore
-/companion/comp2026/README.md
-/companion/comp2026/r.txt
-/companion/comp2026/src/backup/
-/companion/comp2026/src/gc/
-/companion/comp2026/src/drone/aruco_land_only.py
-/companion/comp2026/src/drone/entry.py
-/companion/comp2026/src/drone/waypoint_only.py
-/companion/comp2026/src/drone/control/listener.py
-/companion/comp2026/src/drone/control/mission_data/
-/companion/comp2026/src/drone/control/sender.py
-/companion/comp2026/src/drone/sensors/lidar/
-/companion/comp2026/src/drone/sensors/servo/
-/companion/comp2026/src/drone/sitl/
-/companion/comp2026/src/cam_test.py
-/companion/comp2026/src/lidar_test.py
-/companion/comp2026/**/*.mp4
-/companion/comp2026/**/.DS_Store
+# Ignore the nested checkout by default, then admit only the automatic
+# mission's import closure. Parent directories must be re-included explicitly.
+/companion/comp2026/**
+!/companion/comp2026/src/
+/companion/comp2026/src/**
+!/companion/comp2026/src/drone/
+/companion/comp2026/src/drone/**
+!/companion/comp2026/src/drone/auto_attempt.py
+!/companion/comp2026/src/drone/common_types.py
+!/companion/comp2026/src/drone/mock_mission.py
+!/companion/comp2026/src/drone/timebase.py
+!/companion/comp2026/src/drone/control/
+/companion/comp2026/src/drone/control/**
+!/companion/comp2026/src/drone/control/drone_control.py
+!/companion/comp2026/src/drone/control/mission_info.py
+!/companion/comp2026/src/drone/missions/
+/companion/comp2026/src/drone/missions/**
+!/companion/comp2026/src/drone/missions/fm1.py
+!/companion/comp2026/src/drone/missions/fm2.py
+!/companion/comp2026/src/drone/missions/utils.py
+!/companion/comp2026/src/drone/sensors/
+/companion/comp2026/src/drone/sensors/**
+!/companion/comp2026/src/drone/sensors/camera/
+/companion/comp2026/src/drone/sensors/camera/**
+!/companion/comp2026/src/drone/sensors/camera/_camera_manager.py
+!/companion/comp2026/src/drone/sensors/camera/calibration.json
+!/companion/comp2026/src/drone/sensors/camera/camera.py
+!/companion/comp2026/src/drone/utils/
+/companion/comp2026/src/drone/utils/**
+!/companion/comp2026/src/drone/utils/position_smoother.py

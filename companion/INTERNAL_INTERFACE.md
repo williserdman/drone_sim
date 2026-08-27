@@ -24,10 +24,14 @@
 For resolved `comp2026_auto`, `runtime_node` instead creates one responsive ROS
 executor and one blocking original-attempt worker. `Comp2026StartGate`
 separates durable process readiness from permission to enter
-`run_auto_attempt`; only the latter requires RUNNING-era clock, frame, range,
-payload-service, heartbeat, and armable facts. The public-zero GUIDED send is a
-lifecycle/rendezvous adaptation and does not enter the original phase machine
-or arm the vehicle.
+`run_auto_attempt`. Process, RUNNING, and clock-observed facts are durable. Each
+candidate release replaces one locked snapshot of the dynamic predicates using
+an undelivered frame pair, `RosLidar.get_distance()`, current service presence,
+current DroneKit heartbeat health, and current armability. None of these five
+dynamic values latch. Heartbeat health directly reuses DroneControl's existing
+60-second transport timeout and stores no wall timestamp. The public-zero
+GUIDED send is a lifecycle/rendezvous adaptation and does not enter the original
+phase machine or arm the vehicle.
 
 `comp2026_host` owns only focused boundary adapters:
 
@@ -51,10 +55,21 @@ does not edit it. Python's startup compatibility hook defines only the removed
 DroneKit import. The package explicitly owns DroneKit's otherwise undeclared
 `future` distribution.
 
-On original-attempt failure, recovery requests RTL, land, and disarm
-best-effort. The executor continues callbacks until orchestration finalization;
-then the clock, frame, gate, and payload waits stop, the worker joins,
-quiescence is written, and DroneKit closes.
+`AttemptFailureCoordinator` retains only the first fatal callback/mission
+reason, stops the gate/frame/payload/clock/event seams, guards terminal success,
+and grants one recovery claim after the worker exits. Recovery then requests
+RTL, land, and disarm best-effort without competing with original flight logic.
+
+The executor continues callbacks until orchestration finalization. Teardown
+stops the attempt, requires the worker to terminate, shuts down and joins the
+executor, destroys the ROS node, closes DroneKit, and only then writes
+quiescence. Worker or executor timeout writes explicit runtime failure and skips
+the quiescence marker.
+
+The root Docker context default-denies every nested-checkout path and selectively
+re-includes only the exact `auto_attempt` import closure. In particular, legacy
+entry points, hardware adapters, scratch state, and incomplete
+`missions/fm3.py` never enter the context or image.
 
 ## Future seams
 
