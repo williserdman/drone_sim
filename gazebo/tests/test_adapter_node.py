@@ -142,9 +142,10 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         rclpy.shutdown()
 
 
-def test_competition_node_selects_only_the_unique_native_onboard_source():
+def test_competition_node_selects_only_reliable_depth_five_camera_sources():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")
+    from rclpy.qos import ReliabilityPolicy
     from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
 
     rclpy.init()
@@ -158,13 +159,27 @@ def test_competition_node_selects_only_the_unique_native_onboard_source():
     )
     graph = rclpy.create_node("competition_camera_source_observer")
     selected = "/gazebo/private/camera/competition_onboard/image"
+    observer = "/gazebo/private/camera/observer/image"
     inherited = "/gazebo/private/camera/onboard/image"
     try:
         _spin_until(
             graph,
-            lambda: len(graph.get_subscriptions_info_by_topic(selected)) == 1,
+            lambda: all(
+                len(graph.get_subscriptions_info_by_topic(topic)) == 1
+                for topic in (selected, observer)
+            ),
         )
         assert graph.get_subscriptions_info_by_topic(inherited) == []
+        for topic in (selected, observer):
+            endpoints = graph.get_subscriptions_info_by_topic(topic)
+            assert endpoints[0].qos_profile.reliability is ReliabilityPolicy.RELIABLE
+            local = [
+                subscription
+                for subscription in adapter.subscriptions
+                if subscription.topic_name == topic
+            ]
+            assert len(local) == 1, topic
+            assert local[0].qos_profile.depth == 5
         assert len(
             graph.get_publishers_info_by_topic("/camera/onboard/image_raw")
         ) == 1

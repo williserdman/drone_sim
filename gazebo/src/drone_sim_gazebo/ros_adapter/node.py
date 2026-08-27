@@ -221,7 +221,7 @@ class GazeboAdapterNode(_node_base()):
                 Image,
                 topic,
                 lambda message, stream=stream: self._accept_image(stream, message),
-                _qos(5, reliable=False),
+                _qos(5, reliable=True),
             )
         self.create_subscription(
             Odometry,
