@@ -12,5 +12,25 @@
 /.env
 /.env.*
 
-# This is a separate user-owned repository, not a drone_sim build input.
-/companion/comp2026/
+# The companion image consumes only the original mission's runtime source.
+/companion/comp2026/.git/
+/companion/comp2026/docs/
+/companion/comp2026/tests/
+/companion/comp2026/.gitignore
+/companion/comp2026/README.md
+/companion/comp2026/r.txt
+/companion/comp2026/src/backup/
+/companion/comp2026/src/gc/
+/companion/comp2026/src/drone/aruco_land_only.py
+/companion/comp2026/src/drone/entry.py
+/companion/comp2026/src/drone/waypoint_only.py
+/companion/comp2026/src/drone/control/listener.py
+/companion/comp2026/src/drone/control/mission_data/
+/companion/comp2026/src/drone/control/sender.py
+/companion/comp2026/src/drone/sensors/lidar/
+/companion/comp2026/src/drone/sensors/servo/
+/companion/comp2026/src/drone/sitl/
+/companion/comp2026/src/cam_test.py
+/companion/comp2026/src/lidar_test.py
+/companion/comp2026/**/*.mp4
+/companion/comp2026/**/.DS_Store

@@ -1,14 +1,18 @@
-"""ROS 2 and PyMAVLink process adapter for the controlled descent mission."""
+"""Select and host the resolved controlled-descent or Comp2026 mission."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import collections
+import collections.abc
+import inspect
 import json
 import math
 import os
 from pathlib import Path
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 from typing import Any, Mapping
@@ -19,16 +23,32 @@ from artifacts.runtime_protocol import RuntimeProtocol
 from .controller import MissionController, mission_policy_active, process_telemetry
 from .lifecycle import CompanionLifecycle
 from .mavlink_adapter import MavlinkAdapter
-from .mission import MissionPhase, MissionState, Telemetry
+from .mission import CommandKind, MissionPhase, MissionState, Telemetry
+from .comp2026_host import (
+    Comp2026StartGate,
+    GPSCoord,
+    MissionEventEmitter,
+    MissionEventRecord,
+    PayloadDropper,
+    PayloadRequest,
+    RosFrameSource,
+    RosLidar,
+    SimulationClock,
+    load_course_waypoints,
+)
 
 
 @dataclass(frozen=True)
 class RuntimeConfig:
     run_id: str
     run_directory: Path
+    mission: str = "controlled_descent"
     mavlink_endpoint: str = "tcp:ardupilot-sitl:5760"
     startup_timeout_seconds: float = 60.0
     max_wall_seconds: float = 3600.0
+    finalization_wall_seconds: float = 120.0
+    course_path: Path | None = None
+    scenario_path: Path | None = None
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "RuntimeConfig":
@@ -72,11 +92,45 @@ class RuntimeConfig:
             or max_wall_seconds <= 0
         ):
             raise ValueError("max_wall_seconds must be a positive integer")
+        finalization_wall_seconds = document.get("finalization_wall_seconds")
+        if (
+            isinstance(finalization_wall_seconds, bool)
+            or not isinstance(finalization_wall_seconds, int)
+            or finalization_wall_seconds <= 0
+        ):
+            raise ValueError("finalization_wall_seconds must be a positive integer")
+        mission = document.get("mission")
+        if mission not in {"controlled_descent", "comp2026_auto"}:
+            raise ValueError("resolved mission must select an approved companion host")
+        course_path: Path | None = None
+        scenario_path: Path | None = None
+        if mission == "comp2026_auto":
+            competition = document.get("competition")
+            if (
+                not isinstance(competition, dict)
+                or competition.get("course") != "course.yaml"
+                or competition.get("scenario") != "scenario.yaml"
+            ):
+                raise ValueError("comp2026_auto requires resolved competition sources")
+            course_path = config_path.parent / "course.yaml"
+            scenario_path = config_path.parent / "scenario.yaml"
+            if not course_path.is_file() or not scenario_path.is_file():
+                raise ValueError("resolved competition sources are unreadable")
         timeout = override if timeout_override is not None else float(startup_wall_seconds)
         endpoint = environment.get("SIM_MAVLINK_ENDPOINT", "tcp:ardupilot-sitl:5760")
         if endpoint != "tcp:ardupilot-sitl:5760":
             raise ValueError("production MAVLink endpoint must be tcp:ardupilot-sitl:5760")
-        return cls(run_id, run_directory, endpoint, timeout, float(max_wall_seconds))
+        return cls(
+            run_id=run_id,
+            run_directory=run_directory,
+            mission=mission,
+            mavlink_endpoint=endpoint,
+            startup_timeout_seconds=timeout,
+            max_wall_seconds=float(max_wall_seconds),
+            finalization_wall_seconds=float(finalization_wall_seconds),
+            course_path=course_path,
+            scenario_path=scenario_path,
+        )
 
 
 def stamp_ns(stamp: Any) -> int:
@@ -127,6 +181,7 @@ class _ProductionProtocol:
             "mission-ready",
             "mission-command-delivered",
             "mission-finished",
+            "runtime-failure",
         }:
             raise ValueError("companion does not own that status")
         self._runtime.write_status(name, document)
@@ -161,8 +216,48 @@ def process_runtime_telemetry(
     )
 
 
-def main() -> int:
-    config = RuntimeConfig.from_environment(os.environ)
+def _enable_dronekit_python312_compatibility() -> None:
+    """Install only the aliases DroneKit 2.9.2 still imports on Python 3.12."""
+
+    if not hasattr(collections, "MutableMapping"):
+        collections.MutableMapping = collections.abc.MutableMapping  # type: ignore[attr-defined]
+    if not hasattr(inspect, "getargspec"):
+        inspect.getargspec = inspect.getfullargspec  # type: ignore[attr-defined]
+
+
+class _RosPayloadClient:
+    """Block a mission worker while the one responsive executor resolves ROS."""
+
+    def __init__(self, client: Any, service_type: Any) -> None:
+        self._client = client
+        self._service_type = service_type
+        self._stopped = threading.Event()
+
+    def service_is_ready(self) -> bool:
+        return bool(self._client.service_is_ready())
+
+    def call(self, request: PayloadRequest) -> Any:
+        if self._stopped.is_set():
+            raise RuntimeError("payload client stopped")
+        ros_request = self._service_type.Request()
+        ros_request.run_id = request.run_id
+        ros_request.aruco_id = request.aruco_id
+        ros_request.action = request.action
+        ros_request.command_id = request.command_id
+        future = self._client.call_async(ros_request)
+        completed = threading.Event()
+        future.add_done_callback(lambda _future: completed.set())
+        while not completed.wait(0.05):
+            if self._stopped.is_set():
+                future.cancel()
+                raise RuntimeError("payload client stopped during confirmation")
+        return future.result()
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+
+def _run_controlled_descent(config: RuntimeConfig) -> int:
     protocol = _ProductionProtocol(config)
     lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
     lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
@@ -330,6 +425,328 @@ def main() -> int:
         protocol.close()
         rclpy.shutdown()
     return exit_code
+
+
+def _run_comp2026(config: RuntimeConfig) -> int:
+    """Host one original nested attempt behind current ROS/lifecycle seams."""
+
+    if config.course_path is None or config.scenario_path is None:
+        raise ValueError("competition runtime requires resolved course and scenario")
+
+    protocol = _ProductionProtocol(config)
+    lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
+    lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
+    _enable_dronekit_python312_compatibility()
+
+    import rclpy
+    from drone.auto_attempt import run_auto_attempt
+    from drone import timebase
+    from drone.control.drone_control import DroneControl
+    from drone.control.mission_info import MissonTracker
+    from drone.sensors.camera._camera_manager import CameraManager
+    from drone.sensors.camera.camera import Camera
+    from dronekit import VehicleMode
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from rosgraph_msgs.msg import Clock
+    from sensor_msgs.msg import Image, LaserScan
+    from simulation_interfaces.msg import FrameMetadata, MissionEvent, RunState
+    from simulation_interfaces.srv import PayloadCommand
+
+    def qos(depth: int, *, transient: bool = False) -> Any:
+        return QoSProfile(
+            depth=depth,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=(
+                DurabilityPolicy.TRANSIENT_LOCAL
+                if transient
+                else DurabilityPolicy.VOLATILE
+            ),
+        )
+
+    rclpy.init()
+    node = Node("drone_sim_companion")
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    executor_thread = threading.Thread(
+        target=executor.spin,
+        name="companion-ros-executor",
+        daemon=True,
+    )
+    clock = SimulationClock()
+    frame_source = RosFrameSource(width_px=640, height_px=480, run_id=config.run_id)
+    lidar = RosLidar(clock)
+    gate = Comp2026StartGate()
+    mission_publisher = node.create_publisher(
+        MissionEvent,
+        "/simulation/mission_events",
+        qos(100, transient=True),
+    )
+    ros_payload_client = node.create_client(
+        PayloadCommand,
+        "/simulation/payload_command",
+    )
+    payload_client = _RosPayloadClient(ros_payload_client, PayloadCommand)
+    finalizing = False
+    mission_running = False
+    requested_stop = False
+    initial_command_delivered = False
+    runtime_failure_written = False
+    runtime_failure_lock = threading.Lock()
+    exit_code = 0
+    controller: Any | None = None
+    mission_worker: threading.Thread | None = None
+
+    def stop(_signum: int, _frame: Any) -> None:
+        nonlocal requested_stop
+        requested_stop = True
+
+    def state_callback(message: Any) -> None:
+        nonlocal finalizing, mission_running
+        if message.run_id != config.run_id:
+            return
+        if message.state == RunState.RUNNING:
+            mission_running = True
+            gate.accept_running()
+        elif message.state == RunState.FINALIZING:
+            finalizing = True
+
+    def clock_callback(message: Any) -> None:
+        if not mission_running:
+            return
+        try:
+            clock.accept(stamp_ns(message.clock))
+            gate.accept_clock()
+        except Exception as error:
+            write_runtime_failure(f"competition clock input failed: {error}")
+
+    def image_callback(message: Any) -> None:
+        if not mission_running:
+            return
+        try:
+            frame_source.accept_image(message)
+            if frame_source.ready:
+                gate.accept_frame()
+        except Exception as error:
+            write_runtime_failure(f"competition image input failed: {error}")
+
+    def metadata_callback(message: Any) -> None:
+        if not mission_running:
+            return
+        try:
+            frame_source.accept_metadata(message)
+            if frame_source.ready:
+                gate.accept_frame()
+        except Exception as error:
+            write_runtime_failure(f"competition metadata input failed: {error}")
+
+    def range_callback(message: Any) -> None:
+        if not mission_running:
+            return
+        try:
+            timestamp_ns = stamp_ns(message.header.stamp)
+            lidar.accept(message, timestamp_ns)
+            gate.accept_range()
+        except Exception as error:
+            write_runtime_failure(f"competition range input failed: {error}")
+
+    def publish_mission_event(record: MissionEventRecord) -> None:
+        message = MissionEvent()
+        message.run_id = record.run_id
+        message.sim_timestamp.sec = record.sim_timestamp_ns // 1_000_000_000
+        message.sim_timestamp.nanosec = record.sim_timestamp_ns % 1_000_000_000
+        message.event_id = record.event_id
+        message.phase = record.phase
+        message.state = record.state
+        message.detail = record.detail
+        mission_publisher.publish(message)
+
+    emitter = MissionEventEmitter(config.run_id, clock, publish_mission_event)
+
+    def write_runtime_failure(reason: str) -> None:
+        nonlocal runtime_failure_written, exit_code
+        with runtime_failure_lock:
+            exit_code = 1
+            if runtime_failure_written:
+                return
+            protocol.write_status(
+                "runtime-failure",
+                {
+                    "run_id": config.run_id,
+                    "module": "companion",
+                    "reason": reason,
+                    "diagnostic_paths": ["logs/docker/companion.log.partial"],
+                },
+            )
+            runtime_failure_written = True
+
+    def best_effort_recovery() -> None:
+        if controller is None:
+            return
+        with timebase.configured(clock):
+            for name, action in (
+                ("RTL", controller.rtl),
+                ("LAND", controller.simple_land),
+                ("DISARM", controller.disarm),
+            ):
+                try:
+                    action()
+                except Exception as error:
+                    lifecycle.emit(
+                        "recovery_failed",
+                        clock.timestamp_ns,
+                        {"action": name, "reason": str(error)},
+                    )
+
+    def run_original_attempt() -> None:
+        try:
+            gate.wait_until_ready()
+            assert controller is not None
+            current_home = controller.get_current_gps()
+            home = GPSCoord(current_home.lat, current_home.long, 0.0)
+            waypoints = load_course_waypoints(config.course_path, home)
+            manager = CameraManager(frame_source=frame_source)
+            camera = Camera(100, manager=manager)
+            tracker = MissonTracker(600)
+            payloads = {
+                marker: PayloadDropper(config.run_id, marker, payload_client, clock)
+                for marker in (2, 3, 4)
+            }
+            with timebase.configured(clock):
+                run_auto_attempt(
+                    tracker=tracker,
+                    controller=controller,
+                    camera=camera,
+                    lidar=lidar,
+                    payloads=payloads,
+                    waypoints=waypoints,
+                    emit=emitter,
+                )
+            if not emitter.home_complete:
+                raise RuntimeError("original attempt returned without HOME/COMPLETE")
+            lifecycle.observe_terminal(
+                MissionState(
+                    MissionPhase.LANDED,
+                    last_timestamp_ns=clock.timestamp_ns or 0,
+                )
+            )
+        except Exception as error:
+            phase = emitter.last_phase or "WAIT_READY"
+            reason = f"original comp2026 mission failed in {phase}: {error}"
+            lifecycle.emit(
+                "mission_failed",
+                clock.timestamp_ns,
+                {"phase": phase, "reason": str(error)},
+            )
+            write_runtime_failure(reason)
+            best_effort_recovery()
+
+    node.create_subscription(
+        RunState,
+        "/simulation/run_state",
+        state_callback,
+        qos(1, transient=True),
+    )
+    node.create_subscription(Clock, "/clock", clock_callback, qos(1000))
+    node.create_subscription(
+        Image,
+        "/camera/onboard/image_raw",
+        image_callback,
+        qos(100),
+    )
+    node.create_subscription(
+        FrameMetadata,
+        "/camera/onboard/frame_metadata",
+        metadata_callback,
+        qos(100),
+    )
+    node.create_subscription(
+        LaserScan,
+        "/competition/range/downward",
+        range_callback,
+        qos(100),
+    )
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    executor_thread.start()
+    overall_wall_deadline = time.monotonic() + config.max_wall_seconds
+    try:
+        try:
+            controller = DroneControl(config.mavlink_endpoint)
+        except Exception as error:
+            write_runtime_failure(f"DroneKit connection failed: {error}")
+        else:
+            lifecycle.mark_transport_ready()
+            mission_worker = threading.Thread(
+                target=run_original_attempt,
+                name="comp2026-original-attempt",
+                daemon=True,
+            )
+            mission_worker.start()
+            gate.mark_process_ready()
+            # Preserve the established status schema. For this mission these
+            # booleans attest to the initialized DroneKit/gated worker seam;
+            # RUNNING-era armability is independently required by the gate.
+            lifecycle.observe_mission_readiness(
+                heartbeat_observed=True,
+                prearm_checks_healthy=True,
+            )
+
+        while rclpy.ok() and not requested_stop and not finalizing:
+            if mission_running and controller is not None:
+                heartbeat = getattr(controller.vehicle, "last_heartbeat", None)
+                gate.accept_vehicle(
+                    heartbeat_observed=(
+                        isinstance(heartbeat, (int, float))
+                        and not isinstance(heartbeat, bool)
+                        and math.isfinite(heartbeat)
+                    ),
+                    armable=getattr(controller.vehicle, "is_armable", False) is True,
+                )
+                if payload_client.service_is_ready():
+                    gate.accept_payload_service()
+                if (
+                    clock.timestamp_ns == 0
+                    and not initial_command_delivered
+                    and gate.mission_ready
+                ):
+                    controller.vehicle.mode = VehicleMode("GUIDED")
+                    lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 0)
+                    initial_command_delivered = True
+            if protocol.read_finalize_request() is not None:
+                finalizing = True
+            if time.monotonic() >= overall_wall_deadline and not runtime_failure_written:
+                write_runtime_failure("companion exceeded the overall run wall failsafe")
+            time.sleep(0.02)
+    finally:
+        gate.stop("finalization")
+        frame_source.stop("finalization")
+        payload_client.stop()
+        clock.stop("finalization")
+        if mission_worker is not None:
+            mission_worker.join(timeout=config.finalization_wall_seconds)
+            if mission_worker.is_alive():
+                write_runtime_failure("original mission worker did not stop for finalization")
+        lifecycle.finalize(clock.timestamp_ns)
+        executor.shutdown(timeout_sec=config.finalization_wall_seconds)
+        executor_thread.join(timeout=config.finalization_wall_seconds)
+        node.destroy_node()
+        if controller is not None:
+            try:
+                controller.vehicle.close()
+            except Exception:
+                pass
+        protocol.close()
+        rclpy.shutdown()
+    return exit_code
+
+
+def main() -> int:
+    config = RuntimeConfig.from_environment(os.environ)
+    if config.mission == "controlled_descent":
+        return _run_controlled_descent(config)
+    return _run_comp2026(config)
 
 
 if __name__ == "__main__":

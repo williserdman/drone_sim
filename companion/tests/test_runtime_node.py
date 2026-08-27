@@ -25,6 +25,7 @@ def write_resolved_config(
     run_id: str = RUN_ID,
     startup_wall_seconds: object = 120,
     max_wall_seconds: object = 3600,
+    mission: str = "controlled_descent",
 ) -> Path:
     config_path = run_directory / "configuration/run.json"
     config_path.parent.mkdir(parents=True)
@@ -34,6 +35,8 @@ def write_resolved_config(
                 "run_id": run_id,
                 "startup_wall_seconds": startup_wall_seconds,
                 "max_wall_seconds": max_wall_seconds,
+                "finalization_wall_seconds": 120,
+                "mission": mission,
             }
         ),
         encoding="utf-8",
@@ -56,6 +59,8 @@ def test_runtime_config_uses_resolved_run_startup_deadline(tmp_path: Path) -> No
     assert config.mavlink_endpoint == "tcp:ardupilot-sitl:5760"
     assert config.startup_timeout_seconds == 120.0
     assert config.max_wall_seconds == 3600.0
+    assert config.finalization_wall_seconds == 120.0
+    assert config.mission == "controlled_descent"
 
 
 def test_runtime_config_preserves_explicit_startup_timeout_override(tmp_path: Path) -> None:
@@ -72,6 +77,34 @@ def test_runtime_config_preserves_explicit_startup_timeout_override(tmp_path: Pa
 
     assert config.startup_timeout_seconds == 17.5
     assert config.max_wall_seconds == 3600.0
+
+
+def test_runtime_selects_original_competition_host_from_resolved_mission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    configuration = run_directory / "configuration"
+    config_path = write_resolved_config(run_directory, mission="comp2026_auto")
+    (configuration / "course.yaml").write_text("waypoints: {}\n", encoding="utf-8")
+    (configuration / "scenario.yaml").write_text("payloads: []\n", encoding="utf-8")
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    document["competition"] = {"course": "course.yaml", "scenario": "scenario.yaml"}
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+    selected: list[str] = []
+    monkeypatch.setattr(runtime_node, "_run_controlled_descent", lambda _config: selected.append("controlled") or 0)
+    monkeypatch.setattr(runtime_node, "_run_comp2026", lambda _config: selected.append("comp2026") or 0)
+    monkeypatch.setattr(
+        runtime_node.os,
+        "environ",
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        },
+    )
+
+    assert runtime_node.main() == 0
+    assert selected == ["comp2026"]
 
 
 def test_first_heartbeat_ignores_startup_wall_deadline_after_transport_connects() -> None:

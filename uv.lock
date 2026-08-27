@@ -47,15 +47,25 @@ version = "0.1.0"
 source = { editable = "companion" }
 dependencies = [
     { name = "drone-sim-artifacts" },
+    { name = "dronekit" },
     { name = "fastcrc" },
+    { name = "future" },
+    { name = "numpy" },
+    { name = "opencv-contrib-python-headless" },
     { name = "pymavlink" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "drone-sim-artifacts", editable = "artifacts" },
+    { name = "dronekit", specifier = "==2.9.2" },
     { name = "fastcrc", specifier = "==0.3.6" },
+    { name = "future", specifier = "==1.0.0" },
+    { name = "numpy", specifier = "==2.1.3" },
+    { name = "opencv-contrib-python-headless", specifier = "==4.10.0.84" },
     { name = "pymavlink", specifier = "==2.4.49" },
+    { name = "pyyaml", specifier = "==6.0.3" },
 ]
 
 [[package]]
@@ -148,6 +158,19 @@ version = "0.1.0"
 source = { editable = "scorekeeper" }
 
 [[package]]
+name = "dronekit"
+version = "2.9.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "monotonic" },
+    { name = "pymavlink" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/97/62/93ac7ff4144b801f436a9233b7bb3166d0a14c0a80846e4a51091acece12/dronekit-2.9.2.tar.gz", hash = "sha256:53d037241a86bf366a385c5bad7949536a4715e49111204d78d936c11fac4b51", size = 44423, upload-time = "2019-03-18T10:19:53.294Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/4a/74ef556f76d38c149e4ca38ff3bf25be5723c63835f51eec42c7c5f1c466/dronekit-2.9.2-py3-none-any.whl", hash = "sha256:97542ad03a7584287d878f2082f8533e41b2ba77881b06bfbd5594bfbd75434f", size = 56853, upload-time = "2019-03-18T10:19:46.132Z" },
+]
+
+[[package]]
 name = "fastcrc"
 version = "0.3.6"
 source = { registry = "https://pypi.org/simple" }
@@ -214,6 +237,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/82/09/eb32e7f83354ed75f0236449294901fc13e45091b2363d7d8b22d5041217/fastcrc-0.3.6-cp314-cp314t-musllinux_1_2_armv7l.whl", hash = "sha256:c4f0bcfa5b19307b2282d650ec5ab69f525632485c2be3d73b6f241e418c39b5", size = 562536, upload-time = "2026-05-06T06:39:32.757Z" },
     { url = "https://files.pythonhosted.org/packages/71/2b/58be21f3898181f965cc83aebdee374a3bafcebfd9c959642618e89d203c/fastcrc-0.3.6-cp314-cp314t-musllinux_1_2_i686.whl", hash = "sha256:c5d61a03733f67f46d16c997fd25935809993d5718c0e19e815d5fedc6b1bca1", size = 518167, upload-time = "2026-05-06T06:39:51.352Z" },
     { url = "https://files.pythonhosted.org/packages/ef/07/64b64020bb0346c190c7ae9c381fb5a0f9b6bda2d4a7d8d65d739c118439/fastcrc-0.3.6-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:a663bad3ec57fce7ad0ffa4596e174247c59f20d02a105b630948baed149d387", size = 487656, upload-time = "2026-05-06T06:40:10.609Z" },
+]
+
+[[package]]
+name = "future"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/b2/4140c69c6a66432916b26158687e821ba631a4c9273c474343badf84d3ba/future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05", size = 1228490, upload-time = "2024-02-21T11:52:38.461Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/71/ae30dadffc90b9006d77af76b393cb9dfbfc9629f339fc1574a1c52e6806/future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216", size = 491326, upload-time = "2024-02-21T11:52:35.956Z" },
 ]
 
 [[package]]
@@ -360,6 +392,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/20/18/35fb14dd6baccbffa6daeb2369802f04a94e3f73db3c7bb405dbab009729/lxml-6.1.2-cp315-cp315t-win32.whl", hash = "sha256:87534cec6ea325435e4adf2326b0cf3110eee9a47abf73652eb155db639c08c6", size = 3901151, upload-time = "2026-08-19T05:04:58.671Z" },
     { url = "https://files.pythonhosted.org/packages/f0/b6/07530896ca062bc3d2f09d5cb8a48e799c05b12c496205db03159ba13b6c/lxml-6.1.2-cp315-cp315t-win_amd64.whl", hash = "sha256:4e220a9c297e5d36895d489a08c9a3f1f6193b6414e702c5fb751e4a3767f8d0", size = 4395355, upload-time = "2026-08-19T05:05:01.651Z" },
     { url = "https://files.pythonhosted.org/packages/31/a8/237d8de1d77085cfd41d0c6049a044d8d01886f3afb7f1eda2f43d900a96/lxml-6.1.2-cp315-cp315t-win_arm64.whl", hash = "sha256:f16a407766bac51c65d605b06d900821751a79aa20e12185f273f14a17180e7b", size = 3822823, upload-time = "2026-08-19T05:05:04.63Z" },
+]
+
+[[package]]
+name = "monotonic"
+version = "1.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/ca/8e91948b782ddfbd194f323e7e7d9ba12e5877addf04fb2bf8fca38e86ac/monotonic-1.6.tar.gz", hash = "sha256:3a55207bcfed53ddd5c5bae174524062935efed17792e9de2ad0205ce9ad63f7", size = 7615, upload-time = "2021-08-11T14:37:28.79Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/67/7e8406a29b6c45be7af7740456f7f37025f0506ae2e05fb9009a53946860/monotonic-1.6-py2.py3-none-any.whl", hash = "sha256:68687e19a14f11f26d140dd5c86f3dba4bf5df58003000ed467e0e2a69bca96c", size = 8154, upload-time = "2021-04-09T21:58:05.122Z" },
 ]
 
 [[package]]

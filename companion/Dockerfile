@@ -18,9 +18,12 @@ COPY artifacts/pyproject.toml /opt/drone_sim/artifacts/pyproject.toml
 COPY artifacts/src /opt/drone_sim/artifacts/src
 COPY companion/pyproject.toml /opt/drone_sim/companion/pyproject.toml
 COPY companion/src /opt/drone_sim/companion/src
+COPY companion/comp2026/src /opt/drone_sim/comp2026/src
 RUN python3 -m venv --system-site-packages /opt/drone_sim/venv \
     && /opt/drone_sim/venv/bin/pip install --no-cache-dir \
-        "fastcrc==0.3.6" "pymavlink==2.4.49" \
+        "dronekit==2.9.2" "fastcrc==0.3.6" "future==1.0.0" \
+        "numpy==2.1.3" "opencv-contrib-python-headless==4.10.0.84" \
+        "pymavlink==2.4.49" "PyYAML==6.0.3" \
     && /opt/drone_sim/venv/bin/pip install \
         --no-cache-dir --no-index --no-build-isolation --no-deps \
         /opt/drone_sim/artifacts \
@@ -33,7 +36,7 @@ ENV VIRTUAL_ENV=/opt/drone_sim/venv \
     AMENT_PREFIX_PATH="/ros_ws/install/simulation_interfaces:/opt/ros/jazzy" \
     CMAKE_PREFIX_PATH="/ros_ws/install/simulation_interfaces:/opt/ros/jazzy" \
     LD_LIBRARY_PATH="/ros_ws/install/simulation_interfaces/lib:/opt/ros/jazzy/lib" \
-    PYTHONPATH="/ros_ws/install/simulation_interfaces/lib/python3.12/site-packages"
+    PYTHONPATH="/opt/drone_sim/companion/src:/opt/drone_sim/comp2026/src:/ros_ws/install/simulation_interfaces/lib/python3.12/site-packages"
 
 ENTRYPOINT ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && source /ros_ws/install/setup.bash && exec \"$@\"", "--"]
 CMD ["drone-sim-companion-runtime"]

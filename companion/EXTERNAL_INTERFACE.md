@@ -1,14 +1,34 @@
 # Companion External Interface
 
+## Runtime selection
+
+The current run's immutable resolved `mission` selects one of two adapters.
+`controlled_descent` retains the existing PyMAVLink controller path.
+`comp2026_auto` hosts the original mission source copied from the exact nested
+repository commit through a thin ROS/DroneKit adapter; the nested
+`run_auto_attempt` remains the phase and flight-decision authority.
+
 ## ROS 2 inputs
 
 - Gazebo camera frames on `/camera/onboard/image_raw` through ROS 2 image
-  transport at 20 frames per simulated second, using best-effort QoS depth 5
+  transport at 20 frames per simulated second. Competition uses reliable,
+  volatile QoS depth 100 and exact resolved 640x480 `rgb8` bytes.
 - Authoritative frame-aligned `/clock` using reliable QoS depth 1000
 
 Each frame correlates with `simulation_interfaces/msg/FrameMetadata`, which
 carries `run_id`, `frame_id`, stream identity, and a simulation capture
 timestamp.
+
+For `comp2026_auto`, the companion also consumes reliable, volatile
+`/competition/range/downward` `LaserScan` samples and the existing
+`/simulation/payload_command` `PayloadCommand` service. It publishes ordered
+reliable, transient-local `MissionEvent` rows on
+`/simulation/mission_events`. Payload command IDs are
+`run:<aruco_id>:<attach|release>:<per-action-sequence>`; a call returns to the
+original mission only after an accepted response with the identical command ID
+and a positive response sequence. Rejections, missing responses, and
+correlation mismatches raise into the mission failure path. Attachment returns
+literal `True` on success, as required by the original FM3 branch.
 
 ## MAVLink interface
 
@@ -32,9 +52,27 @@ the exact reason for a normal pre-arm rejection.
 
 Commands derived from imagery retain `source_frame_id` where the adapter permits.
 
+The `comp2026_auto` branch uses DroneKit 2.9.2 at the same fixed
+`tcp:ardupilot-sitl:5760` endpoint. At public zero it queues the established
+GUIDED transport command and records `mission-command-delivered`, allowing the
+existing Gazebo epoch rendezvous to release. The original worker does not emit
+`FM1/STARTED` or arm until the current run is `RUNNING` and a public clock,
+exact image/metadata pair, downward range, live payload service, heartbeat,
+and `is_armable is True` have all been observed. No QGC or outer retry/state
+machine is introduced.
+
 ## Timing and ordering
 
 Mission logic is frame- or event-triggered in simulation time. Duplicate frames are idempotently ignored, missing frames are diagnosed, stale `run_id` data is ignored, and loss of `/clock` prevents new simulated decisions. Wall time measures computation and infrastructure health only.
+
+The original mission's clock seam reads the accepted public `/clock` value.
+Each sleep captures its own start and waits until
+`current_timestamp - saved_start >= duration`; shutdown stops the wait. Frames
+are joined only when current-run metadata and the image header have the exact
+same simulation timestamp. Capture blocks for a strictly newer pair, exposes
+that genuine timestamp as `last_timestamp_ns`, converts RGB to BGR without
+`cv_bridge`, and never duplicates or rescales a delivered frame. A downward
+range older than 0.5 elapsed simulated seconds fails closed.
 
 The MAVLink TCP connection deadline uses the current run's resolved
 `startup_wall_seconds` from `SIM_CONFIG_PATH`. After that transport connects,
@@ -87,10 +125,21 @@ vehicle command acknowledgement required by mission policy.
 
 The companion must never directly command or mutate Gazebo.
 
+For `comp2026_auto`, `mission-ready` preserves the established durable schema
+and may precede public sensor samples: it means the ROS graph, responsive
+executor, DroneKit connection, and blocked original-mission worker gate are
+initialized. This is intentionally distinct from permission to start the
+mission; the RUNNING-era gate above remains mandatory. Success additionally
+requires the original callback's ordered `HOME/DISARMED` then
+`HOME/COMPLETE`. On exception the companion records the active phase, writes
+current-run runtime failure, and requests best-effort RTL, land, and disarm
+while retaining callbacks until finalization.
+
 For Phase 2 synthetic finalization, the stub stops publisher/log output before
 writing `.status/quiescence/companion.json` with exact current-run quiescence
 schema, then remains silent while orchestration aggregates the freeze.
 
 ## Deferred decisions
 
-- Command-to-frame correlation encoding for future vision-driven missions
+- Live end-to-end competition-attempt tuning remains outside this adapter
+  integration; the nested mission remains authoritative for those decisions.
