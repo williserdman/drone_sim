@@ -37,10 +37,12 @@ itself.
 
 ## Ordering and failure behavior
 
-Ground-truth samples are accepted in exact 50,000,000 ns order for one canonical
-run ID. The first duplicate, regression, or gap permanently marks the result
-incomplete; a later suffix cannot repair it. Missing required input likewise
-marks a run incomplete rather than causing corrective control.
+Ground-truth and all three payload-state streams are accepted in exact
+50,000,000 ns order after mission start for one canonical run ID. The first
+duplicate, regression, or gap permanently marks the result incomplete; a later
+suffix cannot repair it or hide a pose jump or concurrent attachment. Missing
+required input likewise marks a run incomplete rather than causing corrective
+control.
 
 For `competition_v1`, the first current-run `FM1/STARTED` mission event stores
 the authoritative `start_sim_time`. Release stability, settling, freshness,
@@ -54,10 +56,15 @@ horizontally. A payload component passes only after confirmed physical
 detachment and 1 simulated second of contiguous grounded, low-speed truth with
 the full rotated 0.1524 m square footprint inside the 0.9144 m F2 rectangle.
 FM3 releases additionally require a confirmed physical attachment, a
-non-teleporting pickup within 0.075 m, capacity at most one, and marker order 3
-then 4. Completion requires ordered mission evidence and physical Home contact
+non-teleporting pickup within 0.075 m, marker 3's center inside WA or marker 4's
+center inside WM, capacity at most one, and marker order 3 then 4. Payload 2
+must settle before marker 3's pickup, payload 3 before marker 4's pickup, and
+payload 4 before physical Home landing. Completion requires physical Home contact,
+followed by distinct ordered `HOME/DISARMED` and `HOME/COMPLETE` mission events,
 at or before 600 elapsed simulated seconds; only then can `score-finished` be
-written.
+written. `HOME/DISARMED` is the downstream controller's current-run evidence
+that its original DroneKit vehicle reported `armed is False` after its disarm
+wait; `HOME/COMPLETE` alone is insufficient.
 
 The committed `rules/descent_v1.json` has maximum 100 and freezes a safe
 pre-impact downward-speed threshold of 1.0 m/s. The scorekeeper emits exactly

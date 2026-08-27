@@ -70,8 +70,44 @@ class AttemptTrace:
         self.accepted_inputs: list[tuple[str, object]] = []
         self.start_ns = START
         self.cursor_ns = START
+        self.last_tick_ns: int | None = None
         self.mission_event_id = 0
         self.payload_event_id = 0
+        self.pending_settlements: dict[
+            int, tuple[tuple[float, float], float, float]
+        ] = {}
+        self.ground_truth_fact: dict[str, object] = {
+            "xy": (0.0, 0.0),
+            "z": 0.0,
+            "velocity": (0.0, 0.0, 0.0),
+            "contact": True,
+        }
+        self.payload_facts: dict[int, dict[str, object]] = {
+            2: {
+                "xy": (0.0, 0.0),
+                "attached": True,
+                "grounded": False,
+                "speed": 0.0,
+                "yaw": 0.0,
+                "z": 0.0254,
+            },
+            3: {
+                "xy": SOURCES[3],
+                "attached": False,
+                "grounded": True,
+                "speed": 0.0,
+                "yaw": 0.0,
+                "z": 0.0254,
+            },
+            4: {
+                "xy": SOURCES[4],
+                "attached": False,
+                "grounded": True,
+                "speed": 0.0,
+                "yaw": 0.0,
+                "z": 0.0254,
+            },
+        }
 
     def mission(self, phase: str, state: str, timestamp_ns: int) -> None:
         sample = MissionEventSample(
@@ -109,36 +145,88 @@ class AttemptTrace:
         self.accepted_inputs.append(("payload_state", sample))
         self.scorer.accept_payload_state(sample)
 
-    def fm1(self, *, complete: bool = True) -> None:
-        self.mission("FM1", "STARTED", self.start_ns)
+    def emit_tick(
+        self,
+        timestamp_ns: int,
+        *,
+        ground_truth_update: dict[str, object] | None = None,
+        payload_updates: dict[int, dict[str, object]] | None = None,
+        omit_payloads: frozenset[int] = frozenset(),
+    ) -> None:
+        if self.last_tick_ns is not None:
+            assert timestamp_ns - self.last_tick_ns == DT
+        if ground_truth_update is not None:
+            self.ground_truth_fact.update(ground_truth_update)
+        for marker, update in (payload_updates or {}).items():
+            self.payload_facts[marker].update(update)
         self.accept_ground_truth(
-            ground_truth(self.start_ns, xy=(0.0, 0.0), z=0.0, contact=True)
-        )
-        self.accept_payload_state(
-            payload_state(
-                self.start_ns,
-                2,
-                xy=(0.0, 0.0),
-                attached=True,
-                grounded=False,
+            ground_truth(
+                timestamp_ns,
+                xy=self.ground_truth_fact["xy"],
+                z=self.ground_truth_fact["z"],
+                velocity=self.ground_truth_fact["velocity"],
+                contact=self.ground_truth_fact["contact"],
             )
         )
-        for marker, xy in SOURCES.items():
+        for marker in (2, 3, 4):
+            if marker in omit_payloads:
+                continue
+            fact = self.payload_facts[marker]
             self.accept_payload_state(
                 payload_state(
-                    self.start_ns,
+                    timestamp_ns,
                     marker,
-                    xy=xy,
-                    attached=False,
-                    grounded=True,
+                    xy=fact["xy"],
+                    attached=fact["attached"],
+                    grounded=fact["grounded"],
+                    speed=fact["speed"],
+                    yaw=fact["yaw"],
+                    z=fact["z"],
                 )
             )
-        self.cursor_ns = self.start_ns + 10_000_000_000
-        self.accept_ground_truth(
-            ground_truth(self.cursor_ns, xy=(-91.44, 0.0), z=0.0, contact=True)
+        self.last_tick_ns = timestamp_ns
+        self.cursor_ns = timestamp_ns
+
+    def advance_to(
+        self,
+        timestamp_ns: int,
+        *,
+        final_ground_truth_update: dict[str, object] | None = None,
+        final_payload_updates: dict[int, dict[str, object]] | None = None,
+    ) -> None:
+        assert self.last_tick_ns is not None
+        assert timestamp_ns >= self.last_tick_ns
+        while self.last_tick_ns < timestamp_ns:
+            next_timestamp_ns = self.last_tick_ns + DT
+            self.emit_tick(
+                next_timestamp_ns,
+                ground_truth_update=(
+                    final_ground_truth_update
+                    if next_timestamp_ns == timestamp_ns
+                    else None
+                ),
+                payload_updates=(
+                    final_payload_updates
+                    if next_timestamp_ns == timestamp_ns
+                    else None
+                ),
+            )
+
+    def fm1(self, *, complete: bool = True) -> None:
+        self.mission("FM1", "STARTED", self.start_ns)
+        self.emit_tick(self.start_ns)
+        landing_time = self.start_ns + 10_000_000_000
+        self.advance_to(
+            landing_time,
+            final_ground_truth_update={
+                "xy": (-91.44, 0.0),
+                "z": 0.0,
+                "velocity": (0.0, 0.0, 0.0),
+                "contact": True,
+            },
         )
         if complete:
-            self.mission("FM1", "COMPLETE", self.cursor_ns)
+            self.mission("FM1", "COMPLETE", landing_time)
 
     def drop(
         self,
@@ -158,117 +246,201 @@ class AttemptTrace:
         settle_xy: tuple[float, float] = F2,
         settle_yaw: float = 0.0,
         settle_speed: float = 0.0,
+        pickup_xy: tuple[float, float] | None = None,
+        defer_settle: bool = False,
     ) -> None:
         phase_start = self.cursor_ns + 1_000_000_000
+        self.advance_to(
+            phase_start,
+            final_payload_updates=(
+                {marker: {"xy": pickup_xy}}
+                if marker in SOURCES and pickup_xy is not None
+                else None
+            ),
+        )
         self.mission(phase, "STARTED", phase_start)
         if marker in SOURCES:
             attach_time = phase_start + 1_000_000_000
-            source = SOURCES[marker]
-            detached_time = attach_time - DT if attach_truth_delay_ns == 0 else attach_time
-            self.accept_payload_state(
-                payload_state(
-                    detached_time,
-                    marker,
-                    xy=source,
-                    attached=False,
-                    grounded=True,
-                )
-            )
+            source = SOURCES[marker] if pickup_xy is None else pickup_xy
+            self.advance_to(attach_time - DT)
             attached_xy = (source[0] + pickup_jump_m, source[1])
-            self.accept_ground_truth(
-                ground_truth(attach_time, xy=attached_xy, z=0.0, contact=True)
-            )
-            self.accept_payload_state(
-                payload_state(
-                    attach_time + attach_truth_delay_ns,
-                    marker,
-                    xy=attached_xy,
-                    attached=True,
-                    grounded=True,
-                    z=0.0254 + pickup_jump_z_m,
-                )
-            )
+            attach_updates = {
+                marker: {
+                    "xy": attached_xy,
+                    "attached": True,
+                    "grounded": True,
+                    "z": 0.0254 + pickup_jump_z_m,
+                }
+            }
             if capacity_overflow:
-                other = 4 if marker == 3 else 3
-                self.accept_payload_state(
-                    payload_state(
-                        attach_time,
-                        other,
-                        xy=SOURCES[other],
-                        attached=True,
-                        grounded=True,
-                    )
+                attach_updates[4 if marker == 3 else 3] = {"attached": True}
+            if attach_truth_delay_ns == 0:
+                self.emit_tick(
+                    attach_time,
+                    ground_truth_update={
+                        "xy": attached_xy,
+                        "z": 0.0,
+                        "velocity": (0.0, 0.0, 0.0),
+                        "contact": True,
+                    },
+                    payload_updates=attach_updates,
+                )
+            else:
+                self.emit_tick(
+                    attach_time,
+                    ground_truth_update={
+                        "xy": attached_xy,
+                        "z": 0.0,
+                        "velocity": (0.0, 0.0, 0.0),
+                        "contact": True,
+                    },
                 )
             if attach_event:
                 self.payload_event(marker, "attach", attach_time)
+            if attach_truth_delay_ns:
+                assert attach_truth_delay_ns == DT
+                self.emit_tick(
+                    attach_time + DT,
+                    payload_updates=attach_updates,
+                )
             stability_start = attach_time + attach_truth_delay_ns + 1_000_000_000
         else:
             stability_start = phase_start + 1_000_000_000
 
-        for index in range(stability_samples):
-            self.accept_ground_truth(
-                ground_truth(
-                    stability_start + index * DT,
-                    xy=release_xy,
-                    z=release_z,
-                    velocity=(release_speed, 0.0, 0.0),
-                )
-            )
+        self.advance_to(stability_start - DT)
         release_time = stability_start + (stability_samples - 1) * DT
-        self.accept_payload_state(
-            payload_state(
-                release_time - release_attached_age_ns,
-                marker,
-                xy=release_xy,
-                attached=True,
-                grounded=False,
+        for index in range(stability_samples):
+            timestamp_ns = stability_start + index * DT
+            omit = (
+                frozenset({marker})
+                if release_attached_age_ns
+                and timestamp_ns > release_time - release_attached_age_ns
+                else frozenset()
             )
-        )
+            self.emit_tick(
+                timestamp_ns,
+                ground_truth_update={
+                    "xy": release_xy,
+                    "z": release_z,
+                    "velocity": (release_speed, 0.0, 0.0),
+                    "contact": False,
+                },
+                payload_updates={
+                    marker: {
+                        "xy": release_xy,
+                        "attached": True,
+                        "grounded": False,
+                    }
+                },
+                omit_payloads=omit,
+            )
         self.payload_event(marker, "release", release_time)
-        self.accept_payload_state(
-            payload_state(
-                release_time + DT,
-                marker,
-                xy=release_xy,
-                attached=False,
-                grounded=False,
-            )
+        self.emit_tick(
+            release_time + DT,
+            payload_updates={
+                marker: {
+                    "xy": release_xy,
+                    "attached": False,
+                    "grounded": False,
+                }
+            },
         )
         self.mission(phase, "COMPLETE", release_time + DT)
 
-        settle_start = release_time + 1_000_000_000
-        for index in range(21):
-            self.accept_payload_state(
-                payload_state(
-                    settle_start + index * DT,
-                    marker,
-                    xy=settle_xy,
-                    attached=False,
-                    grounded=True,
-                    speed=settle_speed,
-                    yaw=settle_yaw,
-                )
+        if defer_settle:
+            self.pending_settlements[marker] = (
+                settle_xy,
+                settle_yaw,
+                settle_speed,
             )
-        self.cursor_ns = settle_start + 20 * DT
+        else:
+            self.settle_payload(
+                marker,
+                xy=settle_xy,
+                yaw=settle_yaw,
+                speed=settle_speed,
+                start_ns=release_time + 1_000_000_000,
+            )
 
-    def home(self, *, elapsed_ns: int = 420_000_000_000) -> None:
-        complete_time = self.start_ns + elapsed_ns
-        self.mission("HOME", "STARTED", complete_time - 1_000_000_000)
-        self.accept_ground_truth(
-            ground_truth(complete_time, xy=(0.0, 0.0), z=0.0, contact=True)
-        )
-        for marker in (2, 3, 4):
-            self.accept_payload_state(
-                payload_state(
-                    complete_time,
-                    marker,
-                    xy=F2,
-                    attached=False,
-                    grounded=True,
-                )
+    def settle_payload(
+        self,
+        marker: int,
+        *,
+        xy: tuple[float, float] | None = None,
+        yaw: float | None = None,
+        speed: float | None = None,
+        start_ns: int | None = None,
+    ) -> None:
+        pending = self.pending_settlements.pop(marker, None)
+        if pending is not None:
+            pending_xy, pending_yaw, pending_speed = pending
+        else:
+            pending_xy, pending_yaw, pending_speed = F2, 0.0, 0.0
+        settled_xy = pending_xy if xy is None else xy
+        settled_yaw = pending_yaw if yaw is None else yaw
+        settled_speed = pending_speed if speed is None else speed
+        settle_start = self.cursor_ns + 1_000_000_000 if start_ns is None else start_ns
+        self.advance_to(settle_start - DT)
+        for index in range(21):
+            self.emit_tick(
+                settle_start + index * DT,
+                payload_updates={
+                    marker: {
+                        "xy": settled_xy,
+                        "attached": False,
+                        "grounded": True,
+                        "speed": settled_speed,
+                        "yaw": settled_yaw,
+                    }
+                },
             )
+
+    def home(
+        self,
+        *,
+        elapsed_ns: int | None = None,
+        disarmed: bool = True,
+        landing_after_disarmed: bool = False,
+    ) -> None:
+        complete_time = (
+            self.cursor_ns + 2_000_000_000
+            if elapsed_ns is None
+            else self.start_ns + elapsed_ns
+        )
+        home_start = complete_time - 1_000_000_000
+        self.advance_to(home_start)
+        self.mission("HOME", "STARTED", home_start)
+        landing_time = complete_time - 2 * DT
+        disarmed_time = complete_time - DT
+        if landing_after_disarmed:
+            self.advance_to(disarmed_time)
+        else:
+            self.advance_to(
+                landing_time,
+                final_ground_truth_update={
+                    "xy": (0.0, 0.0),
+                    "z": 0.0,
+                    "velocity": (0.0, 0.0, 0.0),
+                    "contact": True,
+                },
+            )
+            self.advance_to(disarmed_time)
+        if disarmed:
+            self.mission("HOME", "DISARMED", disarmed_time)
+        self.advance_to(
+            complete_time,
+            final_ground_truth_update=(
+                {
+                    "xy": (0.0, 0.0),
+                    "z": 0.0,
+                    "velocity": (0.0, 0.0, 0.0),
+                    "contact": True,
+                }
+                if landing_after_disarmed
+                else None
+            ),
+        )
         self.mission("HOME", "COMPLETE", complete_time)
-        self.cursor_ns = complete_time
 
 
 def new_trace() -> AttemptTrace:
@@ -281,7 +453,7 @@ def perfect_trace() -> AttemptTrace:
     trace.drop(2, phase="FM2")
     trace.drop(3, phase="FM3_3")
     trace.drop(4, phase="FM3_4")
-    trace.home()
+    trace.home(elapsed_ns=420_000_000_000)
     return trace
 
 
@@ -345,6 +517,75 @@ def test_missing_fm1_complete_mission_evidence_cannot_award_autonomy():
 
     assert rule_passed(result, "fm1_autonomy") is False
     assert result.complete is False
+
+
+def test_prestart_vehicle_contact_cannot_award_fm1_points():
+    """A fresh L contact from before FM1 STARTED must not enter landing evidence."""
+    scorer = CompetitionScorer(RUN_ID, load_competition_rules(RULES))
+    scorer.accept_ground_truth(
+        ground_truth(START - DT, xy=(-91.44, 0.0), z=0.0, contact=True)
+    )
+    scorer.accept_mission_event(
+        MissionEventSample(RUN_ID, START, 0, "FM1", "STARTED", "automatic attempt")
+    )
+    scorer.accept_mission_event(
+        MissionEventSample(RUN_ID, START, 1, "FM1", "COMPLETE", "automatic attempt")
+    )
+
+    result = scorer.finalize()
+
+    assert rule_passed(result, "fm1_landing") is False
+    assert rule_passed(result, "fm1_autonomy") is False
+
+
+def test_ground_truth_gap_after_mission_start_fails_closed():
+    """A missing vehicle tick can hide a release excursion or physical transition."""
+    scorer = CompetitionScorer(RUN_ID, load_competition_rules(RULES))
+    scorer.accept_mission_event(
+        MissionEventSample(RUN_ID, START, 0, "FM1", "STARTED", "automatic attempt")
+    )
+    scorer.accept_ground_truth(
+        ground_truth(START, xy=(0.0, 0.0), z=0.0, contact=True)
+    )
+    scorer.accept_ground_truth(
+        ground_truth(START + 2 * DT, xy=(0.0, 0.0), z=0.0, contact=True)
+    )
+
+    result = scorer.finalize()
+
+    assert result.complete is False
+    assert result.diagnostic == "ground_truth_timestamp_gap"
+
+
+def test_payload_gap_cannot_hide_teleport_or_capacity_transfer():
+    """Missing payload ticks cannot bridge two attachments without overlap evidence."""
+    scorer = CompetitionScorer(RUN_ID, load_competition_rules(RULES))
+    scorer.accept_mission_event(
+        MissionEventSample(RUN_ID, START, 0, "FM1", "STARTED", "automatic attempt")
+    )
+    scorer.accept_payload_state(
+        payload_state(
+            START,
+            2,
+            xy=(0.0, 0.0),
+            attached=True,
+            grounded=False,
+        )
+    )
+    scorer.accept_payload_state(
+        payload_state(
+            START + 2 * DT,
+            2,
+            xy=F2,
+            attached=False,
+            grounded=True,
+        )
+    )
+
+    result = scorer.finalize()
+
+    assert result.complete is False
+    assert result.diagnostic == "payload_2_timestamp_gap"
 
 
 def test_release_before_two_full_seconds_cannot_award_payload():
@@ -450,6 +691,30 @@ def test_missing_confirmed_attach_before_fm3_release_cannot_award_payload():
     assert rule_passed(trace.scorer.finalize(), "payload_3") is False
 
 
+def test_fm3_pickup_outside_configured_source_zone_cannot_score():
+    """Matching vehicle/payload centers away from WA must not satisfy marker 3 pickup."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3", pickup_xy=(0.0, 0.0))
+    trace.drop(4, phase="FM3_4")
+    trace.home()
+
+    assert rule_passed(trace.scorer.finalize(), "payload_3") is False
+
+
+def test_marker_four_pickup_at_wa_cannot_substitute_for_configured_wm_source():
+    """The two FM3 markers have distinct configured physical pickup sources."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4", pickup_xy=SOURCES[3])
+    trace.home()
+
+    assert rule_passed(trace.scorer.finalize(), "payload_4") is False
+
+
 def test_next_tick_physical_attach_truth_confirms_fresh_event():
     """Gazebo confirmation may precede recurrent attached truth by one 50 ms tick."""
     trace = new_trace()
@@ -540,6 +805,84 @@ def test_out_of_order_marker_four_cannot_earn_its_payload_points():
 
     assert rule_passed(result, "payload_4") is False
     assert result.complete is False
+
+
+def test_payload_two_settling_after_marker_three_cannot_backfill_checkpoint():
+    """Marker 3 physical work cannot begin before payload 2 has settled for scoring."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2", defer_settle=True)
+    trace.drop(3, phase="FM3_3")
+    trace.settle_payload(2)
+    trace.drop(4, phase="FM3_4")
+    trace.home()
+
+    result = trace.scorer.finalize()
+
+    assert rule_passed(result, "payload_2") is False
+    assert result.achieved_score < 150.0
+
+
+def test_payload_three_settling_after_marker_four_cannot_backfill_checkpoint():
+    """Marker 4 physical work cannot begin before payload 3 has settled for scoring."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3", defer_settle=True)
+    trace.drop(4, phase="FM3_4")
+    trace.settle_payload(3)
+    trace.home()
+
+    result = trace.scorer.finalize()
+
+    assert rule_passed(result, "payload_3") is False
+    assert result.achieved_score < 150.0
+
+
+def test_payload_four_settling_after_home_cannot_backfill_final_score():
+    """Home landing/completion must occur only after payload 4 physically settles."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4", defer_settle=True)
+    trace.home()
+    trace.settle_payload(4)
+
+    result = trace.scorer.finalize()
+
+    assert rule_passed(result, "payload_4") is False
+    assert result.complete is False
+
+
+def test_home_complete_without_distinct_disarmed_event_is_incomplete():
+    """A companion HOME/COMPLETE claim alone cannot prove ArduPilot disarm."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4")
+    trace.home(disarmed=False)
+
+    result = trace.scorer.finalize()
+
+    assert result.complete is False
+    assert result.diagnostic == "home_disarm_missing"
+
+
+def test_home_disarmed_before_physical_landing_is_incomplete():
+    """ArduPilot disarm evidence must follow, not precede, the Gazebo landing."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4")
+    trace.home(landing_after_disarmed=True)
+
+    result = trace.scorer.finalize()
+
+    assert result.complete is False
+    assert result.diagnostic == "home_completion_invalid"
 
 
 def test_confirmed_release_before_mission_start_earns_no_score():

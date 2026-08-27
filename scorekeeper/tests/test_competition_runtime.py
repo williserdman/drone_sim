@@ -131,6 +131,25 @@ def test_source_readiness_waits_for_payload_and_home_event_tail(tmp_path):
     assert runtime.source_inputs_observed_through(source_timestamp_ns) is True
 
 
+def test_source_readiness_requires_distinct_home_disarmed_event(tmp_path):
+    """HOME/COMPLETE alone cannot let the runtime finalize an armed attempt."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4")
+    trace.home(disarmed=False)
+    runtime, _protocol, _operations = runtime_for(
+        tmp_path,
+        CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
+    )
+    replay(trace, runtime)
+
+    assert runtime.source_inputs_observed_through(
+        trace.scorer.last_sim_timestamp_ns
+    ) is False
+
+
 def test_begin_finalization_persists_failure_then_becomes_quiescent(tmp_path):
     """Finalization cannot make a missing mission start or Home completion valid."""
     runtime, protocol, operations = runtime_for(

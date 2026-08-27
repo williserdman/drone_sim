@@ -166,3 +166,147 @@ depends on the planned companion host and final artifact validation tasks; that
 end-to-end run is intentionally outside this focused physical scorer task. The
 host Docker installation warns that the legacy builder is deprecated, but both
 the real build and image smoke exited successfully.
+
+## Fix Round 1
+
+### Status and files
+
+Resolved the five critical scoring-integrity findings on top of
+`7636c4b013e85db2343f541dda8436212219bd69` without changing the ROS message
+contracts or introducing a clock, epoch, barrier, queue, or synchronization
+mechanism.
+
+Modified:
+
+- `scorekeeper/src/drone_sim_scorekeeper/competition.py`
+- `scorekeeper/src/drone_sim_scorekeeper/competition_runtime.py`
+- `scorekeeper/tests/test_competition_score.py`
+- `scorekeeper/tests/test_competition_runtime.py`
+- `scorekeeper/EXTERNAL_INTERFACE.md`
+- `scorekeeper/INTERNAL_INTERFACE.md`
+
+The pre-existing untracked `SYSTEM_DIAGRAM.md` and `companion/comp2026/` remain
+unmodified and unstaged.
+
+### RED evidence
+
+The first focused run added one regression for each controller finding and
+failed all seven selected cases:
+
+```text
+$ uv run pytest scorekeeper/tests/test_competition_score.py -q \
+    -k 'prestart_vehicle or ground_truth_gap or payload_gap or outside_configured or settling_after_marker or settling_after_home or without_distinct_disarmed'
+7 failed
+```
+
+The failures demonstrated that a pre-start L sample awarded 50 points, stream
+gaps did not produce fail-closed diagnostics, an off-source FM3 pickup scored,
+late payload 2 and payload 4 settlement backfilled checkpoints, and
+`HOME/COMPLETE` without `HOME/DISARMED` still completed. After converting the
+fixture to emit every vehicle and payload stream on the exact 50 ms grid, the
+existing perfect trace also stayed RED until the new Home sequence was accepted:
+
+```text
+FAILED test_perfect_physical_attempt_scores_150_at_required_checkpoints
+diagnostic='mission_sequence_invalid'
+```
+
+Additional boundary coverage was then added for marker 4 at the wrong WA
+source, payload 3 settling after marker 4, physical landing after DISARMED, and
+runtime source readiness without the distinct DISARMED tail event.
+
+### GREEN evidence
+
+Fresh focused scorer/runtime result:
+
+```text
+$ uv run pytest scorekeeper/tests/test_competition_score.py scorekeeper/tests/test_competition_runtime.py -q
+38 passed in 9.51s
+```
+
+Fresh full scorekeeper result:
+
+```text
+$ uv run pytest scorekeeper/tests -q
+67 passed in 11.16s
+```
+
+Fresh descent serialization/runtime compatibility result:
+
+```text
+$ uv run pytest scorekeeper/tests/test_descent_score.py scorekeeper/tests/test_output.py scorekeeper/tests/test_runtime.py -q
+17 passed in 0.46s
+```
+
+`git diff --check` and Python byte-compilation also exited zero.
+
+### Mission-relative timing and scoring integrity
+
+- Vehicle and all three payload streams fail permanently on any post-start
+  regression or interval other than exactly 50,000,000 ns. Continuity already
+  received when `FM1/STARTED` arrives is checked at that point; later samples
+  are checked incrementally.
+- Physical vehicle/payload lookups have a hard lower bound at the saved
+  `start_sim_time_ns`, and release windows cannot begin before it. Pre-start
+  state and event history therefore cannot award any component.
+- Marker 3 attachment requires its payload center inside configured WA; marker
+  4 requires WM. Adjacent exact-grid states still independently enforce no
+  pickup pose jump, while the complete streams make stale capacity carryover
+  fail closed.
+- Each settlement timestamp is consumed: payload 2 must settle before marker
+  3 pickup, payload 3 before marker 4 pickup, and payload 4 before the earliest
+  physical Home landing/DISARMED/COMPLETE boundary. Later evidence cannot
+  backfill an earlier checkpoint.
+- Valid completion requires Gazebo Home XY/contact/speed truth first, then
+  strictly later current-run `HOME/DISARMED`, then strictly later
+  `HOME/COMPLETE`. Runtime readiness waits for both Home tail events.
+- The deadline remains exactly
+  `home_complete_sim_time - start_sim_time <= 600_000_000_000`; the 900-second
+  absolute source epoch test still accepts a +420-second mission and rejects
+  +600.05 seconds.
+
+### Image and smoke evidence
+
+```text
+$ docker build --target runtime -f scorekeeper/Dockerfile -t drone-sim-scorekeeper-competition .
+Successfully built 08f261deac39
+Successfully tagged drone-sim-scorekeeper-competition:latest
+```
+
+Image identity:
+
+```text
+sha256:08f261deac39ddb585a919e810acbad6bf45b9844ef362a7d20576809e099f4a
+```
+
+In-image frozen competition rule smoke:
+
+```text
+$ docker run --rm --entrypoint python3 drone-sim-scorekeeper-competition -c '<load competition_v1>'
+competition_v1 150.0
+```
+
+Packaged ROS/descent compatibility smoke:
+
+```text
+$ docker run --rm drone-sim-scorekeeper-competition python3 -m drone_sim_scorekeeper.self_test
+{"result": "ok", "ruleset_id": "descent_v1", "score": 100}
+```
+
+### Self-review and concerns
+
+- Read-only authority remains intact: no command publisher, service client,
+  actuator, electromagnet, Gazebo, pose, force, or physics mutation path was
+  added.
+- The first implementation compared settlement to the following phase start;
+  self-review narrowed that to the exact required physical checkpoint: marker
+  attach or the earliest Home landing/disarm/completion boundary.
+- The initial continuous fixture made gap checking quadratic; the production
+  acceptance path was reduced to an O(1) adjacent timestamp check, retaining a
+  one-time history check when mission start arrives.
+- `descent_v1` production files are untouched by this fix and its focused
+  17-test byte/serialization/runtime suite remains green.
+- No Task 6 blocker remains. Live 20 Hz behavior, Gazebo AGL semantics, and the
+  controller's real DroneKit-observed disarm event remain explicit downstream
+  live-acceptance items for Tasks 7, 8, and 10. Docker again emitted only the
+  host legacy-builder deprecation warning.

@@ -73,6 +73,7 @@ class CompetitionScorekeeperRuntime:
         }
         self._last_payload_event_id: int | None = None
         self._last_payload_event_timestamp_ns: int | None = None
+        self._home_disarmed_timestamp_ns: int | None = None
         self._home_complete_timestamp_ns: int | None = None
         self.quiescent = False
 
@@ -96,7 +97,10 @@ class CompetitionScorekeeperRuntime:
             and self._last_payload_event_id >= 4
             and self._last_payload_event_timestamp_ns is not None
             and self._last_payload_event_timestamp_ns <= timestamp_ns
+            and self._home_disarmed_timestamp_ns is not None
+            and self._home_disarmed_timestamp_ns <= timestamp_ns
             and self._home_complete_timestamp_ns is not None
+            and self._home_disarmed_timestamp_ns < self._home_complete_timestamp_ns
             and self._home_complete_timestamp_ns <= timestamp_ns
         )
 
@@ -148,8 +152,11 @@ class CompetitionScorekeeperRuntime:
             raise TypeError("sample must be MissionEventSample")
         if sample.run_id == self.run_id:
             self.scorer.accept_mission_event(sample)
-            if sample.phase == "HOME" and sample.state == "COMPLETE":
-                self._home_complete_timestamp_ns = sample.sim_timestamp_ns
+            if sample.phase == "HOME":
+                if sample.state == "DISARMED":
+                    self._home_disarmed_timestamp_ns = sample.sim_timestamp_ns
+                elif sample.state == "COMPLETE":
+                    self._home_complete_timestamp_ns = sample.sim_timestamp_ns
 
     def _write_failure(self, reason: str) -> None:
         if self._failure_written:
