@@ -39,7 +39,7 @@
   subscriber_queue: 10
   lazy: false
 - ros_topic_name: "/gazebo/private/payload_2/contacts"
-  gz_topic_name: "/gazebo/private/payload/2/contacts"
+  gz_topic_name: "/world/competition_mission/model/payload_2/link/body/sensor/ground_contact/contact"
   ros_type_name: "ros_gz_interfaces/msg/Contacts"
   gz_type_name: "gz.msgs.Contacts"
   direction: "GZ_TO_ROS"
@@ -79,7 +79,7 @@
   subscriber_queue: 10
   lazy: false
 - ros_topic_name: "/gazebo/private/payload_3/contacts"
-  gz_topic_name: "/gazebo/private/payload/3/contacts"
+  gz_topic_name: "/world/competition_mission/model/payload_3/link/body/sensor/ground_contact/contact"
   ros_type_name: "ros_gz_interfaces/msg/Contacts"
   gz_type_name: "gz.msgs.Contacts"
   direction: "GZ_TO_ROS"
@@ -119,7 +119,7 @@
   subscriber_queue: 10
   lazy: false
 - ros_topic_name: "/gazebo/private/payload_4/contacts"
-  gz_topic_name: "/gazebo/private/payload/4/contacts"
+  gz_topic_name: "/world/competition_mission/model/payload_4/link/body/sensor/ground_contact/contact"
   ros_type_name: "ros_gz_interfaces/msg/Contacts"
   gz_type_name: "gz.msgs.Contacts"
   direction: "GZ_TO_ROS"

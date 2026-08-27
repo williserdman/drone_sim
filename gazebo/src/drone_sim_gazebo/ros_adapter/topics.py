@@ -78,7 +78,8 @@ def gazebo_topics_for_world(world_name: str) -> tuple[str, ...]:
         competition.extend(
             (
                 f"/model/payload_{aruco_id}/pose",
-                f"/gazebo/private/payload/{aruco_id}/contacts",
+                f"/world/competition_mission/model/payload_{aruco_id}/link/body/"
+                "sensor/ground_contact/contact",
                 f"/gazebo/private/payload/{aruco_id}/joint_state",
                 f"/gazebo/private/payload/{aruco_id}/result",
             )

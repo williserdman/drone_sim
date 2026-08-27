@@ -53,7 +53,7 @@ def test_competition_bridge_is_minimal_and_directional():
         for aruco_id in (2, 3, 4)
     )
     for aruco_id in (2, 3, 4):
-        for suffix in ("contacts", "command", "joint_state", "result"):
+        for suffix in ("command", "joint_state", "result"):
             assert (
                 by_ros_topic[f"/gazebo/private/payload_{aruco_id}/{suffix}"]
                 ["gz_topic_name"]
@@ -64,6 +64,31 @@ def test_competition_bridge_is_minimal_and_directional():
         for topic, item in by_ros_topic.items()
         if not topic.endswith("/command")
     )
+
+
+def test_competition_bridge_uses_gazebo_contact_system_publishers():
+    """Live Gazebo contact sensors ignore the SDF topic hint and use canonical paths."""
+    from drone_sim_gazebo.ros_adapter.topics import gazebo_topics_for_world
+
+    bridge = yaml.safe_load(
+        (Path(__file__).parents[1] / "config/bridge-competition.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    by_ros_topic = {item["ros_topic_name"]: item for item in bridge}
+    required = gazebo_topics_for_world("competition_mission")
+
+    for aruco_id in (2, 3, 4):
+        native_topic = (
+            f"/world/competition_mission/model/payload_{aruco_id}/link/body/"
+            "sensor/ground_contact/contact"
+        )
+        assert (
+            by_ros_topic[f"/gazebo/private/payload_{aruco_id}/contacts"]
+            ["gz_topic_name"]
+            == native_topic
+        )
+        assert native_topic in required
 
 
 class Server:
