@@ -2,11 +2,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -35,6 +38,81 @@ void Require(bool _condition, const std::string &_message)
     std::cerr << _message << '\n';
     std::exit(1);
   }
+}
+
+struct JointTruth
+{
+  std::int64_t timestampNs;
+  std::string state;
+};
+
+std::optional<JointTruth> ParseJointTruth(const std::string &_wire)
+{
+  constexpr const char *prefix = "payload-joint-state-v1|";
+  if (_wire.rfind(prefix, 0) != 0)
+    return std::nullopt;
+  const auto separator = _wire.find('|', std::char_traits<char>::length(prefix));
+  if (separator == std::string::npos ||
+      _wire.find('|', separator + 1) != std::string::npos)
+    return std::nullopt;
+  const auto timestampText = _wire.substr(
+      std::char_traits<char>::length(prefix),
+      separator - std::char_traits<char>::length(prefix));
+  const auto state = _wire.substr(separator + 1);
+  if (timestampText.empty() || (state != "attached" && state != "detached"))
+    return std::nullopt;
+  try
+  {
+    std::size_t parsed = 0;
+    const auto timestamp = std::stoll(timestampText, &parsed);
+    if (parsed != timestampText.size() || timestamp < 0)
+      return std::nullopt;
+    return JointTruth{timestamp, state};
+  }
+  catch (...)
+  {
+    return std::nullopt;
+  }
+}
+
+std::string LatestState(const std::vector<std::string> &_wires)
+{
+  if (_wires.empty())
+    return {};
+  const auto parsed = ParseJointTruth(_wires.back());
+  return parsed ? parsed->state : std::string{};
+}
+
+std::vector<std::string> StateTransitions(
+    const std::vector<std::string> &_wires)
+{
+  std::vector<std::string> states;
+  for (const auto &wire : _wires)
+  {
+    const auto parsed = ParseJointTruth(wire);
+    if (!parsed)
+      return {};
+    if (states.empty() || states.back() != parsed->state)
+      states.push_back(parsed->state);
+  }
+  return states;
+}
+
+bool HasExactTruthCadence(const std::vector<std::string> &_wires)
+{
+  if (_wires.size() < 2)
+    return false;
+  auto previous = ParseJointTruth(_wires.front());
+  if (!previous)
+    return false;
+  for (auto iterator = std::next(_wires.begin()); iterator != _wires.end(); ++iterator)
+  {
+    const auto current = ParseJointTruth(*iterator);
+    if (!current || current->timestampNs - previous->timestampNs != 50'000'000)
+      return false;
+    previous = current;
+  }
+  return true;
 }
 
 class PhysicalObserver:
@@ -138,12 +216,16 @@ int main(int argc, char **argv)
         <initially_attached>)" +
         (_initiallyAttached ? "true" : "false") + R"(</initially_attached>
         <exclusive_parent>true</exclusive_parent>
+        <state_publish_period>0.05</state_publish_period>
       </plugin>)";
   };
   const std::string sdf = std::string{R"(
     <sdf version="1.10">
       <world name="coordinator_test">
         <gravity>0 0 0</gravity>
+        <physics name="fixed" type="ignored">
+          <max_step_size>0.01</max_step_size>
+        </physics>
         <plugin filename="gz-sim-physics-system"
                 name="gz::sim::systems::Physics"/>
         <model name="host">
@@ -242,10 +324,29 @@ int main(int argc, char **argv)
   Require(AdvanceUntil(server, [&]
   {
     std::lock_guard<std::mutex> guard(mutex);
-    return payload2States.size() == 1 && payload2States[0] == "attached" &&
-        payload3States.size() == 1 && payload3States[0] == "detached" &&
-        payload4States.size() == 1 && payload4States[0] == "detached";
+    return LatestState(payload2States) == "attached" &&
+        LatestState(payload3States) == "detached" &&
+        LatestState(payload4States) == "detached";
   }), "payload 2 must start attached while payloads 3 and 4 start detached");
+  std::size_t initialTruthCount = 0;
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    initialTruthCount = payload3States.size();
+  }
+  for (int index = 0; index < 6; ++index)
+    Require(server.RunOnce(false), "server must advance recurrent truth cadence");
+  Require(WaitFor([&]
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    return payload3States.size() > initialTruthCount;
+  }), "unchanged joint state must recur after one 50 ms truth period");
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    Require(HasExactTruthCadence(payload2States) &&
+        HasExactTruthCadence(payload3States) &&
+        HasExactTruthCadence(payload4States),
+        "joint truth must carry exact recurrent 50 ms simulation timestamps");
+  }
   Require(observer->currentJointCount == 1 && observer->maximumJointCount == 1,
       "initially detached payloads must never create a joint component");
   Require(observer->payload3MaxError < 1e-9 && observer->payload4MaxError < 1e-9,
@@ -275,8 +376,7 @@ int main(int argc, char **argv)
     Require(server.RunOnce(false), "server must advance occupied attach check");
   {
     std::lock_guard<std::mutex> guard(mutex);
-    Require(results.empty() && payload3States ==
-        std::vector<std::string>({"detached"}),
+    Require(results.empty() && LatestState(payload3States) == "detached",
         "an occupied hardpoint must leave payload 3 physically detached");
   }
   Require(observer->currentJointCount == 1 &&
@@ -289,8 +389,8 @@ int main(int argc, char **argv)
   Require(AdvanceUntil(server, [&]
   {
     std::lock_guard<std::mutex> guard(mutex);
-    return results.size() == 1 && payload2States.back() == "detached" &&
-        payload3States.back() == "attached" &&
+    return results.size() == 1 && LatestState(payload2States) == "detached" &&
+        LatestState(payload3States) == "attached" &&
         observer->currentJointCount == 1;
   }), "pending payload 3 attach must complete after payload 2 detaches");
   Require(attachTriggers == 1, "duplicate attach must publish one stock trigger");
@@ -309,7 +409,7 @@ int main(int argc, char **argv)
   Require(AdvanceUntil(server, [&]
   {
     std::lock_guard<std::mutex> guard(mutex);
-    return results.size() == 3 && payload3States.back() == "detached" &&
+    return results.size() == 3 && LatestState(payload3States) == "detached" &&
         observer->currentJointCount == 0;
   }), "duplicate detach must complete after one stock physical transition");
   Require(detachTriggers == 1, "duplicate detach must publish one stock trigger");
@@ -348,13 +448,14 @@ int main(int argc, char **argv)
     Require(results[4] ==
         "payload-result-v1|D1|error|unknown|COMMAND_ID_ACTION_CONFLICT",
         "conflicting identity reuse must expose the exact error code");
-    Require(payload3States ==
+    Require(StateTransitions(payload3States) ==
         std::vector<std::string>({"detached", "attached", "detached"}),
-        "payload 3 must expose exactly one transition per accepted action");
-    Require(payload2States ==
+        "payload 3 recurrent truth must expose each accepted transition");
+    Require(StateTransitions(payload2States) ==
         std::vector<std::string>({"attached", "detached"}),
         "payload 2 must detach before payload 3 occupies the hardpoint");
-    Require(payload4States == std::vector<std::string>({"detached"}),
+    Require(StateTransitions(payload4States) ==
+        std::vector<std::string>({"detached"}),
         "payload 4 must remain observably and physically detached");
   }
   return 0;

@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from drone_sim_gazebo.ros_adapter import AdapterFault
 from drone_sim_gazebo.ros_adapter.payload import PublicPayloadState
 
 
@@ -66,6 +67,27 @@ def test_payload_state_message_preserves_all_physical_fields():
     assert (message.twist.linear.x, message.twist.linear.y, message.twist.linear.z) == (4.0, 5.0, 6.0)
     assert message.grounded is True
     assert message.attached is False
+
+
+def test_joint_truth_wire_preserves_authoritative_native_timestamp():
+    """The adapter must use plugin sample time, never callback receipt time."""
+    from drone_sim_gazebo.ros_adapter.payload import parse_joint_state
+
+    assert parse_joint_state(
+        "payload-joint-state-v1|90050000000|detached"
+    ) == (90_050_000_000, "detached")
+    with pytest.raises(AdapterFault, match="joint state"):
+        parse_joint_state("attached")
+
+
+def test_range_sequence_rejects_a_missing_first_public_tick():
+    """Range cannot shift its count window after losing public 50 ms."""
+    from drone_sim_gazebo.ros_adapter.model import RangeSequence
+
+    sequence = RangeSequence(expected_samples=2, interval_ns=50_000_000)
+
+    with pytest.raises(AdapterFault, match="first range sample.*50000000 ns"):
+        sequence.accept(100_000_000)
 
 
 def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():

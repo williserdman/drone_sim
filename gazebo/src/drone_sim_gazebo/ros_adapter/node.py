@@ -10,8 +10,20 @@ from dataclasses import dataclass
 from .aggregation import AggregationFault, NativeOdometry
 from .epoch import OutputEpochGate
 from .live import LiveAdapter
-from .model import AdapterFault, AdapterSummary, NativeImage, PublicFrame, PublicGroundTruth
-from .payload import PayloadTracker, PublicPayloadState, payload_state_message
+from .model import (
+    AdapterFault,
+    AdapterSummary,
+    NativeImage,
+    PublicFrame,
+    PublicGroundTruth,
+    RangeSequence,
+)
+from .payload import (
+    PayloadTracker,
+    PublicPayloadState,
+    parse_joint_state,
+    payload_state_message,
+)
 from .topics import (
     PAYLOAD_IDS,
     contact_topic_for_world,
@@ -112,7 +124,6 @@ class GazeboAdapterNode(_node_base()):
         self._metadata_type = FrameMetadata
         self._ground_truth_type = GroundTruth
         self._payload_state_type = PayloadState
-        self._range_type = LaserScan
         self._image_publishers = {
             stream: self.create_publisher(
                 Image, f"/camera/{stream}/image_raw", _qos(100, reliable=True)
@@ -133,9 +144,7 @@ class GazeboAdapterNode(_node_base()):
         self._payload_state_publisher = None
         self._range_publisher = None
         self._payload_trackers: dict[int, PayloadTracker] = {}
-        self._attachment_states: dict[int, str] = {}
-        self._range_samples = 0
-        self._last_range_timestamp_ns: int | None = None
+        self._range_sequence: RangeSequence | None = None
         if self._competition:
             from geometry_msgs.msg import PoseArray
             from std_msgs.msg import String
@@ -158,6 +167,10 @@ class GazeboAdapterNode(_node_base()):
                 )
                 for aruco_id in PAYLOAD_IDS
             }
+            self._range_sequence = RangeSequence(
+                expected_samples=expected_frames,
+                interval_ns=50_000_000,
+            )
             self.create_subscription(
                 LaserScan,
                 "/gazebo/private/range/downward",
@@ -383,22 +396,33 @@ class GazeboAdapterNode(_node_base()):
         try:
             timestamp_ns = self._sample_timestamp(message)
             if timestamp_ns is not None:
-                self._payload_trackers[aruco_id].accept_contact(
-                    timestamp_ns,
-                    bool(message.contacts),
+                self._emit(
+                    self._payload_trackers[aruco_id].accept_contact(
+                        timestamp_ns,
+                        bool(message.contacts),
+                    )
                 )
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
     def _accept_payload_attachment(self, aruco_id: int, message) -> None:
-        if self._faulted or self._completion_reported:
+        if (
+            self._faulted
+            or self._completion_reported
+            or not self._output_active
+            and not self._output_epoch.activation_pending
+        ):
             return
         try:
-            if message.data not in {"attached", "detached"}:
-                raise AdapterFault(
-                    "physical joint state must be exactly attached or detached"
+            native_timestamp_ns, physical_state = parse_joint_state(message.data)
+            timestamp_ns = self._output_epoch.rebase_sample(native_timestamp_ns)
+            if timestamp_ns is not None:
+                self._emit(
+                    self._payload_trackers[aruco_id].accept_attachment(
+                        timestamp_ns,
+                        physical_state,
+                    )
                 )
-            self._attachment_states[aruco_id] = message.data
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
@@ -416,19 +440,14 @@ class GazeboAdapterNode(_node_base()):
                 return
             if len(message.poses) != 1:
                 raise AdapterFault("payload pose vector must contain exactly one pose")
-            try:
-                physical_state = self._attachment_states[aruco_id]
-            except KeyError as error:
-                raise AdapterFault("payload attachment state is unknown") from error
             tracker = self._payload_trackers[aruco_id]
-            tracker.accept_attachment(timestamp_ns, physical_state)
             pose = message.poses[0]
             output = tracker.accept_pose(
                 timestamp_ns,
                 _vector3(pose.position),
                 _quaternion(pose.orientation),
             )
-            self._emit((output,))
+            self._emit(output)
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
@@ -444,18 +463,10 @@ class GazeboAdapterNode(_node_base()):
             timestamp_ns = self._sample_timestamp(message)
             if timestamp_ns is None:
                 return
-            if self._range_samples == self._expected_frames:
-                raise AdapterFault("downward range sample overrun")
-            if self._last_range_timestamp_ns is not None:
-                delta_ns = timestamp_ns - self._last_range_timestamp_ns
-                if delta_ns != 50_000_000:
-                    raise AdapterFault(
-                        "downward range timestamps must advance by exactly 50000000 ns"
-                    )
+            assert self._range_sequence is not None
+            self._range_sequence.accept(timestamp_ns)
             public = copy.deepcopy(message)
             _set_stamp(public.header.stamp, timestamp_ns)
-            self._last_range_timestamp_ns = timestamp_ns
-            self._range_samples += 1
             self._emit((_PublicRange(timestamp_ns, public),))
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
@@ -530,7 +541,8 @@ class GazeboAdapterNode(_node_base()):
     def _maybe_complete(self) -> None:
         competition_complete = (
             not self._competition
-            or self._range_samples == self._expected_frames
+            or self._range_sequence is not None
+            and self._range_sequence.accepted_samples == self._expected_frames
             and all(
                 tracker.accepted_poses == self._expected_frames
                 for tracker in self._payload_trackers.values()

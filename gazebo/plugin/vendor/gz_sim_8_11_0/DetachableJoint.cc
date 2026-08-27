@@ -16,9 +16,12 @@
  */
 
 // Modified for Drone Sim: project-local plugin identity, optional
-// initially-detached state, and opt-in exclusive-parent arbitration. See
+// initially-detached state, opt-in exclusive-parent arbitration, and recurrent
+// timestamped level truth. See
 // gazebo/provenance/gz-sim-detachable-joint.json.
 
+#include <chrono>
+#include <cmath>
 #include <vector>
 
 #include <gz/plugin/Register.hh>
@@ -219,6 +222,23 @@ void DetachableJoint::Configure(const Entity &_entity,
   this->publishInitialDetached = !initiallyAttached;
   this->exclusiveParent =
       _sdf->Get<bool>("exclusive_parent", false).first;
+  const auto statePublishPeriod =
+      _sdf->Get<double>("state_publish_period", 0.0).first;
+  if (!std::isfinite(statePublishPeriod) || statePublishPeriod < 0.0)
+  {
+    gzerr << "state_publish_period must be finite and nonnegative\n";
+    this->validConfig = false;
+    return;
+  }
+  this->statePublishPeriodNs = std::chrono::duration_cast<
+      std::chrono::nanoseconds>(
+          std::chrono::duration<double>(statePublishPeriod)).count();
+  if (statePublishPeriod > 0.0 && this->statePublishPeriodNs <= 0)
+  {
+    gzerr << "state_publish_period is below nanosecond resolution\n";
+    this->validConfig = false;
+    return;
+  }
 
   this->validConfig = true;
 
@@ -322,13 +342,14 @@ void DetachableJoint::GetChildModelAndLinkEntities(
 }
 //////////////////////////////////////////////////
 void DetachableJoint::PreUpdate(
-  const UpdateInfo &/*_info*/,
+  const UpdateInfo &_info,
   EntityComponentManager &_ecm)
 {
   GZ_PROFILE("DetachableJoint::PreUpdate");
   if (this->validConfig && this->publishInitialDetached)
   {
-    this->PublishJointState(false);
+    if (this->statePublishPeriodNs == 0)
+      this->PublishJointState(false, _info.simTime.count());
     this->publishInitialDetached = false;
   }
 
@@ -337,6 +358,7 @@ void DetachableJoint::PreUpdate(
   {
     // return if attach is not requested.
     if (!this->attachRequested){
+      this->PublishPeriodicJointState(_info.simTime);
       return;
     }
 
@@ -374,7 +396,8 @@ void DetachableJoint::PreUpdate(
                                         this->childLinkEntity, "fixed"}));
       this->attachRequested = false;
       this->isAttached = true;
-      this->PublishJointState(this->isAttached);
+      if (this->statePublishPeriodNs == 0)
+        this->PublishJointState(this->isAttached, _info.simTime.count());
       gzdbg << "Attaching entity: " << this->detachableJointEntity
               << std::endl;
     }
@@ -397,23 +420,38 @@ void DetachableJoint::PreUpdate(
       this->detachableJointEntity = kNullEntity;
       this->detachRequested = false;
       this->isAttached = false;
-      this->PublishJointState(this->isAttached);
+      if (this->statePublishPeriodNs == 0)
+        this->PublishJointState(this->isAttached, _info.simTime.count());
     }
   }
+  this->PublishPeriodicJointState(_info.simTime);
 }
 
 //////////////////////////////////////////////////
-void DetachableJoint::PublishJointState(bool attached)
+void DetachableJoint::PublishPeriodicJointState(
+    const std::chrono::steady_clock::duration &_simTime)
+{
+  if (!this->validConfig || this->statePublishPeriodNs == 0)
+    return;
+  const auto timestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      _simTime).count();
+  if (timestampNs < 0 || timestampNs % this->statePublishPeriodNs != 0 ||
+      timestampNs == this->lastStatePublishTimestampNs)
+    return;
+  this->PublishJointState(this->isAttached, timestampNs);
+  this->lastStatePublishTimestampNs = timestampNs;
+}
+
+//////////////////////////////////////////////////
+void DetachableJoint::PublishJointState(bool attached, std::int64_t timestampNs)
 {
   msgs::StringMsg detachedStateMsg;
-  if (attached)
-  {
-    detachedStateMsg.set_data("attached");
-  }
+  const std::string state = attached ? "attached" : "detached";
+  if (this->statePublishPeriodNs == 0)
+    detachedStateMsg.set_data(state);
   else
-  {
-    detachedStateMsg.set_data("detached");
-  }
+    detachedStateMsg.set_data(
+        "payload-joint-state-v1|" + std::to_string(timestampNs) + '|' + state);
   this->outputPub.Publish(detachedStateMsg);
 }
 

@@ -70,6 +70,31 @@ std::optional<Command> ParseCommand(const std::string &_wire)
   return command;
 }
 
+std::optional<std::string> ParsePhysicalState(const std::string &_wire)
+{
+  if (_wire == "attached" || _wire == "detached")
+    return _wire;
+  constexpr const char *prefix = "payload-joint-state-v1|";
+  if (_wire.rfind(prefix, 0) != 0)
+    return std::nullopt;
+  const auto separator = _wire.find('|', std::char_traits<char>::length(prefix));
+  if (separator == std::string::npos ||
+      _wire.find('|', separator + 1) != std::string::npos)
+    return std::nullopt;
+  const auto timestamp = _wire.substr(
+      std::char_traits<char>::length(prefix),
+      separator - std::char_traits<char>::length(prefix));
+  const auto state = _wire.substr(separator + 1);
+  if (timestamp.empty() || (state != "attached" && state != "detached"))
+    return std::nullopt;
+  for (const char character : timestamp)
+  {
+    if (character < '0' || character > '9')
+      return std::nullopt;
+  }
+  return state;
+}
+
 std::string ResultWire(
     const std::string &_id,
     const std::string &_status,
@@ -177,13 +202,14 @@ class PayloadCommandCoordinator:
 
   private: void OnPhysicalState(const gz::msgs::StringMsg &_message)
   {
-    if (_message.data() != "attached" && _message.data() != "detached")
+    const auto physicalState = ParsePhysicalState(_message.data());
+    if (!physicalState)
     {
       gzerr << "PayloadCommandCoordinator ignored invalid physical state\n";
       return;
     }
     std::lock_guard<std::mutex> guard(this->mutex);
-    this->physicalState = _message.data();
+    this->physicalState = *physicalState;
     if (this->active && this->active->DesiredState() == *this->physicalState)
     {
       this->CompleteActiveLocked();

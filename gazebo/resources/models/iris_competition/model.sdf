@@ -466,6 +466,7 @@
       <output_topic>/gazebo/private/payload/2/joint_state</output_topic>
       <initially_attached>true</initially_attached>
       <exclusive_parent>true</exclusive_parent>
+      <state_publish_period>0.05</state_publish_period>
     </plugin>
     <plugin filename="libcwru_payload_command_coordinator.so" name="drone_sim::gazebo::PayloadCommandCoordinator">
       <command_topic>/gazebo/private/payload/3/command</command_topic>
@@ -483,6 +484,7 @@
       <output_topic>/gazebo/private/payload/3/joint_state</output_topic>
       <initially_attached>false</initially_attached>
       <exclusive_parent>true</exclusive_parent>
+      <state_publish_period>0.05</state_publish_period>
     </plugin>
     <plugin filename="libcwru_payload_command_coordinator.so" name="drone_sim::gazebo::PayloadCommandCoordinator">
       <command_topic>/gazebo/private/payload/4/command</command_topic>
@@ -500,6 +502,7 @@
       <output_topic>/gazebo/private/payload/4/joint_state</output_topic>
       <initially_attached>false</initially_attached>
       <exclusive_parent>true</exclusive_parent>
+      <state_publish_period>0.05</state_publish_period>
     </plugin>
     <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
       <publish_link_pose>false</publish_link_pose>

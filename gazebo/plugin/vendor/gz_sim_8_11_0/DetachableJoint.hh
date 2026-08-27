@@ -16,7 +16,8 @@
  */
 
 // Modified for Drone Sim: project-local plugin identity, optional
-// initially-detached state, and opt-in exclusive-parent arbitration. See
+// initially-detached state, opt-in exclusive-parent arbitration, and recurrent
+// timestamped level truth. See
 // gazebo/provenance/gz-sim-detachable-joint.json.
 
 #ifndef GZ_SIM_SYSTEMS_DETACHABLEJOINT_HH_
@@ -24,6 +25,8 @@
 
 #include <gz/msgs/empty.pb.h>
 
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <gz/transport/Node.hh>
@@ -77,6 +80,10 @@ namespace gazebo
   /// - `<exclusive_parent>` (optional): If true, wait to create a joint while
   /// another detachable joint component uses the same parent link. Defaults
   /// to false for compatibility with the upstream system.
+  ///
+  /// - `<state_publish_period>` (optional): Positive simulation-time period in
+  /// seconds for recurrent versioned joint level truth. Zero retains the
+  /// upstream transition-only wire behavior. Defaults to zero.
 
   class DetachableJoint
       : public gz::sim::System,
@@ -104,7 +111,11 @@ namespace gazebo
     private: gz::transport::Node::Publisher outputPub;
 
     /// \brief Helper function to publish the state of the detachment
-    private: void PublishJointState(bool attached);
+    private: void PublishJointState(bool attached, std::int64_t timestampNs);
+
+    /// \brief Publish recurrent physical level truth on its exact grid.
+    private: void PublishPeriodicJointState(
+        const std::chrono::steady_clock::duration &_simTime);
 
     /// \brief Callback for detach request topic
     private: void OnDetachRequest(const gz::msgs::Empty &_msg);
@@ -160,6 +171,12 @@ namespace gazebo
 
     /// \brief Whether this parent link may have only one detachable joint.
     private: bool exclusiveParent{false};
+
+    /// \brief Recurrent truth period in simulation nanoseconds; zero disables.
+    private: std::int64_t statePublishPeriodNs{0};
+
+    /// \brief Last recurrent truth timestamp, preventing duplicate grid output.
+    private: std::int64_t lastStatePublishTimestampNs{-1};
 
   };
 }

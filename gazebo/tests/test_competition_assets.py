@@ -234,6 +234,7 @@ def test_payload_joint_topics_and_initial_states_are_exact(tmp_path):
         assert joint.findtext("output_topic") == f"{base}/joint_state"
         assert joint.findtext("initially_attached") == expected_initial
         assert joint.findtext("exclusive_parent") == "true"
+        assert joint.findtext("state_publish_period") == "0.05"
         assert coordinator.findtext("physical_state_topic") == f"{base}/joint_state"
         assert coordinator.findtext("result_topic") == f"{base}/result"
         assert coordinator.findtext("stock_attach_topic") == f"{base}/physical/attach"

@@ -27,13 +27,14 @@ def test_payload_tracker_emits_one_complete_sample_per_pose_tick():
     """Dropping a pose tick would make public physical truth incomplete."""
     tracker = ready_tracker()
 
-    first = tracker.accept_pose(
+    (first,) = tracker.accept_pose(
         INTERVAL_NS,
         (1.0, 2.0, 0.0254),
         UNIT_QUATERNION,
     )
     tracker.accept_contact(2 * INTERVAL_NS, False)
-    second = tracker.accept_pose(
+    tracker.accept_attachment(2 * INTERVAL_NS, False)
+    (second,) = tracker.accept_pose(
         2 * INTERVAL_NS,
         (1.005, 2.0, 0.0254),
         UNIT_QUATERNION,
@@ -63,8 +64,13 @@ def test_payload_tracker_uses_only_explicit_joint_state_for_attachment():
     )
     tracker.accept_contact(INTERVAL_NS, True)
 
-    with pytest.raises(AdapterFault, match="attachment state"):
-        tracker.accept_pose(INTERVAL_NS, (0.0, 0.0, 0.065), UNIT_QUATERNION)
+    assert tracker.accept_pose(
+        INTERVAL_NS,
+        (0.0, 0.0, 0.065),
+        UNIT_QUATERNION,
+    ) == ()
+    with pytest.raises(AdapterFault, match="first joint truth"):
+        tracker.accept_attachment(2 * INTERVAL_NS, False)
 
 
 def test_payload_tracker_accepts_only_known_physical_joint_states_and_latches():
@@ -87,14 +93,13 @@ def test_payload_tracker_rejects_contact_older_than_one_pose_sample():
     """A stale grounded bit must not be joined to a current pose."""
     tracker = ready_tracker(stamp_ns=INTERVAL_NS)
     tracker.accept_pose(INTERVAL_NS, (0.0, 0.0, 0.0254), UNIT_QUATERNION)
+    tracker.accept_attachment(2 * INTERVAL_NS, False)
     tracker.accept_pose(2 * INTERVAL_NS, (0.0, 0.0, 0.0254), UNIT_QUATERNION)
+    tracker.accept_attachment(3 * INTERVAL_NS, False)
+    tracker.accept_pose(3 * INTERVAL_NS, (0.0, 0.0, 0.0254), UNIT_QUATERNION)
 
     with pytest.raises(AdapterFault, match="contact.*older than one sample"):
-        tracker.accept_pose(
-            3 * INTERVAL_NS,
-            (0.0, 0.0, 0.0254),
-            UNIT_QUATERNION,
-        )
+        tracker.accept_contact(4 * INTERVAL_NS, True)
 
 
 @pytest.mark.parametrize(
@@ -138,7 +143,7 @@ def test_payload_tracker_rejects_malformed_physical_pose(position, orientation):
 
 def test_public_payload_state_is_immutable():
     tracker = ready_tracker()
-    state = tracker.accept_pose(
+    (state,) = tracker.accept_pose(
         INTERVAL_NS,
         (0.0, 0.0, 0.0254),
         UNIT_QUATERNION,
@@ -146,3 +151,85 @@ def test_public_payload_state_is_immutable():
 
     with pytest.raises(FrozenInstanceError):
         state.attached = True
+
+
+def test_payload_tracker_joins_pose_before_same_tick_contact_without_faulting():
+    """Independent ROS callback order must not decide whether valid truth faults."""
+    tracker = PayloadTracker(
+        run_id=RUN_ID,
+        aruco_id=3,
+        interval_ns=INTERVAL_NS,
+    )
+    tracker.accept_attachment(INTERVAL_NS, False)
+
+    assert tracker.accept_pose(
+        INTERVAL_NS,
+        (1.0, 2.0, 0.0254),
+        UNIT_QUATERNION,
+    ) == ()
+    (sample,) = tracker.accept_contact(INTERVAL_NS, True)
+
+    assert sample.sim_timestamp_ns == INTERVAL_NS
+    assert sample.grounded is True
+    assert sample.attached is False
+
+
+def test_payload_tracker_rejects_a_missed_recurrent_joint_tick():
+    """A later level sample must expose a dropped transition-sized truth tick."""
+    tracker = PayloadTracker(
+        run_id=RUN_ID,
+        aruco_id=3,
+        interval_ns=INTERVAL_NS,
+    )
+    tracker.accept_contact(INTERVAL_NS, True)
+    tracker.accept_attachment(INTERVAL_NS, False)
+    tracker.accept_pose(INTERVAL_NS, (0.0, 0.0, 0.0254), UNIT_QUATERNION)
+    tracker.accept_contact(2 * INTERVAL_NS, True)
+    assert tracker.accept_pose(
+        2 * INTERVAL_NS,
+        (0.0, 0.0, 0.0254),
+        UNIT_QUATERNION,
+    ) == ()
+
+    with pytest.raises(AdapterFault, match="joint.*exactly 50000000 ns"):
+        tracker.accept_attachment(3 * INTERVAL_NS, True)
+
+
+@pytest.mark.parametrize("aruco_id", [2, 3, 4])
+def test_payload_tracker_rejects_a_missing_first_public_tick(aruco_id):
+    """Every payload ID must begin on the shared public 50 ms grid."""
+    tracker = PayloadTracker(
+        run_id=RUN_ID,
+        aruco_id=aruco_id,
+        interval_ns=INTERVAL_NS,
+    )
+    tracker.accept_contact(INTERVAL_NS, True)
+    tracker.accept_attachment(INTERVAL_NS, False)
+
+    with pytest.raises(AdapterFault, match="first payload pose.*50000000 ns"):
+        tracker.accept_pose(
+            2 * INTERVAL_NS,
+            (0.0, 0.0, 0.0254),
+            UNIT_QUATERNION,
+        )
+
+
+def test_payload_tracker_rejects_nonfinite_derived_velocity():
+    """Finite positions whose subtraction overflows must still fail closed."""
+    tracker = PayloadTracker(
+        run_id=RUN_ID,
+        aruco_id=3,
+        interval_ns=INTERVAL_NS,
+    )
+    tracker.accept_contact(INTERVAL_NS, True)
+    tracker.accept_attachment(INTERVAL_NS, False)
+    tracker.accept_pose(INTERVAL_NS, (-1e308, 0.0, 0.0), UNIT_QUATERNION)
+    tracker.accept_contact(2 * INTERVAL_NS, True)
+    tracker.accept_attachment(2 * INTERVAL_NS, False)
+
+    with pytest.raises(AdapterFault, match="linear_velocity_xyz.*finite"):
+        tracker.accept_pose(
+            2 * INTERVAL_NS,
+            (1e308, 0.0, 0.0),
+            UNIT_QUATERNION,
+        )

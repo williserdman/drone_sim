@@ -19,6 +19,52 @@ class AdapterFault(RuntimeError):
     """A native sample violates the fixed public adapter contract."""
 
 
+class RangeSequence:
+    """Validate one exact zero-based public range timestamp sequence."""
+
+    def __init__(self, *, expected_samples: int, interval_ns: int) -> None:
+        self._expected_samples = _positive_integer(
+            expected_samples,
+            field="expected_samples",
+        )
+        self._interval_ns = _positive_integer(interval_ns, field="interval_ns")
+        self._accepted_samples = 0
+        self._fault_reason: str | None = None
+
+    @property
+    def accepted_samples(self) -> int:
+        return self._accepted_samples
+
+    def accept(self, sim_timestamp_ns: int) -> None:
+        if self._fault_reason is not None:
+            raise AdapterFault(self._fault_reason)
+        try:
+            timestamp_ns = _positive_integer(
+                sim_timestamp_ns,
+                field="sim_timestamp_ns",
+            )
+            if self._accepted_samples == self._expected_samples:
+                raise AdapterFault("downward range sample overrun")
+            expected_timestamp_ns = (
+                self._accepted_samples + 1
+            ) * self._interval_ns
+            if timestamp_ns != expected_timestamp_ns:
+                if self._accepted_samples == 0:
+                    raise AdapterFault(
+                        "first range sample must be exactly "
+                        f"{self._interval_ns} ns"
+                    )
+                raise AdapterFault(
+                    "downward range timestamps must advance by exactly "
+                    f"{self._interval_ns} ns"
+                )
+            self._accepted_samples += 1
+        except AdapterFault as error:
+            if self._fault_reason is None:
+                self._fault_reason = f"range sequence faulted: {error}"
+            raise AdapterFault(self._fault_reason) from error
+
+
 @dataclass(frozen=True)
 class NativeImage:
     sim_timestamp_ns: int

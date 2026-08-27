@@ -12,6 +12,9 @@ from .model import (
 )
 
 
+_JOINT_STATE_PREFIX = "payload-joint-state-v1"
+
+
 @dataclass(frozen=True)
 class PublicPayloadState:
     run_id: str
@@ -57,6 +60,24 @@ def payload_state_message(value: PublicPayloadState, message_type):
     return message
 
 
+def parse_joint_state(value: object) -> tuple[int, str]:
+    """Decode recurrent Gazebo joint truth with its native sample time."""
+    if not isinstance(value, str):
+        raise AdapterFault("joint state must be timestamped physical truth")
+    parts = value.split("|")
+    if len(parts) != 3 or parts[0] != _JOINT_STATE_PREFIX:
+        raise AdapterFault("joint state must use payload-joint-state-v1")
+    try:
+        timestamp_ns = int(parts[1])
+    except ValueError as error:
+        raise AdapterFault("joint state timestamp is malformed") from error
+    if str(timestamp_ns) != parts[1] or timestamp_ns < 0:
+        raise AdapterFault("joint state timestamp is malformed")
+    if parts[2] not in {"attached", "detached"}:
+        raise AdapterFault("joint state must be exactly attached or detached")
+    return timestamp_ns, parts[2]
+
+
 class PayloadTracker:
     """Publish one fail-closed physical payload sample per exact pose tick."""
 
@@ -66,12 +87,19 @@ class PayloadTracker:
             raise AdapterFault("aruco_id must be an unsigned 16-bit integer")
         self._aruco_id = aruco_id
         self._interval_ns = _positive_integer(interval_ns, field="interval_ns")
-        self._last_pose_timestamp_ns: int | None = None
+        self._last_pose_input_timestamp_ns: int | None = None
         self._last_position_xyz: tuple[float, float, float] | None = None
-        self._contact_timestamp_ns: int | None = None
-        self._grounded: bool | None = None
-        self._attachment_timestamp_ns: int | None = None
-        self._attached: bool | None = None
+        self._last_contact_timestamp_ns: int | None = None
+        self._last_attachment_timestamp_ns: int | None = None
+        self._contacts: dict[int, bool] = {}
+        self._attachments: dict[int, bool] = {}
+        self._poses: dict[
+            int,
+            tuple[
+                tuple[float, float, float],
+                tuple[float, float, float, float],
+            ],
+        ] = {}
         self._accepted_poses = 0
         self._fault_reason: str | None = None
 
@@ -93,19 +121,24 @@ class PayloadTracker:
     def _timestamp(self, value: object) -> int:
         return _positive_integer(value, field="sim_timestamp_ns")
 
-    def accept_contact(self, sim_timestamp_ns: int, grounded: bool) -> None:
+    def accept_contact(
+        self,
+        sim_timestamp_ns: int,
+        grounded: bool,
+    ) -> tuple[PublicPayloadState, ...]:
         self._raise_if_faulted()
         try:
             timestamp_ns = self._timestamp(sim_timestamp_ns)
             if type(grounded) is not bool:
                 raise AdapterFault("grounded contact state must be a boolean")
             if (
-                self._contact_timestamp_ns is not None
-                and timestamp_ns <= self._contact_timestamp_ns
+                self._last_contact_timestamp_ns is not None
+                and timestamp_ns <= self._last_contact_timestamp_ns
             ):
                 raise AdapterFault("contact timestamps must increase")
-            self._contact_timestamp_ns = timestamp_ns
-            self._grounded = grounded
+            self._last_contact_timestamp_ns = timestamp_ns
+            self._contacts[timestamp_ns] = grounded
+            return self._drain()
         except AdapterFault as error:
             self._latch(error)
 
@@ -113,7 +146,7 @@ class PayloadTracker:
         self,
         sim_timestamp_ns: int,
         physical_state: bool | str,
-    ) -> None:
+    ) -> tuple[PublicPayloadState, ...]:
         self._raise_if_faulted()
         try:
             timestamp_ns = self._timestamp(sim_timestamp_ns)
@@ -127,13 +160,20 @@ class PayloadTracker:
                 raise AdapterFault(
                     "physical joint state must be exactly attached or detached"
                 )
-            if (
-                self._attachment_timestamp_ns is not None
-                and timestamp_ns < self._attachment_timestamp_ns
-            ):
-                raise AdapterFault("attachment timestamps must not regress")
-            self._attachment_timestamp_ns = timestamp_ns
-            self._attached = attached
+            if self._last_attachment_timestamp_ns is None:
+                if timestamp_ns != self._interval_ns:
+                    raise AdapterFault(
+                        "first joint truth must be exactly "
+                        f"{self._interval_ns} ns"
+                    )
+            elif timestamp_ns - self._last_attachment_timestamp_ns != self._interval_ns:
+                raise AdapterFault(
+                    "joint truth timestamps must advance by exactly "
+                    f"{self._interval_ns} ns"
+                )
+            self._last_attachment_timestamp_ns = timestamp_ns
+            self._attachments[timestamp_ns] = attached
+            return self._drain()
         except AdapterFault as error:
             self._latch(error)
 
@@ -142,7 +182,7 @@ class PayloadTracker:
         sim_timestamp_ns: int,
         position_xyz: tuple[float, float, float],
         orientation_xyzw: tuple[float, float, float, float],
-    ) -> PublicPayloadState:
+    ) -> tuple[PublicPayloadState, ...]:
         self._raise_if_faulted()
         try:
             timestamp_ns = self._timestamp(sim_timestamp_ns)
@@ -156,25 +196,61 @@ class PayloadTracker:
                 field="orientation_xyzw",
                 length=4,
             )
-            if self._last_pose_timestamp_ns is not None:
-                delta_ns = timestamp_ns - self._last_pose_timestamp_ns
+            if self._last_pose_input_timestamp_ns is None:
+                if timestamp_ns != self._interval_ns:
+                    raise AdapterFault(
+                        "first payload pose must be exactly "
+                        f"{self._interval_ns} ns"
+                    )
+            else:
+                delta_ns = timestamp_ns - self._last_pose_input_timestamp_ns
                 if delta_ns != self._interval_ns:
                     raise AdapterFault(
                         "payload pose timestamps must advance by exactly "
                         f"{self._interval_ns} ns"
                     )
-            if self._contact_timestamp_ns is None or self._grounded is None:
-                raise AdapterFault("payload contact state is unknown")
-            contact_age_ns = timestamp_ns - self._contact_timestamp_ns
-            if contact_age_ns < 0:
-                raise AdapterFault("payload contact timestamp is ahead of pose")
-            if contact_age_ns > self._interval_ns:
-                raise AdapterFault("payload contact is older than one sample")
-            if self._attachment_timestamp_ns is None or self._attached is None:
-                raise AdapterFault("payload attachment state is unknown")
-            if self._attachment_timestamp_ns > timestamp_ns:
-                raise AdapterFault("payload attachment timestamp is ahead of pose")
+            self._last_pose_input_timestamp_ns = timestamp_ns
+            self._poses[timestamp_ns] = (position, orientation)
+            return self._drain()
+        except AdapterFault as error:
+            self._latch(error)
 
+    def _drain(self) -> tuple[PublicPayloadState, ...]:
+        output: list[PublicPayloadState] = []
+        while self._poses:
+            timestamp_ns = min(self._poses)
+            if timestamp_ns not in self._attachments:
+                if (
+                    self._last_attachment_timestamp_ns is not None
+                    and self._last_attachment_timestamp_ns > timestamp_ns
+                ):
+                    raise AdapterFault("payload joint truth is missing for pose tick")
+                break
+
+            eligible_contacts = [
+                stamp for stamp in self._contacts if stamp <= timestamp_ns
+            ]
+            if not eligible_contacts:
+                if (
+                    self._last_contact_timestamp_ns is not None
+                    and self._last_contact_timestamp_ns > timestamp_ns
+                ):
+                    raise AdapterFault("payload contact state is unknown")
+                break
+            contact_timestamp_ns = max(eligible_contacts)
+            contact_age_ns = timestamp_ns - contact_timestamp_ns
+            if contact_timestamp_ns != timestamp_ns:
+                if (
+                    self._last_contact_timestamp_ns is None
+                    or self._last_contact_timestamp_ns <= timestamp_ns
+                ):
+                    break
+                if contact_age_ns > self._interval_ns:
+                    raise AdapterFault("payload contact is older than one sample")
+
+            position, orientation = self._poses.pop(timestamp_ns)
+            attached = self._attachments.pop(timestamp_ns)
+            grounded = self._contacts[contact_timestamp_ns]
             if self._last_position_xyz is None:
                 velocity = (0.0, 0.0, 0.0)
             else:
@@ -183,19 +259,26 @@ class PayloadTracker:
                     (current - previous) / seconds
                     for current, previous in zip(position, self._last_position_xyz)
                 )
-            public = PublicPayloadState(
-                run_id=self._run_id,
-                sim_timestamp_ns=timestamp_ns,
-                aruco_id=self._aruco_id,
-                position_xyz=position,
-                orientation_xyzw=orientation,
-                linear_velocity_xyz=velocity,
-                grounded=self._grounded,
-                attached=self._attached,
+                velocity = _validate_vector(
+                    velocity,
+                    field="linear_velocity_xyz",
+                    length=3,
+                )
+            output.append(
+                PublicPayloadState(
+                    run_id=self._run_id,
+                    sim_timestamp_ns=timestamp_ns,
+                    aruco_id=self._aruco_id,
+                    position_xyz=position,
+                    orientation_xyzw=orientation,
+                    linear_velocity_xyz=velocity,
+                    grounded=grounded,
+                    attached=attached,
+                )
             )
-            self._last_pose_timestamp_ns = timestamp_ns
             self._last_position_xyz = position
             self._accepted_poses += 1
-            return public
-        except AdapterFault as error:
-            self._latch(error)
+            for stamp in tuple(self._contacts):
+                if stamp < timestamp_ns - self._interval_ns:
+                    del self._contacts[stamp]
+        return tuple(output)

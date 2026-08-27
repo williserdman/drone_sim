@@ -239,6 +239,7 @@ def _add_payload_joints(model: ET.Element, payloads: tuple[Payload, ...]) -> Non
         _text(detachable, "output_topic", f"{base}/joint_state")
         _text(detachable, "initially_attached", "true" if payload.initial == "attached" else "false")
         _text(detachable, "exclusive_parent", "true")
+        _text(detachable, "state_publish_period", "0.05")
 
 
 def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfig) -> None:
