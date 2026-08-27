@@ -17,6 +17,8 @@ class RecordingRuntimeConfig:
     physical_run: bool = False
     width_px: int = 320
     height_px: int = 240
+    fps: int = 20
+    encoding: str = "rgb8"
     step_bytes: int = 960
     image_payload_bytes: int = 320 * 240 * 3
     ruleset_id: str = "descent_v1"
@@ -43,7 +45,7 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
         raise ValueError(
             "recording configuration must equal 320x240 or 640x480 rgb8 at 20 FPS"
         )
-    width_px, height_px, _fps, _encoding = geometry
+    width_px, height_px, fps, encoding = geometry
     ruleset_id = document.get("scenario", "descent_v1")
     if ruleset_id == "competition_v1" and (width_px, height_px) != (640, 480):
         raise ValueError("competition_v1 recording must equal 640x480 rgb8 at 20 FPS")
@@ -58,6 +60,8 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
             physical_run=False,
             width_px=width_px,
             height_px=height_px,
+            fps=fps,
+            encoding=encoding,
             step_bytes=width_px * 3,
             image_payload_bytes=width_px * height_px * 3,
             ruleset_id=ruleset_id,
@@ -88,6 +92,8 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
         physical_run=True,
         width_px=width_px,
         height_px=height_px,
+        fps=fps,
+        encoding=encoding,
         step_bytes=width_px * 3,
         image_payload_bytes=width_px * height_px * 3,
         ruleset_id=ruleset_id,

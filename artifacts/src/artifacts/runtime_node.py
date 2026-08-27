@@ -716,6 +716,10 @@ def main() -> None:
             run_id=configured_run_id,
             stream=stream,
             expected_frame_count=recording_contract.expected_camera_frames,
+            width_px=recording_contract.width_px,
+            height_px=recording_contract.height_px,
+            fps=recording_contract.fps,
+            encoding=recording_contract.encoding,
             diagnostic_sink=errors,
         )
         return FaultAwareRecorder(
@@ -757,7 +761,14 @@ def main() -> None:
         protocol=protocol,
         bag_recorder=RosbagRecorder(run_directory, topics=recording_contract.topics),
         video_node=video_node,
-        video_validators={"onboard": VideoValidator(), "observer": VideoValidator()},
+        video_validators={
+            stream: VideoValidator(
+                width_px=recording_contract.width_px,
+                height_px=recording_contract.height_px,
+                fps=recording_contract.fps,
+            )
+            for stream in ("onboard", "observer")
+        },
         bag_validator=RosbagValidator(
             run_id,
             expected_camera_frames=recording_contract.expected_camera_frames,

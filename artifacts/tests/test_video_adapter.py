@@ -219,6 +219,33 @@ def test_command_is_exact_and_start_is_shell_free(tmp_path):
     assert factory.calls[0][1]["stdin"] is subprocess.PIPE
 
 
+def test_competition_geometry_controls_ffmpeg_and_raw_frame_contract(tmp_path):
+    factory = FakeProcessFactory()
+    recorder = _recorder(
+        tmp_path,
+        process_factory=factory,
+        width_px=640,
+        height_px=480,
+        fps=20,
+        encoding="rgb8",
+    )
+    frame = bytes(640 * 480 * 3)
+
+    assert recorder.command()[10:14] == (
+        "-video_size",
+        "640x480",
+        "-framerate",
+        "20",
+    )
+
+    recorder.accept_image(
+        _image(50_000_000, width=640, height=480, step=1_920, data=frame)
+    )
+    recorder.accept_metadata(_metadata(50_000_000, frame_id=0))
+
+    assert factory.process.stdin.getvalue() == frame
+
+
 def test_start_keeps_encoded_inode_anonymous_until_finalization(tmp_path):
     factory = FakeProcessFactory()
     recorder = _recorder(tmp_path, process_factory=factory)

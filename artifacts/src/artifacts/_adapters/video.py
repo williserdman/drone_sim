@@ -26,6 +26,12 @@ FPS = 20
 ENCODING = "rgb8"
 STEP_BYTES = WIDTH_PX * 3
 PAYLOAD_BYTES = WIDTH_PX * HEIGHT_PX * 3
+SUPPORTED_RECORDING_GEOMETRIES = frozenset(
+    {
+        (320, 240, 20, "rgb8"),
+        (640, 480, 20, "rgb8"),
+    }
+)
 STREAMS = ("onboard", "observer")
 _RECOVERY_RESERVE_SECONDS = 0.5
 _RECOVERY_LINK_MARGIN_SECONDS = 0.1
@@ -556,8 +562,10 @@ class VideoStreamRecorder:
             or expected_frame_count <= 0
         ):
             raise ValueError("expected_frame_count must be a positive integer")
-        if (width_px, height_px, fps, encoding) != (WIDTH_PX, HEIGHT_PX, FPS, ENCODING):
-            raise ValueError("recording configuration must equal frozen 320x240 rgb8 at 20 FPS")
+        if (width_px, height_px, fps, encoding) not in SUPPORTED_RECORDING_GEOMETRIES:
+            raise ValueError(
+                "recording configuration must equal 320x240 or 640x480 rgb8 at 20 FPS"
+            )
         self.run_directory = Path(run_directory).resolve()
         self.run_id = run_id
         self.stream = stream
@@ -566,6 +574,8 @@ class VideoStreamRecorder:
         self.height_px = height_px
         self.fps = fps
         self.encoding = encoding
+        self.step_bytes = width_px * 3
+        self.payload_bytes = width_px * height_px * 3
         self._process_factory = process_factory
         self._command_runner = command_runner
         self._validator = validator or VideoValidator(
@@ -640,8 +650,9 @@ class VideoStreamRecorder:
             raise RuntimeError("video output has not been reserved")
         return (
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "320x240",
-            "-framerate", "20", "-i", "pipe:0", "-an", "-c:v", "libx264",
+            "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size",
+            f"{self.width_px}x{self.height_px}", "-framerate", str(self.fps),
+            "-i", "pipe:0", "-an", "-c:v", "libx264",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4",
             f"/proc/self/fd/{descriptor}",
         )
@@ -1070,13 +1081,20 @@ class VideoStreamRecorder:
         if image.width % 2 or image.height % 2:
             self._reject("image dimensions must be even", timestamp_ns)
         if (image.width, image.height) != (self.width_px, self.height_px):
-            self._reject("image dimensions changed or differ from 320x240", timestamp_ns)
+            self._reject(
+                "image dimensions changed or differ from "
+                f"{self.width_px}x{self.height_px}",
+                timestamp_ns,
+            )
         if image.encoding != self.encoding:
-            self._reject("image encoding must be rgb8", timestamp_ns)
-        if image.step != STEP_BYTES:
-            self._reject("image step must be 960", timestamp_ns)
-        if len(image.data) != PAYLOAD_BYTES:
-            self._reject("image payload must contain exactly 230400 bytes", timestamp_ns)
+            self._reject(f"image encoding must be {self.encoding}", timestamp_ns)
+        if image.step != self.step_bytes:
+            self._reject(f"image step must be {self.step_bytes}", timestamp_ns)
+        if len(image.data) != self.payload_bytes:
+            self._reject(
+                f"image payload must contain exactly {self.payload_bytes} bytes",
+                timestamp_ns,
+            )
         self._pending_image = image
         self._pair_if_ready()
 

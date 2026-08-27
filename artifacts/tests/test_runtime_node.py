@@ -15,12 +15,12 @@ RUN_ID = "11111111-1111-4111-8111-111111111111"
 
 
 @pytest.mark.parametrize(
-    ("physical_run", "expected_depth"),
-    [(True, 100), (False, 5)],
+    ("physical_run", "expected_depth", "geometry"),
+    [(True, 100, (640, 480)), (False, 5, (320, 240))],
     ids=["physical-production", "synthetic-phase2"],
 )
 def test_production_runtime_requests_profile_specific_reliable_volatile_camera_qos(
-    monkeypatch, tmp_path, physical_run, expected_depth
+    monkeypatch, tmp_path, physical_run, expected_depth, geometry
 ):
     reliability = SimpleNamespace(RELIABLE=object())
     durability = SimpleNamespace(TRANSIENT_LOCAL=object(), VOLATILE=object())
@@ -77,18 +77,24 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
         def start(self):
             pass
 
+    stream_recorder_arguments = []
+
     class StreamRecorder:
         def __init__(self, _run_directory, *, stream, **_kwargs):
             self.stream = stream
             self.frame_count = 0
             self.is_ready = False
+            stream_recorder_arguments.append((stream, _kwargs))
 
         def start(self, *, deadline):
             del deadline
             self.is_ready = True
 
+    validator_arguments = []
+
     class Validator:
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *args, **kwargs):
+            validator_arguments.append((args, kwargs))
             pass
 
     class ArtifactStatus:
@@ -146,8 +152,10 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
                 synthetic_camera_ack=not physical_run,
                 topics=BASE_TOPICS,
                 ruleset_id="descent_v1",
-                width_px=320,
-                height_px=240,
+                width_px=geometry[0],
+                height_px=geometry[1],
+                fps=20,
+                encoding="rgb8",
             ),
     )
     monkeypatch.setattr(runtime_node, "write_event", lambda *_args, **_kwargs: None)
@@ -188,6 +196,25 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
         and subscription.qos_profile.durability is durability.VOLATILE
         for subscription in subscriptions
     )
+    expected_geometry = {
+        "width_px": geometry[0],
+        "height_px": geometry[1],
+        "fps": 20,
+        "encoding": "rgb8",
+    }
+    assert [stream for stream, _arguments in stream_recorder_arguments] == [
+        "onboard",
+        "observer",
+    ]
+    assert all(
+        arguments | expected_geometry == arguments
+        for _stream, arguments in stream_recorder_arguments
+    )
+    video_validator_arguments = [kwargs for args, kwargs in validator_arguments if not args]
+    assert video_validator_arguments == [
+        {"width_px": geometry[0], "height_px": geometry[1], "fps": 20},
+        {"width_px": geometry[0], "height_px": geometry[1], "fps": 20},
+    ]
 
 
 def test_durable_finalize_request_latches_one_nonrestarting_deadline_without_ros_event():
