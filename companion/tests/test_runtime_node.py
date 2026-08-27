@@ -248,13 +248,18 @@ def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> Non
     ]
 
     assert len(constructors) == 1
-    wait_ready = next(
-        keyword.value
+    keywords = {
+        keyword.arg: keyword.value
         for keyword in constructors[0].keywords
-        if keyword.arg == "wait_ready"
-    )
+    }
+    wait_ready = keywords["wait_ready"]
     assert isinstance(wait_ready, ast.Constant)
     assert wait_ready.value is False
+    heartbeat_timeout = keywords["heartbeat_timeout"]
+    assert isinstance(heartbeat_timeout, ast.Attribute)
+    assert isinstance(heartbeat_timeout.value, ast.Name)
+    assert heartbeat_timeout.value.id == "config"
+    assert heartbeat_timeout.attr == "startup_timeout_seconds"
 
 
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:

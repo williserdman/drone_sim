@@ -725,7 +725,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     overall_wall_deadline = time.monotonic() + config.max_wall_seconds
     try:
         try:
-            controller = DroneControl(config.mavlink_endpoint, wait_ready=False)
+            controller = DroneControl(
+                config.mavlink_endpoint,
+                wait_ready=False,
+                heartbeat_timeout=config.startup_timeout_seconds,
+            )
         except Exception as error:
             attempt_failure.fail(f"DroneKit connection failed: {error}")
         else:
