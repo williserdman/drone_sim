@@ -77,6 +77,41 @@ def test_flight_transport_discovers_and_controls_the_flight_world():
     assert "/world/vertical_descent/control" in calls[-1][0]
 
 
+def test_competition_transport_requires_every_physical_source_topic():
+    """Gazebo-ready must not precede any payload, range, or joint publisher."""
+    from drone_sim_gazebo.ros_adapter.topics import gazebo_topics_for_world
+
+    topics = gazebo_topics_for_world("competition_mission")
+    outputs = {
+        ("gz", "topic", "-l"): "\n".join(topics),
+        ("gz", "service", "-l"): (
+            "/world/competition_mission/control\n/model/iris/ardupilot/status\n"
+        ),
+    }
+
+    def run(argv, **_kwargs):
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": outputs[tuple(argv)], "stderr": ""},
+        )()
+
+    GazeboTransport(
+        environment={"GZ_PARTITION": "p"},
+        world_name="competition_mission",
+        run=run,
+    ).assert_ready()
+
+    missing = topics[-1]
+    outputs[("gz", "topic", "-l")] = "\n".join(topics[:-1])
+    with pytest.raises(TransportError, match=missing):
+        GazeboTransport(
+            environment={"GZ_PARTITION": "p"},
+            world_name="competition_mission",
+            run=run,
+        ).assert_ready()
+
+
 def test_flight_transport_rejects_a_world_without_the_plugin_status_service():
     """A passive world must not satisfy the flight runtime's local readiness."""
     contact = (

@@ -13,6 +13,7 @@ from .model import (
 from .aggregation import AggregationFault, NativeOdometry, PrivateTruthAggregator
 from .epoch import FRAME_INTERVAL_NS, OutputEpochGate, PublicEpoch
 from .live import LiveAdapter
+from .payload import PayloadTracker, PublicPayloadState
 
 
 __all__ = [
@@ -31,4 +32,6 @@ __all__ = [
     "FRAME_INTERVAL_NS",
     "OutputEpochGate",
     "PublicEpoch",
+    "PayloadTracker",
+    "PublicPayloadState",
 ]

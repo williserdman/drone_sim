@@ -165,6 +165,19 @@ def test_flight_runtime_routes_contact_bridge_to_the_selected_world():
     )
 
 
+def test_competition_runtime_routes_private_topics_to_the_selected_world():
+    from drone_sim_gazebo.ros_adapter.topics import contact_topic_for_world
+    from drone_sim_gazebo.runtime.paths import bridge_config_for_world
+
+    assert contact_topic_for_world("competition_mission") == (
+        "/world/competition_mission/model/ground_plane/link/ground_link/sensor/"
+        "iris_ground_contact/contact"
+    )
+    assert bridge_config_for_world("competition_mission") == Path(
+        "/etc/drone_sim/gazebo-bridge-competition.yaml"
+    )
+
+
 def test_flight_clock_bridge_has_a_bounded_reliable_delivery_queue():
     bridge = (ROOT / "gazebo/config/bridge-flight.yaml").read_text(encoding="utf-8")
     clock = bridge.split(

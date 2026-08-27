@@ -22,6 +22,30 @@ def _odom(stamp):
     )
 
 
+def test_live_adapter_uses_the_resolved_competition_image_geometry():
+    """The live wrapper must not drop dimensions before native validation."""
+    adapter = LiveAdapter(
+        run_id=RUN_ID,
+        expected_frames=1,
+        width_px=640,
+        height_px=480,
+    )
+
+    frame = adapter.accept_image(
+        "onboard",
+        NativeImage(
+            50_000_000,
+            640,
+            480,
+            "rgb8",
+            1920,
+            bytes(640 * 480 * 3),
+        ),
+    )[0]
+
+    assert (frame.width, frame.height, frame.step) == (640, 480, 1920)
+
+
 def test_live_adapter_publishes_one_truth_after_image_pair_when_truth_arrives_first():
     adapter = LiveAdapter(run_id=RUN_ID, expected_frames=1)
     assert adapter.accept_odometry(_odom(50_000_000)) == ()

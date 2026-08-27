@@ -4,6 +4,8 @@ import time
 
 import pytest
 
+from drone_sim_gazebo.ros_adapter.payload import PublicPayloadState
+
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 PUBLIC_EPOCH_NATIVE_NS = 90_000_000_000
@@ -19,6 +21,51 @@ def _spin_until(node, predicate, *, timeout=5.0):
     while time.monotonic() < deadline and not predicate():
         rclpy.spin_once(node, timeout_sec=0.05)
     assert predicate()
+
+
+def test_payload_state_message_preserves_all_physical_fields():
+    """A ROS conversion must not replace Gazebo-owned pose or joint facts."""
+    from drone_sim_gazebo.ros_adapter.payload import payload_state_message
+
+    class Value:
+        pass
+
+    class Message:
+        def __init__(self):
+            self.sim_timestamp = Value()
+            self.pose = Value()
+            self.pose.position = Value()
+            self.pose.orientation = Value()
+            self.twist = Value()
+            self.twist.linear = Value()
+            self.twist.angular = Value()
+
+    value = PublicPayloadState(
+        run_id=RUN_ID,
+        sim_timestamp_ns=50_000_000,
+        aruco_id=3,
+        position_xyz=(1.0, 2.0, 3.0),
+        orientation_xyzw=(0.1, 0.2, 0.3, 0.9),
+        linear_velocity_xyz=(4.0, 5.0, 6.0),
+        grounded=True,
+        attached=False,
+    )
+
+    message = payload_state_message(value, Message)
+
+    assert message.run_id == RUN_ID
+    assert (message.sim_timestamp.sec, message.sim_timestamp.nanosec) == (0, 50_000_000)
+    assert message.aruco_id == 3
+    assert (message.pose.position.x, message.pose.position.y, message.pose.position.z) == (1.0, 2.0, 3.0)
+    assert (
+        message.pose.orientation.x,
+        message.pose.orientation.y,
+        message.pose.orientation.z,
+        message.pose.orientation.w,
+    ) == (0.1, 0.2, 0.3, 0.9)
+    assert (message.twist.linear.x, message.twist.linear.y, message.twist.linear.z) == (4.0, 5.0, 6.0)
+    assert message.grounded is True
+    assert message.attached is False
 
 
 def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():

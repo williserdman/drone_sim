@@ -1,4 +1,6 @@
 import pytest
+import yaml
+from pathlib import Path
 
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
@@ -11,6 +13,57 @@ from drone_sim_gazebo.runtime.runtime_node import (
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+
+
+def test_competition_bridge_is_minimal_and_directional():
+    """A missing or bidirectional bridge would break physical authority boundaries."""
+    bridge = yaml.safe_load(
+        (Path(__file__).parents[1] / "config/bridge-competition.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    by_ros_topic = {item["ros_topic_name"]: item for item in bridge}
+    expected = {
+        "/gazebo/private/clock",
+        "/gazebo/private/iris/odometry",
+        "/world/competition_mission/model/ground_plane/link/ground_link/sensor/iris_ground_contact/contact",
+        "/gazebo/private/range/downward",
+    }
+    for aruco_id in (2, 3, 4):
+        expected.update(
+            {
+                f"/gazebo/private/payload_{aruco_id}/pose",
+                f"/gazebo/private/payload_{aruco_id}/contacts",
+                f"/gazebo/private/payload_{aruco_id}/command",
+                f"/gazebo/private/payload_{aruco_id}/joint_state",
+                f"/gazebo/private/payload_{aruco_id}/result",
+            }
+        )
+
+    assert set(by_ros_topic) == expected
+    assert all(
+        not token[0].isdigit()
+        for topic in by_ros_topic
+        for token in topic.split("/")
+        if token
+    )
+    assert all(
+        by_ros_topic[f"/gazebo/private/payload_{aruco_id}/command"]["direction"]
+        == "ROS_TO_GZ"
+        for aruco_id in (2, 3, 4)
+    )
+    for aruco_id in (2, 3, 4):
+        for suffix in ("contacts", "command", "joint_state", "result"):
+            assert (
+                by_ros_topic[f"/gazebo/private/payload_{aruco_id}/{suffix}"]
+                ["gz_topic_name"]
+                == f"/gazebo/private/payload/{aruco_id}/{suffix}"
+            )
+    assert all(
+        item["direction"] == "GZ_TO_ROS"
+        for topic, item in by_ros_topic.items()
+        if not topic.endswith("/command")
+    )
 
 
 class Server:

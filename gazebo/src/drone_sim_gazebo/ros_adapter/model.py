@@ -10,12 +10,9 @@ from uuid import UUID
 
 _STREAMS = ("onboard", "observer")
 _FRAME_INTERVAL_NS = 50_000_000
-_WIDTH = 320
-_HEIGHT = 240
 _ENCODING = "rgb8"
-_STEP = 960
-_PAYLOAD_BYTES = 230_400
 _UNMATCHED_FRAME_CAPACITY = 2
+_APPROVED_IMAGE_GEOMETRIES = {(320, 240), (640, 480)}
 
 
 class AdapterFault(RuntimeError):
@@ -108,27 +105,43 @@ def _validate_stream(stream: object) -> str:
     return stream
 
 
-def _validate_native_image(sample: object) -> NativeImage:
+def _image_geometry(width_px: object, height_px: object) -> tuple[int, int]:
+    if (
+        type(width_px) is not int
+        or type(height_px) is not int
+        or (width_px, height_px) not in _APPROVED_IMAGE_GEOMETRIES
+    ):
+        raise AdapterFault("image geometry must be exactly 320x240 or 640x480")
+    return width_px, height_px
+
+
+def _validate_native_image(
+    sample: object,
+    *,
+    width_px: int,
+    height_px: int,
+) -> NativeImage:
     if not isinstance(sample, NativeImage):
         raise AdapterFault("camera input must be a NativeImage")
     _positive_integer(sample.sim_timestamp_ns, field="sim_timestamp_ns")
     if (
         not isinstance(sample.width, int)
         or isinstance(sample.width, bool)
-        or sample.width != _WIDTH
+        or sample.width != width_px
         or not isinstance(sample.height, int)
         or isinstance(sample.height, bool)
-        or sample.height != _HEIGHT
+        or sample.height != height_px
         or not isinstance(sample.encoding, str)
         or sample.encoding != _ENCODING
         or not isinstance(sample.step, int)
         or isinstance(sample.step, bool)
-        or sample.step != _STEP
+        or sample.step != width_px * 3
         or type(sample.data) is not bytes
-        or len(sample.data) != _PAYLOAD_BYTES
+        or len(sample.data) != width_px * height_px * 3
     ):
         raise AdapterFault(
-            "camera sample must be 320x240 rgb8 with step 960 and 230400 immutable bytes"
+            f"camera sample must be {width_px}x{height_px} rgb8 with step "
+            f"{width_px * 3} and {width_px * height_px * 3} immutable bytes"
         )
     return sample
 
@@ -170,13 +183,22 @@ def _validate_native_ground_truth(sample: object) -> NativeGroundTruth:
 class CameraSequence:
     """Validate one camera stream and assign its contiguous public IDs."""
 
-    def __init__(self, *, run_id: str, stream: str, expected_frames: int) -> None:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        stream: str,
+        expected_frames: int,
+        width_px: int = 320,
+        height_px: int = 240,
+    ) -> None:
         self._run_id = _canonical_run_id(run_id)
         self._stream = _validate_stream(stream)
         self._expected_frames = _positive_integer(
             expected_frames,
             field="expected_frames",
         )
+        self._width_px, self._height_px = _image_geometry(width_px, height_px)
         self._accepted_frames = 0
         self._first_sim_timestamp_ns: int | None = None
         self._last_sim_timestamp_ns: int | None = None
@@ -207,7 +229,11 @@ class CameraSequence:
     def _preflight(self, sample: NativeImage) -> NativeImage:
         self._raise_if_faulted()
         try:
-            sample = _validate_native_image(sample)
+            sample = _validate_native_image(
+                sample,
+                width_px=self._width_px,
+                height_px=self._height_px,
+            )
             if self._accepted_frames == self._expected_frames:
                 raise AdapterFault(f"{self._stream} camera frame overrun")
             if self._last_sim_timestamp_ns is not None:
@@ -246,17 +272,27 @@ class CameraSequence:
 class AdapterModel:
     """Align two fixed-rate camera streams with one physical truth sample."""
 
-    def __init__(self, *, run_id: str, expected_frames: int) -> None:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        expected_frames: int,
+        width_px: int = 320,
+        height_px: int = 240,
+    ) -> None:
         self._run_id = _canonical_run_id(run_id)
         self._expected_frames = _positive_integer(
             expected_frames,
             field="expected_frames",
         )
+        width_px, height_px = _image_geometry(width_px, height_px)
         self._sequences = {
             stream: CameraSequence(
                 run_id=self._run_id,
                 stream=stream,
                 expected_frames=self._expected_frames,
+                width_px=width_px,
+                height_px=height_px,
             )
             for stream in _STREAMS
         }

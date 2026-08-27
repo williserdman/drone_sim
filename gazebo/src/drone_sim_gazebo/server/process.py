@@ -300,9 +300,9 @@ def _validate_config(config: object) -> SimulationConfig:
         isinstance(config.target_real_time_factor, bool)
         or not isinstance(config.target_real_time_factor, (int, float))
         or not math.isfinite(config.target_real_time_factor)
-        or config.target_real_time_factor != 0.1
+        or config.target_real_time_factor not in {0.1, 0.25}
     ):
-        raise ValueError("target_real_time_factor must be exactly 0.1")
+        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25")
     return config
 
 
@@ -312,6 +312,7 @@ def _validate_world(value: object) -> ResolvedWorld:
     if (value.world_name, value.vehicle_id) not in {
         ("phase3_foundation", "iris"),
         ("vertical_descent", "iris_flight"),
+        ("competition_mission", "iris_competition"),
     }:
         raise ValueError("server supports only approved local Iris worlds")
     path = _safe_existing_path(value.path, field="world path", directory=False)
@@ -354,7 +355,9 @@ class ServerSpec:
             raise TypeError("environment must be an immutable mapping")
         environment = MappingProxyType(dict(self.environment))
         object.__setattr__(self, "environment", environment)
-        flight = bool(self.argv) and self.argv[-1].endswith("/vertical_descent.sdf")
+        flight = bool(self.argv) and self.argv[-1].endswith(
+            ("/vertical_descent.sdf", "/competition_mission.sdf")
+        )
         expected_environment_keys = (
             _FLIGHT_ENVIRONMENT_KEYS if flight else _PASSIVE_ENVIRONMENT_KEYS
         )
@@ -408,7 +411,12 @@ class ServerSpec:
         if self.argv != expected_argv:
             raise ValueError("argv must be the exact paused Gazebo server command")
         if (
-            world_path.name not in {"phase3_foundation.sdf", "vertical_descent.sdf"}
+            world_path.name
+            not in {
+                "phase3_foundation.sdf",
+                "vertical_descent.sdf",
+                "competition_mission.sdf",
+            }
             or world_path.parent.name != "worlds"
             or world_path.parent.parent != resource_path.parent
         ):
@@ -460,6 +468,14 @@ def server_spec(
         raise ValueError("run directory name must match run_id")
     resolved_world = _validate_world(resolved_world)
     config = _validate_config(config)
+    expected_factor = (
+        0.25 if resolved_world.world_name == "competition_mission" else 0.1
+    )
+    if config.target_real_time_factor != expected_factor:
+        raise ValueError(
+            f"{resolved_world.world_name} target_real_time_factor must be "
+            f"exactly {expected_factor}"
+        )
     gazebo_directory = run_directory / "gazebo"
     state_directory = gazebo_directory / "state"
     environment_values = {
@@ -467,7 +483,7 @@ def server_spec(
         "GZ_PARTITION": "drone_sim_" + canonical_run_id.replace("-", "_"),
         "GZ_SIM_RESOURCE_PATH": str(resolved_world.resource_path),
     }
-    if resolved_world.world_name == "vertical_descent":
+    if resolved_world.world_name in {"vertical_descent", "competition_mission"}:
         environment_values["GZ_SIM_SYSTEM_PLUGIN_PATH"] = _FLIGHT_PLUGIN_PATH
     environment = MappingProxyType(environment_values)
     return ServerSpec(

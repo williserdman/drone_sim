@@ -76,6 +76,27 @@ def _resolved_flight_world(tmp_path: Path) -> ResolvedWorld:
     )
 
 
+def _resolved_competition_world(tmp_path: Path) -> ResolvedWorld:
+    resources = tmp_path / "competition image resources"
+    models = resources / "models"
+    worlds = resources / "worlds"
+    models.mkdir(parents=True)
+    worlds.mkdir()
+    world = worlds / "competition_mission.sdf"
+    world.write_text("<sdf version='1.10'/>", encoding="utf-8")
+    return ResolvedWorld(
+        path=world.resolve(),
+        world_name="competition_mission",
+        vehicle_id="iris_competition",
+        resource_path=models.resolve(),
+        world_sha256=WORLD_DIGEST,
+        resource_sha256s=(
+            ("models/iris_competition/model.sdf", MODEL_DIGEST),
+            ("worlds/competition_mission.sdf", WORLD_DIGEST),
+        ),
+    )
+
+
 def _spec(tmp_path: Path, *, seed: int = 9) -> ServerSpec:
     return server_spec(
         run_id=RUN_ID,
@@ -292,6 +313,20 @@ def test_flight_server_spec_adds_only_the_pinned_plugin_directory(tmp_path: Path
     )
 
     assert spec.argv[-1].endswith("/worlds/vertical_descent.sdf")
+    assert spec.environment["GZ_SIM_SYSTEM_PLUGIN_PATH"] == (
+        "/opt/drone_sim/gazebo/plugins"
+    )
+
+
+def test_competition_server_accepts_quarter_speed_and_loads_physical_plugins(tmp_path: Path):
+    spec = server_spec(
+        run_id=RUN_ID,
+        run_directory=_run_directory(tmp_path),
+        resolved_world=_resolved_competition_world(tmp_path),
+        config=SimulationConfig(2026, 600_000_000_000, 0.25),
+    )
+
+    assert spec.argv[-1].endswith("/worlds/competition_mission.sdf")
     assert spec.environment["GZ_SIM_SYSTEM_PLUGIN_PATH"] == (
         "/opt/drone_sim/gazebo/plugins"
     )

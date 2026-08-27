@@ -91,6 +91,18 @@ def test_resolve_phase3_world_is_local_frozen_and_stable():
         resolved.world_name = "changed"
 
 
+def test_resolve_competition_world_uses_the_committed_vehicle_and_world():
+    from drone_sim_gazebo.worlds import WorldConfig, resolve_world
+
+    resolved = resolve_world(
+        WorldConfig("competition_mission", "iris_competition")
+    )
+
+    assert resolved.world_name == "competition_mission"
+    assert resolved.vehicle_id == "iris_competition"
+    assert resolved.path == (RESOURCES / "worlds/competition_mission.sdf").resolve()
+
+
 @pytest.mark.parametrize(
     ("world", "vehicle"),
     (("other", "iris"), ("phase3_foundation", "other")),

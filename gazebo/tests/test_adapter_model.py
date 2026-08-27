@@ -38,6 +38,17 @@ def native_image(stamp_ns: int = 50_000_000, **changes: object) -> NativeImage:
     return NativeImage(**values)  # type: ignore[arg-type]
 
 
+def native_image_at(width: int, height: int) -> NativeImage:
+    return NativeImage(
+        sim_timestamp_ns=INTERVAL_NS,
+        width=width,
+        height=height,
+        encoding="rgb8",
+        step=width * 3,
+        data=bytes(width * height * 3),
+    )
+
+
 def native_ground_truth(
     stamp_ns: int = 50_000_000, **changes: object
 ) -> NativeGroundTruth:
@@ -201,6 +212,34 @@ def test_camera_sequence_assigns_contiguous_ids_and_preserves_native_stamp():
     assert second.sim_timestamp_ns == second.header_timestamp_ns == 100_000_000
     assert first.data is RGB_PAYLOAD
     assert adapter.complete
+
+
+@pytest.mark.parametrize("width,height", [(320, 240), (640, 480)])
+def test_adapter_uses_resolved_image_geometry(width, height):
+    """Freezing image geometry would break one of the two approved profiles."""
+    model = AdapterModel(
+        run_id=RUN_ID,
+        expected_frames=1,
+        width_px=width,
+        height_px=height,
+    )
+
+    frame = model.accept_frame("onboard", native_image_at(width, height))
+
+    assert (frame.width, frame.height, frame.step) == (width, height, width * 3)
+
+
+def test_adapter_rejects_native_geometry_that_disagrees_with_resolved_config():
+    """The adapter must reject rather than rescale a wrong native image."""
+    model = AdapterModel(
+        run_id=RUN_ID,
+        expected_frames=1,
+        width_px=640,
+        height_px=480,
+    )
+
+    with pytest.raises(AdapterFault, match="640x480"):
+        model.accept_frame("onboard", native_image_at(320, 240))
 
 
 @pytest.mark.parametrize(

@@ -17,8 +17,20 @@ from .model import (
 class LiveAdapter:
     """Join callback-order-independent private samples without queue growth."""
 
-    def __init__(self, *, run_id: str, expected_frames: int) -> None:
-        self._adapter = AdapterModel(run_id=run_id, expected_frames=expected_frames)
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        expected_frames: int,
+        width_px: int = 320,
+        height_px: int = 240,
+    ) -> None:
+        self._adapter = AdapterModel(
+            run_id=run_id,
+            expected_frames=expected_frames,
+            width_px=width_px,
+            height_px=height_px,
+        )
         self._truth = PrivateTruthAggregator()
         self._pending_pair_stamps: deque[int] = deque()
 

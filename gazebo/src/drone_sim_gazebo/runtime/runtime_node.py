@@ -246,6 +246,8 @@ def main() -> int:
         expected_frames=config.expected_camera_frames,
         public_epoch_native_ns=config.simulation.public_epoch_native_ns,
         world_name=resolved.world_name,
+        width_px=config.recording.width_px,
+        height_px=config.recording.height_px,
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
         on_fault=lambda reason: _record_adapter_fault(run_id, inbox, reason),
     )
@@ -268,7 +270,7 @@ def main() -> int:
             public_epoch_native_ns=config.simulation.public_epoch_native_ns,
             activate_output=adapter.activate_output,
         )
-        if resolved.world_name == "vertical_descent"
+        if resolved.world_name in {"vertical_descent", "competition_mission"}
         else None
     )
     action_executor = ActionExecutor(
@@ -299,7 +301,10 @@ def main() -> int:
                 _event(run_id, "public_epoch_released", sim_timestamp_ns=0)
             if not gazebo_ready_seen and adapter.transport_ready():
                 exchange_ready = True
-                if resolved.world_name == "vertical_descent":
+                if resolved.world_name in {
+                    "vertical_descent",
+                    "competition_mission",
+                }:
                     flight_exchange = _probe_flight_exchange(
                         transport, deadline=startup_deadline
                     )

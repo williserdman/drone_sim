@@ -87,6 +87,16 @@ def test_runtime_copies_local_resources_and_only_fetches_the_pinned_plugin_sourc
     assert "display=" not in dockerfile
 
 
+def test_runtime_installs_the_competition_bridge_configuration():
+    """The competition world must not silently reuse a smaller bridge surface."""
+    dockerfile = _dockerfile()
+
+    assert (
+        "cp /opt/drone_sim/source/config/bridge-competition.yaml "
+        "/etc/drone_sim/gazebo-bridge-competition.yaml"
+    ) in dockerfile
+
+
 def test_test_target_proves_harmonic_bridge_and_pinned_plugin_offline():
     """The image must self-identify Sim 8 and its pinned flight plugin offline."""
     dockerfile = _dockerfile()

@@ -25,14 +25,9 @@ from .model import (
     WriteRuntimeFailure,
     WriteSourceFinished,
 )
+from ..ros_adapter.topics import gazebo_topics_for_world
 
 
-_STATIC_TOPICS = (
-    "/clock",
-    "/gazebo/private/camera/onboard/image",
-    "/gazebo/private/camera/observer/image",
-    "/gazebo/private/iris/odometry",
-)
 _FLIGHT_STATUS_SERVICE = "/model/iris/ardupilot/status"
 _FLIGHT_STATUS_KEYS = frozenset(
     {
@@ -149,14 +144,15 @@ class GazeboTransport:
         world_name: str = "phase3_foundation",
         run: Callable[..., object] = subprocess.run,
     ) -> None:
-        if world_name not in {"phase3_foundation", "vertical_descent"}:
+        if world_name not in {
+            "phase3_foundation",
+            "vertical_descent",
+            "competition_mission",
+        }:
             raise ValueError("world_name must identify an approved local world")
         self._environment = dict(environment)
-        self._flight = world_name == "vertical_descent"
-        self._topics = _STATIC_TOPICS + (
-            f"/world/{world_name}/model/ground_plane/link/ground_link/sensor/"
-            "iris_ground_contact/contact",
-        )
+        self._flight = world_name in {"vertical_descent", "competition_mission"}
+        self._topics = gazebo_topics_for_world(world_name)
         self._control_service = f"/world/{world_name}/control"
         self._stats_topic = f"/world/{world_name}/stats"
         self._run = run
