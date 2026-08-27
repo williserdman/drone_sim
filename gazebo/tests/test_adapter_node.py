@@ -142,7 +142,7 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         rclpy.shutdown()
 
 
-def test_competition_node_selects_only_reliable_depth_five_camera_sources():
+def test_competition_node_activates_exact_reliable_camera_sources_once():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")
     from rclpy.qos import ReliabilityPolicy
@@ -162,6 +162,14 @@ def test_competition_node_selects_only_reliable_depth_five_camera_sources():
     observer = "/gazebo/private/camera/observer/image"
     inherited = "/gazebo/private/camera/onboard/image"
     try:
+        assert graph.get_subscriptions_info_by_topic(selected) == []
+        assert graph.get_subscriptions_info_by_topic(observer) == []
+        assert graph.get_subscriptions_info_by_topic(inherited) == []
+        assert len(
+            graph.get_publishers_info_by_topic("/camera/onboard/image_raw")
+        ) == 1
+
+        adapter.activate_output()
         _spin_until(
             graph,
             lambda: all(
@@ -180,6 +188,11 @@ def test_competition_node_selects_only_reliable_depth_five_camera_sources():
             ]
             assert len(local) == 1, topic
             assert local[0].qos_profile.depth == 5
+
+        adapter.activate_output()
+        rclpy.spin_once(graph, timeout_sec=0.1)
+        for topic in (selected, observer):
+            assert len(graph.get_subscriptions_info_by_topic(topic)) == 1
         assert len(
             graph.get_publishers_info_by_topic("/camera/onboard/image_raw")
         ) == 1

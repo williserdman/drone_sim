@@ -212,17 +212,6 @@ class GazeboAdapterNode(_node_base()):
             self._accept_clock,
             _qos(1000, reliable=True),
         )
-        for stream, topic in zip(
-            ("onboard", "observer"),
-            camera_topics_for_world(self._world_name),
-            strict=True,
-        ):
-            self.create_subscription(
-                Image,
-                topic,
-                lambda message, stream=stream: self._accept_image(stream, message),
-                _qos(5, reliable=True),
-            )
         self.create_subscription(
             Odometry,
             "/gazebo/private/iris/odometry",
@@ -274,6 +263,20 @@ class GazeboAdapterNode(_node_base()):
         if self._faulted or self._output_active or self._completion_reported:
             return
         try:
+            if not self._output_epoch.activation_pending:
+                for stream, topic in zip(
+                    ("onboard", "observer"),
+                    camera_topics_for_world(self._world_name),
+                    strict=True,
+                ):
+                    self.create_subscription(
+                        self._image_type,
+                        topic,
+                        lambda message, stream=stream: self._accept_image(
+                            stream, message
+                        ),
+                        _qos(5, reliable=True),
+                    )
             self._output_epoch.request_activation()
         except AdapterFault as error:
             self._fail(error)
