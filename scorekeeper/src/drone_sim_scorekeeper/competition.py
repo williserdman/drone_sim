@@ -589,6 +589,22 @@ class CompetitionScorer:
         landing_timestamp = self._physical_home_landing_timestamp(started)
         if landing_timestamp is None or landing_timestamp >= disarmed.sim_timestamp_ns:
             return None
+        disarmed_truth = self._vehicle_at(disarmed.sim_timestamp_ns)
+        complete_truth = self._vehicle_at(complete.sim_timestamp_ns)
+        if (
+            disarmed_truth is None
+            or complete_truth is None
+            or not self._is_landed(disarmed_truth, "H")
+            or not self._is_landed(complete_truth, "H")
+            or any(
+                not self._is_landed(sample, "H")
+                for sample in self._ground_truth
+                if landing_timestamp
+                <= sample.sim_timestamp_ns
+                <= complete.sim_timestamp_ns
+            )
+        ):
+            return None
         return landing_timestamp
 
     def _physical_home_landing_timestamp(
@@ -837,6 +853,17 @@ class CompetitionScorer:
                 settled = None
         return settled is not None, settled
 
+    def _settlement_order_valid(
+        self, marker: int, boundary_ns: int | None
+    ) -> bool:
+        if boundary_ns is None:
+            return True
+        release = self._payload_event(marker, "release")
+        if release is None:
+            return True
+        settled = self._settled_timestamp(marker, release)
+        return settled is None or settled < boundary_ns
+
     def _evaluate(self) -> tuple[tuple[bool, ...], bool, str | None]:
         if self.start_sim_time_ns is None:
             return (False,) * 7, False, "mission_start_missing"
@@ -881,6 +908,17 @@ class CompetitionScorer:
             4, "FM3_4", settle_before_ns=home_checkpoint_boundary
         )
         payload_4 = payload_4 and fm3_autonomy and capacity_valid
+        settlement_order_valid = (
+            self._settlement_order_valid(
+                2,
+                None if marker_3_attach is None else marker_3_attach.sim_timestamp_ns,
+            )
+            and self._settlement_order_valid(
+                3,
+                None if marker_4_attach is None else marker_4_attach.sim_timestamp_ns,
+            )
+            and self._settlement_order_valid(4, home_checkpoint_boundary)
+        )
         outcomes = (
             fm1_landing,
             fm1_autonomy,
@@ -904,7 +942,7 @@ class CompetitionScorer:
             and mission_valid
             and payload_valid
             and capacity_valid
-            and payload_4
+            and settlement_order_valid
             and home_landed
             and deadline_valid
         )
@@ -922,7 +960,7 @@ class CompetitionScorer:
             diagnostic = "payload_event_sequence_invalid"
         elif not capacity_valid:
             diagnostic = "payload_capacity_exceeded"
-        elif not payload_4:
+        elif not settlement_order_valid:
             diagnostic = "physical_sequence_invalid"
         elif not home_landed:
             diagnostic = "home_completion_invalid"

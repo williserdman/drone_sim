@@ -401,6 +401,7 @@ class AttemptTrace:
         elapsed_ns: int | None = None,
         disarmed: bool = True,
         landing_after_disarmed: bool = False,
+        leave_before_disarmed: bool = False,
     ) -> None:
         complete_time = (
             self.cursor_ns + 2_000_000_000
@@ -424,7 +425,19 @@ class AttemptTrace:
                     "contact": True,
                 },
             )
-            self.advance_to(disarmed_time)
+            self.advance_to(
+                disarmed_time,
+                final_ground_truth_update=(
+                    {
+                        "xy": (5.0, 0.0),
+                        "z": 0.0,
+                        "velocity": (0.2, 0.0, 0.0),
+                        "contact": False,
+                    }
+                    if leave_before_disarmed
+                    else None
+                ),
+            )
         if disarmed:
             self.mission("HOME", "DISARMED", disarmed_time)
         self.advance_to(
@@ -883,6 +896,39 @@ def test_home_disarmed_before_physical_landing_is_incomplete():
 
     assert result.complete is False
     assert result.diagnostic == "home_completion_invalid"
+
+
+def test_home_contact_then_departure_before_disarmed_is_incomplete():
+    """A stale first Home contact cannot hide contradictory terminal truth."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4")
+    trace.home(leave_before_disarmed=True)
+
+    result = trace.scorer.finalize()
+
+    assert result.complete is False
+    assert result.diagnostic == "home_completion_invalid"
+
+
+def test_valid_home_finalizes_honest_partial_score():
+    """A missed payload component changes points, not terminal validity."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4", release_speed=0.100001)
+    trace.home()
+
+    result = trace.scorer.finalize()
+
+    assert result.complete is True
+    assert result.diagnostic is None
+    assert result.achieved_score == 145.0
+    assert rule_passed(result, "payload_4") is False
+    assert [event.event_id for event in result.events] == list(range(8))
 
 
 def test_confirmed_release_before_mission_start_earns_no_score():

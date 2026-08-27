@@ -57,14 +57,17 @@ detachment and 1 simulated second of contiguous grounded, low-speed truth with
 the full rotated 0.1524 m square footprint inside the 0.9144 m F2 rectangle.
 FM3 releases additionally require a confirmed physical attachment, a
 non-teleporting pickup within 0.075 m, marker 3's center inside WA or marker 4's
-center inside WM, capacity at most one, and marker order 3 then 4. Payload 2
-must settle before marker 3's pickup, payload 3 before marker 4's pickup, and
-payload 4 before physical Home landing. Completion requires physical Home contact,
-followed by distinct ordered `HOME/DISARMED` and `HOME/COMPLETE` mission events,
-at or before 600 elapsed simulated seconds; only then can `score-finished` be
+center inside WM, capacity at most one, and marker order 3 then 4. A recognized
+payload 2 settlement cannot occur after marker 3's pickup, payload 3 settlement
+after marker 4's pickup, or payload 4 settlement after physical Home landing.
+Completion requires physical Home XY/contact/low-speed truth to remain valid
+through distinct ordered `HOME/DISARMED` and `HOME/COMPLETE` mission events at
+or before 600 elapsed simulated seconds; only then can `score-finished` be
 written. `HOME/DISARMED` is the downstream controller's current-run evidence
 that its original DroneKit vehicle reported `armed is False` after its disarm
-wait; `HOME/COMPLETE` alone is insufficient.
+wait; `HOME/COMPLETE` alone is insufficient. A physically missed point
+component produces an honest finalized partial score when stream continuity,
+event grammar, physical ordering, and terminal evidence remain valid.
 
 The committed `rules/descent_v1.json` has maximum 100 and freezes a safe
 pre-impact downward-speed threshold of 1.0 m/s. The scorekeeper emits exactly

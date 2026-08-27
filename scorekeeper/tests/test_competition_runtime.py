@@ -81,6 +81,40 @@ def test_complete_score_persists_and_flushes_eight_events_before_finished(tmp_pa
     ] == 150.0
 
 
+def test_valid_home_persists_and_finishes_partial_score(tmp_path):
+    """A valid terminal sequence must durably finalize honest missed points."""
+    source = new_trace()
+    source.fm1()
+    source.drop(2, phase="FM2")
+    source.drop(3, phase="FM3_3")
+    source.drop(4, phase="FM3_4", release_speed=0.100001)
+    source.home()
+    runtime, protocol, operations = runtime_for(
+        tmp_path,
+        CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
+    )
+    replay(source, runtime)
+
+    result = runtime.accept_source_finished(source.scorer.last_sim_timestamp_ns)
+
+    assert result.complete is True
+    assert result.achieved_score == 145.0
+    assert operations[:8] == [("publish", index) for index in range(8)]
+    assert operations[8] == ("flush",)
+    assert operations[9][0] == "finished"
+    assert protocol.statuses == []
+    persisted = json.loads((tmp_path / "scoring/result.json").read_text())
+    assert persisted["complete"] is True
+    assert persisted["achieved_score"] == 145.0
+    event_rows = [
+        json.loads(row)
+        for row in (tmp_path / "scoring/events.jsonl").read_text().splitlines()
+    ]
+    assert [row["event_id"] for row in event_rows] == list(range(8))
+    assert event_rows[6]["value"] == 0.0
+    assert event_rows[7]["value"] == 145.0
+
+
 def test_source_finish_without_valid_home_never_writes_score_finished(tmp_path):
     """Payload checkpoints alone must not complete the scoring lifecycle."""
     trace = new_trace()

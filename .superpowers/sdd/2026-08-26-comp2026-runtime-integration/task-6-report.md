@@ -310,3 +310,96 @@ $ docker run --rm drone-sim-scorekeeper-competition python3 -m drone_sim_scoreke
   controller's real DroneKit-observed disarm event remain explicit downstream
   live-acceptance items for Tasks 7, 8, and 10. Docker again emitted only the
   host legacy-builder deprecation warning.
+
+### Fix Round 2
+
+Resolved the two remaining scorer findings on top of
+`0253ab79f39f1b42e20e7b7daaf6f1420f42ca0e`.
+
+Files changed:
+
+- `scorekeeper/src/drone_sim_scorekeeper/competition.py`
+- `scorekeeper/tests/test_competition_score.py`
+- `scorekeeper/tests/test_competition_runtime.py`
+- `scorekeeper/EXTERNAL_INTERFACE.md`
+- `scorekeeper/INTERNAL_INTERFACE.md`
+
+The pre-existing untracked `SYSTEM_DIAGRAM.md` and `companion/comp2026/` remain
+unmodified and unstaged.
+
+RED was witnessed before the production change:
+
+```text
+$ uv run pytest \
+    scorekeeper/tests/test_competition_score.py::test_home_contact_then_departure_before_disarmed_is_incomplete \
+    scorekeeper/tests/test_competition_score.py::test_valid_home_finalizes_honest_partial_score \
+    scorekeeper/tests/test_competition_runtime.py::test_valid_home_persists_and_finishes_partial_score -q
+3 failed
+```
+
+The contradictory Home trace incorrectly returned `complete=True` and 150;
+both partial-score traces incorrectly returned `complete=False`, 145, and
+`physical_sequence_invalid`.
+
+The minimal GREEN separates terminal validity from point achievement. Home now
+requires fresh valid Gazebo samples at both DISARMED and COMPLETE and rejects
+every contradictory exact-grid sample between the first physical Home landing
+and completion. A failed point condition no longer invalidates the terminal
+sequence. Recognized settlement after the next pickup/Home boundary remains a
+separate structural failure, so round-1 no-backfill behavior is preserved.
+
+Focused verification:
+
+```text
+$ uv run pytest scorekeeper/tests/test_competition_score.py scorekeeper/tests/test_competition_runtime.py -q
+41 passed in 8.75s
+```
+
+Fresh full and descent compatibility verification:
+
+```text
+$ git diff --check
+$ uv run python -m compileall -q scorekeeper/src scorekeeper/tests
+$ uv run pytest scorekeeper/tests -q
+70 passed in 8.67s
+
+$ uv run pytest scorekeeper/tests/test_descent_score.py scorekeeper/tests/test_output.py scorekeeper/tests/test_runtime.py -q
+17 passed in 0.63s
+```
+
+The 145-point runtime regression confirms eight event IDs `0..7`, zero for the
+missed payload-4 component, final event value 145, `complete=true` in the
+persisted result, durable publication/flush, and `score-finished` rather than a
+runtime failure. The perfect trace still produces the unchanged 150-point
+sequence.
+
+Production image evidence:
+
+```text
+$ docker build --target runtime -f scorekeeper/Dockerfile -t drone-sim-scorekeeper-competition .
+Successfully built d762aa4ae16c
+Successfully tagged drone-sim-scorekeeper-competition:latest
+
+sha256:d762aa4ae16c6e3d3219a9bd95ecd94e7820913939b790dca250202d31955b6e
+```
+
+Both in-image smokes passed:
+
+```text
+competition_v1 150.0
+{"result": "ok", "ruleset_id": "descent_v1", "score": 100}
+```
+
+Self-review:
+
+- The Home check uses only existing mission-relative timestamps and exact-grid
+  state; it adds no epoch, clock, barrier, queue, or synchronization machinery.
+- The physical point outcomes remain independent and preserve the seven
+  component events plus final event. Only stream/event/physical ordering and
+  terminal validity control whether the attempt finalizes successfully.
+- Gap, event grammar, capacity, late-settlement, missing DISARMED, invalid Home
+  suffix, and deadline diagnostics remain fail closed.
+- No Task 6 blocker remains. Real 20 Hz behavior, Gazebo AGL semantics, and the
+  controller's DroneKit-observed DISARMED event remain downstream live
+  acceptance items. The only build warning was the host legacy-builder
+  deprecation notice.

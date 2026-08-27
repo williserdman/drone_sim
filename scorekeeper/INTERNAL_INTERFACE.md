@@ -21,13 +21,15 @@ The evaluator independently joins confirmed events to physical attachment and
 detachment state, exact-grid release windows, non-jumping pickups inside the
 configured WA/WM source, capacity one, and grounded low-speed settling. Every
 vehicle and payload stream must stay on an exact 50 ms grid after mission start,
-and settlement must precede the next pickup or Home landing. `_inside_f2` projects the
-payload's complete 0.1524 m square XY footprint through final quaternion yaw
-before checking the 0.9144 m F2 rectangle. Home completion requires Gazebo
-landing truth before an ordered current-run `HOME/DISARMED` event and then
-`HOME/COMPLETE`; the disarmed event is supplied only after the controller has
-observed `vehicle.armed is False`. Seven fixed rule results produce events 0
-through 6; event 7 is `score.finalized`.
+and any recognized settlement must precede the next pickup or Home landing.
+`_inside_f2` projects the payload's complete 0.1524 m square XY footprint
+through final quaternion yaw before checking the 0.9144 m F2 rectangle. Home
+completion requires continuously valid Gazebo landing truth through an ordered
+current-run `HOME/DISARMED` event and then `HOME/COMPLETE`; the disarmed event is
+supplied only after the controller has observed `vehicle.armed is False`.
+Terminal validity is independent of point achievement, so a structurally valid
+attempt persists and publishes an honest partial score. Seven fixed rule
+results produce events 0 through 6; event 7 is `score.finalized`.
 
 `load_descent_rules(path)` checksums the exact rules bytes.
 `persist_score_outputs(run_directory, result)` creates, never overwrites,
