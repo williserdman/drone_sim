@@ -24,7 +24,11 @@ RUN python3 -m venv --system-site-packages /opt/drone_sim/venv \
         /opt/drone_sim/artifacts \
     && /opt/drone_sim/venv/bin/pip install \
         --no-cache-dir --no-index --no-build-isolation --no-deps \
-        /opt/drone_sim/electromagnet
+        /opt/drone_sim/electromagnet \
+    && bash -lc '. /opt/ros/jazzy/setup.bash \
+        && . /ros_ws/install/setup.bash \
+        && /opt/drone_sim/venv/bin/python -c \
+        "import yaml; from simulation_interfaces.msg import GroundTruth, PayloadEvent, PayloadState; from simulation_interfaces.srv import PayloadCommand; import drone_sim_electromagnet.runtime_node"'
 
 ENV VIRTUAL_ENV=/opt/drone_sim/venv \
     PATH="/opt/drone_sim/venv/bin:${PATH}" \

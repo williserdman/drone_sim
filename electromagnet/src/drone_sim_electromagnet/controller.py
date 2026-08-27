@@ -3,13 +3,326 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from threading import Event, RLock
 from typing import Any, Protocol, TextIO
 
 from artifacts.structured_log import StructuredEvent, write_event
 
 from .scenario import InactiveScenarioEvent, ScenarioPolicy
+from .payload import PayloadAuthority, PayloadDecision, PayloadRequest, PayloadWorld
+
+
+@dataclass(frozen=True)
+class PhysicalResult:
+    command_id: str
+    status: str
+    state: str
+    code: str
+
+
+def parse_physical_result(value: object) -> PhysicalResult:
+    if not isinstance(value, str):
+        raise ValueError("physical result must use payload-result-v1")
+    parts = value.split("|")
+    if len(parts) != 5 or parts[0] != "payload-result-v1":
+        raise ValueError("physical result must use payload-result-v1")
+    _, command_id, status, state, code = parts
+    if (
+        not command_id
+        or status not in {"confirmed", "error"}
+        or state not in {"attached", "detached", "unknown"}
+        or not code
+    ):
+        raise ValueError("physical result must use payload-result-v1")
+    if status == "confirmed" and (state == "unknown" or code != "OK"):
+        raise ValueError("physical result must use payload-result-v1")
+    if status == "error" and state != "unknown":
+        raise ValueError("physical result must use payload-result-v1")
+    return PhysicalResult(command_id, status, state, code)
+
+
+@dataclass(frozen=True)
+class PayloadResponse:
+    accepted: bool
+    code: str
+    detail: str
+    command_id: str
+    response_sequence: int
+
+
+@dataclass(frozen=True)
+class PayloadEventRecord:
+    run_id: str
+    timestamp_ns: int
+    event_id: int
+    aruco_id: int
+    command_id: str
+    action: str
+    state: str
+    code: str
+
+
+@dataclass(frozen=True)
+class _VehicleFact:
+    timestamp_ns: int
+    xy: tuple[float, float]
+    grounded: bool
+
+
+@dataclass(frozen=True)
+class _PayloadFact:
+    timestamp_ns: int
+    xy: tuple[float, float]
+    grounded: bool
+    attached: bool
+
+
+@dataclass
+class _PendingResult:
+    marker_id: int
+    event: Event
+    value: PhysicalResult | None = None
+
+
+class PayloadGateway:
+    """Join current Gazebo facts to one physically confirmed command response."""
+
+    def __init__(
+        self,
+        authority: PayloadAuthority,
+        *,
+        publish_command: Callable[[int, str], None],
+        publish_event: Callable[[PayloadEventRecord], None],
+        confirmation_timeout_seconds: float = 5.0,
+    ) -> None:
+        if confirmation_timeout_seconds <= 0:
+            raise ValueError("confirmation timeout must be positive")
+        self._authority = authority
+        self._publish_command = publish_command
+        self._publish_event = publish_event
+        self._confirmation_timeout_seconds = confirmation_timeout_seconds
+        self._vehicle: _VehicleFact | None = None
+        self._payloads: dict[int, _PayloadFact] = {}
+        self._attached_id: int | None = None
+        self._attachment_confirmed_by_result = False
+        self._pending: dict[str, _PendingResult] = {}
+        self._responses: dict[str, tuple[PayloadRequest, PayloadResponse]] = {}
+        self._response_sequence = 0
+        self._event_id = 0
+        self._lock = RLock()
+
+    @property
+    def attached_id(self) -> int | None:
+        with self._lock:
+            return self._attached_id
+
+    def accept_vehicle(
+        self,
+        run_id: str,
+        timestamp_ns: int,
+        xy: tuple[float, float],
+        grounded: bool,
+    ) -> None:
+        if run_id != self._authority.run_id:
+            return
+        with self._lock:
+            self._vehicle = _VehicleFact(timestamp_ns, xy, grounded)
+
+    def accept_payload(
+        self,
+        run_id: str,
+        timestamp_ns: int,
+        aruco_id: int,
+        xy: tuple[float, float],
+        grounded: bool,
+        attached: bool,
+    ) -> None:
+        if run_id != self._authority.run_id or aruco_id not in {2, 3, 4}:
+            return
+        with self._lock:
+            self._payloads[aruco_id] = _PayloadFact(
+                timestamp_ns, xy, grounded, attached
+            )
+            if not self._attachment_confirmed_by_result:
+                attached_ids = [
+                    marker for marker, fact in self._payloads.items() if fact.attached
+                ]
+                self._attached_id = attached_ids[0] if len(attached_ids) == 1 else None
+
+    def accept_result(self, aruco_id: int, wire: object) -> None:
+        result = parse_physical_result(wire)
+        with self._lock:
+            pending = self._pending.get(result.command_id)
+            if pending is None or pending.marker_id != aruco_id or pending.value is not None:
+                return
+            pending.value = result
+            pending.event.set()
+
+    def ready(
+        self,
+        *,
+        result_publishers: frozenset[int],
+        service_ready: bool,
+    ) -> bool:
+        with self._lock:
+            return (
+                self._vehicle is not None
+                and set(self._payloads) == {2, 3, 4}
+                and result_publishers == frozenset({2, 3, 4})
+                and service_ready
+            )
+
+    def _response(
+        self,
+        request: PayloadRequest,
+        *,
+        accepted: bool,
+        code: str,
+        detail: str,
+        cache: bool = True,
+    ) -> PayloadResponse:
+        with self._lock:
+            self._response_sequence += 1
+            response = PayloadResponse(
+                accepted,
+                code,
+                detail,
+                request.command_id,
+                self._response_sequence,
+            )
+            if cache:
+                self._responses[request.command_id] = (request, response)
+            return response
+
+    def _snapshot(self, request: PayloadRequest) -> PayloadWorld | None:
+        with self._lock:
+            if self._vehicle is None or set(self._payloads) != {2, 3, 4}:
+                return None
+            payload = self._payloads.get(request.aruco_id)
+            if payload is None:
+                payload = _PayloadFact(0, (0.0, 0.0), False, False)
+            return PayloadWorld(
+                vehicle_xy=self._vehicle.xy,
+                vehicle_grounded=self._vehicle.grounded,
+                payload_xy=payload.xy,
+                payload_grounded=payload.grounded,
+                attached_id=self._attached_id,
+            )
+
+    def execute(self, request: PayloadRequest) -> PayloadResponse:
+        with self._lock:
+            previous = self._responses.get(request.command_id)
+            if previous is not None:
+                if previous[0] == request:
+                    return previous[1]
+                return self._response(
+                    request,
+                    accepted=False,
+                    code="COMMAND_ID_CONFLICT",
+                    detail="command_id was already used by a different request",
+                    cache=False,
+                )
+
+        world = self._snapshot(request)
+        if world is None:
+            return self._response(
+                request,
+                accepted=False,
+                code="NOT_READY",
+                detail="current vehicle and payload truth is incomplete",
+            )
+        decision = self._authority.decide(world, request)
+        if decision.wire_command is None:
+            return self._response(
+                request,
+                accepted=decision.accepted,
+                code=decision.code,
+                detail=decision.code,
+                cache=decision.code != "COMMAND_IN_PROGRESS",
+            )
+
+        pending = _PendingResult(request.aruco_id, Event())
+        with self._lock:
+            self._pending[request.command_id] = pending
+        try:
+            self._publish_command(request.aruco_id, decision.wire_command)
+        except Exception:
+            with self._lock:
+                self._pending.pop(request.command_id, None)
+            completed = PayloadDecision(False, "COORDINATOR_PUBLISH_FAILED", None)
+            self._authority.complete(request, completed)
+            return self._response(
+                request,
+                accepted=False,
+                code=completed.code,
+                detail="coordinator command could not be published",
+            )
+
+        confirmed = pending.event.wait(self._confirmation_timeout_seconds)
+        with self._lock:
+            self._pending.pop(request.command_id, None)
+            physical = pending.value
+        if not confirmed or physical is None:
+            completed = PayloadDecision(False, "PHYSICAL_CONFIRMATION_TIMEOUT", None)
+            self._authority.complete(request, completed)
+            return self._response(
+                request,
+                accepted=False,
+                code=completed.code,
+                detail="no matching physical confirmation within five wall seconds",
+            )
+
+        expected_state = "attached" if request.action == "attach" else "detached"
+        accepted = (
+            physical.status == "confirmed"
+            and physical.state == expected_state
+            and physical.code == "OK"
+        )
+        code = (
+            "OK"
+            if accepted
+            else physical.code
+            if physical.status == "error"
+            else "PHYSICAL_CONFIRMATION_MISMATCH"
+        )
+        completed = PayloadDecision(accepted, code, None)
+        self._authority.complete(request, completed)
+        if not accepted:
+            return self._response(
+                request,
+                accepted=False,
+                code=code,
+                detail="Gazebo rejected the physical payload command",
+            )
+
+        with self._lock:
+            self._attached_id = request.aruco_id if request.action == "attach" else None
+            self._attachment_confirmed_by_result = True
+            timestamp_ns = max(
+                self._vehicle.timestamp_ns if self._vehicle is not None else 0,
+                self._payloads[request.aruco_id].timestamp_ns,
+            )
+            event = PayloadEventRecord(
+                run_id=self._authority.run_id,
+                timestamp_ns=timestamp_ns,
+                event_id=self._event_id,
+                aruco_id=request.aruco_id,
+                command_id=request.command_id,
+                action=request.action,
+                state=physical.state,
+                code=physical.code,
+            )
+            self._event_id += 1
+        self._publish_event(event)
+        return self._response(
+            request,
+            accepted=True,
+            code="OK",
+            detail=f"physical payload {physical.state}",
+        )
 
 
 class QuiescenceProtocol(Protocol):
@@ -21,16 +334,18 @@ class ScenarioController:
         self,
         *,
         run_id: str,
-        policy: ScenarioPolicy,
+        policy: ScenarioPolicy | None,
         publish: Callable[[InactiveScenarioEvent], None],
         protocol: QuiescenceProtocol,
         stream: TextIO,
+        scenario: str = "descent_v1",
     ) -> None:
         self._run_id = run_id
         self._policy = policy
         self._publish = publish
         self._protocol = protocol
         self._stream = stream
+        self._scenario = scenario
         self._ready = False
         self._quiescent = False
 
@@ -61,12 +376,21 @@ class ScenarioController:
 
     def mark_ready(self) -> None:
         if not self._ready:
-            self._emit("ready", None, {"scenario": "descent_v1", "physical_force": False})
+            self._emit(
+                "ready",
+                None,
+                {
+                    "scenario": self._scenario,
+                    "physical_force": self._scenario == "competition_v1",
+                },
+            )
             self._ready = True
 
     def observe_clock(self, timestamp_ns: int) -> None:
         if self._quiescent:
             return
+        if self._policy is None:
+            raise RuntimeError("competition payload authority has no inactive clock policy")
         event = self._policy.observe_clock(timestamp_ns)
         if event is None:
             return
@@ -93,4 +417,11 @@ class ScenarioController:
         self._emit("scenario_failed", timestamp_ns, {"reason": reason}, severity="ERROR")
 
 
-__all__ = ["ScenarioController"]
+__all__ = [
+    "PayloadEventRecord",
+    "PayloadGateway",
+    "PayloadResponse",
+    "PhysicalResult",
+    "ScenarioController",
+    "parse_physical_result",
+]

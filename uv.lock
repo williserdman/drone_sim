@@ -103,10 +103,14 @@ version = "0.1.0"
 source = { editable = "electromagnet" }
 dependencies = [
     { name = "drone-sim-artifacts" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "drone-sim-artifacts", editable = "artifacts" }]
+requires-dist = [
+    { name = "drone-sim-artifacts", editable = "artifacts" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
+]
 
 [[package]]
 name = "drone-sim-gazebo"
