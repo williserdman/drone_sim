@@ -31,6 +31,20 @@ camera publisher remains compatible with later mission consumers that request
 best effort; exact bag and video acceptance does not rely on a best-effort
 delivery promise.
 
+`BASE_TOPICS` remains the ten-topic descent inventory. `competition_v1` adds
+`/simulation/payload_state` (`PayloadState`, reliable volatile depth 100),
+`/simulation/payload_events` (`PayloadEvent`, reliable transient-local depth
+100), `/simulation/mission_events` (`MissionEvent`, reliable transient-local
+depth 100), and `/competition/range/downward` (`LaserScan`, reliable volatile
+depth 100). The competition bag requires IDs 2, 3, and 4 at every exact 50 ms
+grid point and uses the resolved 640x480 image shape and byte count.
+
+Competition acceptance dispatches by `ruleset_id` to a physically independent
+oracle. It decodes vehicle, payload, mission, event, and downward-range facts
+and requires score events 0 through 7 plus `result.json` to match the seven
+recomputed components exactly. It never accepts the production scorekeeper's
+`complete` or point booleans as authority.
+
 Phase 2 synthetic infrastructure also publishes a transport-only acknowledgement
 on `/simulation/camera_pair_ack` after both exact camera pairs have drained into
 their recorders. It reuses `simulation_interfaces/msg/FrameMetadata` with the

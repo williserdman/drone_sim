@@ -71,3 +71,7 @@ The module never commands the aircraft, writes a model pose, teleports a
 payload, or awards score. Physical mutation belongs to Gazebo. On finalization,
 its final structured event precedes
 `.status/quiescence/electromagnet.json`; no module output follows that marker.
+
+There is no retry service. A rejected, mismatched, or timed-out request returns
+one fail-closed response to the current mission; retry policy remains outside
+this module and is deferred for the MVP.

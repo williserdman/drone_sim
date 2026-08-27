@@ -95,3 +95,5 @@ velocity, electromagnet request, or physics-mutation output.
 ## Deferred decisions
 
 - Optional diagnostic telemetry beyond authoritative ground truth
+- QGroundControl presentation and attempt retry policy; neither can change the
+  persisted physical result.

@@ -755,7 +755,7 @@ def main() -> None:
         run_directory,
         run_id,
         protocol=protocol,
-        bag_recorder=RosbagRecorder(run_directory),
+        bag_recorder=RosbagRecorder(run_directory, topics=recording_contract.topics),
         video_node=video_node,
         video_validators={"onboard": VideoValidator(), "observer": VideoValidator()},
         bag_validator=RosbagValidator(
@@ -763,6 +763,9 @@ def main() -> None:
             expected_camera_frames=recording_contract.expected_camera_frames,
             physical_run=recording_contract.physical_run,
             config_sha256=(config["config_sha256"] if recording_contract.physical_run else None),
+            ruleset_id=recording_contract.ruleset_id,
+            width_px=recording_contract.width_px,
+            height_px=recording_contract.height_px,
         ),
         publish=publish,
         fault=fault,

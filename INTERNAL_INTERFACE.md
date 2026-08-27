@@ -16,8 +16,11 @@ Define relationships among the repository's immediate child modules. Top-level c
 | Gazebo | ArduPilot SITL | Reserved Phase 4 ArduPilot-Gazebo adapter | Simulated sensors and dynamics; inactive in Phase 3 |
 | Gazebo | Companion | ROS 2 image transport | Camera frames |
 | Gazebo | Scorekeeper | ROS 2 | Ground truth |
+| Gazebo | Companion and Artifacts | ROS 2 `/competition/range/downward` | Reliable volatile downward `LaserScan`, depth 100 |
+| Gazebo | Electromagnet, Scorekeeper, and Artifacts | ROS 2 `/simulation/payload_state` | Three recurrent physical payload states per 50 ms tick |
 | Electromagnet | Gazebo | ROS 2 | Physical-effect requests |
-| Electromagnet | Scorekeeper | ROS 2 | Scenario events |
+| Electromagnet | Scorekeeper and Artifacts | ROS 2 `/simulation/payload_events` | Ordered confirmed attach/release facts |
+| Companion | Scorekeeper and Artifacts | ROS 2 `/simulation/mission_events` | Ordered competition phase facts |
 | Gazebo | Simulation-aware modules | ROS 2 `/clock` | Simulation time |
 | All modules | Artifacts | Structured stdout | Run-correlated JSON Lines logs |
 | Gazebo | Artifacts | ROS 2 and filesystem | Both camera streams, ground truth, server log, and state |
@@ -47,6 +50,11 @@ Every run has a unique `run_id`. Run-scoped messages preserve it, and receivers 
 ## Timing rules
 
 Simulation time schedules simulated behavior. Wall time is limited to infrastructure health checks, profiling, and host-performance diagnostics.
+
+Competition timing stores the first current-run `FM1/STARTED` simulation
+timestamp. Freshness, stability, settlement, and the 600-second deadline use
+only current simulation timestamp minus that start value; no sibling adds an
+epoch, timestamp rebase, or synchronization queue.
 
 ## Finalization protocol
 

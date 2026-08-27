@@ -16,7 +16,7 @@ import uuid
 from ..validation import ValidationResult, ValidationStatus, validate_tree
 
 
-FIXED_TOPICS = (
+BASE_TOPICS = (
     "/clock",
     "/simulation/run_state",
     "/simulation/artifact_status",
@@ -28,8 +28,9 @@ FIXED_TOPICS = (
     "/camera/observer/image_raw",
     "/camera/observer/frame_metadata",
 )
+FIXED_TOPICS = BASE_TOPICS
 
-FIXED_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
+BASE_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
     {
         "/clock": "rosgraph_msgs/msg/Clock",
         "/simulation/run_state": "simulation_interfaces/msg/RunState",
@@ -41,6 +42,22 @@ FIXED_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
         "/camera/onboard/frame_metadata": "simulation_interfaces/msg/FrameMetadata",
         "/camera/observer/image_raw": "sensor_msgs/msg/Image",
         "/camera/observer/frame_metadata": "simulation_interfaces/msg/FrameMetadata",
+    }
+)
+FIXED_TOPIC_TYPES = BASE_TOPIC_TYPES
+COMPETITION_TOPICS = BASE_TOPICS + (
+    "/simulation/payload_state",
+    "/simulation/payload_events",
+    "/simulation/mission_events",
+    "/competition/range/downward",
+)
+COMPETITION_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
+    {
+        **BASE_TOPIC_TYPES,
+        "/simulation/payload_state": "simulation_interfaces/msg/PayloadState",
+        "/simulation/payload_events": "simulation_interfaces/msg/PayloadEvent",
+        "/simulation/mission_events": "simulation_interfaces/msg/MissionEvent",
+        "/competition/range/downward": "sensor_msgs/msg/LaserScan",
     }
 )
 
@@ -131,12 +148,53 @@ class ScoreEventEvidence:
 
 
 @dataclass(frozen=True)
+class PayloadStateEvidence:
+    sim_timestamp_ns: int
+    aruco_id: int
+    position_xyz: tuple[float, float, float]
+    orientation_xyzw: tuple[float, float, float, float]
+    linear_velocity_xyz: tuple[float, float, float]
+    grounded: bool
+    attached: bool
+
+
+@dataclass(frozen=True)
+class PayloadEventEvidence:
+    sim_timestamp_ns: int
+    event_id: int
+    aruco_id: int
+    command_id: str
+    action: str
+    state: str
+    code: str
+
+
+@dataclass(frozen=True)
+class MissionEventEvidence:
+    sim_timestamp_ns: int
+    event_id: int
+    phase: str
+    state: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class DownwardRangeEvidence:
+    sim_timestamp_ns: int
+    range_m: float
+
+
+@dataclass(frozen=True)
 class PhysicalBagEvidence:
     bag_sha256: str
     config_sha256: str
     lifecycle_states: tuple[str, ...]
     ground_truth: tuple[GroundTruthEvidence, ...]
     score_events: tuple[ScoreEventEvidence, ...]
+    payload_states: tuple[PayloadStateEvidence, ...] = ()
+    payload_events: tuple[PayloadEventEvidence, ...] = ()
+    mission_events: tuple[MissionEventEvidence, ...] = ()
+    downward_ranges: tuple[DownwardRangeEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -245,7 +303,7 @@ class RosbagRecorder:
         self,
         run_directory: Path | str,
         *,
-        topics: Sequence[str] = FIXED_TOPICS,
+        topics: Sequence[str] = BASE_TOPICS,
         process_factory: Callable[..., _Process] = _production_process_factory,
         monotonic: Callable[[], float] = time.monotonic,
         signal_sender: Callable[[_Process, int], None] = _production_signal_sender,
@@ -254,8 +312,12 @@ class RosbagRecorder:
     ) -> None:
         self.run_directory = Path(run_directory).resolve()
         self.topics = tuple(topics)
-        if self.topics != FIXED_TOPICS:
-            raise ValueError("rosbag topics must equal the frozen ten-topic inventory")
+        if self.topics == BASE_TOPICS:
+            self.topic_types = BASE_TOPIC_TYPES
+        elif self.topics == COMPETITION_TOPICS:
+            self.topic_types = COMPETITION_TOPIC_TYPES
+        else:
+            raise ValueError("rosbag topics must equal a supported evidence inventory")
         self.node_name = f"rosbag2_recorder_{uuid_factory().hex}"
         self._process_factory = process_factory
         self._monotonic = monotonic
@@ -406,7 +468,7 @@ class RosbagRecorder:
             return False
 
         for topic in self.topics:
-            expected_type = FIXED_TOPIC_TYPES[topic]
+            expected_type = self.topic_types[topic]
             recorder_endpoints = tuple(
                 endpoint
                 for endpoint in graph.get_subscriptions_info_by_topic(topic)
@@ -601,6 +663,100 @@ def _ground_truth_evidence(message: Any, timestamp_ns: int) -> GroundTruthEviden
     )
 
 
+def _finite_vector(value: Any, fields: tuple[str, ...], label: str) -> tuple[float, ...]:
+    values = tuple(getattr(value, field) for field in fields)
+    if any(
+        isinstance(item, bool)
+        or not isinstance(item, (int, float))
+        or not math.isfinite(item)
+        for item in values
+    ):
+        raise ValueError(f"{label} contains nonfinite vector fields")
+    return tuple(float(item) for item in values)
+
+
+def _payload_state_evidence(message: Any, timestamp_ns: int) -> PayloadStateEvidence:
+    marker = message.aruco_id
+    if type(marker) is not int or marker not in (2, 3, 4):
+        raise ValueError("payload state has an unknown ArUco ID")
+    position = _finite_vector(message.pose.position, ("x", "y", "z"), "payload state")
+    orientation = _finite_vector(
+        message.pose.orientation,
+        ("x", "y", "z", "w"),
+        "payload state",
+    )
+    velocity = _finite_vector(message.twist.linear, ("x", "y", "z"), "payload state")
+    if sum(item * item for item in orientation) == 0.0:
+        raise ValueError("payload state orientation has zero norm")
+    if type(message.grounded) is not bool or type(message.attached) is not bool:
+        raise ValueError("payload state physical flags are invalid")
+    return PayloadStateEvidence(
+        timestamp_ns,
+        marker,
+        (position[0], position[1], position[2]),
+        (orientation[0], orientation[1], orientation[2], orientation[3]),
+        (velocity[0], velocity[1], velocity[2]),
+        message.grounded,
+        message.attached,
+    )
+
+
+def _payload_event_evidence(message: Any, timestamp_ns: int) -> PayloadEventEvidence:
+    if type(message.event_id) is not int or message.event_id < 0:
+        raise ValueError("payload event ID is invalid")
+    if type(message.aruco_id) is not int or message.aruco_id not in (2, 3, 4):
+        raise ValueError("payload event ArUco ID is invalid")
+    values = (message.command_id, message.action, message.state, message.code)
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError("payload event fields are invalid")
+    return PayloadEventEvidence(
+        timestamp_ns,
+        message.event_id,
+        message.aruco_id,
+        message.command_id,
+        message.action,
+        message.state,
+        message.code,
+    )
+
+
+def _mission_event_evidence(message: Any, timestamp_ns: int) -> MissionEventEvidence:
+    if type(message.event_id) is not int or message.event_id < 0:
+        raise ValueError("mission event ID is invalid")
+    if (
+        not isinstance(message.phase, str)
+        or not message.phase
+        or not isinstance(message.state, str)
+        or not message.state
+        or not isinstance(message.detail, str)
+    ):
+        raise ValueError("mission event fields are invalid")
+    return MissionEventEvidence(
+        timestamp_ns,
+        message.event_id,
+        message.phase,
+        message.state,
+        message.detail,
+    )
+
+
+def _downward_range_evidence(message: Any, timestamp_ns: int) -> DownwardRangeEvidence:
+    if not isinstance(message.ranges, Sequence) or len(message.ranges) != 1:
+        raise ValueError("downward range must contain exactly one beam")
+    measured = message.ranges[0]
+    bounds = (message.range_min, message.range_max)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in (measured, *bounds)
+    ):
+        raise ValueError("downward range contains nonfinite values")
+    if bounds[0] < 0 or bounds[1] <= bounds[0] or not bounds[0] <= measured <= bounds[1]:
+        raise ValueError("downward range is outside sensor bounds")
+    return DownwardRangeEvidence(timestamp_ns, float(measured))
+
+
 class RosbagValidator:
     """Validate a quiescent MCAP bag without changing it."""
 
@@ -612,6 +768,9 @@ class RosbagValidator:
         expected_camera_frames: int | None = None,
         physical_run: bool = False,
         config_sha256: str | None = None,
+        ruleset_id: str = "descent_v1",
+        width_px: int = 320,
+        height_px: int = 240,
     ) -> None:
         if not run_id:
             raise ValueError("run_id must not be empty")
@@ -629,11 +788,30 @@ class RosbagValidator:
             or any(character not in "0123456789abcdef" for character in config_sha256)
         ):
             raise ValueError("physical_run requires a lowercase config SHA-256")
+        if ruleset_id not in {"descent_v1", "competition_v1"}:
+            raise ValueError("ruleset_id is unsupported")
+        if (
+            type(width_px) is not int
+            or type(height_px) is not int
+            or (width_px, height_px) not in {(320, 240), (640, 480)}
+        ):
+            raise ValueError("image geometry is unsupported")
         self.run_id = run_id
         self._backend = backend or _Rosbag2Backend()
         self.expected_camera_frames = expected_camera_frames
         self.physical_run = physical_run
         self.config_sha256 = config_sha256
+        self.ruleset_id = ruleset_id
+        self.width_px = width_px
+        self.height_px = height_px
+        self.step_bytes = width_px * 3
+        self.image_payload_bytes = width_px * height_px * 3
+        if ruleset_id == "competition_v1":
+            self.topics = COMPETITION_TOPICS
+            self.topic_types = COMPETITION_TOPIC_TYPES
+        else:
+            self.topics = BASE_TOPICS
+            self.topic_types = BASE_TOPIC_TYPES
 
     @staticmethod
     def _result(
@@ -709,42 +887,49 @@ class RosbagValidator:
             )
         metadata_names = tuple(topic.name for topic in metadata.topics)
         if len(set(metadata_names)) != len(metadata_names) or set(metadata_names) != set(
-            FIXED_TOPICS
+            self.topics
         ):
             return self._result(
                 filesystem,
                 ValidationStatus.INVALID,
-                "rosbag topic inventory differs from the frozen ten-topic inventory",
+                "rosbag topic inventory differs from the selected evidence inventory",
             )
         topics_by_name = {topic.name: topic for topic in metadata.topics}
-        for topic in FIXED_TOPICS:
+        for topic in self.topics:
             topic_metadata = topics_by_name[topic]
-            if topic_metadata.message_type != FIXED_TOPIC_TYPES[topic]:
+            if topic_metadata.message_type != self.topic_types[topic]:
                 return self._result(
                     filesystem,
                     ValidationStatus.INVALID,
                     f"rosbag topic {topic} has wrong type {topic_metadata.message_type!r}",
                 )
-            if topic_metadata.message_count <= 0:
+            if topic_metadata.message_count <= 0 and not (
+                self.ruleset_id == "competition_v1"
+                and topic == "/simulation/scenario_events"
+            ):
                 return self._result(
                     filesystem,
                     ValidationStatus.INVALID,
                     f"rosbag topic {topic} has zero messages",
                 )
 
-        counts = {topic: 0 for topic in FIXED_TOPICS}
-        timestamps: dict[str, list[int]] = {topic: [] for topic in FIXED_TOPICS}
+        counts = {topic: 0 for topic in self.topics}
+        timestamps: dict[str, list[int]] = {topic: [] for topic in self.topics}
         frame_ids: dict[str, list[int]] = {"onboard": [], "observer": []}
         artifact_statuses: list[tuple[int, Any]] = []
         run_states: list[Any] = []
         ground_truth_samples: list[GroundTruthEvidence] = []
         scenario_events: list[Any] = []
         score_events: list[Any] = []
+        payload_states: list[PayloadStateEvidence] = []
+        payload_events: list[PayloadEventEvidence] = []
+        mission_events: list[MissionEventEvidence] = []
+        downward_ranges: list[DownwardRangeEvidence] = []
         first_clock_index: int | None = None
         try:
             for record_index, record in enumerate(
                 self._backend.read_messages(
-                    bag_directory, metadata.storage_id, FIXED_TOPIC_TYPES
+                    bag_directory, metadata.storage_id, self.topic_types
                 )
             ):
                 if record.topic not in counts:
@@ -767,11 +952,11 @@ class RosbagValidator:
                             f"rosbag topic {record.topic} contains a missing image payload",
                         )
                     if self.physical_run and (
-                        message.height != 240
-                        or message.width != 320
+                        message.height != self.height_px
+                        or message.width != self.width_px
                         or message.encoding != "rgb8"
-                        or message.step != 960
-                        or len(message.data) != 320 * 240 * 3
+                        or message.step != self.step_bytes
+                        or len(message.data) != self.image_payload_bytes
                     ):
                         return self._result(
                             filesystem,
@@ -780,6 +965,19 @@ class RosbagValidator:
                             f"{record.topic} has invalid physical image shape or payload",
                         )
                     sim_timestamp_ns = _timestamp_ns(message.header.stamp)
+                elif record.topic == "/competition/range/downward":
+                    sim_timestamp_ns = _timestamp_ns(message.header.stamp)
+                    if timestamps[record.topic] and sim_timestamp_ns < timestamps[
+                        record.topic
+                    ][-1]:
+                        return self._result(
+                            filesystem,
+                            ValidationStatus.INVALID,
+                            "downward range timestamps are nonmonotonic",
+                        )
+                    downward_ranges.append(
+                        _downward_range_evidence(message, sim_timestamp_ns)
+                    )
                 else:
                     if message.run_id != self.run_id:
                         return self._result(
@@ -819,6 +1017,18 @@ class RosbagValidator:
                         scenario_events.append(message)
                     elif record.topic == "/simulation/score_events":
                         score_events.append(message)
+                    elif record.topic == "/simulation/payload_state":
+                        payload_states.append(
+                            _payload_state_evidence(message, sim_timestamp_ns)
+                        )
+                    elif record.topic == "/simulation/payload_events":
+                        payload_events.append(
+                            _payload_event_evidence(message, sim_timestamp_ns)
+                        )
+                    elif record.topic == "/simulation/mission_events":
+                        mission_events.append(
+                            _mission_event_evidence(message, sim_timestamp_ns)
+                        )
                 timestamps[record.topic].append(sim_timestamp_ns)
         except Exception as error:
             return self._result(
@@ -827,7 +1037,7 @@ class RosbagValidator:
                 f"rosbag contains an unreadable serialized message: {error}",
             )
 
-        for topic in FIXED_TOPICS:
+        for topic in self.topics:
             if counts[topic] != topics_by_name[topic].message_count:
                 return self._result(
                     filesystem,
@@ -937,31 +1147,42 @@ class RosbagValidator:
                     "rosbag physical clock does not cover every frame timestamp",
                 )
 
-            if len(scenario_events) != 1:
-                return self._result(
-                    filesystem,
-                    ValidationStatus.INVALID,
-                    "rosbag physical scenario initialization is incomplete",
+            if self.ruleset_id == "descent_v1":
+                if len(scenario_events) != 1:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag physical scenario initialization is incomplete",
+                    )
+                scenario = scenario_events[0]
+                if (
+                    scenario.event_id != 0
+                    or scenario.magnet_id != "descent-v1-magnet"
+                    or scenario.state != "INACTIVE"
+                ):
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag physical scenario initialization is not truthful INACTIVE",
+                    )
+                expected_event_types = (
+                    "descent.airborne_then_contact",
+                    "descent.touchdown_precision",
+                    "descent.safe_preimpact_speed",
+                    "descent.stable_contact",
+                    "score.finalized",
                 )
-            scenario = scenario_events[0]
-            if (
-                scenario.event_id != 0
-                or scenario.magnet_id != "descent-v1-magnet"
-                or scenario.state != "INACTIVE"
-            ):
-                return self._result(
-                    filesystem,
-                    ValidationStatus.INVALID,
-                    "rosbag physical scenario initialization is not truthful INACTIVE",
+            else:
+                expected_event_types = (
+                    "competition.fm1_landing",
+                    "competition.fm1_autonomy",
+                    "competition.payload_2",
+                    "competition.fm2_autonomy",
+                    "competition.payload_3",
+                    "competition.fm3_autonomy",
+                    "competition.payload_4",
+                    "score.finalized",
                 )
-
-            expected_event_types = (
-                "descent.airborne_then_contact",
-                "descent.touchdown_precision",
-                "descent.safe_preimpact_speed",
-                "descent.stable_contact",
-                "score.finalized",
-            )
             if len(score_events) != len(expected_event_types) or any(
                 event.event_id != index
                 or event.event_type != event_type
@@ -978,6 +1199,50 @@ class RosbagValidator:
                     ValidationStatus.INVALID,
                     "rosbag physical score events are not exactly ordered and contiguous",
                 )
+
+            if self.ruleset_id == "competition_v1":
+                payload_by_timestamp: dict[int, list[int]] = {}
+                for sample in payload_states:
+                    payload_by_timestamp.setdefault(sample.sim_timestamp_ns, []).append(
+                        sample.aruco_id
+                    )
+                expected_grid = timestamps["/simulation/ground_truth"]
+                if (
+                    sorted(payload_by_timestamp) != expected_grid
+                    or any(
+                        sorted(markers) != [2, 3, 4]
+                        for markers in payload_by_timestamp.values()
+                    )
+                ):
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag competition payload grid must contain IDs 2, 3, and 4",
+                    )
+                if timestamps["/competition/range/downward"] != expected_grid:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag competition downward range is not aligned to the physical grid",
+                    )
+                for label, events in (
+                    ("payload", payload_events),
+                    ("mission", mission_events),
+                ):
+                    if not events or any(
+                        event.event_id != index
+                        or (
+                            index > 0
+                            and event.sim_timestamp_ns
+                            < events[index - 1].sim_timestamp_ns
+                        )
+                        for index, event in enumerate(events)
+                    ):
+                        return self._result(
+                            filesystem,
+                            ValidationStatus.INVALID,
+                            f"rosbag competition {label} events are not contiguous and monotonic",
+                        )
 
         if self.expected_camera_frames is not None:
             exact_topics = (
@@ -1053,7 +1318,7 @@ class RosbagValidator:
                 timestamps[topic][0],
                 timestamps[topic][-1],
             )
-            for topic in FIXED_TOPICS
+            for topic in self.topics
         )
         physical_evidence = None
         if self.physical_run:
@@ -1074,6 +1339,10 @@ class RosbagValidator:
                     )
                     for event in score_events
                 ),
+                tuple(payload_states),
+                tuple(payload_events),
+                tuple(mission_events),
+                tuple(downward_ranges),
             )
         return self._result(
             filesystem,
@@ -1085,6 +1354,10 @@ class RosbagValidator:
 
 
 __all__ = [
+    "BASE_TOPIC_TYPES",
+    "BASE_TOPICS",
+    "COMPETITION_TOPIC_TYPES",
+    "COMPETITION_TOPICS",
     "FIXED_TOPIC_TYPES",
     "FIXED_TOPICS",
     "BagBackend",
@@ -1092,6 +1365,10 @@ __all__ = [
     "BagMetadata",
     "BagTopicMetadata",
     "GroundTruthEvidence",
+    "DownwardRangeEvidence",
+    "MissionEventEvidence",
+    "PayloadEventEvidence",
+    "PayloadStateEvidence",
     "PhysicalBagEvidence",
     "RecorderFinalization",
     "RosbagRecorder",

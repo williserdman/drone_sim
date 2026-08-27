@@ -41,6 +41,12 @@ one-way parameter bridge for clock, odometry, and contact, plus one
 `ros_gz_image` bridge for the fixed camera pair. Both quiesce before the
 server.
 
+For `competition_v1`, the same composition root starts three marker-specific
+detachable-joint coordinators and the public payload/range adapter. A
+coordinator accepts only the private correlated command wire, confirms actual
+joint state, and emits the matching result; it never awards score or decides
+whether a public request was authorized.
+
 `ros_adapter.aggregation` retains at most one odometry, one contact, and one
 completed truth value. `ros_adapter.live` joins that truth to the current
 camera pair before the public ROS node publishes it. Private sensor QoS may be

@@ -12,12 +12,14 @@ import time
 from typing import Any
 from uuid import UUID
 
-from artifacts import DockerLogCommandResult, ImageDigest
+from artifacts import DockerLogCommandResult, ImageDigest, SourceRevision
 from orchestration.config import RuntimeTopology
 
 
 _SERVICE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _DIGEST_PATTERN = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
+_COMPANION_IMAGE = "drone-sim-companion-runtime:phase3"
+_COMP2026_REVISION_LABEL = "org.opencontainers.image.comp2026.revision"
 _AMBIENT_COMPOSE_SELECTORS = frozenset(
     {
         "COMPOSE_FILE",
@@ -155,6 +157,43 @@ class ComposeRuntime:
 
     def up(self, timeout: float) -> ComposeCommandResult:
         return self._compose(["up", "--detach", "--no-build"], timeout)
+
+    def bind_source_revisions(
+        self,
+        revisions: Sequence[SourceRevision],
+        timeout: float,
+    ) -> ComposeCommandResult:
+        """Bind Compose interpolation and verify the built nested-source label."""
+        records = tuple(revisions)
+        if [record.name for record in records] != ["drone_sim", "comp2026"]:
+            raise ValueError("source revisions must be ordered drone_sim then comp2026")
+        nested = records[1].revision
+        if not isinstance(nested, str) or not nested:
+            raise ValueError("comp2026 source revision must be nonempty")
+        self.environment["SIM_COMP2026_REVISION"] = nested
+        result = self._invoke(
+            [
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                f'{{{{ index .Config.Labels "{_COMP2026_REVISION_LABEL}" }}}}',
+                _COMPANION_IMAGE,
+            ],
+            timeout,
+        )
+        if result.returncode != 0:
+            raise ComposeRuntimeError("companion image revision label unavailable", result)
+        try:
+            label = result.output.decode("ascii").strip()
+        except UnicodeDecodeError as error:
+            raise ComposeRuntimeError("companion image revision label is not ASCII", result) from error
+        if label != nested:
+            raise ComposeRuntimeError(
+                "companion image revision label does not match comp2026 source",
+                result,
+            )
+        return result
 
     def logs(self, command: list[str], timeout: float) -> DockerLogCommandResult:
         """Run exactly one Task 5 frozen per-service log command with safe context."""

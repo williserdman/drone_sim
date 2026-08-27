@@ -7,10 +7,10 @@ server, private Gazebo Transport endpoints, bridges, public ROS adapter, native
 state, and raw server log. Gazebo is the sole producer of physical truth and
 simulation time. Gazebo Transport is not a repository-wide interface.
 
-Two immutable selections are accepted. `phase3_foundation/iris` is the passive
-foundation world. `vertical_descent/iris_flight` is the flight world; the
-configured resource selector remains `iris_flight`, while its physical Gazebo
-entity and private topic child are named `iris`.
+Three immutable selections are accepted. `phase3_foundation/iris` is passive,
+`vertical_descent/iris_flight` is the descent world, and
+`comp2026_course/iris_flight` is the competition world. The physical vehicle
+entity and private topic child remain named `iris`.
 
 ## ROS 2 outputs
 
@@ -22,10 +22,13 @@ entity and private topic child are named `iris`.
 | `/camera/observer/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, depth 100 |
 | `/camera/observer/frame_metadata` | `simulation_interfaces/msg/FrameMetadata` | Reliable, volatile, depth 100 |
 | `/simulation/ground_truth` | `simulation_interfaces/msg/GroundTruth` | Reliable, volatile, depth 10 |
+| `/simulation/payload_state` | `simulation_interfaces/msg/PayloadState` | Reliable, volatile, depth 100 |
+| `/competition/range/downward` | `sensor_msgs/msg/LaserScan` | Reliable, volatile, depth 100 |
 
 All run-scoped outputs carry `run_id`. Each image has matching metadata with a
 stream-local contiguous frame ID and an identical public simulation timestamp.
-Both streams are fixed at `320x240`, `rgb8`, and 20 simulated Hz. Each accepted
+Both streams are `320x240` for descent or `640x480` for competition, `rgb8`,
+and 20 simulated Hz. Each accepted
 camera pair has one ground-truth sample at the same public timestamp. The
 onboard public image is the exact stream later consumed by companion vision and
 artifacts. Camera history retains five simulated seconds so a bounded host-side
@@ -137,5 +140,7 @@ not receive restarted budgets.
 ## Excluded and reserved interfaces
 
 The passive foundation selection has no ArduPilot actuator/sensor seam.
-MAVLink is owned by ArduPilot SITL and companion, not Gazebo. Electromagnet physical-effect requests,
-payload behavior, course policy, and competition scoring remain Phase 6 work.
+MAVLink is owned by ArduPilot SITL and companion, not Gazebo. Gazebo owns only
+physical detachable-joint mutation and recurrent payload/range truth; request
+authorization belongs to electromagnet and point decisions belong to
+scorekeeper.

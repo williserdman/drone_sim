@@ -145,7 +145,40 @@ def test_command_has_absolute_output_qos_node_and_frozen_topic_order(tmp_path):
     assert "--use-sim-time" not in recorder.command()
 
 
+def test_competition_bag_contract_extends_descent_without_changing_base_topics(tmp_path):
+    """Dropping descent topics or downward range would leave incomplete evidence."""
+    from artifacts._adapters.rosbag import (
+        BASE_TOPICS,
+        COMPETITION_TOPIC_TYPES,
+        COMPETITION_TOPICS,
+    )
+
+    assert BASE_TOPICS == FIXED_TOPICS
+    assert COMPETITION_TOPICS == BASE_TOPICS + (
+        "/simulation/payload_state",
+        "/simulation/payload_events",
+        "/simulation/mission_events",
+        "/competition/range/downward",
+    )
+    assert COMPETITION_TOPIC_TYPES["/simulation/payload_state"] == (
+        "simulation_interfaces/msg/PayloadState"
+    )
+    assert COMPETITION_TOPIC_TYPES["/simulation/payload_events"] == (
+        "simulation_interfaces/msg/PayloadEvent"
+    )
+    assert COMPETITION_TOPIC_TYPES["/simulation/mission_events"] == (
+        "simulation_interfaces/msg/MissionEvent"
+    )
+    assert COMPETITION_TOPIC_TYPES["/competition/range/downward"] == (
+        "sensor_msgs/msg/LaserScan"
+    )
+    recorder = _recorder(tmp_path, topics=COMPETITION_TOPICS)
+    assert recorder.command()[-len(COMPETITION_TOPICS) :] == COMPETITION_TOPICS
+
+
 def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
+    import yaml
+
     artifact_root = Path(__file__).parents[1]
     override_path = artifact_root / "recording-qos.yaml"
     dockerfile = (artifact_root / "Dockerfile").read_text(encoding="utf-8")
@@ -192,6 +225,26 @@ def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
         "COPY artifacts/recording-qos.yaml /etc/drone_sim/recording-qos.yaml"
         in dockerfile
     )
+    qos_document = yaml.safe_load(override)
+    assert qos_document["/simulation/payload_state"] == {
+        "history": "keep_last",
+        "depth": 100,
+        "reliability": "reliable",
+        "durability": "volatile",
+    }
+    for topic in ("/simulation/payload_events", "/simulation/mission_events"):
+        assert qos_document[topic] == {
+            "history": "keep_last",
+            "depth": 100,
+            "reliability": "reliable",
+            "durability": "transient_local",
+        }
+    assert qos_document["/competition/range/downward"] == {
+        "history": "keep_last",
+        "depth": 100,
+        "reliability": "reliable",
+        "durability": "volatile",
+    }
 
 
 def test_start_uses_shell_free_process_and_appends_combined_recorder_log(tmp_path):
@@ -522,6 +575,23 @@ def _ground_truth(timestamp_ns, *, value=0.0, in_contact=False):
     )
 
 
+def _payload_state(timestamp_ns, marker):
+    message = _ground_truth(timestamp_ns)
+    message.aruco_id = marker
+    message.grounded = marker != 2
+    message.attached = marker == 2
+    return message
+
+
+def _range(timestamp_ns, value=10.0):
+    return SimpleNamespace(
+        header=SimpleNamespace(stamp=_stamp(timestamp_ns)),
+        range_min=0.05,
+        range_max=30.0,
+        ranges=[value],
+    )
+
+
 def _run_state(timestamp_ns, state, *, reason=""):
     return _custom_message(
         timestamp_ns,
@@ -671,6 +741,110 @@ def _valid_physical_messages():
     ]
 
 
+def _valid_competition_messages():
+    messages = [
+        item
+        for item in _valid_physical_messages()
+        if item.topic != "/simulation/score_events"
+    ]
+    points = (20.0, 30.0, 10.0, 20.0, 15.0, 50.0, 5.0)
+    for index, (rule_id, value) in enumerate(
+        zip(
+            (
+                "fm1_landing",
+                "fm1_autonomy",
+                "payload_2",
+                "fm2_autonomy",
+                "payload_3",
+                "fm3_autonomy",
+                "payload_4",
+            ),
+            points,
+            strict=True,
+        )
+    ):
+        messages.append(
+            BagMessage(
+                "/simulation/score_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=index,
+                    event_type=f"competition.{rule_id}",
+                    value=value,
+                    evidence_ref=f"scoring/events.jsonl#event-{index}",
+                ),
+                200 + index,
+            )
+        )
+    messages.append(
+        BagMessage(
+            "/simulation/score_events",
+            _custom_message(
+                50_000_000,
+                event_id=7,
+                event_type="score.finalized",
+                value=150.0,
+                evidence_ref="scoring/events.jsonl#event-7",
+            ),
+            207,
+        )
+    )
+    messages.extend(
+        BagMessage("/simulation/payload_state", _payload_state(50_000_000, marker), 210 + marker)
+        for marker in (2, 3, 4)
+    )
+    messages.extend(
+        (
+            BagMessage(
+                "/simulation/payload_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=0,
+                    aruco_id=2,
+                    command_id="release-2",
+                    action="release",
+                    state="detached",
+                    code="OK",
+                ),
+                220,
+            ),
+            BagMessage(
+                "/simulation/mission_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=0,
+                    phase="FM1",
+                    state="STARTED",
+                    detail="automatic attempt",
+                ),
+                221,
+            ),
+            BagMessage(
+                "/competition/range/downward",
+                _range(50_000_000),
+                222,
+            ),
+        )
+    )
+    return messages
+
+
+def _competition_metadata_for(messages):
+    from artifacts._adapters.rosbag import COMPETITION_TOPIC_TYPES, COMPETITION_TOPICS
+
+    return BagMetadata(
+        storage_id="mcap",
+        topics=tuple(
+            BagTopicMetadata(
+                topic,
+                COMPETITION_TOPIC_TYPES[topic],
+                sum(message.topic == topic for message in messages),
+            )
+            for topic in COMPETITION_TOPICS
+        ),
+    )
+
+
 def _metadata_for(messages, *, storage_id="mcap", type_overrides=None):
     type_overrides = type_overrides or {}
     return BagMetadata(
@@ -812,6 +986,96 @@ def test_physical_bag_accepts_explicit_production_evidence_contract(tmp_path):
     ).validate(tmp_path, "rosbag")
 
     assert result.status is ValidationStatus.VALID
+
+
+def test_competition_bag_decodes_three_payloads_events_and_downward_range(tmp_path):
+    """Losing any one physical stream would make independent scoring impossible."""
+    from artifacts._adapters.rosbag import (
+        DownwardRangeEvidence,
+        MissionEventEvidence,
+        PayloadEventEvidence,
+        PayloadStateEvidence,
+    )
+
+    _bag_directory(tmp_path)
+    messages = _valid_competition_messages()
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_competition_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="competition_v1",
+        width_px=320,
+        height_px=240,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+    evidence = result.physical_evidence
+    assert evidence is not None
+    assert evidence.payload_states == tuple(
+        PayloadStateEvidence(
+            50_000_000,
+            marker,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 1.0),
+            (0.0, 0.0, 0.0),
+            marker != 2,
+            marker == 2,
+        )
+        for marker in (2, 3, 4)
+    )
+    assert evidence.payload_events == (
+        PayloadEventEvidence(
+            50_000_000,
+            0,
+            2,
+            "release-2",
+            "release",
+            "detached",
+            "OK",
+        ),
+    )
+    assert evidence.mission_events == (
+        MissionEventEvidence(
+            50_000_000,
+            0,
+            "FM1",
+            "STARTED",
+            "automatic attempt",
+        ),
+    )
+    assert evidence.downward_ranges == (DownwardRangeEvidence(50_000_000, 10.0),)
+
+
+def test_competition_bag_rejects_missing_payload_id_on_grid_tick(tmp_path):
+    """Two payload samples at a tick cannot stand in for the required IDs 2, 3, and 4."""
+    messages = [
+        item
+        for item in _valid_competition_messages()
+        if not (
+            item.topic == "/simulation/payload_state"
+            and item.message.aruco_id == 4
+        )
+    ]
+    _bag_directory(tmp_path)
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_competition_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="competition_v1",
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.INVALID
+    assert "payload" in result.detail
 
 
 def test_physical_bag_rejects_camera_and_ground_truth_epoch_starting_at_zero(
@@ -959,6 +1223,40 @@ def test_physical_bag_requires_fixed_rgb8_image_shape(tmp_path):
 
     assert result.status is ValidationStatus.INVALID
     assert "image shape" in result.detail
+
+
+def test_physical_bag_validates_resolved_image_geometry_instead_of_descent_literals(
+    tmp_path,
+):
+    """A valid configured 640x480 frame must not be checked as 320x240."""
+    messages = [
+        replace(
+            item,
+            message=_image(
+                50_000_000,
+                data=b"\x00" * (640 * 480 * 3),
+                height=480,
+                width=640,
+                encoding="rgb8",
+                step=640 * 3,
+            ),
+        )
+        if item.topic.endswith("/image_raw")
+        else item
+        for item in _valid_physical_messages()
+    ]
+    _bag_directory(tmp_path)
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        width_px=640,
+        height_px=480,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
 
 
 def test_physical_bag_rejects_nonfinite_ground_truth(tmp_path):

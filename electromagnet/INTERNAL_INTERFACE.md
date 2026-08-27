@@ -35,3 +35,7 @@ The preserved `ScenarioPolicy`/`ScenarioController.observe_clock()` seam remains
 the deterministic inactive `descent_v1` implementation. `ScenarioController`
 also owns structured readiness/failure/finalization evidence and the shared
 quiescence boundary for both runtime paths.
+
+All physical freshness comparisons use accepted simulation timestamps already
+present on vehicle and payload facts. The gateway adds no epoch, timestamp
+mapping, activation barrier, or cross-service synchronization queue.

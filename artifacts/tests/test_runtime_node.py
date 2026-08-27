@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import artifacts.runtime_node as runtime_node
+from artifacts._adapters.rosbag import BASE_TOPICS
 from artifacts.runtime_node import AggregateArtifactsRuntime, FaultAwareRecorder
 from artifacts.validation import ValidationStatus
 
@@ -70,8 +71,8 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
             pass
 
     class BagRecorder:
-        def __init__(self, _run_directory):
-            pass
+        def __init__(self, _run_directory, *, topics):
+            self.topics = topics
 
         def start(self):
             pass
@@ -139,11 +140,15 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
     monkeypatch.setattr(
         runtime_node,
         "resolve_recording_runtime_config",
-        lambda _config: SimpleNamespace(
-            expected_camera_frames=1_200,
-            physical_run=physical_run,
-            synthetic_camera_ack=not physical_run,
-        ),
+            lambda _config: SimpleNamespace(
+                expected_camera_frames=1_200,
+                physical_run=physical_run,
+                synthetic_camera_ack=not physical_run,
+                topics=BASE_TOPICS,
+                ruleset_id="descent_v1",
+                width_px=320,
+                height_px=240,
+            ),
     )
     monkeypatch.setattr(runtime_node, "write_event", lambda *_args, **_kwargs: None)
 

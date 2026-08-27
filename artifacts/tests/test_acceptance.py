@@ -57,6 +57,7 @@ def _completed_bundle(
     achieved: float = 60.0,
     with_optional_artifact: bool = False,
     log_mutator=None,
+    source_revisions: tuple[SourceRevision, ...] | None = None,
 ) -> None:
     modules = tuple(Path(path).stem for path in MODULE_LOGS)
     for relative_path in REQUIRED_ARTIFACT_PATHS:
@@ -251,7 +252,8 @@ def _completed_bundle(
             sim_end_ns=2_000_000_000,
             wall_started_at=now,
             wall_ended_at=now,
-            source_revisions=(
+            source_revisions=source_revisions
+            or (
                 SourceRevision(
                     "drone_sim", EXPECTED_SOURCE_REVISION, EXPECTED_SOURCE_DIRTY
                 ),
@@ -430,6 +432,32 @@ def test_acceptance_rejects_source_revision_not_matching_external_expectation(
             ),
             **_expected_provenance_kwargs(),
         )
+
+
+def test_acceptance_validates_parent_and_nested_source_provenance(tmp_path):
+    """A parent-only manifest cannot identify the local nested mission source."""
+    from artifacts.acceptance import inspect_phase3_bundle
+
+    sources = (
+        SourceRevision("drone_sim", "a" * 40, True),
+        SourceRevision("comp2026", "b" * 40, True),
+    )
+    _completed_bundle(tmp_path, source_revisions=sources)
+
+    report = inspect_phase3_bundle(
+        tmp_path,
+        rules_path=RULES_PATH,
+        expected_source_revisions={
+            "drone_sim": "a" * 40,
+            "comp2026": "b" * 40,
+        },
+        expected_source_dirty={"drone_sim": True, "comp2026": True},
+        expected_image_digests=EXPECTED_IMAGE_DIGESTS,
+        compose_resources=lambda _project: (),
+        semantic_check=lambda *_args: _physical_evidence(tmp_path, achieved=60.0),
+    )
+
+    assert report.achieved_score == 60.0
 
 
 def test_acceptance_rejects_image_digest_not_matching_external_expectation(

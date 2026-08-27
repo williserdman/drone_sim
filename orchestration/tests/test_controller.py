@@ -19,6 +19,7 @@ from artifacts import (
     DockerLogCaptureResult,
     DockerLogCommandResult,
     ImageDigest,
+    SourceRevision,
 )
 from artifacts.manifest import REQUIRED_ARTIFACT_PATHS
 from orchestration._adapters.compose import ComposeCommandResult, ComposeRuntime
@@ -566,6 +567,10 @@ class FakeCompose:
 
     def image_digests(self, timeout):
         return (ImageDigest("phase2", SHA_A),)
+
+    def bind_source_revisions(self, revisions, timeout):
+        self.bound_source_revisions = tuple(revisions)
+        return ComposeCommandResult(0, b"source revisions bound")
 
     def down(self, timeout):
         self.trace.append("compose down")
@@ -1191,15 +1196,20 @@ def test_phase2_preserves_synthetic_state_and_score_completion_contract(tmp_path
 
 
 def test_git_provenance_commands_consume_one_shared_remaining_deadline(tmp_path):
-    values = iter([10.0, 10.0, 11.0, 11.0, 11.0])
+    now = [10.0]
     calls = []
 
     def monotonic():
-        return next(values)
+        return now[0]
 
     def runner(command, **kwargs):
         calls.append((command, kwargs["timeout"]))
-        output = b"abc123\n" if command[-2:] == ["rev-parse", "HEAD"] else b" M file\n"
+        nested = command[2] == str(tmp_path / "companion/comp2026")
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            output = (b"b" * 40 + b"\n") if nested else (b"a" * 40 + b"\n")
+        else:
+            output = b"?? docs/\n" if nested else b""
+        now[0] += 0.5
         return SimpleNamespace(returncode=0, stdout=output)
 
     controller = RunController(
@@ -1209,9 +1219,65 @@ def test_git_provenance_commands_consume_one_shared_remaining_deadline(tmp_path)
     )
 
     assert controller._source_revisions(15.0) == (
-        __import__("artifacts").SourceRevision("drone_sim", "abc123", True),
+        SourceRevision("drone_sim", "a" * 40, False),
+        SourceRevision("comp2026", "b" * 40, True),
     )
-    assert [timeout for _command, timeout in calls] == [5.0, 4.0]
+    assert [timeout for _command, timeout in calls] == [5.0, 4.5, 4.0, 3.5]
+    assert [command[2] for command, _timeout in calls] == [
+        str(tmp_path),
+        str(tmp_path),
+        str(tmp_path / "companion/comp2026"),
+        str(tmp_path / "companion/comp2026"),
+    ]
+
+
+def test_phase3_compose_binds_nested_revision_label_before_launch(tmp_path):
+    calls = []
+
+    def runner(command, *, env, timeout):
+        calls.append((command, env.copy(), timeout))
+        return SimpleNamespace(returncode=0, stdout=("b" * 40 + "\n").encode())
+
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=(tmp_path / "run").resolve(),
+        config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase3"),
+        runner=runner,
+        base_environment={},
+    )
+
+    result = runtime.bind_source_revisions(
+        (
+            SourceRevision("drone_sim", "a" * 40, True),
+            SourceRevision("comp2026", "b" * 40, True),
+        ),
+        4.0,
+    )
+
+    assert result.returncode == 0
+    assert calls == [
+        (
+            [
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                '{{ index .Config.Labels "org.opencontainers.image.comp2026.revision" }}',
+                "drone-sim-companion-runtime:phase3",
+            ],
+            {
+                "COMPOSE_DISABLE_ENV_FILE": "1",
+                "COMPOSE_PROFILES": "phase3",
+                "SIM_COMP2026_REVISION": "b" * 40,
+                "SIM_CONFIG_PATH": str((tmp_path / "run/configuration/run.json").resolve()),
+                "SIM_RUN_DIRECTORY": str((tmp_path / "run").resolve()),
+                "SIM_RUN_ID": RUN_ID,
+            },
+            4.0,
+        )
+    ]
 
 
 def test_completed_controller_executes_frozen_order_commits_manifest_then_tears_down(tmp_path):

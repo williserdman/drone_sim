@@ -20,6 +20,22 @@
   reliability: reliable
   durability: volatile
 /simulation/score_events: *event_qos
+/simulation/payload_state:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
+/simulation/payload_events: &competition_event_qos
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: transient_local
+/simulation/mission_events: *competition_event_qos
+/competition/range/downward:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
 /camera/onboard/image_raw: &image_qos
   history: keep_last
   depth: 100

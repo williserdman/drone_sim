@@ -161,3 +161,7 @@ schema, then remains silent while orchestration aggregates the freeze.
 
 - Live end-to-end competition-attempt tuning remains outside this adapter
   integration; the nested mission remains authoritative for those decisions.
+- QGroundControl support and automatic mission retries are deferred. A current
+  attempt fails once through the existing recovery and durable failure path.
+- The exact nested revision is a local checkout/image-label handoff; no remote
+  Git operation is part of companion startup or acceptance.

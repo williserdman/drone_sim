@@ -741,46 +741,54 @@ class RunController:
 
     def _source_revisions(self, deadline: float) -> tuple[SourceRevision, ...]:
         deadline_check = self._deadline_check(deadline)
+        records: list[SourceRevision] = []
         try:
-            deadline_check()
-            revision = self.source_runner(
-                ["git", "-C", str(self.project_directory), "rev-parse", "HEAD"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                shell=False,
-                timeout=self._remaining(deadline, self.monotonic),
-            )
-            deadline_check()
-            dirty = self.source_runner(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_directory),
-                    "status",
-                    "--porcelain=v1",
-                    "--untracked-files=normal",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                shell=False,
-                timeout=self._remaining(deadline, self.monotonic),
-            )
-            deadline_check()
+            for name, repository in (
+                ("drone_sim", self.project_directory),
+                ("comp2026", self.project_directory / "companion/comp2026"),
+            ):
+                deadline_check()
+                revision = self.source_runner(
+                    ["git", "-C", str(repository), "rev-parse", "HEAD"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    shell=False,
+                    timeout=self._remaining(deadline, self.monotonic),
+                )
+                deadline_check()
+                dirty = self.source_runner(
+                    [
+                        "git",
+                        "-C",
+                        str(repository),
+                        "status",
+                        "--porcelain=v1",
+                        "--untracked-files=normal",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    shell=False,
+                    timeout=self._remaining(deadline, self.monotonic),
+                )
+                deadline_check()
+                if revision.returncode != 0 or dirty.returncode != 0:
+                    raise ControllerError("source_revision_unavailable")
+                try:
+                    value = revision.stdout.decode("ascii").strip()
+                except UnicodeDecodeError as exc:
+                    raise ControllerError("source_revision_invalid") from exc
+                if not value:
+                    raise ControllerError("source_revision_invalid")
+                records.append(SourceRevision(name, value, bool(dirty.stdout)))
         except TimeoutError:
+            raise
+        except ControllerError:
             raise
         except Exception as exc:
             raise ControllerError("source_revision_unavailable") from exc
-        if revision.returncode != 0 or dirty.returncode != 0:
-            raise ControllerError("source_revision_unavailable")
-        try:
-            value = revision.stdout.decode("ascii").strip()
-        except UnicodeDecodeError as exc:
-            raise ControllerError("source_revision_invalid") from exc
-        if not value:
-            raise ControllerError("source_revision_invalid")
-        return (SourceRevision("drone_sim", value, bool(dirty.stdout)),)
+        return tuple(records)
 
     def _score_metadata(
         self,
@@ -945,6 +953,7 @@ class RunController:
         sim_start_ns: int | None = None
         sim_end_ns: int | None = None
         manifest_path: Path | None = None
+        source_revisions: tuple[SourceRevision, ...] = ()
         try:
             self.config_writer(run_directory, config)
             lifecycle = lifecycle.apply(LifecycleEvent.START)
@@ -962,6 +971,23 @@ class RunController:
                 mono_started + config.startup_wall_seconds,
                 mono_started + config.max_wall_seconds,
             )
+            if primary is None:
+                try:
+                    source_revisions = self._source_revisions(startup_deadline)
+                    if config.runtime_profile == "phase3":
+                        compose.bind_source_revisions(
+                            source_revisions,
+                            self._remaining(startup_deadline, self.monotonic),
+                        )
+                except TimeoutError:
+                    primary = TerminalCause("provenance", "startup_deadline")
+                except Exception as exc:
+                    primary = TerminalCause(
+                        "provenance",
+                        str(exc)
+                        if isinstance(exc, ControllerError)
+                        else "source_revision_binding_failed",
+                    )
             if primary is None:
                 try:
                     compose_attempted = True
@@ -1258,18 +1284,6 @@ class RunController:
                     primary = primary or TerminalCause("artifact_validation", reason)
 
                 try:
-                    source_revisions = self._source_revisions(work_deadline)
-                except (ControllerError, TimeoutError) as exc:
-                    source_revisions = ()
-                    if requested == "COMPLETED":
-                        requested = "FAILED"
-                        reason = (
-                            "finalization_deadline"
-                            if isinstance(exc, TimeoutError)
-                            else str(exc)
-                        )
-                        primary = primary or TerminalCause("provenance", reason)
-                try:
                     work_deadline_check()
                     image_digests = tuple(
                         compose.image_digests(
@@ -1290,7 +1304,11 @@ class RunController:
                         )
                         primary = primary or TerminalCause("provenance", reason)
                 try:
-                    if requested == "COMPLETED" and config.runtime_profile == "phase3":
+                    if (
+                        requested == "COMPLETED"
+                        and config.runtime_profile == "phase3"
+                        and config.scenario != "competition_v1"
+                    ):
                         score = validate_descent_score_outputs(
                             run_directory,
                             run_id=config.run_id,

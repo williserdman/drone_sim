@@ -79,6 +79,10 @@ re-includes only the exact `auto_attempt` import closure. In particular, legacy
 entry points, hardware adapters, scratch state, and incomplete
 `missions/fm3.py` never enter the context or image.
 
+The companion Dockerfile labels that unchanged 13-file closure with
+`org.opencontainers.image.comp2026.revision`. Orchestration, not this runtime,
+compares the label with the current nested checkout before launch.
+
 ## Future seams
 
 Further vision changes remain inside the original nested mission or a later

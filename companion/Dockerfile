@@ -1,5 +1,8 @@
 FROM ros:jazzy-ros-base@sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4 AS runtime
 
+ARG SIM_COMP2026_REVISION
+LABEL org.opencontainers.image.comp2026.revision="${SIM_COMP2026_REVISION}"
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         python3-venv=3.12.3-0ubuntu2.1 \

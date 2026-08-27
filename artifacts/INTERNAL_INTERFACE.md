@@ -4,6 +4,13 @@
 
 The bundle builder consumes immutable artifact records and produces a manifest. Recorder adapters own ROS bag, image encoding, Docker-log capture, and filesystem validation. Tests replace adapters without changing manifest or lifecycle logic.
 
+`runtime_configuration` selects the unchanged descent base inventory or the
+competition extension from immutable run configuration. The separate
+`competition_score_validation` module imports no production competition
+scorer; it recomputes continuous release and settlement windows, rotated
+containment, ordered Home landing/disarm/completion, and the mission-relative
+deadline from decoded bag facts.
+
 ## Idempotency
 
 Finalizing the same `run_id` repeatedly produces the same artifact inventory and never overwrites another run.

@@ -47,3 +47,7 @@ transitions. `runtime_node` selects the policy only from the resolved
 
 The ROS boundary publishes only `/simulation/score_events`. It has no vehicle,
 electromagnet, Gazebo command, service client, or physics-mutation path.
+
+Acceptance does not reuse this scorer as its oracle. The artifacts module
+independently re-decodes the preserved bag and requires this module's result
+booleans, component values, and events 0 through 7 to match recomputed physics.

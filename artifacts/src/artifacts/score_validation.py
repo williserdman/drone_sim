@@ -372,8 +372,43 @@ def validate_descent_score_outputs(
     return ValidatedScoreMetadata(achieved, maximum, checksum, tuple(evidence))
 
 
+def validate_score_outputs(
+    run_directory: Path | str,
+    *,
+    run_id: str,
+    rules_path: Path | str,
+    deadline_check: Callable[[], None] | None = None,
+    physical_evidence: PhysicalBagEvidence | None = None,
+):
+    """Dispatch score validation using the persisted result ruleset identity."""
+    document = _read_json(
+        run_directory, "scoring/result.json", deadline_check=deadline_check
+    )
+    ruleset_id = document.get("ruleset_id") if isinstance(document, dict) else None
+    if ruleset_id == "descent_v1":
+        return validate_descent_score_outputs(
+            run_directory,
+            run_id=run_id,
+            rules_path=rules_path,
+            deadline_check=deadline_check,
+            physical_evidence=physical_evidence,
+        )
+    if ruleset_id == "competition_v1":
+        from .competition_score_validation import validate_competition_score_outputs
+
+        return validate_competition_score_outputs(
+            run_directory,
+            run_id=run_id,
+            rules_path=rules_path,
+            deadline_check=deadline_check,
+            physical_evidence=physical_evidence,
+        )
+    raise ScoreValidationError("score ruleset is unsupported")
+
+
 __all__ = [
     "ScoreValidationError",
     "ValidatedScoreMetadata",
     "validate_descent_score_outputs",
+    "validate_score_outputs",
 ]

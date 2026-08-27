@@ -38,6 +38,36 @@ def test_physical_profile_derives_frame_count_and_never_requires_camera_ack():
     assert contract.physical_run is True
 
 
+def test_competition_profile_preserves_resolved_640x480_geometry_and_topics():
+    """Hard-coding descent geometry would reject or mis-size competition evidence."""
+    from artifacts._adapters.rosbag import COMPETITION_TOPICS
+
+    contract = resolve_recording_runtime_config(
+        {
+            "runtime_profile": "phase3",
+            "mission": "comp2026_auto",
+            "scenario": "competition_v1",
+            "recording": {
+                "width_px": 640,
+                "height_px": 480,
+                "fps": 20,
+                "encoding": "rgb8",
+            },
+            "simulation": {"duration_sim_seconds": 600},
+        }
+    )
+
+    assert contract.expected_camera_frames == 12_000
+    assert (contract.width_px, contract.height_px, contract.step_bytes) == (
+        640,
+        480,
+        1_920,
+    )
+    assert contract.image_payload_bytes == 640 * 480 * 3
+    assert contract.ruleset_id == "competition_v1"
+    assert contract.topics == COMPETITION_TOPICS
+
+
 @pytest.mark.parametrize("duration", [0, 0.075, True, float("nan")])
 def test_physical_profile_rejects_nonpositive_or_off_grid_duration(duration):
     """Rounding an invalid duration could certify the wrong camera inventory."""

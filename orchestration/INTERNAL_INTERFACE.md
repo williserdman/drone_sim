@@ -8,6 +8,12 @@ The internal lifecycle module accepts validated events and returns a new immutab
 
 `run_id`, lifecycle state, terminal status and reason, configuration checksum, source revisions, image digests, simulation timing summary, and wall-clock infrastructure timing.
 
+`_source_revisions` spends one shared startup deadline on fixed parent then
+nested `rev-parse HEAD` and porcelain status calls. `ComposeRuntime` passes only
+the nested revision as `SIM_COMP2026_REVISION`, inspects the already-built OCI
+label, and refuses launch on disagreement. Provenance records observed dirty
+booleans; it never cleans, ignores, stages, or rewrites user-owned files.
+
 ## Configuration seam
 
 `resolve_run_config` is the only template-to-run boundary. It rejects a caller

@@ -30,7 +30,7 @@ from .manifest import (
     validate_manifest,
 )
 from .runtime_configuration import resolve_recording_runtime_config
-from .score_validation import ScoreValidationError, validate_descent_score_outputs
+from .score_validation import ScoreValidationError, validate_score_outputs
 from .validation import (
     ValidationStatus,
     read_regular_file_bytes,
@@ -88,6 +88,38 @@ class BundleAcceptanceReport:
 
 ComposeResources = Callable[[str], Sequence[str]]
 SemanticCheck = Callable[[Path, str, int, str], PhysicalBagEvidence]
+
+
+def _expected_sources(
+    *,
+    expected_source_revision: str | None,
+    expected_source_dirty: bool | Mapping[str, bool] | None,
+    expected_source_revisions: Mapping[str, str] | None,
+) -> tuple[dict[str, str], dict[str, bool]]:
+    """Normalize the legacy single-source and current two-source interfaces."""
+    if expected_source_revisions is not None:
+        if expected_source_revision is not None or not isinstance(
+            expected_source_dirty, Mapping
+        ):
+            raise TypeError(
+                "source revision and dirty expectations must both be mappings"
+            )
+        revisions = dict(expected_source_revisions)
+        dirty = dict(expected_source_dirty)
+    else:
+        if not isinstance(expected_source_revision, str) or type(
+            expected_source_dirty
+        ) is not bool:
+            raise TypeError("legacy source provenance expectation is incomplete")
+        revisions = {"drone_sim": expected_source_revision}
+        dirty = {"drone_sim": expected_source_dirty}
+    if tuple(revisions) != tuple(dirty) or not revisions:
+        raise TypeError("source revision and dirty expectation names must match")
+    if any(not isinstance(name, str) or not isinstance(value, str) for name, value in revisions.items()):
+        raise TypeError("source revision expectations are invalid")
+    if any(type(value) is not bool for value in dirty.values()):
+        raise TypeError("source dirty expectations are invalid")
+    return revisions, dirty
 
 
 def _parse_boolean(value: str) -> bool:
@@ -253,18 +285,18 @@ def _validate_config(run_directory: Path, run_id: str) -> tuple[dict[str, Any], 
 def _validate_phase3_provenance(
     manifest: dict[str, Any],
     *,
-    expected_source_revision: str,
-    expected_source_dirty: bool,
+    expected_source_revisions: Mapping[str, str],
+    expected_source_dirty: Mapping[str, bool],
     expected_image_digests: Mapping[str, str],
 ) -> None:
     sources = manifest["source_revisions"]
-    if sources != [
-        {
-            "name": "drone_sim",
-            "revision": expected_source_revision,
-            "dirty": expected_source_dirty,
-        }
-    ]:
+    if tuple(expected_source_revisions) != tuple(expected_source_dirty):
+        raise BundleAcceptanceError("expected source provenance names do not match")
+    expected_sources = [
+        {"name": name, "revision": revision, "dirty": expected_source_dirty[name]}
+        for name, revision in expected_source_revisions.items()
+    ]
+    if sources != expected_sources:
         raise BundleAcceptanceError(
             "manifest source provenance does not match external expectation"
         )
@@ -351,7 +383,9 @@ def _validate_manifest_inventory(run_directory: Path, manifest: dict[str, Any]) 
             )
 
 
-def _validate_module_logs(run_directory: Path, run_id: str) -> None:
+def _validate_module_logs(
+    run_directory: Path, run_id: str, *, ruleset_id: str
+) -> None:
     logs_directory = run_directory / "logs"
     expected_names = {Path(path).name for path in MODULE_LOGS}
     try:
@@ -380,11 +414,13 @@ def _validate_module_logs(run_directory: Path, run_id: str) -> None:
         ):
             raise BundleAcceptanceError(f"module log contract is invalid: {relative_path}")
         documents_by_module[module] = documents
-    _validate_production_log_evidence(documents_by_module)
+    _validate_production_log_evidence(documents_by_module, ruleset_id=ruleset_id)
 
 
 def _validate_production_log_evidence(
     documents_by_module: dict[str, list[dict[str, Any]]],
+    *,
+    ruleset_id: str,
 ) -> None:
     companion = documents_by_module["companion"]
     companion_events = {row["event"] for row in companion}
@@ -412,11 +448,13 @@ def _validate_production_log_evidence(
         and row["fields"] == {"outcome": "LANDED"}
         for row in companion
     )
-    if (
-        not required_facts.issubset(companion_events)
-        or issued != commands
-        or acknowledged != commands
-        or not mission_finished
+    descent_evidence_valid = (
+        required_facts.issubset(companion_events)
+        and issued == commands
+        and acknowledged == commands
+    )
+    if not mission_finished or (
+        ruleset_id == "descent_v1" and not descent_evidence_valid
     ):
         raise BundleAcceptanceError("companion flight evidence is incomplete")
 
@@ -482,11 +520,21 @@ def _production_semantic_check(
         )
         if result.status is not ValidationStatus.VALID:
             raise BundleAcceptanceError(f"{stream} video is invalid: {result.detail}")
+    configuration, _digest = _read_json(run_directory, "configuration/run.json")
+    try:
+        contract = resolve_recording_runtime_config(configuration)
+    except ValueError as error:
+        raise BundleAcceptanceError(
+            f"recording configuration is invalid: {error}"
+        ) from error
     bag = RosbagValidator(
         run_id,
         expected_camera_frames=expected_camera_frames,
         physical_run=True,
         config_sha256=config_sha256,
+        ruleset_id=contract.ruleset_id,
+        width_px=contract.width_px,
+        height_px=contract.height_px,
     ).validate(run_directory, "rosbag")
     if bag.status is not ValidationStatus.VALID:
         raise BundleAcceptanceError(f"physical MCAP is invalid: {bag.detail}")
@@ -668,9 +716,10 @@ def inspect_phase3_semantics(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
-    expected_source_revision: str,
-    expected_source_dirty: bool,
     expected_image_digests: Mapping[str, str],
+    expected_source_revision: str | None = None,
+    expected_source_dirty: bool | Mapping[str, bool] | None = None,
+    expected_source_revisions: Mapping[str, str] | None = None,
     require_maximum_score: bool = False,
     semantic_check: SemanticCheck = _production_semantic_check,
 ) -> BundleAcceptanceReport:
@@ -687,10 +736,15 @@ def inspect_phase3_semantics(
         raise BundleAcceptanceError("manifest is not a completed schema-v1 run")
     if manifest.get("incomplete_paths") != []:
         raise BundleAcceptanceError("completed manifest contains incomplete artifacts")
-    _validate_phase3_provenance(
-        manifest,
+    source_revisions, source_dirty = _expected_sources(
         expected_source_revision=expected_source_revision,
         expected_source_dirty=expected_source_dirty,
+        expected_source_revisions=expected_source_revisions,
+    )
+    _validate_phase3_provenance(
+        manifest,
+        expected_source_revisions=source_revisions,
+        expected_source_dirty=source_dirty,
         expected_image_digests=expected_image_digests,
     )
 
@@ -705,7 +759,12 @@ def inspect_phase3_semantics(
     ]:
         raise BundleAcceptanceError("manifest configuration provenance is invalid")
     _validate_manifest_inventory(directory, manifest)
-    _validate_module_logs(directory, run_id)
+    ruleset_id = (
+        "competition_v1"
+        if configuration.get("scenario") == "competition_v1"
+        else "descent_v1"
+    )
+    _validate_module_logs(directory, run_id, ruleset_id=ruleset_id)
     physical_evidence = semantic_check(
         directory,
         run_id,
@@ -716,7 +775,7 @@ def inspect_phase3_semantics(
         raise BundleAcceptanceError("semantic inspection returned no physical evidence")
 
     try:
-        score = validate_descent_score_outputs(
+        score = validate_score_outputs(
             directory,
             run_id=run_id,
             rules_path=rules_path,
@@ -732,11 +791,13 @@ def inspect_phase3_semantics(
         "evidence_paths": list(score.evidence_paths),
     }:
         raise BundleAcceptanceError("manifest scoring provenance does not match score evidence")
-    if require_maximum_score and not (
-        math.isclose(score.achieved_score, 100.0)
-        and math.isclose(score.maximum_available_score, 100.0)
+    if require_maximum_score and not math.isclose(
+        score.achieved_score, score.maximum_available_score
     ):
-        raise BundleAcceptanceError("bundle did not achieve the required 100/100 score")
+        required = "150/150" if ruleset_id == "competition_v1" else "100/100"
+        raise BundleAcceptanceError(
+            f"bundle did not achieve the required {required} score"
+        )
 
     compose_project = "drone-sim-" + run_id.replace("-", "")
     return BundleAcceptanceReport(
@@ -752,9 +813,10 @@ def inspect_phase3_bundle(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
-    expected_source_revision: str,
-    expected_source_dirty: bool,
     expected_image_digests: Mapping[str, str],
+    expected_source_revision: str | None = None,
+    expected_source_dirty: bool | Mapping[str, bool] | None = None,
+    expected_source_revisions: Mapping[str, str] | None = None,
     require_maximum_score: bool = False,
     compose_resources: ComposeResources = docker_compose_resources,
     semantic_check: SemanticCheck = _production_semantic_check,
@@ -765,6 +827,7 @@ def inspect_phase3_bundle(
         rules_path=rules_path,
         expected_source_revision=expected_source_revision,
         expected_source_dirty=expected_source_dirty,
+        expected_source_revisions=expected_source_revisions,
         expected_image_digests=expected_image_digests,
         require_maximum_score=require_maximum_score,
         semantic_check=semantic_check,

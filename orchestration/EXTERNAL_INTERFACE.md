@@ -34,7 +34,14 @@ application initialization completed.
 
 The resolved snapshot normalizes the selector and simulation values, includes
 them in `config_sha256`, and derives the expected per-stream frame count before
-Compose construction. Recording remains fixed at `320x240`, `rgb8`, and 20 FPS.
+Compose construction. Recording remains fixed at 20 FPS `rgb8`: `320x240` for
+descent and `640x480` for the competition mission.
+
+For every start, source provenance is captured from the actual parent and
+`companion/comp2026` worktrees, in that order, including untracked files in the
+dirty flag. Phase 3 binds the nested revision into the companion image label
+before `up --no-build`; a missing or mismatched label fails startup without
+altering either worktree.
 
 ## Module lifecycle
 
@@ -134,6 +141,5 @@ Each `start` uses a fresh run-scoped Compose project. Phase 3 reset means
 destroying that server/container and starting a new server with a distinct run
 ID and Gazebo partition; orchestration exposes no in-process reset operation.
 
-Phase 3 makes no claim about ArduPilot SITL, MAVLink, motor dynamics,
-ArduPilot-Gazebo lockstep, companion mission behavior, electromagnet forces, or
-competition scoring.
+The Phase 3 competition selection uses the same seven services and durable
+failure/finalization protocol. No eighth inspector or retry service is added.

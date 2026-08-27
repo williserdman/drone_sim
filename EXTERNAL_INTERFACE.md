@@ -30,7 +30,8 @@ the same absolute path explicitly.
 - ROS 2 discovery and network configuration
 - Result and log destinations
 
-Recording geometry is exactly `320x240` at 20 FPS with `rgb8` encoding.
+Recording geometry is `320x240` for descent and exactly `640x480` for
+`comp2026_auto`, always at 20 FPS with `rgb8` encoding.
 Template and resolved-config validation reject incompatible profile/simulation
 pairs, invalid timing, or other geometry before Compose construction. Phase 3
 derives the expected per-stream frame count from the exact integer-nanosecond
@@ -138,11 +139,18 @@ Reset is run-scoped replacement: destroy the container/server and start a fresh
 Compose project and Gazebo partition from immutable SDF. There is no public
 in-process reset endpoint.
 
-## Current MVP boundary
+## Competition MVP operator path
 
-The production Phase 3 profile includes ArduPilot SITL, MAVLink mission
-control, Gazebo actuator/sensor lockstep, dual cameras, controlled takeoff and
-landing, complete evidence capture, and the committed `descent_v1` scorekeeper.
-It does not execute the nested `companion/comp2026` repository. Precision
-vision, LiDAR, payload/dropper behavior, active electromagnet physics, and a
-broader competition ruleset remain future work.
+The default command is
+`uv run drone-sim start --config config/default-run.json`. It selects the
+unchanged seven-service Phase 3 topology, nested `comp2026_auto` mission,
+physical payload coordination, and `competition_v1`. After completion,
+`make inspect-competition RUN_DIRECTORY=...` independently checks the bag,
+both current Git worktrees, all seven local image digests, and exact 150-point
+score. It is read-only and fails closed on any mismatch.
+
+The companion image contains only the fixed nested runtime closure and carries
+`org.opencontainers.image.comp2026.revision`. The nested checkout remains a
+local commit handoff: this repository neither pushes it nor makes that commit
+available remotely. QGroundControl integration and automatic mission retries
+remain deferred.
