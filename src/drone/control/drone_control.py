@@ -157,11 +157,16 @@ def goto(vehicle, lat, lon, alt_m):
 
 
 class DroneControl:
-    def __init__(self, connection_port="/dev/cu.usbmodem1103"):
+    def __init__(
+        self,
+        connection_port="/dev/cu.usbmodem1103",
+        *,
+        wait_ready: bool = True,
+    ):
         print(f"Connecting to {connection_port} …")
         vehicle = connect(
             connection_port,
-            wait_ready=True,
+            wait_ready=wait_ready,
             heartbeat_timeout=60,
             timeout=120,
             source_system=1,
