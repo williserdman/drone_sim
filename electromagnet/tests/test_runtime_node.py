@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -123,6 +124,25 @@ def ready_gateway(
     return gateway
 
 
+def seed_gateway(
+    gateway: PayloadGateway,
+    *,
+    timestamp_ns: int = 50_000_000,
+    vehicle_xy: tuple[float, float] = (-45.72, -9.144),
+    attached: frozenset[int] = frozenset(),
+) -> None:
+    gateway.accept_vehicle(RUN_ID, timestamp_ns, vehicle_xy, True)
+    gateway.accept_payload(
+        RUN_ID, timestamp_ns, 2, (0.0, 0.0), False, 2 in attached
+    )
+    gateway.accept_payload(
+        RUN_ID, timestamp_ns, 3, (-45.72, -9.144), True, 3 in attached
+    )
+    gateway.accept_payload(
+        RUN_ID, timestamp_ns, 4, (-45.72, 9.144), True, 4 in attached
+    )
+
+
 def test_gateway_returns_only_after_physical_confirmation_and_replays_exactly() -> None:
     commands: list[tuple[int, str]] = []
     events: list[object] = []
@@ -176,6 +196,211 @@ def test_gateway_rejects_nonmatching_physical_confirmation() -> None:
     )
     assert events == []
     assert gateway.attached_id is None
+
+
+def test_concurrent_exact_duplicate_waits_and_replays_identical_response() -> None:
+    commands: list[tuple[int, str]] = []
+    events: list[object] = []
+    command_published = Event()
+    duplicate_called = Event()
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=lambda marker, wire: (
+            commands.append((marker, wire)),
+            command_published.set(),
+        ),
+        publish_event=events.append,
+        confirmation_timeout_seconds=2.0,
+    )
+    seed_gateway(gateway)
+    request = PayloadRequest(RUN_ID, 3, "attach", "concurrent:duplicate")
+    responses: list[object] = []
+
+    first = Thread(target=lambda: responses.append(gateway.execute(request)))
+
+    def call_duplicate() -> None:
+        duplicate_called.set()
+        responses.append(gateway.execute(request))
+
+    duplicate = Thread(target=call_duplicate)
+    first.start()
+    assert command_published.wait(1.0)
+    duplicate.start()
+    assert duplicate_called.wait(1.0)
+    assert duplicate.is_alive()
+    gateway.accept_result(
+        3,
+        "payload-result-v1|concurrent:duplicate|confirmed|attached|OK",
+    )
+    first.join(1.0)
+    duplicate.join(1.0)
+
+    assert first.is_alive() is False
+    assert duplicate.is_alive() is False
+    assert responses[0] == responses[1]
+    assert responses[0].response_sequence == 1
+    assert commands == [
+        (3, "payload-command-v1|concurrent:duplicate|attach")
+    ]
+    assert len(events) == 1
+
+
+def test_conflicting_reuse_cannot_poison_original_response_cache() -> None:
+    commands: list[tuple[int, str]] = []
+    command_published = Event()
+    conflict_called = Event()
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=lambda marker, wire: (
+            commands.append((marker, wire)),
+            command_published.set(),
+        ),
+        publish_event=lambda _event: None,
+        confirmation_timeout_seconds=2.0,
+    )
+    seed_gateway(gateway)
+    original = PayloadRequest(RUN_ID, 3, "attach", "concurrent:conflict")
+    conflict = PayloadRequest(RUN_ID, 4, "attach", "concurrent:conflict")
+    outcomes: dict[str, object] = {}
+    first = Thread(
+        target=lambda: outcomes.setdefault("first", gateway.execute(original))
+    )
+
+    def call_conflict() -> None:
+        conflict_called.set()
+        outcomes.setdefault("conflict", gateway.execute(conflict))
+
+    second = Thread(target=call_conflict)
+    first.start()
+    assert command_published.wait(1.0)
+    second.start()
+    assert conflict_called.wait(1.0)
+    assert second.is_alive()
+    gateway.accept_result(
+        3,
+        "payload-result-v1|concurrent:conflict|confirmed|attached|OK",
+    )
+    first.join(1.0)
+    second.join(1.0)
+
+    replay = gateway.execute(original)
+    assert replay == outcomes["first"]
+    assert (outcomes["conflict"].accepted, outcomes["conflict"].code) == (
+        False,
+        "COMMAND_ID_CONFLICT",
+    )
+    assert commands == [(3, "payload-command-v1|concurrent:conflict|attach")]
+
+
+def test_distinct_physical_commands_serialize_before_second_validation() -> None:
+    commands: list[tuple[int, str]] = []
+    events: list[object] = []
+    first_published = Event()
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=lambda marker, wire: (
+            commands.append((marker, wire)),
+            first_published.set(),
+        ),
+        publish_event=events.append,
+        confirmation_timeout_seconds=2.0,
+    )
+    seed_gateway(gateway)
+    requests = (
+        PayloadRequest(RUN_ID, 3, "attach", "serialized:1"),
+        PayloadRequest(RUN_ID, 3, "attach", "serialized:2"),
+    )
+    outcomes: dict[str, object] = {}
+    first = Thread(
+        target=lambda: outcomes.setdefault("first", gateway.execute(requests[0]))
+    )
+    second = Thread(
+        target=lambda: outcomes.setdefault("second", gateway.execute(requests[1]))
+    )
+    first.start()
+    assert first_published.wait(1.0)
+    second.start()
+    assert len(commands) == 1
+    gateway.accept_result(
+        3, "payload-result-v1|serialized:1|confirmed|attached|OK"
+    )
+    first.join(1.0)
+    second.join(1.0)
+
+    assert (outcomes["first"].accepted, outcomes["first"].code) == (True, "OK")
+    assert (outcomes["second"].accepted, outcomes["second"].code) == (
+        False,
+        "CAPACITY_OCCUPIED",
+    )
+    assert commands == [(3, "payload-command-v1|serialized:1|attach")]
+    assert len(events) == 1
+
+
+def test_recurrent_payload_truth_updates_attachment_after_confirmation() -> None:
+    commands: list[tuple[int, str]] = []
+    events: list[object] = []
+    gateway = ready_gateway(
+        commands=commands,
+        events=events,
+        confirmation="payload-result-v1|truth:attach|confirmed|attached|OK",
+    )
+    assert gateway.execute(
+        PayloadRequest(RUN_ID, 3, "attach", "truth:attach")
+    ).accepted
+    assert gateway.attached_id == 3
+
+    seed_gateway(gateway, timestamp_ns=100_000_000)
+
+    assert gateway.attached_id is None
+
+
+def test_timestamp_regressions_do_not_overwrite_current_authorization_facts() -> None:
+    commands: list[tuple[int, str]] = []
+    events: list[object] = []
+    gateway = ready_gateway(
+        commands=commands,
+        events=events,
+        confirmation="payload-result-v1|monotonic:1|confirmed|attached|OK",
+    )
+    gateway.accept_vehicle(RUN_ID, 40_000_000, (-40.0, -9.144), False)
+    gateway.accept_payload(
+        RUN_ID, 40_000_000, 3, (-45.72, 9.144), False, False
+    )
+
+    result = gateway.execute(PayloadRequest(RUN_ID, 3, "attach", "monotonic:1"))
+
+    assert result.accepted is True
+
+
+def test_mixed_timestamp_world_fails_closed_without_a_command() -> None:
+    commands: list[tuple[int, str]] = []
+    gateway = ready_gateway(commands=commands, events=[], confirmation=None)
+    gateway.accept_vehicle(RUN_ID, 100_000_000, (-45.72, -9.144), True)
+
+    result = gateway.execute(PayloadRequest(RUN_ID, 3, "attach", "stale:1"))
+
+    assert (result.accepted, result.code) == (False, "STALE_PHYSICAL_STATE")
+    assert commands == []
+
+
+def test_multiple_attached_payloads_are_invalid_not_free_capacity() -> None:
+    commands: list[tuple[int, str]] = []
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=lambda marker, wire: commands.append((marker, wire)),
+        publish_event=lambda _event: None,
+        confirmation_timeout_seconds=0.05,
+    )
+    seed_gateway(
+        gateway,
+        vehicle_xy=(-45.72, 9.144),
+        attached=frozenset({2, 3}),
+    )
+
+    result = gateway.execute(PayloadRequest(RUN_ID, 4, "attach", "invalid:capacity"))
+
+    assert (result.accepted, result.code) == (False, "INVALID_PHYSICAL_STATE")
+    assert commands == []
 
 
 def test_competition_readiness_requires_all_current_facts_and_result_publishers() -> None:

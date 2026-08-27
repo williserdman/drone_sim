@@ -10,11 +10,20 @@ cannot reach Gazebo.
 `PayloadGateway` in `controller.py` joins the latest current-run vehicle and
 three payload facts, publishes a marker-specific coordinator command, and waits
 on a per-command wall-time event. Result callbacks populate those events from a
-different executor thread. Only an exact marker, command ID, status, and desired
-physical state can produce an accepted response. The gateway updates its
-confirmed one-slot attachment state and publishes one immutable
-`PayloadEventRecord` only after that confirmation. Validation rejection,
-coordinator error, mismatch, and timeout never change attachment state.
+different executor thread. A dedicated operation mutex spans validation through
+response caching; it is independent of the fact/result mutex. Concurrent exact
+duplicates therefore wait for and replay the original response, conflicts
+cannot replace that response, and distinct physical operations revalidate in
+order without blocking result callbacks.
+
+Only an exact marker, command ID, status, and desired physical state can produce
+an accepted response. A confirmation updates the requested payload's local fact
+for the immediate response, then later monotonic recurrent `PayloadState` facts
+remain authoritative. Authorization requires one common timestamp across the
+vehicle and all payloads and rejects multiple attached facts explicitly. The
+gateway publishes one immutable `PayloadEventRecord` only after confirmation.
+Validation rejection, coordinator error, mismatch, and timeout publish no
+physical event.
 
 `runtime_node.py` owns ROS translation and resolved-config loading. The
 competition boundary uses a `MultiThreadedExecutor` and one

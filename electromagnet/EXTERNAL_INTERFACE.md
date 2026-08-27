@@ -42,8 +42,17 @@ coordinator. The service returns `accepted=true` only after the matching
 whose `state` is `attached` or `detached`. Five wall seconds without a matching
 result returns `PHYSICAL_CONFIRMATION_TIMEOUT`; the runtime does not infer a
 state or publish a physical event. An identical completed request returns its
-original response and sequence without republishing. Reusing a command ID for
-a different request returns `COMMAND_ID_CONFLICT`.
+original response and sequence without republishing, including when a duplicate
+arrives while the original is pending. Reusing a command ID for a different
+request returns `COMMAND_ID_CONFLICT`. Physical operations are serialized, so a
+second command is validated only after the first reaches a terminal result.
+
+Vehicle and payload samples never regress their per-source timestamps. A
+request fails closed with `STALE_PHYSICAL_STATE` unless current vehicle truth
+and all three payload facts describe one common simulation tick. More than one
+physically attached payload returns `INVALID_PHYSICAL_STATE`; it is never
+treated as free capacity. Recurrent `PayloadState.attached` samples remain the
+attachment authority after coordinator confirmations.
 
 Competition readiness is emitted only after current-run vehicle truth, all
 three payload states, all three result publishers, and the service exist.

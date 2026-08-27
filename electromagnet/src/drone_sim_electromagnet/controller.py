@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from threading import Event, RLock
+from threading import Event, Lock, RLock
 from typing import Any, Protocol, TextIO
 
 from artifacts.structured_log import StructuredEvent, write_event
@@ -106,18 +106,26 @@ class PayloadGateway:
         self._confirmation_timeout_seconds = confirmation_timeout_seconds
         self._vehicle: _VehicleFact | None = None
         self._payloads: dict[int, _PayloadFact] = {}
-        self._attached_id: int | None = None
-        self._attachment_confirmed_by_result = False
         self._pending: dict[str, _PendingResult] = {}
         self._responses: dict[str, tuple[PayloadRequest, PayloadResponse]] = {}
         self._response_sequence = 0
         self._event_id = 0
         self._lock = RLock()
+        self._operation_lock = Lock()
 
     @property
     def attached_id(self) -> int | None:
         with self._lock:
-            return self._attached_id
+            attached_id, valid = self._attachment_state_locked()
+            return attached_id if valid else None
+
+    def _attachment_state_locked(self) -> tuple[int | None, bool]:
+        attached_ids = [
+            marker for marker, fact in self._payloads.items() if fact.attached
+        ]
+        if len(attached_ids) > 1:
+            return None, False
+        return (attached_ids[0] if attached_ids else None), True
 
     def accept_vehicle(
         self,
@@ -129,6 +137,8 @@ class PayloadGateway:
         if run_id != self._authority.run_id:
             return
         with self._lock:
+            if self._vehicle is not None and timestamp_ns <= self._vehicle.timestamp_ns:
+                return
             self._vehicle = _VehicleFact(timestamp_ns, xy, grounded)
 
     def accept_payload(
@@ -143,14 +153,12 @@ class PayloadGateway:
         if run_id != self._authority.run_id or aruco_id not in {2, 3, 4}:
             return
         with self._lock:
+            previous = self._payloads.get(aruco_id)
+            if previous is not None and timestamp_ns <= previous.timestamp_ns:
+                return
             self._payloads[aruco_id] = _PayloadFact(
                 timestamp_ns, xy, grounded, attached
             )
-            if not self._attachment_confirmed_by_result:
-                attached_ids = [
-                    marker for marker, fact in self._payloads.items() if fact.attached
-                ]
-                self._attached_id = attached_ids[0] if len(attached_ids) == 1 else None
 
     def accept_result(self, aruco_id: int, wire: object) -> None:
         result = parse_physical_result(wire)
@@ -168,9 +176,17 @@ class PayloadGateway:
         service_ready: bool,
     ) -> bool:
         with self._lock:
+            timestamps = {
+                fact.timestamp_ns for fact in self._payloads.values()
+            }
+            if self._vehicle is not None:
+                timestamps.add(self._vehicle.timestamp_ns)
+            _, attachment_valid = self._attachment_state_locked()
             return (
                 self._vehicle is not None
                 and set(self._payloads) == {2, 3, 4}
+                and len(timestamps) == 1
+                and attachment_valid
                 and result_publishers == frozenset({2, 3, 4})
                 and service_ready
             )
@@ -197,22 +213,40 @@ class PayloadGateway:
                 self._responses[request.command_id] = (request, response)
             return response
 
-    def _snapshot(self, request: PayloadRequest) -> PayloadWorld | None:
+    def _snapshot(
+        self, request: PayloadRequest
+    ) -> tuple[PayloadWorld | None, str | None]:
         with self._lock:
             if self._vehicle is None or set(self._payloads) != {2, 3, 4}:
-                return None
+                return None, "NOT_READY"
+            timestamps = {
+                self._vehicle.timestamp_ns,
+                *(fact.timestamp_ns for fact in self._payloads.values()),
+            }
+            if len(timestamps) != 1:
+                return None, "STALE_PHYSICAL_STATE"
+            attached_id, attachment_valid = self._attachment_state_locked()
+            if not attachment_valid:
+                return None, "INVALID_PHYSICAL_STATE"
             payload = self._payloads.get(request.aruco_id)
             if payload is None:
                 payload = _PayloadFact(0, (0.0, 0.0), False, False)
-            return PayloadWorld(
-                vehicle_xy=self._vehicle.xy,
-                vehicle_grounded=self._vehicle.grounded,
-                payload_xy=payload.xy,
-                payload_grounded=payload.grounded,
-                attached_id=self._attached_id,
+            return (
+                PayloadWorld(
+                    vehicle_xy=self._vehicle.xy,
+                    vehicle_grounded=self._vehicle.grounded,
+                    payload_xy=payload.xy,
+                    payload_grounded=payload.grounded,
+                    attached_id=attached_id,
+                ),
+                None,
             )
 
     def execute(self, request: PayloadRequest) -> PayloadResponse:
+        with self._operation_lock:
+            return self._execute_serialized(request)
+
+    def _execute_serialized(self, request: PayloadRequest) -> PayloadResponse:
         with self._lock:
             previous = self._responses.get(request.command_id)
             if previous is not None:
@@ -226,13 +260,14 @@ class PayloadGateway:
                     cache=False,
                 )
 
-        world = self._snapshot(request)
+        world, snapshot_error = self._snapshot(request)
         if world is None:
+            assert snapshot_error is not None
             return self._response(
                 request,
                 accepted=False,
-                code="NOT_READY",
-                detail="current vehicle and payload truth is incomplete",
+                code=snapshot_error,
+                detail="current vehicle and payload truth is incomplete or inconsistent",
             )
         decision = self._authority.decide(world, request)
         if decision.wire_command is None:
@@ -299,8 +334,13 @@ class PayloadGateway:
             )
 
         with self._lock:
-            self._attached_id = request.aruco_id if request.action == "attach" else None
-            self._attachment_confirmed_by_result = True
+            fact = self._payloads[request.aruco_id]
+            self._payloads[request.aruco_id] = _PayloadFact(
+                timestamp_ns=fact.timestamp_ns,
+                xy=fact.xy,
+                grounded=fact.grounded,
+                attached=request.action == "attach",
+            )
             timestamp_ns = max(
                 self._vehicle.timestamp_ns if self._vehicle is not None else 0,
                 self._payloads[request.aruco_id].timestamp_ns,
