@@ -261,6 +261,104 @@ def test_fatal_input_prevents_further_phase_or_success_and_recovers_once() -> No
     assert recoveries == ["recovered"]
 
 
+def test_callback_failure_claim_precedes_terminal_success() -> None:
+    rendering_exception = threading.Event()
+    allow_failure_claim = threading.Event()
+    callback_results: list[bool] = []
+    finish_results: list[bool] = []
+    finish_returned = threading.Event()
+    failures: list[str] = []
+    terminal: list[str] = []
+
+    class PausingError(ValueError):
+        def __str__(self) -> str:
+            rendering_exception.set()
+            assert allow_failure_claim.wait(1.0)
+            return "bad image"
+
+    coordinator = AttemptFailureCoordinator(
+        stop_attempt=lambda _reason: None,
+        write_failure=failures.append,
+        recover=lambda: None,
+    )
+
+    def fail_callback() -> None:
+        callback_results.append(
+            coordinator.guard_input(
+                "image",
+                lambda: (_ for _ in ()).throw(PausingError()),
+            )
+        )
+
+    def finish() -> None:
+        finish_results.append(
+            coordinator.finish_success(lambda: terminal.append("mission-finished"))
+        )
+        finish_returned.set()
+
+    callback_thread = threading.Thread(target=fail_callback)
+    finish_thread = threading.Thread(target=finish)
+    callback_thread.start()
+    assert rendering_exception.wait(1.0)
+    finish_thread.start()
+    try:
+        assert not finish_returned.wait(0.05)
+    finally:
+        allow_failure_claim.set()
+        callback_thread.join(timeout=1.0)
+        finish_thread.join(timeout=1.0)
+
+    assert callback_results == [False]
+    assert finish_results == [False]
+    assert terminal == []
+    assert failures == ["competition image input failed: bad image"]
+
+
+def test_successful_inflight_callback_completes_before_single_terminal_success() -> None:
+    callback_started = threading.Event()
+    allow_callback = threading.Event()
+    callback_results: list[bool] = []
+    finish_results: list[bool] = []
+    finish_returned = threading.Event()
+    terminal: list[str] = []
+    coordinator = AttemptFailureCoordinator(
+        stop_attempt=lambda _reason: None,
+        write_failure=lambda _reason: None,
+        recover=lambda: None,
+    )
+
+    def accept_callback() -> None:
+        callback_started.set()
+        assert allow_callback.wait(1.0)
+
+    callback_thread = threading.Thread(
+        target=lambda: callback_results.append(
+            coordinator.guard_input("range", accept_callback)
+        )
+    )
+
+    def finish() -> None:
+        finish_results.append(
+            coordinator.finish_success(lambda: terminal.append("mission-finished"))
+        )
+        finish_returned.set()
+
+    finish_thread = threading.Thread(target=finish)
+    callback_thread.start()
+    assert callback_started.wait(1.0)
+    finish_thread.start()
+    try:
+        assert not finish_returned.wait(0.05)
+    finally:
+        allow_callback.set()
+        callback_thread.join(timeout=1.0)
+        finish_thread.join(timeout=1.0)
+
+    assert callback_results == [True]
+    assert finish_results == [True]
+    assert terminal == ["mission-finished"]
+
+
 def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> None:
     gate = Comp2026StartGate()
     gate.mark_process_ready()
@@ -272,19 +370,19 @@ def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> Non
     gate.accept_clock()
     gate.refresh_live_readiness(
         frame_ready=True,
-        range_ready=True,
         payload_service_ready=True,
         heartbeat_live=True,
         armable=False,
+        range_is_current=lambda: True,
     )
     assert gate.mission_start_ready is False
 
     gate.refresh_live_readiness(
         frame_ready=True,
-        range_ready=True,
         payload_service_ready=True,
         heartbeat_live=True,
         armable=True,
+        range_is_current=lambda: True,
     )
     assert gate.mission_start_ready is True
 
@@ -337,6 +435,56 @@ def test_start_readiness_invalidates_when_range_becomes_stale() -> None:
     refresh_live_start(inputs)
 
     assert gate.mission_start_ready is False
+
+
+def test_start_gate_cannot_release_when_clock_advances_during_live_predicate_read() -> None:
+    gate, clock, lidar, frame_source, _payload_service, vehicle = live_start_inputs()
+    clock.accept(1_400_000_000)
+    released = threading.Event()
+
+    def wait_for_start() -> None:
+        try:
+            gate.wait_until_ready()
+        except RuntimeError:
+            return
+        released.set()
+
+    worker = threading.Thread(target=wait_for_start)
+    worker.start()
+
+    class ClockAdvancingPayloadService:
+        def service_is_ready(self) -> bool:
+            clock.accept(1_500_000_001)
+            return True
+
+    try:
+        refresh_comp2026_start_gate(
+            gate,
+            frame_source=frame_source,
+            lidar=lidar,
+            payload_client=ClockAdvancingPayloadService(),
+            vehicle=vehicle,
+        )
+
+        assert gate.mission_start_ready is False
+        assert not released.wait(0.05)
+
+        lidar.accept(
+            SimpleNamespace(ranges=[4.572], range_min=0.1, range_max=30.0),
+            1_500_000_001,
+        )
+        refresh_comp2026_start_gate(
+            gate,
+            frame_source=frame_source,
+            lidar=lidar,
+            payload_client=MutablePayloadService(),
+            vehicle=vehicle,
+        )
+        worker.join(timeout=1.0)
+        assert released.is_set()
+    finally:
+        gate.stop("test cleanup")
+        worker.join(timeout=1.0)
 
 
 def test_start_readiness_invalidates_when_payload_service_disappears() -> None:

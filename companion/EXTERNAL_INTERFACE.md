@@ -61,7 +61,12 @@ finds a public clock, an undelivered exact image/metadata pair, a downward range
 that passes `get_distance()`, a currently available payload service, current
 DroneKit heartbeat health, and `is_armable is True`. These dynamic predicates
 do not latch: loss or reversion invalidates readiness before worker release. The
-heartbeat check reads DroneKit's current `last_heartbeat` against
+frame/service/vehicle facts are sampled first; range freshness is evaluated
+last against the then-current simulation clock while holding the start-gate
+lock, which is the worker-release linearization point. Thus simulation time
+cannot advance during an earlier predicate read and leave a stale cached range
+eligible for release. The heartbeat check reads DroneKit's current
+`last_heartbeat` against
 `DroneControl`'s existing 60-second `heartbeat_timeout`; it does not retain a
 wall observation or add a new timer. No QGC or outer retry/state machine is
 introduced.
@@ -138,7 +143,10 @@ mission; the RUNNING-era gate above remains mandatory. Success additionally
 requires the original callback's ordered `HOME/DISARMED` then
 `HOME/COMPLETE`. The first fatal sensor callback or mission exception stops all
 attempt waits and phase emission, prevents terminal success, records the active
-phase, and writes current-run runtime failure. Recovery is owned once and waits
+phase, and writes current-run runtime failure. Short callback input acceptance
+and the first failure claim are serialized with terminal-success publication;
+cancellation/status/recovery side effects execute outside that lock. Recovery
+is owned once and waits
 for the attempt worker to stop before best-effort RTL, land, and disarm.
 Callbacks remain responsive until finalization. Quiescence is written only
 after the worker has terminated, the ROS executor has stopped and joined, and

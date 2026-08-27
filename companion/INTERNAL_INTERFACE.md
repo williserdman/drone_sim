@@ -28,8 +28,12 @@ separates durable process readiness from permission to enter
 candidate release replaces one locked snapshot of the dynamic predicates using
 an undelivered frame pair, `RosLidar.get_distance()`, current service presence,
 current DroneKit heartbeat health, and current armability. None of these five
-dynamic values latch. Heartbeat health directly reuses DroneControl's existing
-60-second transport timeout and stores no wall timestamp. The public-zero
+dynamic values latch. The frame/service/vehicle values are read first, then the
+gate lock is acquired and `RosLidar.get_distance()` is evaluated last. Updating
+the range result and notifying the waiter in that same critical section defines
+the release linearization point. Heartbeat health directly reuses
+DroneControl's existing 60-second transport timeout and stores no wall
+timestamp. The public-zero
 GUIDED send is a lifecycle/rendezvous adaptation and does not enter the original
 phase machine or arm the vehicle.
 
@@ -57,7 +61,11 @@ DroneKit import. The package explicitly owns DroneKit's otherwise undeclared
 
 `AttemptFailureCoordinator` retains only the first fatal callback/mission
 reason, stops the gate/frame/payload/clock/event seams, guards terminal success,
-and grants one recovery claim after the worker exits. Recovery then requests
+and grants one recovery claim after the worker exits. Callback acceptance and
+exception-to-failure claiming share the terminal-success lock, so an in-flight
+callback either finishes normally before success or claims failure before
+success. Attempt-stop and failure-output side effects run after releasing the
+lock. Recovery then requests
 RTL, land, and disarm best-effort without competing with original flight logic.
 
 The executor continues callbacks until orchestration finalization. Teardown

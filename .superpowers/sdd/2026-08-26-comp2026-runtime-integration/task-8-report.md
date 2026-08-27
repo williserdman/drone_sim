@@ -406,3 +406,130 @@ startup timeout to the nested DroneKit constructor remains deferred because it
 was not required for these Important correctness fixes and changing the nested
 constructor interface would broaden this round. The live seven-service attempt
 also remains the next end-to-end integration check.
+
+## Fix Round 2
+
+### Status and files
+
+Resolved the two remaining Important race findings from parent fix base
+`a2709675c9bce12aaf6e274ec102ee712e23def5`. Modified only:
+
+- `companion/src/drone_sim_companion/comp2026_host.py`
+- `companion/tests/test_comp2026_host.py`
+- `companion/EXTERNAL_INTERFACE.md`
+- `companion/INTERNAL_INTERFACE.md`
+- this report
+
+The nested checkout remained exact at
+`2241d00444db6414a5a1c646c8971c84943849a8` with only preserved untracked
+`docs/`. Parent `SYSTEM_DIAGRAM.md` and the nested checkout stayed untracked and
+unstaged in the parent.
+
+### Release-time readiness RED/GREEN
+
+The deterministic reviewer probe began with a range captured at simulation time
+1.0 seconds and advanced `/clock` to 1.4 seconds, where the sample was still
+fresh. Reading the payload-service predicate then advanced `/clock` to
+1.500000001 seconds. The old implementation had already cached range success,
+so the regression observed:
+
+```text
+assert gate.mission_start_ready is False
+E assert True is False
+```
+
+The worker was eligible with a range age of 500,000,001 simulation nanoseconds.
+
+The corrected refresh reads the undelivered frame, current service, current
+armability, and current DroneKit transport health first. It then enters the gate
+critical section and calls `RosLidar.get_distance()` last. The range result,
+dynamic snapshot, and waiter notification are linearized in that same gate lock.
+No new clock, retained timestamp, elapsed policy, or barrier was introduced.
+
+GREEN proves the clock-advancing service cannot release the worker. Accepting a
+new range at exact current simulation time and refreshing the complete snapshot
+then releases it. The five prior invalidation regressions remain GREEN for stale
+range, service loss, armability reversion, current DroneKit transport timeout,
+and no undelivered genuine frame.
+
+### Fatal callback vs terminal-success RED/GREEN
+
+Two scheduled regressions exposed the old coordinator race:
+
+1. A callback raised an exception whose string conversion paused immediately
+   before `fail()`. `finish_success()` acquired the lock and published while the
+   fatal callback had not yet claimed failure.
+2. A normal successful callback paused in its short acceptance operation.
+   `finish_success()` again returned before that in-flight callback completed.
+
+Both failed on:
+
+```text
+assert not finish_returned.wait(0.05)
+E assert not True
+```
+
+`guard_input()` now holds the same coordinator lock as `finish_success()` while
+executing the short adapter acceptance. On exception it formats and atomically
+stores the first failure reason before releasing that lock. Attempt cancellation
+and durable failure output then execute outside the lock, avoiding stopper or
+output deadlocks. A fatal in-flight callback therefore blocks success and wins
+the failure claim; a successful in-flight callback finishes first and permits
+the one terminal-success action. Existing first-reason, stopped-event,
+single-recovery, and teardown behavior remains unchanged.
+
+### Verification
+
+Fresh pre-commit verification:
+
+```text
+$ uv run pytest companion/tests/test_comp2026_host.py \
+    companion/tests/test_runtime_node.py -q
+43 passed
+
+$ uv run pytest companion/tests -q
+75 passed in 2.21s
+
+$ uv run python -m compileall -q \
+    companion/src/drone_sim_companion companion/src/sitecustomize.py
+# exit 0
+
+$ git diff --check
+# exit 0
+```
+
+The production image was rebuilt because the host synchronization code changed:
+
+```text
+$ docker build --target runtime -f companion/Dockerfile \
+    -t drone-sim-companion-comp2026 .
+Successfully built 79f6f3af2671
+Successfully tagged drone-sim-companion-comp2026:latest
+
+$ docker image inspect --format '{{.Id}}' \
+    drone-sim-companion-comp2026
+sha256:79f6f3af2671e953c7bf341827166e70ee556c033a4bc193eef2cfd299af70b4
+```
+
+The repeated literal 13-file manifest diff exited 0 with no output. Production
+imports and mission binding reported:
+
+```text
+mission_functions=fm1:drone.missions.fm1,fm2:drone.missions.fm2,fm3:drone.mock_mission
+future=1.0.0
+dronekit=2.9.2
+opencv=4.10.0
+aruco=True
+auto_attempt=drone.auto_attempt
+runtime=drone_sim_companion.runtime_node
+```
+
+`importlib.util.find_spec('drone.missions.fm3')` remained `None`. The changed
+host source SHA-256 was byte-identical in the workspace and image:
+
+```text
+49f9dc2a2bbd9ad495e96b772434b51ff1ca3af46fcc158a86a0e8fe92c0c3e3
+```
+
+No epoch/rebase, activation barrier, pre-zero buffer, lockstep queue,
+synchronization service, retry, or outer mission state machine was added.

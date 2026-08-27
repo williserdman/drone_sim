@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
-from typing import ClassVar, Protocol
+from typing import Callable, ClassVar, Protocol
 
 import numpy as np
 
@@ -485,23 +485,31 @@ class AttemptFailureCoordinator:
             return self._failure_reason
 
     def guard_input(self, name: str, operation) -> bool:
-        if self.failed:
+        failure_reason: str | None = None
+        with self._lock:
+            if self._failure_reason is not None:
+                return False
+            try:
+                operation()
+            except Exception as error:
+                failure_reason = f"competition {name} input failed: {error}"
+                self._failure_reason = failure_reason
+        if failure_reason is not None:
+            self._complete_failure(failure_reason)
             return False
-        try:
-            operation()
-        except Exception as error:
-            self.fail(f"competition {name} input failed: {error}")
-            return False
-        return not self.failed
+        return True
 
     def fail(self, reason: str) -> bool:
         with self._lock:
             if self._failure_reason is not None:
                 return False
             self._failure_reason = reason
-            self._stop_attempt(reason)
-        self._write_failure(reason)
+        self._complete_failure(reason)
         return True
+
+    def _complete_failure(self, reason: str) -> None:
+        self._stop_attempt(reason)
+        self._write_failure(reason)
 
     def finish_success(self, operation) -> bool:
         with self._lock:
@@ -557,17 +565,17 @@ class Comp2026StartGate:
         self,
         *,
         frame_ready: bool,
-        range_ready: bool,
         payload_service_ready: bool,
         heartbeat_live: bool,
         armable: bool,
+        range_is_current: Callable[[], bool],
     ) -> None:
         with self._condition:
             self._frame_ready = frame_ready is True
-            self._range_ready = range_ready is True
             self._payload_service_ready = payload_service_ready is True
             self._heartbeat_live = heartbeat_live is True
             self._armable = armable is True
+            self._range_ready = range_is_current() is True
             self._condition.notify_all()
 
     def wait_until_ready(self) -> None:
@@ -622,20 +630,24 @@ def refresh_comp2026_start_gate(
 ) -> None:
     """Publish one atomic snapshot of every dynamic start predicate."""
 
-    try:
-        lidar.get_distance()
-    except StaleSensorError:
-        range_ready = False
-    else:
-        range_ready = True
+    frame_ready = frame_source.ready
+    payload_service_ready = payload_client.service_is_ready() is True  # type: ignore[attr-defined]
+    heartbeat_live = _heartbeat_is_live(getattr(vehicle, "last_heartbeat", None))
+    armable = getattr(vehicle, "is_armable", False) is True
+
+    def range_is_current() -> bool:
+        try:
+            lidar.get_distance()
+        except StaleSensorError:
+            return False
+        return True
+
     gate.refresh_live_readiness(
-        frame_ready=frame_source.ready,
-        range_ready=range_ready,
-        payload_service_ready=payload_client.service_is_ready() is True,  # type: ignore[attr-defined]
-        heartbeat_live=_heartbeat_is_live(
-            getattr(vehicle, "last_heartbeat", None)
-        ),
-        armable=getattr(vehicle, "is_armable", False) is True,
+        frame_ready=frame_ready,
+        payload_service_ready=payload_service_ready,
+        heartbeat_live=heartbeat_live,
+        armable=armable,
+        range_is_current=range_is_current,
     )
 
 
