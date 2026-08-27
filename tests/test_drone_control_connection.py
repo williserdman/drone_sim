@@ -30,7 +30,7 @@ def test_drone_control_preserves_ready_wait_by_default(monkeypatch):
     }
 
 
-def test_drone_control_can_defer_readiness_to_its_host_gate(monkeypatch):
+def test_drone_control_can_defer_readiness_to_its_host_startup_budget(monkeypatch):
     captured = {}
 
     def connect(endpoint, **options):
@@ -40,6 +40,11 @@ def test_drone_control_can_defer_readiness_to_its_host_gate(monkeypatch):
 
     monkeypatch.setattr(drone_control, "connect", connect)
 
-    drone_control.DroneControl("tcp:ardupilot-sitl:5760", wait_ready=False)
+    drone_control.DroneControl(
+        "tcp:ardupilot-sitl:5760",
+        wait_ready=False,
+        heartbeat_timeout=120,
+    )
 
     assert captured["options"]["wait_ready"] is False
+    assert captured["options"]["heartbeat_timeout"] == 120

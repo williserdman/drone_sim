@@ -162,12 +162,13 @@ class DroneControl:
         connection_port="/dev/cu.usbmodem1103",
         *,
         wait_ready: bool = True,
+        heartbeat_timeout: float = 60,
     ):
         print(f"Connecting to {connection_port} …")
         vehicle = connect(
             connection_port,
             wait_ready=wait_ready,
-            heartbeat_timeout=60,
+            heartbeat_timeout=heartbeat_timeout,
             timeout=120,
             source_system=1,
             source_component=191,
