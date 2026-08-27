@@ -513,6 +513,7 @@ class DroneControl:
         self,
         coord: GPSCoord,
         lidar,
+        required_agl_m: float,
         hold_seconds=2.0,
         vel_threshold=0.10,
         pos_tolerance=0.15,
@@ -520,18 +521,19 @@ class DroneControl:
     ) -> bool:
         """
         Commands and holds a GPS waypoint, then waits until the drone is both
-        near the waypoint, at the commanded AGL, and stable (low horizontal
-        speed) for hold_seconds.
+        near the waypoint, at the required lidar AGL, and stable (low
+        horizontal speed) for hold_seconds.
 
         :param coord: Target GPS waypoint.
         :param lidar: Downward AGL source sampled throughout the hold.
+        :param required_agl_m: Minimum lidar AGL required throughout the hold.
         :param hold_seconds: Continuous stable time required.
         :param vel_threshold: Maximum horizontal speed (m/s) to count as stable.
         :param pos_tolerance: Horizontal distance tolerance to waypoint (m).
         :param timeout: Maximum overall wait time (s).
         """
-        target_alt = coord.alt if coord.alt is not None else self.cruise_alt
-        target = LocationGlobalRelative(coord.lat, coord.long, target_alt)
+        navigation_alt = coord.alt if coord.alt is not None else self.cruise_alt
+        target = LocationGlobalRelative(coord.lat, coord.long, navigation_alt)
 
         print(
             f"[*] Holding waypoint ({coord.lat:.7f}, {coord.long:.7f}) and waiting {hold_seconds:.1f}s stable..."
@@ -560,7 +562,7 @@ class DroneControl:
                 target_pos = GPSCoord(coord.lat, coord.long, 0)
                 distance = horiz_distance_m(current_pos, target_pos)
                 try:
-                    altitude_ok = lidar.get_distance() >= target_alt
+                    altitude_ok = lidar.get_distance() >= required_agl_m
                 except Exception:
                     altitude_ok = False
 

@@ -319,7 +319,7 @@ def fm3(
                     if controller.goto_waypoint(drop_target) != 0:
                         return False
                 if not controller.hold_waypoint_until_stable(
-                    drop_target, lidar
+                    drop_target, lidar, required_agl_m=10.0
                 ):
                     print(f"Skipping drop for ID {id}: stability gate timed out.")
                     return False

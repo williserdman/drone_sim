@@ -149,15 +149,37 @@ def test_release_stability_uses_horizontal_speed_and_resets_continuous_window():
 
     with timebase.configured(clock):
         stable = controller.hold_waypoint_until_stable(
-            GPSCoord(41.0, -81.0, 10.0), FakeLidar(), timeout=4.0
+            GPSCoord(41.0, -81.0, 10.0),
+            FakeLidar(),
+            required_agl_m=10.0,
+            timeout=4.0,
         )
 
     assert stable is True
     assert clock.now_value == pytest.approx(3.2, abs=0.21)
 
 
-def test_release_stability_resets_below_ten_metres_agl():
-    """Regression: quiet flight below the release height must not count."""
+def test_release_stability_uses_lidar_agl_not_adjusted_navigation_altitude():
+    """Regression: terrain-corrected navigation altitude is not lidar AGL."""
+    clock = FakeClock()
+    vehicle = StableVehicle(clock)
+    controller = controller_without_connect(vehicle)
+
+    with timebase.configured(clock):
+        stable = controller.hold_waypoint_until_stable(
+            GPSCoord(41.0, -81.0, 15.0),
+            FakeLidar(),
+            required_agl_m=10.0,
+            timeout=4.0,
+        )
+
+    assert stable is True
+    assert vehicle.targets
+    assert all(target.alt == 15.0 for target in vehicle.targets)
+
+
+def test_release_stability_resets_below_ten_metres_agl_after_terrain_adjustment():
+    """Regression: quiet flight below 10 m AGL must reset the hold window."""
     clock = FakeClock()
     controller = controller_without_connect(StableVehicle(clock))
 
@@ -167,7 +189,10 @@ def test_release_stability_resets_below_ten_metres_agl():
 
     with timebase.configured(clock):
         stable = controller.hold_waypoint_until_stable(
-            GPSCoord(41.0, -81.0, 10.0), RisingLidar(), timeout=4.0
+            GPSCoord(41.0, -81.0, 15.0),
+            RisingLidar(),
+            required_agl_m=10.0,
+            timeout=4.0,
         )
 
     assert stable is True
@@ -194,8 +219,10 @@ class ReleaseController:
     def goto_waypoint(self, waypoint, position_tol=None):
         return 0
 
-    def hold_waypoint_until_stable(self, waypoint, lidar):
+    def hold_waypoint_until_stable(self, waypoint, lidar, *, required_agl_m):
         self.hold_lidar = lidar
+        self.hold_waypoint = waypoint
+        self.required_agl_m = required_agl_m
         return self.stable
 
     def set_guided_mode(self):
@@ -255,6 +282,7 @@ def test_fm2_refuses_release_when_stability_gate_times_out():
     assert result is False
     assert payload.drop_calls == 0
     assert controller.hold_lidar is lidar
+    assert controller.required_agl_m == 10.0
 
 
 class RecordingCamera:
@@ -276,9 +304,10 @@ def test_fm3_refuses_release_when_stability_gate_times_out(monkeypatch):
     monkeypatch.setattr(active, "pickup_sequence", lambda *args: True)
     payload = RecordingPayload()
 
+    controller = ReleaseController(stable=False)
     result = active.fm3(
         TrackerWithTime(),
-        ReleaseController(stable=False),
+        controller,
         RecordingCamera(),
         FakeLidar(),
         payload,
@@ -289,6 +318,7 @@ def test_fm3_refuses_release_when_stability_gate_times_out(monkeypatch):
 
     assert result is False
     assert payload.drop_calls == 0
+    assert controller.required_agl_m == 10.0
 
 
 def test_fm3_low_time_exit_is_explicit_failure():

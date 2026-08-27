@@ -39,7 +39,9 @@ def fm2(
     desired_drop_agl = desired_drop_height_m
     if lidar_alt < desired_drop_agl:
         target_gps.alt += desired_drop_agl - lidar_alt
-    if not controller.hold_waypoint_until_stable(target_gps, lidar):
+    if not controller.hold_waypoint_until_stable(
+        target_gps, lidar, required_agl_m=10.0
+    ):
         warn("fm2: release stability gate timed out", controller.vehicle._master)
         return False
     dropper.drop()
