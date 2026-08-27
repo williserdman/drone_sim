@@ -372,12 +372,28 @@ int main(int argc, char **argv)
   publish("payload-command-v1|A1|attach");
   Require(WaitFor([&] { return attachTriggers == 1; }),
       "duplicate attach must publish one stock trigger");
+  std::size_t occupiedTruthCount = 0;
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    occupiedTruthCount = payload3States.size();
+  }
   for (int index = 0; index < 20; ++index)
     Require(server.RunOnce(false), "server must advance occupied attach check");
   {
     std::lock_guard<std::mutex> guard(mutex);
     Require(results.empty() && LatestState(payload3States) == "detached",
         "an occupied hardpoint must leave payload 3 physically detached");
+    bool recurrentDetached =
+        payload3States.size() >= occupiedTruthCount + 3;
+    for (std::size_t index = occupiedTruthCount;
+         recurrentDetached && index < payload3States.size(); ++index)
+    {
+      const auto truth = ParseJointTruth(payload3States[index]);
+      recurrentDetached = truth && truth->state == "detached";
+    }
+    Require(recurrentDetached && HasExactTruthCadence(payload3States),
+        "occupied pending attach must keep publishing detached truth at exact "
+        "50 ms cadence");
   }
   Require(observer->currentJointCount == 1 &&
       observer->maximumJointCount == 1,

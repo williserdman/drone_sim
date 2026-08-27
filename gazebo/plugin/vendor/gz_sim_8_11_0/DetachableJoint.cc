@@ -377,7 +377,10 @@ void DetachableJoint::PreUpdate(
             return true;
           });
       if (parentOccupied)
+      {
+        this->PublishPeriodicJointState(_info.simTime);
         return;
+      }
     }
 
     if (this->childLinkEntity == kNullEntity ||
