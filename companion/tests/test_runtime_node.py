@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from io import StringIO
 from pathlib import Path
@@ -225,6 +226,35 @@ def test_runtime_has_no_gazebo_ground_truth_dependency() -> None:
     assert "GroundTruth" not in source
     assert '"/simulation/ground_truth"' not in source
     assert "vertical_truth" not in source
+
+
+def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "src/drone_sim_companion/runtime_node.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    run_comp2026 = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_comp2026"
+    )
+    constructors = [
+        node
+        for node in ast.walk(run_comp2026)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "DroneControl"
+    ]
+
+    assert len(constructors) == 1
+    wait_ready = next(
+        keyword.value
+        for keyword in constructors[0].keywords
+        if keyword.arg == "wait_ready"
+    )
+    assert isinstance(wait_ready, ast.Constant)
+    assert wait_ready.value is False
 
 
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:

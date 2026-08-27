@@ -371,6 +371,15 @@ def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> Non
     gate.refresh_live_readiness(
         frame_ready=True,
         payload_service_ready=True,
+        heartbeat_live=False,
+        armable=True,
+        range_is_current=lambda: True,
+    )
+    assert gate.mission_start_ready is False
+
+    gate.refresh_live_readiness(
+        frame_ready=True,
+        payload_service_ready=True,
         heartbeat_live=True,
         armable=False,
         range_is_current=lambda: True,
