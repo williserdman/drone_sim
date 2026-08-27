@@ -7,13 +7,16 @@ import math
 import time
 from datetime import datetime
 import json
+from pathlib import Path
 
 one_over_root_2 = 1 / np.sqrt(2)
 
 
 class CameraManager:
-    def __init__(self) -> None:
+    def __init__(self, frame_source=None, calibration_path=None) -> None:
         self.marker_size = 100  # millimeters (adjust as needed)
+        self.frame_source = frame_source
+        self.last_frame_timestamp = None
 
         # --- Default Camera Calibration for Raspberry Pi Camera v2 (480p) ---
         # Source: typical calibration for 640x480 with 62.2° x 48.8° FOV
@@ -28,7 +31,11 @@ class CameraManager:
         self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_250)
 
         # Load calibration data from JSON
-        json_file_path = "src/drone/sensors/camera/calibration.json"
+        json_file_path = (
+            Path(calibration_path)
+            if calibration_path is not None
+            else Path(__file__).with_name("calibration.json")
+        )
         with open(json_file_path, "r") as file:
             json_data = json.load(file)
 
@@ -73,7 +80,8 @@ class CameraManager:
             if hasattr(cv2, "CAP_PROP_ZOOM"):
                 self.webcam.set(cv2.CAP_PROP_ZOOM, 0)
         """
-        self.webcam = cv2.VideoCapture(0)
+        if self.frame_source is None:
+            self.webcam = cv2.VideoCapture(0)
         ### ENABLE FOR LOW FOV CAMERA
         # self.webcam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
         # self.webcam.set(cv2.CAP_PROP_EXPOSURE, 40)
@@ -243,9 +251,20 @@ class CameraManager:
         elif quality == 1:
             scale = 0.10
 
-        ok, frame = self.webcam.read()
-        if not ok:
-            raise RuntimeError("Failed to capture frame from webcam index 0")
+        if self.frame_source is None:
+            ok, frame = self.webcam.read()
+            if not ok:
+                raise RuntimeError("Failed to capture frame from webcam index 0")
+            self.last_frame_timestamp = time.monotonic_ns()
+        else:
+            frame = self.frame_source.capture_frame(quality=quality)
+            self.last_frame_timestamp = getattr(
+                self.frame_source,
+                "last_timestamp_ns",
+                getattr(self.frame_source, "last_timestamp", None),
+            )
+            if self.last_frame_timestamp is None:
+                self.last_frame_timestamp = time.monotonic_ns()
 
         width = frame.shape[1]
         height = frame.shape[0]

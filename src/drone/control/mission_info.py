@@ -1,4 +1,4 @@
-import time
+from .. import timebase as time
 from ..common_types import *
 import json
 from dataclasses import asdict

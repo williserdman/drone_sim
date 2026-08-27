@@ -6,22 +6,26 @@ run mission to pickup and drop arucos at specified waypoints
 - repeat for all ids in list
 """
 
+from __future__ import annotations
+
 from .common_types import *
 from .control.mission_info import MissonTracker
 from .control.drone_control import DroneControl
-import time
+from . import timebase as time
 from .sensors.camera.camera import Camera
-from .sensors.lidar.lidar import Lidar
-from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .sensors.lidar.lidar import Lidar
+    from .sensors.servo.servo import Dropper
 
 ARUCO_PICKUP = GPSCoord(39.9337075, -75.7802787, 10)
 DROP_POINT = GPSCoord(39.9338306, -75.7801814, 10)
 ALT_TOL = 0.03
 HOVER_ALT_TOL = 1
-TARGET_HOVER_HEIGHT = 3
+TARGET_HOVER_HEIGHT = 4.572
 WINDOW = 5
 MULT = 0.3
 
@@ -43,7 +47,7 @@ def _read_lidar_or_fallback(
 
 def aruco_land_precision(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
-):
+) -> bool:
     # controller.set_precision_land_mode()
     controller.set_land_mode()
 
@@ -58,6 +62,7 @@ def aruco_land_precision(
 
     # Loop until ArduPilot explicitly confirms touchdown
     # this for loop will exit after timeout -> 60 seconds
+    touchdown_confirmed = False
     for i in range(1_000):
         if alt > ALT_TOL and controller.vehicle.armed:
             if time.time() - t0 > timeout:
@@ -88,17 +93,25 @@ def aruco_land_precision(
             # Add a tiny sleep to prevent maxing out the CPU loop
             time.sleep(0.05)
         else:
+            touchdown_confirmed = alt <= ALT_TOL or controller.is_landed()
             break
 
-    print("[*] Lidar confirms touchdown!")
+    if touchdown_confirmed:
+        print("[*] Touchdown confirmed!")
+    else:
+        print("[!] Precision landing ended without touchdown confirmation.")
     # time.sleep(3)
     # controller.set_guided_mode()
-    return
+    return touchdown_confirmed
 
 
 def pickup_sequence(
-    controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
-):
+    controller: DroneControl,
+    camera: Camera,
+    lidar: Lidar,
+    target_id: int,
+    dropper: Dropper,
+) -> bool:
     controller.set_guided_mode()
     timeout = 60
     t0 = time.time()
@@ -154,7 +167,7 @@ def pickup_sequence(
     ]
 
     for dNorth, dEast in grid_offsets_ne:
-        if target_found:
+        if target_found or time.time() - t0 >= timeout:
             break
 
         # Calculate the exact GPS coordinate for this grid point
@@ -189,13 +202,40 @@ def pickup_sequence(
                 print(f"return of goto func: {val}")
 
                 time.sleep(1)  # Let it center before triggering land
-                target_found = True
+                acquisition_start = time.time()
+                last_frame_timestamp = None
+                centered_fresh_results = 0
+                while time.time() - acquisition_start < timeout:
+                    centered_update = camera.vec_to_marker_3d(
+                        target_id, quality=quality
+                    )
+                    if centered_update is not None:
+                        frame_timestamp = camera.last_frame_timestamp
+                        if frame_timestamp != last_frame_timestamp:
+                            last_frame_timestamp = frame_timestamp
+                            horizontal_error = math.hypot(
+                                centered_update.x, centered_update.y
+                            )
+                            if horizontal_error <= 0.50:
+                                centered_fresh_results += 1
+                                if centered_fresh_results == 5:
+                                    target_found = True
+                                    break
+                            else:
+                                centered_fresh_results = 0
+                    time.sleep(0.1)
                 break
             time.sleep(0.1)
 
     # Trigger landing sequence outside the loop
     if target_found:
-        aruco_land_precision(controller, camera, lidar, target_id)
+        if not aruco_land_precision(controller, camera, lidar, target_id):
+            return False
+        if controller.disarm() != 0:
+            return False
+        if dropper.attach(target_id) is False:
+            print(f"[!] Attachment rejected for ID {target_id}.")
+            return False
         return True
     else:
         print("[!] Grid search exhausted, target not found.")
@@ -225,10 +265,10 @@ def fm3(
             print(f"return of goto func: {val}")
 
             print("init pickup sequence")
-            success = pickup_sequence(controller, camera, lidar, id)
+            success = pickup_sequence(controller, camera, lidar, id, dropper)
 
-            controller.set_guided_mode()
             if success:
+                controller.set_guided_mode()
                 print("climb")
                 if controller.vehicle.armed and controller.is_landed():
                     print("vehicle armed")
@@ -248,17 +288,21 @@ def fm3(
 
                 print("dropping")
                 drop_target = GPSCoord(
-                    target_point.lat, target_point.long, target_point.alt
+                    target_point.lat, target_point.long, desired_drop_height_m
                 )
                 lidar_alt, _ = _read_lidar_or_fallback(lidar, controller)
                 if lidar_alt is not None and lidar_alt < desired_drop_height_m:
                     drop_target.alt += desired_drop_height_m - lidar_alt
                     controller.goto_waypoint(drop_target)
-                controller.hold_waypoint_until_stable(drop_target)
+                if not controller.hold_waypoint_until_stable(drop_target):
+                    print(f"Skipping drop for ID {id}: stability gate timed out.")
+                    return False
                 dropper.drop()
             else:
                 print(f"Skipping drop for ID {id} because pickup failed.")
-                controller.climb(10)
+                return False
+
+        return True
 
     except Exception as e:
         print("[ERR]", e)

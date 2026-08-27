@@ -5,7 +5,7 @@ import queue
 
 # os.environ["MAVLINK20"] = "1"
 
-import time
+from .. import timebase as time
 import math
 import collections
 
@@ -402,6 +402,14 @@ class DroneControl:
         return
 
     def disarm(self) -> int:
+        self.vehicle.armed = False
+        t0 = time.time()
+        while self.vehicle.armed:
+            if time.time() - t0 >= 15.0:
+                print("[!] Disarm confirmation timed out.")
+                return -1
+            time.sleep(0.1)
+        print("[*] Vehicle is DISARMED.")
         return 0
 
     def wait_for_arm(self) -> int:
@@ -504,17 +512,18 @@ class DroneControl:
         self,
         coord: GPSCoord,
         hold_seconds=2.0,
-        vel_threshold=0.3,
-        pos_tolerance=POS_TOL,
+        vel_threshold=0.10,
+        pos_tolerance=0.15,
         timeout=30.0,
     ) -> bool:
         """
         Commands and holds a GPS waypoint, then waits until the drone is both
-        near the waypoint and stable (low pitch magnitude) for hold_seconds.
+        near the waypoint, at the commanded altitude, and stable (low horizontal
+        speed) for hold_seconds.
 
         :param coord: Target GPS waypoint.
         :param hold_seconds: Continuous stable time required.
-        :param vel_threshold: Maximum absolute pitch (rad) to count as stable.
+        :param vel_threshold: Maximum horizontal speed (m/s) to count as stable.
         :param pos_tolerance: Horizontal distance tolerance to waypoint (m).
         :param timeout: Maximum overall wait time (s).
         """
@@ -533,27 +542,32 @@ class DroneControl:
             self.vehicle.simple_goto(target)
 
             loc = self.vehicle.location.global_relative_frame
-            attitude = self.vehicle.attitude
+            velocity = self.vehicle.velocity
 
             if (
                 loc is not None
                 and loc.lat is not None
                 and loc.lon is not None
-                and attitude is not None
-                and attitude.pitch is not None
+                and velocity is not None
+                and len(velocity) >= 2
             ):
-                pitch = abs(attitude.pitch)
+                horizontal_speed = math.hypot(velocity[0], velocity[1])
 
                 current_pos = GPSCoord(loc.lat, loc.lon, loc.alt if loc.alt else 0)
                 target_pos = GPSCoord(coord.lat, coord.long, 0)
                 distance = horiz_distance_m(current_pos, target_pos)
+                altitude_ok = loc.alt is not None and loc.alt >= target_alt
 
-                if distance <= pos_tolerance and pitch < vel_threshold:
+                if (
+                    distance <= pos_tolerance
+                    and horizontal_speed <= vel_threshold
+                    and altitude_ok
+                ):
                     if stable_start_time is None:
                         stable_start_time = time.time()
                     elif (time.time() - stable_start_time) >= hold_seconds:
                         print(
-                            f"[*] Waypoint hold stable. dist={distance:.2f}m |pitch|={pitch:.3f}rad"
+                            f"[*] Waypoint hold stable. dist={distance:.2f}m speed={horizontal_speed:.3f}m/s"
                         )
                         return True
                 else:

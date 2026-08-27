@@ -8,11 +8,15 @@ import time
 
 
 class Camera:
-    def __init__(self, marker_size_mm: int):
-        self.cm = CameraManager()
+    def __init__(self, marker_size_mm: int, manager=None):
+        self.cm = manager if manager is not None else CameraManager()
         self.marker_size_mm = marker_size_mm
         self.frame_buffer = deque(maxlen=100) # 10_000
         self._frame_buffer_lock = threading.Lock()
+
+    @property
+    def last_frame_timestamp(self):
+        return self.cm.last_frame_timestamp
 
     def _buffer_frame(self, frame) -> None:
         with self._frame_buffer_lock:

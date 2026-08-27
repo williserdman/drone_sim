@@ -4,13 +4,17 @@ must occur at or above 15ft AGL. Dropping below 30ft AGL halves all payload poin
 15ft loses them entirely. Drops do not need to be successful.
 """
 
+from __future__ import annotations
+
 from ..common_types import *
 from ..control.drone_control import DroneControl
 from ..control.mission_info import MissonTracker
-from ..sensors.servo.servo import Dropper
-from ..sensors.lidar.lidar import Lidar
 from .utils import log, warn
-import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..sensors.lidar.lidar import Lidar
+    from ..sensors.servo.servo import Dropper
 
 
 def fm2(
@@ -35,9 +39,11 @@ def fm2(
     desired_drop_agl = desired_drop_height_m
     if lidar_alt < desired_drop_agl:
         target_gps.alt += desired_drop_agl - lidar_alt
-    controller.hold_waypoint_until_stable(target_gps)
+    if not controller.hold_waypoint_until_stable(target_gps):
+        warn("fm2: release stability gate timed out", controller.vehicle._master)
+        return False
     dropper.drop()
     # TODO: Figure out what to do at the end of fm2. Land and proceed with FM3?
 
     log("fm2: payload dropped", controller.vehicle._master)
-    return
+    return True
