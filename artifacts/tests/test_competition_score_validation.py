@@ -380,3 +380,70 @@ def test_independent_competition_validation_rejects_rotated_payload_outside_f2(
             rules_path=RULES_PATH,
             physical_evidence=replace(evidence, payload_states=mutated_states),
         )
+
+
+def test_independent_competition_validation_requires_pre_attach_payload_in_source(
+    tmp_path,
+):
+    """Crossing the WA boundary during attach must not prove a source pickup."""
+    from artifacts.competition_score_validation import (
+        CompetitionScoreValidationError,
+        validate_competition_score_outputs,
+    )
+
+    evidence = _fixture(tmp_path)
+    outside_x = WA[0] + 6.096 / 2.0 + 0.01
+    inside_x = WA[0] + 6.096 / 2.0 - 0.01
+    mutated_states = tuple(
+        replace(sample, position_xyz=(outside_x, WA[1], sample.position_xyz[2]))
+        if sample.aruco_id == 3 and sample.sim_timestamp_ns == _at(8.95)
+        else replace(sample, position_xyz=(inside_x, WA[1], sample.position_xyz[2]))
+        if sample.aruco_id == 3 and sample.sim_timestamp_ns == _at(9.0)
+        else sample
+        for sample in evidence.payload_states
+    )
+    mutated_ground_truth = tuple(
+        replace(sample, position_xyz=(inside_x, WA[1], sample.position_xyz[2]))
+        if sample.sim_timestamp_ns == _at(9.0)
+        else sample
+        for sample in evidence.ground_truth
+    )
+
+    with pytest.raises(CompetitionScoreValidationError, match="independent"):
+        validate_competition_score_outputs(
+            tmp_path,
+            run_id=RUN_ID,
+            rules_path=RULES_PATH,
+            physical_evidence=replace(
+                evidence,
+                ground_truth=mutated_ground_truth,
+                payload_states=mutated_states,
+            ),
+        )
+
+
+def test_independent_competition_validation_rejects_unexplained_attachment_swap(
+    tmp_path,
+):
+    """Capacity one cannot hide an eventless reattach/detach before marker 3."""
+    from artifacts.competition_score_validation import (
+        CompetitionScoreValidationError,
+        validate_competition_score_outputs,
+    )
+
+    evidence = _fixture(tmp_path)
+    mutated_states = tuple(
+        replace(sample, attached=True)
+        if sample.aruco_id == 2
+        and _at(8.0) <= sample.sim_timestamp_ns < _at(9.0)
+        else sample
+        for sample in evidence.payload_states
+    )
+
+    with pytest.raises(CompetitionScoreValidationError, match="independent"):
+        validate_competition_score_outputs(
+            tmp_path,
+            run_id=RUN_ID,
+            rules_path=RULES_PATH,
+            physical_evidence=replace(evidence, payload_states=mutated_states),
+        )

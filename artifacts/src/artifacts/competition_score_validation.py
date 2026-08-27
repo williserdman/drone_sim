@@ -424,6 +424,7 @@ class _PhysicalOracle:
             == self.rules.interval_ns
             and previous.grounded
             and not previous.attached
+            and self._inside(previous.position_xyz, waypoint)
             and current.attached
             and self._inside(current.position_xyz, waypoint)
             and vehicle.in_contact
@@ -435,6 +436,45 @@ class _PhysicalOracle:
             and math.dist(current.position_xyz, previous.position_xyz)
             <= self.rules.pickup_tolerance_m
         )
+
+    def _attachment_transitions_valid(self) -> bool:
+        transitions: list[tuple[int, int, str]] = []
+        for marker, states in self.payload_states.items():
+            transitions.extend(
+                (
+                    current.sim_timestamp_ns,
+                    marker,
+                    "attach" if current.attached else "release",
+                )
+                for previous, current in zip(states, states[1:])
+                if previous.attached != current.attached
+            )
+        transitions.sort()
+        if len(transitions) != len(self.payload_events):
+            return False
+        for transition, event in zip(
+            transitions, self.payload_events, strict=True
+        ):
+            timestamp_ns, marker, action = transition
+            if (
+                marker != event.aruco_id
+                or action != event.action
+                or not event.sim_timestamp_ns
+                <= timestamp_ns
+                <= event.sim_timestamp_ns + self.rules.interval_ns
+            ):
+                return False
+            if action == "attach":
+                before_ns = timestamp_ns - self.rules.interval_ns
+                before = tuple(
+                    row
+                    for rows in self.payload_states.values()
+                    for row in rows
+                    if row.sim_timestamp_ns == before_ns
+                )
+                if len(before) != 3 or any(row.attached for row in before):
+                    return False
+        return True
 
     @staticmethod
     def _yaw(orientation: tuple[float, float, float, float]) -> float:
@@ -563,6 +603,7 @@ class _PhysicalOracle:
             and tuple(row.event_id for row in self.payload_events) == tuple(range(5))
             and all(row.code == "OK" for row in self.payload_events)
         )
+        attachment_transitions = self._attachment_transitions_valid()
         capacity = self._capacity_valid()
         marker3_attach = self._payload_event(3, "attach")
         marker4_attach = self._payload_event(4, "attach")
@@ -588,7 +629,7 @@ class _PhysicalOracle:
         fm1_landing = self._landing("FM1", "L")
         fm1_autonomy = fm1_landing and tuple((row.phase, row.state) for row in self.mission_events[:2]) == _MISSION_SEQUENCE[:2]
         payload2, settled2 = self._delivery(2, "FM2", None if marker3_attach is None else marker3_attach.sim_timestamp_ns)
-        payload2 = payload2 and fm1_autonomy
+        payload2 = payload2 and fm1_autonomy and attachment_transitions
         fm2_autonomy = payload2 and tuple((row.phase, row.state) for row in self.mission_events[:4]) == _MISSION_SEQUENCE[:4]
         payload3, settled3 = self._delivery(3, "FM3_3", None if marker4_attach is None else marker4_attach.sim_timestamp_ns)
         payload3 = payload3 and fm2_autonomy and capacity
@@ -603,13 +644,15 @@ class _PhysicalOracle:
             and (settled4 is None or home_boundary is None or settled4 < home_boundary)
         )
         home, elapsed = self._home()
-        complete = streams_valid and mission_valid and payload_valid and capacity and ordering and home and elapsed <= self.rules.deadline_ns
+        complete = streams_valid and mission_valid and payload_valid and attachment_transitions and capacity and ordering and home and elapsed <= self.rules.deadline_ns
         if not streams_valid:
             diagnostic = "physical_stream_invalid"
         elif not mission_valid:
             diagnostic = "mission_sequence_invalid"
         elif not payload_valid:
             diagnostic = "payload_event_sequence_invalid"
+        elif not attachment_transitions:
+            diagnostic = "payload_attachment_transition_invalid"
         elif not capacity:
             diagnostic = "payload_capacity_exceeded"
         elif not ordering:

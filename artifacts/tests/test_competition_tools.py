@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -105,15 +106,39 @@ def _accepted_documents(run_directory: Path, *, complete=True, achieved=150.0):
     (run_directory / "scoring/result.json").write_text(json.dumps(result), encoding="utf-8")
 
 
+def _canonical_report(run_directory: Path) -> dict[str, object]:
+    return {
+        "accepted": True,
+        "run_id": RUN_ID,
+        "achieved_score": 150.0,
+        "maximum_available_score": 150.0,
+        "compose_project": "drone-sim-" + RUN_ID.replace("-", ""),
+        "manifest_sha256": hashlib.sha256(
+            (run_directory / "manifest.json").read_bytes()
+        ).hexdigest(),
+    }
+
+
 def test_verification_writer_names_accepted_evidence_and_checkpoints(tmp_path):
     module = _load("write_competition_verification")
     run_directory = tmp_path / "run"
     output = tmp_path / "verification.md"
     _accepted_documents(run_directory)
 
-    module.write_competition_verification(run_directory, output)
+    inspected = []
+
+    def inspector(directory):
+        inspected.append(directory)
+        return _canonical_report(directory)
+
+    module.write_competition_verification(
+        run_directory,
+        output,
+        inspector=inspector,
+    )
 
     note = output.read_text(encoding="utf-8")
+    assert inspected == [run_directory.resolve()]
     for expected in (
         RUN_ID,
         "a" * 40,
@@ -141,5 +166,27 @@ def test_verification_writer_refuses_unaccepted_manifest(
 
     with pytest.raises(ValueError, match="accepted 150/150"):
         module.write_competition_verification(
-            run_directory, tmp_path / "verification.md"
+            run_directory,
+            tmp_path / "verification.md",
+            inspector=_canonical_report,
         )
+
+
+def test_verification_writer_refuses_forged_manifest_and_result_only_bundle(tmp_path):
+    """Two convincing JSON files cannot bypass the canonical bundle inspector."""
+    module = _load("write_competition_verification")
+    run_directory = tmp_path / "forged-run"
+    output = tmp_path / "verification.md"
+    _accepted_documents(run_directory)
+
+    def reject_forgery(_directory):
+        raise ValueError("required videos, rosbag, logs, and checksums are absent")
+
+    with pytest.raises(ValueError, match="canonical competition inspection failed"):
+        module.write_competition_verification(
+            run_directory,
+            output,
+            inspector=reject_forgery,
+        )
+
+    assert not output.exists()

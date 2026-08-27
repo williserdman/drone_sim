@@ -4,9 +4,19 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Mapping
+import hashlib
 import json
-import math
 from pathlib import Path
+
+
+CanonicalInspector = Callable[[Path], Mapping[str, object]]
+
+
+def _canonical_inspection(run_directory: Path) -> Mapping[str, object]:
+    from inspect_competition_run import inspect_competition_run
+
+    return inspect_competition_run(run_directory)
 
 
 def _document(path: Path) -> dict[str, object]:
@@ -24,10 +34,33 @@ def _score_text(value: float) -> str:
 
 
 def write_competition_verification(
-    run_directory: Path | str, output: Path | str
+    run_directory: Path | str,
+    output: Path | str,
+    *,
+    inspector: CanonicalInspector | None = None,
 ) -> Path:
-    """Read an already accepted bundle and write its evidence pointers only."""
+    """Pass canonical read-only acceptance, then write its evidence pointers."""
     directory = Path(run_directory).resolve()
+    try:
+        inspection = (inspector or _canonical_inspection)(directory)
+    except Exception as error:
+        raise ValueError("canonical competition inspection failed") from error
+    expected_inspection_keys = {
+        "accepted",
+        "run_id",
+        "achieved_score",
+        "maximum_available_score",
+        "compose_project",
+        "manifest_sha256",
+    }
+    if (
+        not isinstance(inspection, Mapping)
+        or set(inspection) != expected_inspection_keys
+        or inspection.get("accepted") is not True
+        or inspection.get("achieved_score") != 150.0
+        or inspection.get("maximum_available_score") != 150.0
+    ):
+        raise ValueError("canonical competition inspection failed")
     manifest = _document(directory / "manifest.json")
     result = _document(directory / "scoring/result.json")
     scoring = manifest.get("scoring")
@@ -43,6 +76,9 @@ def write_competition_verification(
         and result.get("achieved_score") == 150.0
         and result.get("maximum_available_score") == 150.0
         and result.get("scoring_checksum") == scoring.get("scoring_checksum")
+        and inspection.get("run_id") == manifest.get("run_id")
+        and inspection.get("manifest_sha256")
+        == hashlib.sha256((directory / "manifest.json").read_bytes()).hexdigest()
         and isinstance(source_rows, list)
         and [row.get("name") for row in source_rows if isinstance(row, dict)]
         == ["drone_sim", "comp2026"]
