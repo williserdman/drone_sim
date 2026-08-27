@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 from threading import Event, Thread
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
+import drone_sim_electromagnet.runtime_node as runtime_node
 from drone_sim_electromagnet.controller import PayloadGateway
 from drone_sim_electromagnet.payload import PayloadRequest
 from drone_sim_electromagnet.runtime_node import (
     RuntimeConfig,
+    _competition_main,
     assign_stamp,
     parse_physical_result,
     stamp_ns,
@@ -27,6 +30,138 @@ def test_ros_timestamp_conversion_is_exact() -> None:
     assert stamp_ns(source) == 12_000_000_345
     assign_stamp(destination, 12_000_000_345)
     assert (destination.sec, destination.nanosec) == (12, 345)
+
+
+def test_competition_exposes_inert_scenario_event_type_for_exact_bag_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Publisher:
+        def __init__(self) -> None:
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    class Node:
+        last: "Node"
+
+        def __init__(self, _name: str) -> None:
+            Node.last = self
+            self.publishers: list[tuple[object, str, object, Publisher]] = []
+
+        def create_publisher(self, message_type, topic, qos):
+            publisher = Publisher()
+            self.publishers.append((message_type, topic, qos, publisher))
+            return publisher
+
+        def create_subscription(self, *_args, **_kwargs):
+            return object()
+
+        def create_service(self, *_args, **_kwargs):
+            return object()
+
+        def count_publishers(self, _topic: str) -> int:
+            return 0
+
+        def destroy_node(self) -> None:
+            pass
+
+    class Executor:
+        def __init__(self, *, num_threads: int) -> None:
+            assert num_threads == 4
+
+        def add_node(self, _node: object) -> None:
+            pass
+
+        def spin_once(self, *, timeout_sec: float) -> None:
+            assert timeout_sec == 0.05
+
+        def shutdown(self, *, timeout_sec: float) -> None:
+            assert timeout_sec == 6.0
+
+    class Protocol:
+        def __init__(self, _run_directory: Path, _run_id: str) -> None:
+            pass
+
+        def read_finalize_request(self):
+            return {"requested_terminal": "FAILED"}
+
+        def write_quiescence(self, module: str) -> None:
+            assert module == "electromagnet"
+
+        def close(self) -> None:
+            pass
+
+    class QoSProfile:
+        def __init__(self, *, depth, reliability, durability) -> None:
+            self.depth = depth
+            self.reliability = reliability
+            self.durability = durability
+
+    class DurabilityPolicy:
+        TRANSIENT_LOCAL = "transient"
+        VOLATILE = "volatile"
+
+    class ReliabilityPolicy:
+        RELIABLE = "reliable"
+
+    class PayloadCommand:
+        class Request:
+            ATTACH = 1
+            RELEASE = 2
+
+    rclpy = ModuleType("rclpy")
+    rclpy.init = lambda: None
+    rclpy.ok = lambda: True
+    rclpy.shutdown = lambda: None
+    callback_groups = ModuleType("rclpy.callback_groups")
+    callback_groups.ReentrantCallbackGroup = object
+    executors = ModuleType("rclpy.executors")
+    executors.MultiThreadedExecutor = Executor
+    node_module = ModuleType("rclpy.node")
+    node_module.Node = Node
+    qos_module = ModuleType("rclpy.qos")
+    qos_module.DurabilityPolicy = DurabilityPolicy
+    qos_module.QoSProfile = QoSProfile
+    qos_module.ReliabilityPolicy = ReliabilityPolicy
+    message_module = ModuleType("simulation_interfaces.msg")
+    for name in (
+        "GroundTruth",
+        "PayloadEvent",
+        "PayloadState",
+        "RunState",
+        "ScenarioEvent",
+    ):
+        setattr(message_module, name, type(name, (), {}))
+    service_module = ModuleType("simulation_interfaces.srv")
+    service_module.PayloadCommand = PayloadCommand
+    string_module = ModuleType("std_msgs.msg")
+    string_module.String = type("String", (), {})
+    for name, module in {
+        "rclpy": rclpy,
+        "rclpy.callback_groups": callback_groups,
+        "rclpy.executors": executors,
+        "rclpy.node": node_module,
+        "rclpy.qos": qos_module,
+        "simulation_interfaces.msg": message_module,
+        "simulation_interfaces.srv": service_module,
+        "std_msgs.msg": string_module,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(runtime_node, "RuntimeProtocol", Protocol)
+    monkeypatch.setattr(runtime_node.signal, "signal", lambda *_args: None)
+
+    assert _competition_main(RuntimeConfig.competition_defaults(RUN_ID)) == 0
+
+    by_topic = {
+        topic: (message_type, qos, publisher)
+        for message_type, topic, qos, publisher in Node.last.publishers
+    }
+    message_type, qos, publisher = by_topic["/simulation/scenario_events"]
+    assert message_type.__name__ == "ScenarioEvent"
+    assert qos.reliability == ReliabilityPolicy.RELIABLE
+    assert qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
+    assert publisher.messages == []
 
 
 def write_config(run_directory: Path, scenario: str) -> Path:

@@ -290,7 +290,13 @@ def _competition_main(config: RuntimeConfig) -> int:
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-    from simulation_interfaces.msg import GroundTruth, PayloadEvent, PayloadState, RunState
+    from simulation_interfaces.msg import (
+        GroundTruth,
+        PayloadEvent,
+        PayloadState,
+        RunState,
+        ScenarioEvent,
+    )
     from simulation_interfaces.srv import PayloadCommand
     from std_msgs.msg import String
 
@@ -312,6 +318,9 @@ def _competition_main(config: RuntimeConfig) -> int:
 
     event_publisher = node.create_publisher(
         PayloadEvent, "/simulation/payload_events", qos(100, transient=True)
+    )
+    _scenario_publisher = node.create_publisher(
+        ScenarioEvent, "/simulation/scenario_events", qos(100, transient=True)
     )
     command_publishers = {
         marker: node.create_publisher(
