@@ -5,7 +5,7 @@
   "scenario": "competition_v1",
   "output_root": "runs",
   "max_wall_seconds": 5400,
-  "startup_wall_seconds": 240,
+  "startup_wall_seconds": 480,
   "finalization_wall_seconds": 120,
   "recording": {
     "width_px": 640,
