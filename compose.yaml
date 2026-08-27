@@ -105,6 +105,9 @@ services:
     <<: *runtime-defaults
     profiles: [phase3]
     image: drone-sim-ardupilot-runtime:phase3
+    depends_on:
+      gazebo-runtime:
+        condition: service_started
     build:
       context: .
       dockerfile: ardupilot_sitl/Dockerfile

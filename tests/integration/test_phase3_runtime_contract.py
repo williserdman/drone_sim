@@ -166,6 +166,34 @@ def test_phase3_internal_flight_endpoints_are_exact_and_never_published_to_host(
     )
 
 
+def test_ardupilot_starts_after_gazebo_service_without_dependency_cycle() -> None:
+    services = _phase3_document()["services"]
+
+    ardupilot_dependencies = services["ardupilot-sitl"]["depends_on"]
+    assert set(ardupilot_dependencies) == {"gazebo-runtime"}
+    assert ardupilot_dependencies["gazebo-runtime"]["condition"] == "service_started"
+
+    graph = {
+        name: set(service.get("depends_on", {}))
+        for name, service in services.items()
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        assert name not in visiting, f"Compose dependency cycle at {name}"
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in graph[name]:
+            visit(dependency)
+        visiting.remove(name)
+        visited.add(name)
+
+    for service_name in graph:
+        visit(service_name)
+
+
 def test_phase2_profile_remains_exactly_the_original_seven_services() -> None:
     environment = os.environ.copy()
     environment["COMPOSE_PROFILES"] = "phase2"
