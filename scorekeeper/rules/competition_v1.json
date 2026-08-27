@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "ruleset_id": "competition_v1",
+  "sample_interval_ns": 50000000,
+  "pickup_center_tolerance_m": 0.075,
+  "release_position_tolerance_m": 0.15,
+  "release_horizontal_speed_mps": 0.10,
+  "release_stability_ns": 2000000000,
+  "payload_settle_ns": 1000000000,
+  "release_agl_m": 10.0,
+  "deadline_ns": 600000000000,
+  "points": {
+    "fm1_landing": 20.0,
+    "fm1_autonomy": 30.0,
+    "payload_2": 10.0,
+    "fm2_autonomy": 20.0,
+    "payload_3": 15.0,
+    "fm3_autonomy": 50.0,
+    "payload_4": 5.0
+  }
+}

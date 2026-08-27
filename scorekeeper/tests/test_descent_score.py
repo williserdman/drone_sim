@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from drone_sim_scorekeeper.descent import DescentScorer, GroundTruthSample, load_descent_rules
+from drone_sim_scorekeeper.models import RuleResult, ScoreEvent, ScoreResult
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -180,3 +181,12 @@ def test_stability_requires_full_half_second_on_exact_grid():
 
     assert result.achieved_score == 80.0
     assert result.rule_results[3].passed is False
+
+
+def test_descent_exports_the_scorer_neutral_result_models_unchanged():
+    """Extracting shared models must not fork descent serialization types."""
+    result = score(perfect_descent())
+
+    assert isinstance(result, ScoreResult)
+    assert all(isinstance(rule, RuleResult) for rule in result.rule_results)
+    assert all(isinstance(event, ScoreEvent) for event in result.events)

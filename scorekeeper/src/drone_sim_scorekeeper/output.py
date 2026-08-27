@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-from .descent import ScoreResult
+from .models import ScoreResult
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ def _write_new(path: Path, payload: bytes) -> None:
 
 
 def persist_score_outputs(run_directory: Path | str, result: ScoreResult) -> ScoreOutputPaths:
-    """Persist the five events and manifest-compatible result without overwrite."""
+    """Persist ordered events and a manifest-compatible result without overwrite."""
     if not isinstance(result, ScoreResult):
         raise TypeError("result must be ScoreResult")
     scoring = Path(run_directory) / "scoring"

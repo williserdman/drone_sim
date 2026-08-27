@@ -4,9 +4,16 @@
 
 - Authoritative `/clock` using best-effort QoS depth 1 with `use_sim_time=true`
 - Gazebo ground truth on `/simulation/ground_truth` using
-  `simulation_interfaces/msg/GroundTruth` and best-effort QoS depth 10
-- Electromagnet events on `/simulation/scenario_events` using
-  `simulation_interfaces/msg/ScenarioEvent` and reliable QoS depth 100
+  `simulation_interfaces/msg/GroundTruth`. `descent_v1` retains best-effort QoS
+  depth 10; `competition_v1` uses reliable, volatile QoS depth 10.
+- For `descent_v1`, electromagnet events on `/simulation/scenario_events` use
+  `simulation_interfaces/msg/ScenarioEvent` and reliable, transient-local QoS
+  depth 100.
+- For `competition_v1`, three 20 Hz physical streams on
+  `/simulation/payload_state` use `simulation_interfaces/msg/PayloadState` and
+  reliable, volatile QoS depth 100. Confirmed `/simulation/payload_events` and
+  ordered `/simulation/mission_events` use their shared message contracts and
+  reliable, transient-local QoS depth 100.
 - Optional ArduPilot telemetry for diagnostics only
 
 Inputs carry `run_id`, simulation timestamps, and stable state or event identities as applicable.
@@ -16,10 +23,17 @@ Inputs carry `run_id`, simulation timestamps, and stable state or event identiti
 The module emits run-scoped `simulation_interfaces/msg/ScoreEvent` messages on
 `/simulation/score_events` using reliable QoS depth 100, plus final results and
 incomplete-run diagnostics. The final result contains achieved score, maximum
-available score, `ruleset_id=descent_v1`, scoring-configuration checksum, and
-safe evidence references. It
+available score, the selected `descent_v1` or `competition_v1` ruleset,
+scoring-configuration checksum, and safe evidence references. It
 is persisted as `scoring/result.json` and is read-only with respect to the
 simulated aircraft.
+
+`competition_v1` emits seven ordered point-component events followed by
+`score.finalized`: FM1 landing 20, FM1 autonomy 30, payload 2 delivery 10, FM2
+autonomy 20, payload 3 delivery 15, FM3 autonomy 50, and payload 4 delivery 5.
+Their cumulative checkpoints are 80 after FM2, 145 after marker 3, and 150
+after marker 4. A confirmed release is evidence only and awards no points by
+itself.
 
 ## Ordering and failure behavior
 
@@ -27,6 +41,23 @@ Ground-truth samples are accepted in exact 50,000,000 ns order for one canonical
 run ID. The first duplicate, regression, or gap permanently marks the result
 incomplete; a later suffix cannot repair it. Missing required input likewise
 marks a run incomplete rather than causing corrective control.
+
+For `competition_v1`, the first current-run `FM1/STARTED` mission event stores
+the authoritative `start_sim_time`. Release stability, settling, freshness,
+and the 600-second deadline use differences between existing simulation
+timestamps. Pre-start events earn no score. No epoch, timestamp rebase,
+activation barrier, or cross-service clock synchronization is introduced.
+
+Each release requires 2 simulated seconds of contiguous 20 Hz vehicle truth at
+or above 10 m AGL, within 0.15 m of F2, and no faster than 0.10 m/s
+horizontally. A payload component passes only after confirmed physical
+detachment and 1 simulated second of contiguous grounded, low-speed truth with
+the full rotated 0.1524 m square footprint inside the 0.9144 m F2 rectangle.
+FM3 releases additionally require a confirmed physical attachment, a
+non-teleporting pickup within 0.075 m, capacity at most one, and marker order 3
+then 4. Completion requires ordered mission evidence and physical Home contact
+at or before 600 elapsed simulated seconds; only then can `score-finished` be
+written.
 
 The committed `rules/descent_v1.json` has maximum 100 and freezes a safe
 pre-impact downward-speed threshold of 1.0 m/s. The scorekeeper emits exactly
@@ -48,9 +79,9 @@ time appears only as observability metadata and deadlines.
 
 ## Prohibited outputs
 
-The scorekeeper exposes no command, mode, actuator, force, constraint, pose, velocity, or physics-mutation output.
+The scorekeeper exposes no command, mode, actuator, force, constraint, pose,
+velocity, electromagnet request, or physics-mutation output.
 
 ## Deferred decisions
 
-- Broader competition or active-electromagnet rulesets
 - Optional diagnostic telemetry beyond authoritative ground truth

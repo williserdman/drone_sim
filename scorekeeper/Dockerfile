@@ -18,7 +18,7 @@ COPY scorekeeper/bin/drone-sim-scorekeeper-runtime /usr/local/bin/drone-sim-scor
 
 RUN chmod 0755 /usr/local/bin/drone-sim-scorekeeper-runtime
 
-ENV SIM_SCORE_RULES_PATH=/opt/drone_sim/scorekeeper/rules/descent_v1.json \
+ENV SIM_SCORE_RULES_PATH=/opt/drone_sim/scorekeeper/rules \
     AMENT_PREFIX_PATH="/opt/drone_sim/ros_ws/install/simulation_interfaces:/opt/ros/jazzy" \
     CMAKE_PREFIX_PATH="/opt/drone_sim/ros_ws/install/simulation_interfaces:/opt/ros/jazzy" \
     LD_LIBRARY_PATH="/opt/drone_sim/ros_ws/install/simulation_interfaces/lib:/opt/ros/jazzy/lib" \

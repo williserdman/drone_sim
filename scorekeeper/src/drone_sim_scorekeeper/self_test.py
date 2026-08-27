@@ -11,6 +11,7 @@ from artifacts.runtime_protocol import RuntimeProtocol
 from .descent import DescentScorer, GroundTruthSample, load_descent_rules
 from .runtime import ScenarioSample, ScorekeeperRuntime
 from .runtime_node import _StructuredLogger, _create_ros_boundary
+from .runtime_node import rules_path_for_scenario
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -155,11 +156,12 @@ def _ros_check() -> None:
 
 
 def main() -> int:
-    rules = Path(
+    rules = rules_path_for_scenario(
         __import__("os").environ.get(
             "SIM_SCORE_RULES_PATH",
-            "/opt/drone_sim/scorekeeper/rules/descent_v1.json",
-        )
+            "/opt/drone_sim/scorekeeper/rules",
+        ),
+        "descent_v1",
     )
     _runtime_check(rules)
     _ros_check()

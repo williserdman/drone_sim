@@ -13,7 +13,16 @@ import sys
 from typing import Any, Callable, Protocol
 from uuid import UUID
 
-from .descent import DescentScorer, GroundTruthSample, ScoreEvent, load_descent_rules
+from .competition import (
+    CompetitionScorer,
+    MissionEventSample,
+    PayloadEventSample,
+    PayloadStateSample,
+    load_competition_rules,
+)
+from .competition_runtime import CompetitionScorekeeperRuntime
+from .descent import DescentScorer, GroundTruthSample, load_descent_rules
+from .models import ScoreEvent, ScoreResult
 from .runtime import ScenarioSample, ScorekeeperRuntime
 
 
@@ -34,6 +43,7 @@ def _canonical_run_id(value: object) -> str:
 
 @dataclass(frozen=True)
 class RuntimeSettings:
+    scenario: str
     expected_ground_truth_samples: int
 
 
@@ -46,8 +56,9 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
         raise ValueError("resolved scorekeeper configuration is invalid") from error
     if not isinstance(document, dict) or document.get("run_id") != canonical:
         raise ValueError("resolved scorekeeper configuration has the wrong run_id")
-    if document.get("scenario") != "descent_v1":
-        raise ValueError("scorekeeper requires scenario descent_v1")
+    scenario = document.get("scenario")
+    if scenario not in {"descent_v1", "competition_v1"}:
+        raise ValueError("scorekeeper scenario must be descent_v1 or competition_v1")
     recording = document.get("recording")
     simulation = document.get("simulation")
     if (
@@ -72,7 +83,16 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
     duration_ns_int = int(duration_ns)
     if duration_ns_int % _FRAME_INTERVAL_NS:
         raise ValueError("simulation duration must lie on the 50 ms score grid")
-    return RuntimeSettings(duration_ns_int // _FRAME_INTERVAL_NS)
+    return RuntimeSettings(scenario, duration_ns_int // _FRAME_INTERVAL_NS)
+
+
+def rules_path_for_scenario(path: Path | str, scenario: str) -> Path:
+    """Resolve the selected ruleset beside either a rules directory or old file path."""
+    if scenario not in {"descent_v1", "competition_v1"}:
+        raise ValueError("unsupported scoring scenario")
+    configured = Path(path)
+    directory = configured.parent if configured.suffix == ".json" else configured
+    return directory / f"{scenario}.json"
 
 
 def _timestamp_ns(stamp: Any) -> int:
@@ -130,6 +150,52 @@ def scenario_from_message(message: Any) -> ScenarioSample:
     )
 
 
+def payload_state_from_message(message: Any) -> PayloadStateSample:
+    return PayloadStateSample(
+        run_id=message.run_id,
+        sim_timestamp_ns=_timestamp_ns(message.sim_timestamp),
+        aruco_id=message.aruco_id,
+        position_xyz=(message.pose.position.x, message.pose.position.y, message.pose.position.z),
+        orientation_xyzw=(
+            message.pose.orientation.x,
+            message.pose.orientation.y,
+            message.pose.orientation.z,
+            message.pose.orientation.w,
+        ),
+        linear_velocity_xyz=(
+            message.twist.linear.x,
+            message.twist.linear.y,
+            message.twist.linear.z,
+        ),
+        grounded=message.grounded,
+        attached=message.attached,
+    )
+
+
+def payload_event_from_message(message: Any) -> PayloadEventSample:
+    return PayloadEventSample(
+        run_id=message.run_id,
+        sim_timestamp_ns=_timestamp_ns(message.sim_timestamp),
+        event_id=message.event_id,
+        aruco_id=message.aruco_id,
+        command_id=message.command_id,
+        action=message.action,
+        state=message.state,
+        code=message.code,
+    )
+
+
+def mission_event_from_message(message: Any) -> MissionEventSample:
+    return MissionEventSample(
+        run_id=message.run_id,
+        sim_timestamp_ns=_timestamp_ns(message.sim_timestamp),
+        event_id=message.event_id,
+        phase=message.phase,
+        state=message.state,
+        detail=message.detail,
+    )
+
+
 def score_event_message(event: ScoreEvent, message_type: Callable[[], Any]) -> Any:
     message = message_type()
     message.run_id = event.run_id
@@ -149,13 +215,22 @@ class DriverProtocol(Protocol):
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
 
 
+class ScoreRuntimeProtocol(Protocol):
+    quiescent: bool
+    result: ScoreResult | None
+
+    def source_inputs_observed_through(self, timestamp_ns: int) -> bool: ...
+    def accept_source_finished(self, sim_timestamp_ns: int) -> ScoreResult: ...
+    def begin_finalization(self) -> None: ...
+
+
 class ScorekeeperDriver:
     """Idempotently bridge durable source/finalization facts into the runtime."""
 
     def __init__(
         self,
         run_id: str,
-        runtime: ScorekeeperRuntime,
+        runtime: ScoreRuntimeProtocol,
         protocol: DriverProtocol,
         *,
         on_scored: Callable[[bool, float, int], None] = lambda _complete, _score, _stamp: None,
@@ -263,13 +338,26 @@ class _RosBoundary:
 
 def _create_ros_boundary(
     run_id: str,
-    runtime_ref: list[ScorekeeperRuntime],
+    runtime_ref: list[ScoreRuntimeProtocol],
     logger: _StructuredLogger,
+    *,
+    scenario: str = "descent_v1",
 ) -> _RosBoundary:
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from rosgraph_msgs.msg import Clock
-    from simulation_interfaces.msg import GroundTruth, RunState, ScenarioEvent, ScoreEvent
+    from simulation_interfaces.msg import (
+        GroundTruth,
+        MissionEvent,
+        PayloadEvent,
+        PayloadState,
+        RunState,
+        ScenarioEvent,
+        ScoreEvent,
+    )
+
+    if scenario not in {"descent_v1", "competition_v1"}:
+        raise ValueError("unsupported scoring scenario")
 
     node = Node("drone_sim_scorekeeper")
     publisher = node.create_publisher(
@@ -300,6 +388,43 @@ def _create_ros_boundary(
         except BaseException as error:
             errors.append(error)
 
+    def accept_payload_state(message: Any) -> None:
+        try:
+            runtime_ref[0].accept_payload_state(payload_state_from_message(message))
+        except BaseException as error:
+            errors.append(error)
+
+    def accept_payload_event(message: Any) -> None:
+        try:
+            sample = payload_event_from_message(message)
+            runtime_ref[0].accept_payload_event(sample)
+            if sample.run_id == run_id:
+                logger.emit(
+                    "payload_event_observed",
+                    sim_timestamp_ns=sample.sim_timestamp_ns,
+                    event_id=sample.event_id,
+                    aruco_id=sample.aruco_id,
+                    action=sample.action,
+                    state=sample.state,
+                )
+        except BaseException as error:
+            errors.append(error)
+
+    def accept_mission_event(message: Any) -> None:
+        try:
+            sample = mission_event_from_message(message)
+            runtime_ref[0].accept_mission_event(sample)
+            if sample.run_id == run_id:
+                logger.emit(
+                    "mission_event_observed",
+                    sim_timestamp_ns=sample.sim_timestamp_ns,
+                    event_id=sample.event_id,
+                    phase=sample.phase,
+                    state=sample.state,
+                )
+        except BaseException as error:
+            errors.append(error)
+
     def accept_clock(_message: Any) -> None:
         return
 
@@ -310,18 +435,50 @@ def _create_ros_boundary(
         GroundTruth,
         "/simulation/ground_truth",
         accept_ground_truth,
-        QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT),
-    )
-    node.create_subscription(
-        ScenarioEvent,
-        "/simulation/scenario_events",
-        accept_scenario,
         QoSProfile(
+            depth=10,
+            reliability=(
+                ReliabilityPolicy.RELIABLE
+                if scenario == "competition_v1"
+                else ReliabilityPolicy.BEST_EFFORT
+            ),
+        ),
+    )
+    if scenario == "competition_v1":
+        node.create_subscription(
+            PayloadState,
+            "/simulation/payload_state",
+            accept_payload_state,
+            QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
+        )
+        event_qos = QoSProfile(
             depth=100,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        ),
-    )
+        )
+        node.create_subscription(
+            PayloadEvent,
+            "/simulation/payload_events",
+            accept_payload_event,
+            event_qos,
+        )
+        node.create_subscription(
+            MissionEvent,
+            "/simulation/mission_events",
+            accept_mission_event,
+            event_qos,
+        )
+    else:
+        node.create_subscription(
+            ScenarioEvent,
+            "/simulation/scenario_events",
+            accept_scenario,
+            QoSProfile(
+                depth=100,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
     node.create_subscription(
         Clock,
         "/clock",
@@ -352,31 +509,48 @@ def main() -> int:
             "SIM_CONFIG_PATH", str(run_directory / "configuration/run.json")
         )
     )
-    rules_path = Path(
+    settings = load_runtime_settings(config_path, run_id)
+    rules_path = rules_path_for_scenario(
         os.environ.get(
             "SIM_SCORE_RULES_PATH",
-            "/opt/drone_sim/scorekeeper/rules/descent_v1.json",
-        )
+            "/opt/drone_sim/scorekeeper/rules",
+        ),
+        settings.scenario,
     )
-    settings = load_runtime_settings(config_path, run_id)
-    rules = load_descent_rules(rules_path)
     protocol = RuntimeProtocol(run_directory, run_id)
     logger = _StructuredLogger(run_id)
-    runtime_ref: list[ScorekeeperRuntime] = []
+    runtime_ref: list[ScoreRuntimeProtocol] = []
     rclpy.init()
-    boundary = _create_ros_boundary(run_id, runtime_ref, logger)
-    runtime = ScorekeeperRuntime(
+    boundary = _create_ros_boundary(
         run_id,
-        DescentScorer(
-            run_id,
-            rules,
-            expected_ground_truth_samples=settings.expected_ground_truth_samples,
-        ),
-        run_directory=run_directory,
-        protocol=protocol,
-        publish=boundary.publish,
-        flush=boundary.flush,
+        runtime_ref,
+        logger,
+        scenario=settings.scenario,
     )
+    if settings.scenario == "competition_v1":
+        rules = load_competition_rules(rules_path)
+        runtime: ScoreRuntimeProtocol = CompetitionScorekeeperRuntime(
+            run_id,
+            CompetitionScorer(run_id, rules),
+            run_directory=run_directory,
+            protocol=protocol,
+            publish=boundary.publish,
+            flush=boundary.flush,
+        )
+    else:
+        rules = load_descent_rules(rules_path)
+        runtime = ScorekeeperRuntime(
+            run_id,
+            DescentScorer(
+                run_id,
+                rules,
+                expected_ground_truth_samples=settings.expected_ground_truth_samples,
+            ),
+            run_directory=run_directory,
+            protocol=protocol,
+            publish=boundary.publish,
+            flush=boundary.flush,
+        )
     runtime_ref.append(runtime)
     driver = ScorekeeperDriver(
         run_id,
@@ -387,7 +561,7 @@ def main() -> int:
             sim_timestamp_ns=stamp,
             complete=complete,
             achieved_score=score,
-            maximum_available_score=100.0,
+            maximum_available_score=rules.maximum_available_score,
             scoring_checksum=rules.scoring_checksum,
         ),
         before_quiescence=lambda: logger.emit(
@@ -437,6 +611,10 @@ __all__ = [
     "ground_truth_from_message",
     "load_runtime_settings",
     "main",
+    "mission_event_from_message",
+    "payload_event_from_message",
+    "payload_state_from_message",
+    "rules_path_for_scenario",
     "scenario_from_message",
     "score_event_message",
 ]
