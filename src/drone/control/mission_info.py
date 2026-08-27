@@ -129,7 +129,7 @@ class MissonTracker:
         return -1.0
 
     def time_left(self) -> float:
-        if self.mission_begin:
+        if self.mission_begin is not None:
             elapsed = time.time() - self.mission_begin
             return self.mission_time_seconds - elapsed
         return -1.0

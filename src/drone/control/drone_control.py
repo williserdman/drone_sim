@@ -405,10 +405,11 @@ class DroneControl:
         self.vehicle.armed = False
         t0 = time.time()
         while self.vehicle.armed:
-            if time.time() - t0 >= 15.0:
+            remaining = 15.0 - (time.time() - t0)
+            if remaining <= 0:
                 print("[!] Disarm confirmation timed out.")
                 return -1
-            time.sleep(0.1)
+            time.sleep(min(0.1, remaining))
         print("[*] Vehicle is DISARMED.")
         return 0
 
@@ -511,6 +512,7 @@ class DroneControl:
     def hold_waypoint_until_stable(
         self,
         coord: GPSCoord,
+        lidar,
         hold_seconds=2.0,
         vel_threshold=0.10,
         pos_tolerance=0.15,
@@ -518,10 +520,11 @@ class DroneControl:
     ) -> bool:
         """
         Commands and holds a GPS waypoint, then waits until the drone is both
-        near the waypoint, at the commanded altitude, and stable (low horizontal
+        near the waypoint, at the commanded AGL, and stable (low horizontal
         speed) for hold_seconds.
 
         :param coord: Target GPS waypoint.
+        :param lidar: Downward AGL source sampled throughout the hold.
         :param hold_seconds: Continuous stable time required.
         :param vel_threshold: Maximum horizontal speed (m/s) to count as stable.
         :param pos_tolerance: Horizontal distance tolerance to waypoint (m).
@@ -556,7 +559,10 @@ class DroneControl:
                 current_pos = GPSCoord(loc.lat, loc.lon, loc.alt if loc.alt else 0)
                 target_pos = GPSCoord(coord.lat, coord.long, 0)
                 distance = horiz_distance_m(current_pos, target_pos)
-                altitude_ok = loc.alt is not None and loc.alt >= target_alt
+                try:
+                    altitude_ok = lidar.get_distance() >= target_alt
+                except Exception:
+                    altitude_ok = False
 
                 if (
                     distance <= pos_tolerance

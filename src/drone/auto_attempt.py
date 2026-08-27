@@ -39,14 +39,14 @@ def run_auto_attempt(
         if timebase.time() - mission_start_sim_time > MISSION_DEADLINE_SECONDS:
             raise TimeoutError("automatic mission exceeded 600 simulated seconds")
 
-    def run_phase(name: str, action) -> None:
+    def run_phase(name: str, action, *, require_true: bool = False) -> None:
         require_deadline()
         emit(name, "STARTED")
         with timebase._deadline(
             mission_start_sim_time, MISSION_DEADLINE_SECONDS
         ):
             result = action()
-        if result is False:
+        if (require_true and result is not True) or result is False:
             raise RuntimeError(f"{name} failed")
         require_deadline()
         emit(name, "COMPLETE")
@@ -81,6 +81,7 @@ def run_auto_attempt(
             waypoints["WA"],
             waypoints["F2"],
         ),
+        require_true=True,
     )
     run_phase(
         "FM3_4",
@@ -94,16 +95,19 @@ def run_auto_attempt(
             waypoints["WM"],
             waypoints["F2"],
         ),
+        require_true=True,
     )
 
     require_deadline()
     emit("HOME", "STARTED")
     with timebase._deadline(mission_start_sim_time, MISSION_DEADLINE_SECONDS):
         home = waypoints["H"]
-        controller.goto_waypoint(
+        if controller.goto_waypoint(
             GPSCoord(home.lat, home.long, MISSION_ALTITUDE_METERS)
-        )
-        controller.simple_land()
+        ) != 0:
+            raise RuntimeError("Home navigation failed")
+        if controller.simple_land() != 0:
+            raise RuntimeError("Home landing was not confirmed")
         if controller.disarm() != 0:
             raise RuntimeError("Home disarm was not confirmed")
         require_deadline()

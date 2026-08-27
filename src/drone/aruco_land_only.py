@@ -22,14 +22,10 @@ def aruco_land_precision(
     controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
 ):
     controller.set_guided_mode()
-<<<<<<< Updated upstream
     # TODO: ensure we are 3-4 meters using lidar above target before initializing PL sequence
     alt = lidar.get_distance()
     how_much_down = alt - 3
     controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
-=======
-    controller.guide_move_relative_frame(RelPosComplete(0, 0, 6))
->>>>>>> Stashed changes
     # original_gps = controller.get_current_gps()
 
     print("[*] Searching for ArUco to initiate Precision Landing...")

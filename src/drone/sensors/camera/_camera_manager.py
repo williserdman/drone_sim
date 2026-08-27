@@ -261,10 +261,12 @@ class CameraManager:
             self.last_frame_timestamp = getattr(
                 self.frame_source,
                 "last_timestamp_ns",
-                getattr(self.frame_source, "last_timestamp", None),
+                None,
             )
             if self.last_frame_timestamp is None:
-                self.last_frame_timestamp = time.monotonic_ns()
+                raise RuntimeError(
+                    "Injected frame source must expose last_timestamp_ns"
+                )
 
         width = frame.shape[1]
         height = frame.shape[0]

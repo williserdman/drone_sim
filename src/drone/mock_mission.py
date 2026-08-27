@@ -117,33 +117,32 @@ def pickup_sequence(
     t0 = time.time()
 
     # 1. Drop down to search altitude
-    alt, _ = _read_lidar_or_fallback(lidar, controller)
-    if alt is None:
+    try:
+        alt = lidar.get_distance()
+    except Exception as error:
+        print(f"[ERR] Cannot read acquisition AGL: {error}")
         print("[ERR] Cannot start pickup sequence without altitude data.")
         return False
     how_much_down = alt - TARGET_HOVER_HEIGHT
     print(f"moving down {how_much_down}m")
 
-    # You can still use a relative move just for the Z-axis drop,
-    # but make sure to wait for it to finish!
-    # controller.guide_move_relative_frame(RelPosComplete(0, 0, how_much_down))
-    # time.sleep(5)
-    controller.climb(alt - how_much_down)
+    controller.guide_move_relative_frame(
+        RelPosComplete(0, 0, how_much_down)
+    )
 
-    # attempt for one minute
-    # print("entering height wait")
-    # for _ in range (600):
-    # if abs(lidar.get_distance() - TARGET_HOVER_HEIGHT) > HOVER_ALT_TOL:
-    # break
-    # time.sleep(0.1)
-
-    hover_alt, _ = _read_lidar_or_fallback(lidar, controller)
-    if hover_alt is not None:
-        print(f"[*] Hover alt difference: {abs(hover_alt - TARGET_HOVER_HEIGHT)}")
+    hover_start = time.time()
+    while time.time() - hover_start < timeout:
+        try:
+            hover_alt = lidar.get_distance()
+        except Exception as error:
+            print(f"[ERR] Cannot verify acquisition AGL: {error}")
+            return False
+        if abs(hover_alt - TARGET_HOVER_HEIGHT) <= HOVER_ALT_TOL:
+            break
+        time.sleep(0.1)
     else:
-        print(
-            "[WARN] Hover altitude difference unavailable due to sensor read failures."
-        )
+        print("[!] Acquisition AGL was not reached.")
+        return False
 
     print("[*] Searching for ArUco to initiate Precision Landing...")
     target_found = False
@@ -186,6 +185,10 @@ def pickup_sequence(
         for _ in range(5):
             update = camera.vec_to_marker_3d(target_id, quality=quality)
             if update:
+                correction_frame_timestamp = camera.last_frame_timestamp
+                if correction_frame_timestamp is None:
+                    time.sleep(0.1)
+                    continue
                 print("[*] Target Acquired! Switching to LAND mode.")
                 controller.vehicle.flush()
 
@@ -203,7 +206,7 @@ def pickup_sequence(
 
                 time.sleep(1)  # Let it center before triggering land
                 acquisition_start = time.time()
-                last_frame_timestamp = None
+                seen_frame_timestamps = {correction_frame_timestamp}
                 centered_fresh_results = 0
                 while time.time() - acquisition_start < timeout:
                     centered_update = camera.vec_to_marker_3d(
@@ -211,8 +214,23 @@ def pickup_sequence(
                     )
                     if centered_update is not None:
                         frame_timestamp = camera.last_frame_timestamp
-                        if frame_timestamp != last_frame_timestamp:
-                            last_frame_timestamp = frame_timestamp
+                        if (
+                            frame_timestamp is not None
+                            and frame_timestamp not in seen_frame_timestamps
+                        ):
+                            seen_frame_timestamps.add(frame_timestamp)
+                            try:
+                                acquisition_agl = lidar.get_distance()
+                            except Exception as error:
+                                print(f"[ERR] Cannot verify acquisition AGL: {error}")
+                                return False
+                            if (
+                                abs(acquisition_agl - TARGET_HOVER_HEIGHT)
+                                > HOVER_ALT_TOL
+                            ):
+                                centered_fresh_results = 0
+                                time.sleep(0.1)
+                                continue
                             horizontal_error = math.hypot(
                                 centered_update.x, centered_update.y
                             )
@@ -233,7 +251,7 @@ def pickup_sequence(
             return False
         if controller.disarm() != 0:
             return False
-        if dropper.attach(target_id) is False:
+        if dropper.attach(target_id) is not True:
             print(f"[!] Attachment rejected for ID {target_id}.")
             return False
         return True
@@ -258,17 +276,20 @@ def fm3(
         for id in IDs:
 
             if mt.time_left() < 60:
-                return
+                return False
 
             print("going to pickup waypoint")
             val = controller.goto_waypoint(pickup_point)
             print(f"return of goto func: {val}")
+            if val != 0:
+                return False
 
             print("init pickup sequence")
             success = pickup_sequence(controller, camera, lidar, id, dropper)
 
             if success:
-                controller.set_guided_mode()
+                if controller.set_guided_mode() != 0:
+                    return False
                 print("climb")
                 if controller.vehicle.armed and controller.is_landed():
                     print("vehicle armed")
@@ -283,6 +304,8 @@ def fm3(
                 print("going to drop point")
                 val = controller.goto_waypoint(target_point)
                 print(f"return of goto func: {val}")
+                if val != 0:
+                    return False
 
                 camera.save_frame_buffer_async()
 
@@ -293,8 +316,11 @@ def fm3(
                 lidar_alt, _ = _read_lidar_or_fallback(lidar, controller)
                 if lidar_alt is not None and lidar_alt < desired_drop_height_m:
                     drop_target.alt += desired_drop_height_m - lidar_alt
-                    controller.goto_waypoint(drop_target)
-                if not controller.hold_waypoint_until_stable(drop_target):
+                    if controller.goto_waypoint(drop_target) != 0:
+                        return False
+                if not controller.hold_waypoint_until_stable(
+                    drop_target, lidar
+                ):
                     print(f"Skipping drop for ID {id}: stability gate timed out.")
                     return False
                 dropper.drop()
@@ -308,13 +334,18 @@ def fm3(
         print("[ERR]", e)
         controller.rtl()
         camera.save_frame_buffer_async()
+        return False
     except KeyboardInterrupt as e:
         print("[ERR]", e)
         controller.rtl()
         camera.save_frame_buffer_async()
+        return False
 
 
 if __name__ == "__main__":
+    from .sensors.lidar.lidar import Lidar
+    from .sensors.servo.servo import Dropper
+
     mt = MissonTracker(600)
     mt.begin_mission()
     controller = DroneControl("/dev/ttyACM0")

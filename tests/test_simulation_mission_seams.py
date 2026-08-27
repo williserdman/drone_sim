@@ -1,4 +1,5 @@
 import importlib
+import runpy
 import sys
 from types import SimpleNamespace
 from types import ModuleType
@@ -84,6 +85,18 @@ def test_mission_tracker_uses_elapsed_simulation_time():
         assert tracker.time_left() == 550.0
 
 
+def test_mission_tracker_accepts_zero_as_a_valid_start_time():
+    """Regression: simulation epoch zero must retain the mission allowance."""
+    from drone.control.mission_info import MissonTracker
+
+    clock = FakeClock(now_value=0.0)
+    with timebase.configured(clock):
+        tracker = MissonTracker(600)
+        tracker.begin_mission()
+        clock.sleep(50.0)
+        assert tracker.time_left() == 550.0
+
+
 def test_disarm_waits_for_dronekit_to_observe_false():
     """Regression: assigning armed=False is not confirmation of disarm."""
     clock = FakeClock()
@@ -108,7 +121,7 @@ def test_disarm_returns_failure_after_fifteen_simulated_seconds():
     with timebase.configured(clock):
         assert controller.disarm() == -1
 
-    assert clock.now_value == pytest.approx(15.0, abs=0.11)
+    assert clock.now_value == pytest.approx(15.0, abs=1e-12)
 
 
 class StableVehicle:
@@ -136,33 +149,25 @@ def test_release_stability_uses_horizontal_speed_and_resets_continuous_window():
 
     with timebase.configured(clock):
         stable = controller.hold_waypoint_until_stable(
-            GPSCoord(41.0, -81.0, 10.0), timeout=4.0
+            GPSCoord(41.0, -81.0, 10.0), FakeLidar(), timeout=4.0
         )
 
     assert stable is True
     assert clock.now_value == pytest.approx(3.2, abs=0.21)
 
 
-class RisingVehicle(StableVehicle):
-    @property
-    def velocity(self):
-        return (0.10, 0.0, 0.0)
-
-    def simple_goto(self, target):
-        super().simple_goto(target)
-        self.location.global_relative_frame.alt = (
-            9.999999 if self.clock.now() <= 1.0 else 10.0
-        )
-
-
 def test_release_stability_resets_below_ten_metres_agl():
     """Regression: quiet flight below the release height must not count."""
     clock = FakeClock()
-    controller = controller_without_connect(RisingVehicle(clock))
+    controller = controller_without_connect(StableVehicle(clock))
+
+    class RisingLidar:
+        def get_distance(self):
+            return 9.999999 if clock.now() <= 1.0 else 10.0
 
     with timebase.configured(clock):
         stable = controller.hold_waypoint_until_stable(
-            GPSCoord(41.0, -81.0, 10.0), timeout=4.0
+            GPSCoord(41.0, -81.0, 10.0), RisingLidar(), timeout=4.0
         )
 
     assert stable is True
@@ -189,7 +194,8 @@ class ReleaseController:
     def goto_waypoint(self, waypoint, position_tol=None):
         return 0
 
-    def hold_waypoint_until_stable(self, waypoint):
+    def hold_waypoint_until_stable(self, waypoint, lidar):
+        self.hold_lidar = lidar
         return self.stable
 
     def set_guided_mode(self):
@@ -235,17 +241,20 @@ def test_fm2_refuses_release_when_stability_gate_times_out():
     from drone.missions.fm2 import fm2
 
     payload = RecordingPayload()
+    controller = ReleaseController(stable=False)
+    lidar = FakeLidar()
     result = fm2(
         mt=object(),
-        controller=ReleaseController(stable=False),
+        controller=controller,
         cruise_alt=10,
         drop_target=GPSCoord(41.0, -81.0, 10.0),
         dropper=payload,
-        lidar=FakeLidar(),
+        lidar=lidar,
     )
 
     assert result is False
     assert payload.drop_calls == 0
+    assert controller.hold_lidar is lidar
 
 
 class RecordingCamera:
@@ -254,8 +263,11 @@ class RecordingCamera:
 
 
 class TrackerWithTime:
+    def __init__(self, seconds=500.0):
+        self.seconds = seconds
+
     def time_left(self):
-        return 500.0
+        return self.seconds
 
 
 def test_fm3_refuses_release_when_stability_gate_times_out(monkeypatch):
@@ -277,6 +289,89 @@ def test_fm3_refuses_release_when_stability_gate_times_out(monkeypatch):
 
     assert result is False
     assert payload.drop_calls == 0
+
+
+def test_fm3_low_time_exit_is_explicit_failure():
+    """Regression: a skipped FM3 phase must not look successful to its caller."""
+    active = importlib.import_module("drone.mock_mission")
+
+    result = active.fm3(
+        TrackerWithTime(59.0),
+        ReleaseController(stable=True),
+        RecordingCamera(),
+        FakeLidar(),
+        RecordingPayload(),
+        {3},
+        GPSCoord(41.0, -81.0, 10.0),
+        GPSCoord(41.1, -81.1, 10.0),
+    )
+
+    assert result is False
+
+
+class FailingMissionController:
+    def __init__(self):
+        self.rtl_calls = 0
+
+    def goto_waypoint(self, waypoint):
+        raise RuntimeError("navigation failed")
+
+    def rtl(self):
+        self.rtl_calls += 1
+
+
+class SavingCamera:
+    def __init__(self):
+        self.save_calls = 0
+
+    def save_frame_buffer_async(self):
+        self.save_calls += 1
+
+
+def test_fm3_exception_path_is_explicit_failure():
+    """Regression: caught mission exceptions must not become FM3 completion."""
+    active = importlib.import_module("drone.mock_mission")
+    controller = FailingMissionController()
+    camera = SavingCamera()
+
+    result = active.fm3(
+        TrackerWithTime(),
+        controller,
+        camera,
+        FakeLidar(),
+        RecordingPayload(),
+        {3},
+        GPSCoord(41.0, -81.0, 10.0),
+        GPSCoord(41.1, -81.1, 10.0),
+    )
+
+    assert result is False
+    assert controller.rtl_calls == 1
+    assert camera.save_calls == 1
+
+
+class FailedGotoController(ReleaseController):
+    def goto_waypoint(self, waypoint, position_tol=None):
+        return -1
+
+
+def test_fm3_navigation_failure_is_explicit_failure(monkeypatch):
+    """Regression: a waypoint timeout must not become FM3 success."""
+    active = importlib.import_module("drone.mock_mission")
+    monkeypatch.setattr(active, "pickup_sequence", lambda *args: True)
+
+    result = active.fm3(
+        TrackerWithTime(),
+        FailedGotoController(stable=True),
+        RecordingCamera(),
+        FakeLidar(),
+        RecordingPayload(),
+        {3},
+        GPSCoord(41.0, -81.0, 10.0),
+        GPSCoord(41.1, -81.1, 10.0),
+    )
+
+    assert result is False
 
 
 class AcquisitionCamera:
@@ -313,6 +408,10 @@ class PickupController:
     def climb(self, altitude):
         self.events.append(("climb", altitude))
 
+    def guide_move_relative_frame(self, direction):
+        self.events.append(("relative_down", direction.z))
+        return 0
+
     def get_current_gps(self):
         return GPSCoord(41.0, -81.0, 10.0)
 
@@ -338,7 +437,7 @@ class PickupController:
         self.events.append(("takeoff", altitude))
         self.vehicle.armed = True
 
-    def hold_waypoint_until_stable(self, waypoint):
+    def hold_waypoint_until_stable(self, waypoint, lidar):
         return True
 
     def rtl(self):
@@ -347,6 +446,24 @@ class PickupController:
 
 def centered_updates(timestamps):
     return [(timestamp, RelPosComplete(0.5, 0.0, 4.572)) for timestamp in timestamps]
+
+
+class PickupLidar:
+    def __init__(self, acquisition_values=None):
+        self.calls = 0
+        self.acquisition_values = list(
+            acquisition_values
+            if acquisition_values is not None
+            else [4.572] * 20
+        )
+
+    def get_distance(self):
+        self.calls += 1
+        if self.calls == 1:
+            return 10.0
+        if self.acquisition_values:
+            return self.acquisition_values.pop(0)
+        return 4.572
 
 
 def test_pickup_requires_five_distinct_centered_results_after_correction(monkeypatch):
@@ -359,11 +476,11 @@ def test_pickup_requires_five_distinct_centered_results_after_correction(monkeyp
         "aruco_land_precision",
         lambda *args: events.append(("landed", 3)) or True,
     )
-    payload = RecordingPayload(events=events)
+    payload = RecordingPayload(attach_result=True, events=events)
 
     with timebase.configured(FakeClock()):
         result = active.pickup_sequence(
-            PickupController(events), camera, FakeLidar(), 3, payload
+            PickupController(events), camera, PickupLidar(), 3, payload
         )
 
     assert result is True
@@ -386,9 +503,9 @@ def test_four_results_with_one_repeated_timestamp_cannot_acquire(monkeypatch):
         result = active.pickup_sequence(
             PickupController(events),
             camera,
-            FakeLidar(),
+            PickupLidar(),
             3,
-            RecordingPayload(events=events),
+            RecordingPayload(attach_result=True, events=events),
         )
 
     assert result is False
@@ -396,7 +513,58 @@ def test_four_results_with_one_repeated_timestamp_cannot_acquire(monkeypatch):
     assert not any(event[0] == "landed" for event in events)
 
 
-def test_rejected_attachment_prevents_fm3_takeoff(monkeypatch):
+def test_pre_correction_frame_cannot_count_again_for_acquisition(monkeypatch):
+    """Regression: the correction frame must not be one of five fresh results."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 1, 2, 3, 4, 5]))
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert camera.consumed_timestamps == [1, 1, 2, 3, 4, 5]
+    assert not any(event[0] == "landed" for event in events)
+
+
+def test_alternating_replayed_frames_cannot_acquire(monkeypatch):
+    """Regression: non-adjacent timestamp replay must not advance acquisition."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 2, 3, 4, 5]))
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert camera.consumed_timestamps == [1, 2, 3, 2, 3, 4, 5]
+    assert not any(event[0] == "landed" for event in events)
+
+
+@pytest.mark.parametrize("attach_result", [None, 0, False])
+def test_rejected_attachment_prevents_fm3_takeoff(monkeypatch, attach_result):
     """Regression: an unconfirmed joint must not be carried away from pickup."""
     active = importlib.import_module("drone.mock_mission")
     events = []
@@ -414,8 +582,8 @@ def test_rejected_attachment_prevents_fm3_takeoff(monkeypatch):
             TrackerWithTime(),
             controller,
             camera,
-            FakeLidar(),
-            RecordingPayload(attach_result=False, events=events),
+            PickupLidar(),
+            RecordingPayload(attach_result=attach_result, events=events),
             {3},
             GPSCoord(41.0, -81.0, 10.0),
             GPSCoord(41.1, -81.1, 10.0),
@@ -429,6 +597,56 @@ def test_rejected_attachment_prevents_fm3_takeoff(monkeypatch):
     )
 
 
+def test_pickup_fails_when_lidar_never_reaches_acquisition_agl(monkeypatch):
+    """Regression: commanding altitude is not proof of 4.572 m AGL."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6]))
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: pytest.fail("LAND must not start above acquisition AGL"),
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            FakeLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert ("relative_down", 10.0 - 4.572) in events
+
+
+def test_pickup_agl_must_remain_valid_for_five_results(monkeypatch):
+    """Regression: an AGL excursion must reset the acquisition window."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6]))
+    lidar = PickupLidar(
+        acquisition_values=[4.572, 4.572, 4.572, 6.0, 4.572, 4.572]
+    )
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: pytest.fail("LAND requires five continuous AGL samples"),
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            lidar,
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+
+
 class InjectedFrameSource:
     def __init__(self, frame):
         self.frame = frame
@@ -437,6 +655,14 @@ class InjectedFrameSource:
 
     def capture_frame(self, quality=4):
         self.calls.append(quality)
+        return self.frame
+
+
+class UntimestampedFrameSource:
+    def __init__(self, frame):
+        self.frame = frame
+
+    def capture_frame(self, quality=4):
         return self.frame
 
 
@@ -464,6 +690,27 @@ def test_injected_camera_frames_do_not_open_hardware_index_zero(monkeypatch, tmp
     assert manager.last_frame_timestamp == 123_000_000
 
 
+def test_injected_camera_source_requires_a_real_timestamp(monkeypatch):
+    """Regression: repeated injected frames must not receive synthetic freshness."""
+    import cv2
+    import numpy as np
+
+    from drone.sensors.camera._camera_manager import CameraManager
+
+    monkeypatch.setattr(
+        cv2,
+        "VideoCapture",
+        lambda index: pytest.fail(f"opened hardware camera index {index}"),
+    )
+    source = UntimestampedFrameSource(
+        np.zeros((480, 640, 3), dtype=np.uint8)
+    )
+    manager = CameraManager(frame_source=source)
+
+    with pytest.raises(RuntimeError, match="timestamp"):
+        manager.capture_frame()
+
+
 def test_camera_accepts_an_injected_manager():
     """Regression: constructing Camera for simulation must not create hardware."""
     from drone.sensors.camera.camera import Camera
@@ -472,3 +719,40 @@ def test_camera_accepts_an_injected_manager():
     camera = Camera(50, manager=manager)
 
     assert camera.cm is manager
+
+
+def test_mock_mission_main_imports_hardware_classes_locally(monkeypatch):
+    """Regression: type-only imports must not break the direct mission entry."""
+    import drone.control.drone_control as control_module
+    import drone.sensors.camera.camera as camera_module
+
+    reached_lidar_constructor = []
+
+    class MainController:
+        def __init__(self, connection_port):
+            pass
+
+    class MainCamera:
+        def __init__(self, marker_size_mm):
+            pass
+
+    class MainLidar:
+        def __init__(self):
+            reached_lidar_constructor.append(True)
+            raise RuntimeError("stop main after local import")
+
+    lidar_module = ModuleType("drone.sensors.lidar.lidar")
+    lidar_module.Lidar = MainLidar  # type: ignore[attr-defined]
+    servo_module = ModuleType("drone.sensors.servo.servo")
+    servo_module.Dropper = object  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(control_module, "DroneControl", MainController)
+    monkeypatch.setattr(camera_module, "Camera", MainCamera)
+    monkeypatch.setitem(sys.modules, "drone.sensors.lidar.lidar", lidar_module)
+    monkeypatch.setitem(sys.modules, "drone.sensors.servo.servo", servo_module)
+    monkeypatch.delitem(sys.modules, "drone.mock_mission", raising=False)
+
+    with pytest.raises(SystemExit):
+        runpy.run_module("drone.mock_mission", run_name="__main__")
+
+    assert reached_lidar_constructor == [True]

@@ -47,6 +47,21 @@ class FakeController:
         return 0
 
 
+class FailingHomeController(FakeController):
+    def __init__(self, calls, *, goto_result=0, land_result=0):
+        super().__init__(calls)
+        self.goto_result = goto_result
+        self.land_result = land_result
+
+    def goto_waypoint(self, waypoint):
+        self.calls.append(("goto", waypoint))
+        return self.goto_result
+
+    def simple_land(self):
+        self.calls.append(("land", "H"))
+        return self.land_result
+
+
 class FakeMissionFunctions:
     def __init__(self, calls, clock=None):
         self.calls = calls
@@ -55,7 +70,7 @@ class FakeMissionFunctions:
     def fm1(self, tracker, controller, cruise_alt, waypoint_l):
         self.calls.append(("mission", "FM1", cruise_alt, waypoint_l))
         if self.clock is not None:
-            self.clock.sleep(601.0)
+            timebase.sleep(601.0)
 
     def fm2(
         self,
@@ -92,6 +107,7 @@ class FakeMissionFunctions:
                 target_point,
             )
         )
+        return True
 
 
 class BlockingMissionFunctions(FakeMissionFunctions):
@@ -114,6 +130,22 @@ class FailedFm2MissionFunctions(FakeMissionFunctions):
     ):
         self.calls.append(("mission", "FM2_FAILED"))
         return False
+
+
+class NoneFm3MissionFunctions(FakeMissionFunctions):
+    def fm3(
+        self,
+        tracker,
+        controller,
+        camera,
+        lidar,
+        payload,
+        possible_ids,
+        pickup_point,
+        target_point,
+    ):
+        self.calls.append(("mission", "FM3_NONE"))
+        return None
 
 
 def fake_waypoints():
@@ -244,7 +276,7 @@ def test_auto_attempt_deadline_is_relative_to_nonzero_mission_start():
                 mission_functions=FakeMissionFunctions(calls, clock=clock),
             )
 
-    assert clock.now_value == 1501.0
+    assert clock.now_value == 1500.0
     assert ("event", "FM1", "COMPLETE") not in calls
 
 
@@ -276,6 +308,7 @@ def test_deadline_interrupts_an_original_blocking_phase():
         1400.0,
         1500.0,
     ]
+    assert clock.now_value == 1500.0
 
 
 def test_explicit_phase_failure_aborts_the_single_attempt():
@@ -302,3 +335,63 @@ def test_explicit_phase_failure_aborts_the_single_attempt():
         call[:2] in {("event", "FM3_3"), ("event", "FM3_4")}
         for call in calls
     )
+
+
+def test_fm3_requires_explicit_true_before_emitting_complete():
+    """Regression: implicit None from active FM3 must abort the attempt."""
+    calls = []
+
+    with timebase.configured(FakeClock()):
+        with pytest.raises(RuntimeError, match="FM3_3 failed"):
+            run_auto_attempt(
+                tracker=FakeTracker(calls),
+                controller=FakeController(calls),
+                camera=object(),
+                lidar=object(),
+                payloads={
+                    marker: FakePayload(marker, calls) for marker in (2, 3, 4)
+                },
+                waypoints=fake_waypoints(),
+                emit=lambda phase, state: calls.append(("event", phase, state)),
+                mission_functions=NoneFm3MissionFunctions(calls),
+            )
+
+    assert ("event", "FM3_3", "COMPLETE") not in calls
+
+
+@pytest.mark.parametrize(
+    ("goto_result", "land_result", "expected_physical_calls"),
+    [
+        (-1, 0, ["goto"]),
+        (0, -1, ["goto", "land"]),
+    ],
+)
+def test_home_failure_prevents_disarm_and_terminal_events(
+    goto_result, land_result, expected_physical_calls
+):
+    """Regression: failed Home movement must not produce completion evidence."""
+    calls = []
+    controller = FailingHomeController(
+        calls, goto_result=goto_result, land_result=land_result
+    )
+
+    with timebase.configured(FakeClock()):
+        with pytest.raises(RuntimeError, match="Home"):
+            run_auto_attempt(
+                tracker=FakeTracker(calls),
+                controller=controller,
+                camera=object(),
+                lidar=object(),
+                payloads={
+                    marker: FakePayload(marker, calls) for marker in (2, 3, 4)
+                },
+                waypoints=fake_waypoints(),
+                emit=lambda phase, state: calls.append(("event", phase, state)),
+                mission_functions=FakeMissionFunctions(calls),
+            )
+
+    assert [call[0] for call in calls if call[0] in {"goto", "land", "disarm"}] == (
+        expected_physical_calls
+    )
+    assert ("event", "HOME", "DISARMED") not in calls
+    assert ("event", "HOME", "COMPLETE") not in calls

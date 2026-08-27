@@ -42,6 +42,17 @@ def monotonic() -> float:
 
 
 def sleep(seconds: float) -> None:
+    if _deadline_limit is not None:
+        start, duration = _deadline_limit
+        now = _active.now()
+        _check_deadline(now)
+        remaining = duration - (now - start)
+        if seconds > remaining:
+            if remaining > 0:
+                _active.sleep(remaining)
+            raise TimeoutError(
+                f"mission exceeded {duration:g} simulated seconds"
+            )
     _active.sleep(seconds)
     _check_deadline(_active.now())
 
