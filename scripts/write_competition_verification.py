@@ -4,13 +4,10 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 import hashlib
 import json
 from pathlib import Path
-
-
-CanonicalInspector = Callable[[Path], Mapping[str, object]]
 
 
 def _canonical_inspection(run_directory: Path) -> Mapping[str, object]:
@@ -36,13 +33,11 @@ def _score_text(value: float) -> str:
 def write_competition_verification(
     run_directory: Path | str,
     output: Path | str,
-    *,
-    inspector: CanonicalInspector | None = None,
 ) -> Path:
     """Pass canonical read-only acceptance, then write its evidence pointers."""
     directory = Path(run_directory).resolve()
     try:
-        inspection = (inspector or _canonical_inspection)(directory)
+        inspection = _canonical_inspection(directory)
     except Exception as error:
         raise ValueError("canonical competition inspection failed") from error
     expected_inspection_keys = {

@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from artifacts.acceptance import BundleAcceptanceError
+
 
 ROOT = Path(__file__).parents[2]
 RUN_ID = "00000000-0000-4000-8000-000000000606"
@@ -119,7 +121,9 @@ def _canonical_report(run_directory: Path) -> dict[str, object]:
     }
 
 
-def test_verification_writer_names_accepted_evidence_and_checkpoints(tmp_path):
+def test_verification_writer_names_accepted_evidence_and_checkpoints(
+    tmp_path, monkeypatch
+):
     module = _load("write_competition_verification")
     run_directory = tmp_path / "run"
     output = tmp_path / "verification.md"
@@ -131,11 +135,9 @@ def test_verification_writer_names_accepted_evidence_and_checkpoints(tmp_path):
         inspected.append(directory)
         return _canonical_report(directory)
 
-    module.write_competition_verification(
-        run_directory,
-        output,
-        inspector=inspector,
-    )
+    monkeypatch.setattr(module, "_canonical_inspection", inspector)
+
+    module.write_competition_verification(run_directory, output)
 
     note = output.read_text(encoding="utf-8")
     assert inspected == [run_directory.resolve()]
@@ -158,35 +160,52 @@ def test_verification_writer_names_accepted_evidence_and_checkpoints(tmp_path):
 
 @pytest.mark.parametrize(("complete", "achieved"), [(False, 150.0), (True, 145.0)])
 def test_verification_writer_refuses_unaccepted_manifest(
-    tmp_path, complete, achieved
+    tmp_path, monkeypatch, complete, achieved
 ):
     module = _load("write_competition_verification")
     run_directory = tmp_path / "run"
     _accepted_documents(run_directory, complete=complete, achieved=achieved)
 
+    monkeypatch.setattr(module, "_canonical_inspection", _canonical_report)
+
     with pytest.raises(ValueError, match="accepted 150/150"):
         module.write_competition_verification(
-            run_directory,
-            tmp_path / "verification.md",
-            inspector=_canonical_report,
+            run_directory, tmp_path / "verification.md"
         )
 
 
-def test_verification_writer_refuses_forged_manifest_and_result_only_bundle(tmp_path):
+def test_public_verification_writer_rejects_caller_supplied_inspector(tmp_path):
+    """A caller-controlled success report must not bypass canonical acceptance."""
+    module = _load("write_competition_verification")
+    run_directory = tmp_path / "run"
+    output = tmp_path / "verification.md"
+    _accepted_documents(run_directory)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'inspector'"):
+        module.write_competition_verification(
+            run_directory,
+            output,
+            inspector=_canonical_report,
+        )
+
+    assert not output.exists()
+
+
+def test_verification_writer_refuses_forged_manifest_and_result_only_bundle(
+    tmp_path, monkeypatch
+):
     """Two convincing JSON files cannot bypass the canonical bundle inspector."""
     module = _load("write_competition_verification")
     run_directory = tmp_path / "forged-run"
     output = tmp_path / "verification.md"
     _accepted_documents(run_directory)
 
-    def reject_forgery(_directory):
-        raise ValueError("required videos, rosbag, logs, and checksums are absent")
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
 
-    with pytest.raises(ValueError, match="canonical competition inspection failed"):
-        module.write_competition_verification(
-            run_directory,
-            output,
-            inspector=reject_forgery,
-        )
+    with pytest.raises(
+        ValueError, match="canonical competition inspection failed"
+    ) as raised:
+        module.write_competition_verification(run_directory, output)
 
+    assert isinstance(raised.value.__cause__, BundleAcceptanceError)
     assert not output.exists()
