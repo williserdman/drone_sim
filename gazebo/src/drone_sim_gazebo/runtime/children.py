@@ -12,6 +12,8 @@ import signal
 import subprocess
 import time
 
+from ..ros_adapter.topics import camera_topics_for_world
+
 
 class ChildProcessError(RuntimeError):
     """A bridge child could not start or quiesce safely."""
@@ -30,7 +32,10 @@ class ChildSpec:
 
 
 def gazebo_child_specs(
-    *, bridge_config: Path, environment: Mapping[str, str]
+    *,
+    bridge_config: Path,
+    environment: Mapping[str, str],
+    world_name: str,
 ) -> tuple[ChildSpec, ...]:
     bridge = ChildSpec(
         "bridge",
@@ -52,8 +57,7 @@ def gazebo_child_specs(
             "run",
             "ros_gz_image",
             "image_bridge",
-            "/gazebo/private/camera/onboard/image",
-            "/gazebo/private/camera/observer/image",
+            *camera_topics_for_world(world_name),
         ),
         environment,
     )

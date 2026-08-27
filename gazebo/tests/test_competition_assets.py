@@ -157,10 +157,18 @@ def test_generated_vehicle_has_centered_camera_offset_range_and_one_hardpoint(tm
     camera = model.find("link[@name='competition_sensor_link']/sensor[@name='downward_camera']")
     assert camera is not None
     assert camera.findtext("pose") == "0 0 -0.1 0 1.570796327 0"
-    assert camera.findtext("topic") == "/gazebo/private/camera/onboard/image"
+    assert camera.findtext("topic") == (
+        "/gazebo/private/camera/competition_onboard/image"
+    )
     assert camera.findtext("update_rate") == "20"
     assert camera.findtext("camera/image/width") == "640"
     assert camera.findtext("camera/image/height") == "480"
+
+    inherited = ET.parse(
+        RESOURCES / "models/iris_phase3/model.sdf"
+    ).getroot().find("model/.//sensor[@name='onboard_camera']")
+    assert inherited is not None
+    assert inherited.findtext("topic") != camera.findtext("topic")
 
     sensor = model.find("link[@name='competition_sensor_link']/sensor[@name='downward_range']")
     assert sensor is not None

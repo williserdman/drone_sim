@@ -3,12 +3,11 @@
 
 PAYLOAD_IDS = (2, 3, 4)
 _WORLDS = {"phase3_foundation", "vertical_descent", "competition_mission"}
-_COMMON_PRIVATE_PUBLISHERS = (
-    "/gazebo/private/clock",
-    "/gazebo/private/camera/onboard/image",
-    "/gazebo/private/camera/observer/image",
-    "/gazebo/private/iris/odometry",
+_ONBOARD_CAMERA_TOPIC = "/gazebo/private/camera/onboard/image"
+_COMPETITION_ONBOARD_CAMERA_TOPIC = (
+    "/gazebo/private/camera/competition_onboard/image"
 )
+_OBSERVER_CAMERA_TOPIC = "/gazebo/private/camera/observer/image"
 
 
 def _world(world_name: str) -> str:
@@ -25,6 +24,16 @@ def contact_topic_for_world(world_name: str) -> str:
     )
 
 
+def camera_topics_for_world(world_name: str) -> tuple[str, str]:
+    world_name = _world(world_name)
+    onboard = (
+        _COMPETITION_ONBOARD_CAMERA_TOPIC
+        if world_name == "competition_mission"
+        else _ONBOARD_CAMERA_TOPIC
+    )
+    return onboard, _OBSERVER_CAMERA_TOPIC
+
+
 def private_payload_topic(aruco_id: int, suffix: str) -> str:
     if aruco_id not in PAYLOAD_IDS:
         raise ValueError("aruco_id must identify an approved competition payload")
@@ -35,7 +44,12 @@ def private_payload_topic(aruco_id: int, suffix: str) -> str:
 
 def private_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
     world_name = _world(world_name)
-    topics = (*_COMMON_PRIVATE_PUBLISHERS, contact_topic_for_world(world_name))
+    topics = (
+        "/gazebo/private/clock",
+        *camera_topics_for_world(world_name),
+        "/gazebo/private/iris/odometry",
+        contact_topic_for_world(world_name),
+    )
     if world_name != "competition_mission":
         return topics
     competition = ["/gazebo/private/range/downward"]
@@ -66,8 +80,7 @@ def gazebo_topics_for_world(world_name: str) -> tuple[str, ...]:
     world_name = _world(world_name)
     topics = (
         "/clock",
-        "/gazebo/private/camera/onboard/image",
-        "/gazebo/private/camera/observer/image",
+        *camera_topics_for_world(world_name),
         "/gazebo/private/iris/odometry",
         contact_topic_for_world(world_name),
     )

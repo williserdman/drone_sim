@@ -166,7 +166,12 @@ def test_flight_runtime_routes_contact_bridge_to_the_selected_world():
 
 
 def test_competition_runtime_routes_private_topics_to_the_selected_world():
-    from drone_sim_gazebo.ros_adapter.topics import contact_topic_for_world
+    from drone_sim_gazebo.ros_adapter.topics import (
+        camera_topics_for_world,
+        contact_topic_for_world,
+        gazebo_topics_for_world,
+        private_publisher_topics_for_world,
+    )
     from drone_sim_gazebo.runtime.paths import bridge_config_for_world
 
     assert contact_topic_for_world("competition_mission") == (
@@ -175,6 +180,18 @@ def test_competition_runtime_routes_private_topics_to_the_selected_world():
     )
     assert bridge_config_for_world("competition_mission") == Path(
         "/etc/drone_sim/gazebo-bridge-competition.yaml"
+    )
+    selected = "/gazebo/private/camera/competition_onboard/image"
+    inherited = "/gazebo/private/camera/onboard/image"
+    assert camera_topics_for_world("competition_mission") == (
+        selected,
+        "/gazebo/private/camera/observer/image",
+    )
+    assert selected in gazebo_topics_for_world("competition_mission")
+    assert selected in private_publisher_topics_for_world("competition_mission")
+    assert inherited not in gazebo_topics_for_world("competition_mission")
+    assert inherited not in private_publisher_topics_for_world(
+        "competition_mission"
     )
 
 

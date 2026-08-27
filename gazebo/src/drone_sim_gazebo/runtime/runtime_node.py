@@ -261,6 +261,7 @@ def main() -> int:
         gazebo_child_specs(
             bridge_config=bridge_config_for_world(resolved.world_name),
             environment=child_environment,
+            world_name=resolved.world_name,
         )
     )
     epoch_rendezvous = (

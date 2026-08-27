@@ -43,6 +43,7 @@ def test_child_specs_are_one_way_private_bridges_and_no_ack_consumer(tmp_path):
     specs = gazebo_child_specs(
         bridge_config=tmp_path / "bridge.yaml",
         environment={"ROS_DOMAIN_ID": "7", "GZ_PARTITION": "run_partition"},
+        world_name="competition_mission",
     )
 
     assert tuple(spec.name for spec in specs) == ("bridge", "image_bridge")
@@ -51,12 +52,25 @@ def test_child_specs_are_one_way_private_bridges_and_no_ack_consumer(tmp_path):
         "--ros-args", "-p", f"config_file:={tmp_path / 'bridge.yaml'}",
     )
     assert specs[1].argv[-2:] == (
-        "/gazebo/private/camera/onboard/image",
+        "/gazebo/private/camera/competition_onboard/image",
         "/gazebo/private/camera/observer/image",
     )
     flattened = " ".join(part for spec in specs for part in spec.argv)
     assert "camera_pair_ack" not in flattened
     assert isinstance(specs[0].environment, MappingProxyType)
+
+
+def test_foundation_image_bridge_keeps_its_existing_private_source(tmp_path):
+    specs = gazebo_child_specs(
+        bridge_config=tmp_path / "bridge.yaml",
+        environment={"GZ_PARTITION": "foundation"},
+        world_name="phase3_foundation",
+    )
+
+    assert specs[1].argv[-2:] == (
+        "/gazebo/private/camera/onboard/image",
+        "/gazebo/private/camera/observer/image",
+    )
 
 
 def test_supervisor_reports_first_unexpected_child_exit():

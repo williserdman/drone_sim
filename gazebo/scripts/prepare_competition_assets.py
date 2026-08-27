@@ -148,7 +148,11 @@ def _add_sensor_link(model: ET.Element, camera: Camera, range_sensor: RangeSenso
         " ".join(_fmt(value) for value in camera.body_position_m)
         + " 0 1.570796327 0",
     )
-    _text(onboard, "topic", "/gazebo/private/camera/onboard/image")
+    _text(
+        onboard,
+        "topic",
+        "/gazebo/private/camera/competition_onboard/image",
+    )
     _text(onboard, "always_on", "true")
     _text(onboard, "update_rate", _fmt(camera.update_rate_hz))
     _text(onboard, "visualize", "false")

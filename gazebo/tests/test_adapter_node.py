@@ -142,6 +142,38 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         rclpy.shutdown()
 
 
+def test_competition_node_selects_only_the_unique_native_onboard_source():
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=2,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        world_name="competition_mission",
+        width_px=640,
+        height_px=480,
+    )
+    graph = rclpy.create_node("competition_camera_source_observer")
+    selected = "/gazebo/private/camera/competition_onboard/image"
+    inherited = "/gazebo/private/camera/onboard/image"
+    try:
+        _spin_until(
+            graph,
+            lambda: len(graph.get_subscriptions_info_by_topic(selected)) == 1,
+        )
+        assert graph.get_subscriptions_info_by_topic(inherited) == []
+        assert len(
+            graph.get_publishers_info_by_topic("/camera/onboard/image_raw")
+        ) == 1
+    finally:
+        graph.destroy_node()
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_live_ros_node_faults_when_pre_zero_outputs_exceed_two_public_epochs():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")

@@ -26,6 +26,7 @@ from .payload import (
 )
 from .topics import (
     PAYLOAD_IDS,
+    camera_topics_for_world,
     contact_topic_for_world,
     private_command_topics_for_world,
     private_payload_topic,
@@ -211,10 +212,14 @@ class GazeboAdapterNode(_node_base()):
             self._accept_clock,
             _qos(1000, reliable=True),
         )
-        for stream in ("onboard", "observer"):
+        for stream, topic in zip(
+            ("onboard", "observer"),
+            camera_topics_for_world(self._world_name),
+            strict=True,
+        ):
             self.create_subscription(
                 Image,
-                f"/gazebo/private/camera/{stream}/image",
+                topic,
                 lambda message, stream=stream: self._accept_image(stream, message),
                 _qos(5, reliable=False),
             )
