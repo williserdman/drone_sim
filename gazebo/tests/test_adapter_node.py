@@ -258,6 +258,42 @@ def test_competition_node_consumes_only_reliable_recurrent_contact_truth():
         rclpy.shutdown()
 
 
+def test_competition_node_consumes_every_payload_pose_reliably():
+    """A missed private pose sample must not create a false 50 ms grid fault."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from rclpy.qos import ReliabilityPolicy
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=2,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        world_name="competition_mission",
+        width_px=640,
+        height_px=480,
+    )
+    graph = rclpy.create_node("competition_payload_pose_source_observer")
+    try:
+        for aruco_id in (2, 3, 4):
+            topic = f"/gazebo/private/payload_{aruco_id}/pose"
+            endpoints = graph.get_subscriptions_info_by_topic(topic)
+            assert len(endpoints) == 1, topic
+            assert endpoints[0].qos_profile.reliability is ReliabilityPolicy.RELIABLE
+            local = [
+                subscription
+                for subscription in adapter.subscriptions
+                if subscription.topic_name == topic
+            ]
+            assert len(local) == 1, topic
+            assert local[0].qos_profile.depth == 10
+    finally:
+        graph.destroy_node()
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_live_ros_node_faults_when_pre_zero_outputs_exceed_two_public_epochs():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")

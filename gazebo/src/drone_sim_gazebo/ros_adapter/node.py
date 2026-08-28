@@ -185,7 +185,7 @@ class GazeboAdapterNode(_node_base()):
                     lambda message, aruco_id=aruco_id: self._accept_payload_pose(
                         aruco_id, message
                     ),
-                    _qos(10, reliable=False),
+                    _qos(10, reliable=True),
                 )
                 self.create_subscription(
                     Contacts,
