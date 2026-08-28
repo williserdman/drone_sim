@@ -101,8 +101,9 @@ camera, odometry, contact, and world-control endpoints before publishing
 For `vertical_descent` only, Gazebo loads the pinned, downstream-patched
 ArduPilotPlugin from `/opt/drone_sim/gazebo/plugins`. The plugin binds UDP 9002,
 accepts Copter servo frames, sends JSON sensor state, and holds physics in
-lockstep while awaiting the next frame. It emits the initial state at simulation
-time zero while the world remains paused; this performs no physics step or
+lockstep while awaiting the next frame. While the world remains paused, it emits
+one private bootstrap state timestamped at one microsecond so ArduPilot does not
+interpret the clock as an unset sentinel; this performs no physics step or
 motor-force update. Its private `/model/iris/ardupilot/status` service is
 advertised only after UDP bind and reports exchange, motor-update, gap, send
 error, last-frame, and last-sim-time counters.
@@ -118,7 +119,7 @@ queued duplicates into a feedback burst. A genuinely lone forward jump remains
 accepted with its missing-frame count reported.
 
 Flight-local readiness fails closed until the bounded paused bootstrap has
-accepted the initial servo frame, sent one simulation-time-zero JSON state, and
+accepted the initial servo frame, sent one one-microsecond JSON state, and
 accepted the resulting servo frame. The paused exchange then stops consuming
 frames. Its stable online counters must show at least two motor-command updates,
 one JSON state, no frame gaps, and no send errors; those counters

@@ -235,7 +235,11 @@ def test_downstream_patch_bounds_paused_bootstrap_to_one_round_trip():
     )
     assert "this->dataPtr->motorUpdates.load() < 2" not in patch
     assert "this->ReceiveServoPacket();" in patch
-    assert "this->CreateStateJSON(initialPausedState ? 0.0 : t, _ecm);" in patch
+    assert (
+        "this->CreateStateJSON(initialPausedState ? 0.000001 : t, _ecm);"
+        in patch
+    )
+    assert "!this->dataPtr->imuMsgValid && _simTime != 0.000001" in patch
     assert "this->dataPtr->initialStateSent = true;" in patch
     assert "ApplyMotorForces" not in patch
 

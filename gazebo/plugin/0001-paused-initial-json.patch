@@ -124,7 +124,7 @@ index 8309c37..2250d09 100755
              std::chrono::duration_cast<std::chrono::duration<double>>(
                  _info.simTime).count();
 -        this->CreateStateJSON(t, _ecm);
-+        this->CreateStateJSON(initialPausedState ? 0.0 : t, _ecm);
++        this->CreateStateJSON(initialPausedState ? 0.000001 : t, _ecm);
          this->SendState();
 -        this->dataPtr->lastControllerUpdateTime = _info.simTime;
 +        this->dataPtr->initialStateSent = true;
@@ -227,9 +227,9 @@ index 8309c37..2250d09 100755
          std::lock_guard<std::mutex> lock(this->dataPtr->imuMsgMutex);
 -        // Wait until we've received a valid message.
 -        if (!this->dataPtr->imuMsgValid)
-+        // A paused world has no IMU sample yet. Permit a single all-zero IMU
-+        // bootstrap packet at t=0; running updates still require real sensor data.
-+        if (!this->dataPtr->imuMsgValid && _simTime != 0.0)
++        // A paused world has no IMU sample yet. Permit the single all-zero IMU
++        // private bootstrap packet at 1 us; running updates still require data.
++        if (!this->dataPtr->imuMsgValid && _simTime != 0.000001)
          {
              return;
          }

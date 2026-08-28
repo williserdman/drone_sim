@@ -232,6 +232,21 @@ def test_one_controlled_step_consumes_only_the_first_sequential_servo_packet():
         assert status["servo_frame_gaps"] == baseline["servo_frame_gaps"] == 0
 
 
+def test_paused_bootstrap_uses_nonzero_scheduler_sentinel_before_native_steps():
+    with PluginHarness() as harness:
+        harness.send(0)
+        paused_json = harness.receive_json(1, timeout=5.0)
+        assert len(paused_json) == 1, harness.log_text()
+        paused_state = json.loads(paused_json[0])
+        paused_status = harness._wait_for_status(
+            lambda value: value["motor_updates"] == 1
+            and value["json_states_sent"] == 1
+        )
+
+        assert paused_state["timestamp"] == 0.000001
+        assert paused_status["last_json_sim_time_ns"] == 1_000
+
+
 def test_duplicate_then_sequential_packet_resends_json_and_updates_once():
     with PluginHarness() as harness:
         baseline = harness.bootstrap()
