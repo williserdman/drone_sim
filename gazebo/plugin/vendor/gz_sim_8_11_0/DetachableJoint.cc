@@ -32,6 +32,8 @@
 #include <sdf/Element.hh>
 
 #include "gz/sim/components/DetachableJoint.hh"
+#include "gz/sim/components/ContactSensor.hh"
+#include "gz/sim/components/ContactSensorData.hh"
 #include "gz/sim/components/Link.hh"
 #include "gz/sim/components/Model.hh"
 #include "gz/sim/components/Name.hh"
@@ -211,6 +213,34 @@ void DetachableJoint::Configure(const Entity &_entity,
     return;
   }
 
+  const bool hasContactSensor = _sdf->HasElement("contact_sensor");
+  const bool hasContactStateTopic = _sdf->HasElement("contact_state_topic");
+  if (hasContactSensor != hasContactStateTopic)
+  {
+    gzerr << "contact_sensor and contact_state_topic must be configured "
+             "together\n";
+    return;
+  }
+  if (hasContactSensor)
+  {
+    this->contactSensorName = _sdf->Get<std::string>("contact_sensor");
+    this->contactStateTopic = validTopic(
+        {_sdf->Get<std::string>("contact_state_topic")});
+    if (this->contactSensorName.empty() || this->contactStateTopic.empty())
+    {
+      gzerr << "No valid recurrent contact source and topic could be found\n";
+      return;
+    }
+    this->contactStatePub = this->node.Advertise<gz::msgs::Contacts>(
+        this->contactStateTopic);
+    if (!this->contactStatePub)
+    {
+      gzerr << "Error advertising topic [" << this->contactStateTopic << "]"
+            << std::endl;
+      return;
+    }
+  }
+
   // Supress Child Warning
   this->suppressChildWarning =
       _sdf->Get<bool>("suppress_child_warning", this->suppressChildWarning)
@@ -359,6 +389,7 @@ void DetachableJoint::PreUpdate(
     // return if attach is not requested.
     if (!this->attachRequested){
       this->PublishPeriodicJointState(_info.simTime);
+      this->PublishPeriodicContactState(_info.simTime, _ecm);
       return;
     }
 
@@ -379,6 +410,7 @@ void DetachableJoint::PreUpdate(
       if (parentOccupied)
       {
         this->PublishPeriodicJointState(_info.simTime);
+        this->PublishPeriodicContactState(_info.simTime, _ecm);
         return;
       }
     }
@@ -428,6 +460,7 @@ void DetachableJoint::PreUpdate(
     }
   }
   this->PublishPeriodicJointState(_info.simTime);
+  this->PublishPeriodicContactState(_info.simTime, _ecm);
 }
 
 //////////////////////////////////////////////////
@@ -443,6 +476,67 @@ void DetachableJoint::PublishPeriodicJointState(
     return;
   this->PublishJointState(this->isAttached, timestampNs);
   this->lastStatePublishTimestampNs = timestampNs;
+}
+
+//////////////////////////////////////////////////
+void DetachableJoint::PublishPeriodicContactState(
+    const std::chrono::steady_clock::duration &_simTime,
+    EntityComponentManager &_ecm)
+{
+  if (!this->validConfig || this->contactStateTopic.empty() ||
+      this->statePublishPeriodNs == 0)
+    return;
+  const auto timestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      _simTime).count();
+  if (timestampNs < 0 || timestampNs % this->statePublishPeriodNs != 0 ||
+      timestampNs == this->lastContactPublishTimestampNs)
+    return;
+
+  if (this->contactSensorEntity == kNullEntity ||
+      !_ecm.HasEntity(this->contactSensorEntity))
+  {
+    if (this->childLinkEntity == kNullEntity)
+      this->GetChildModelAndLinkEntities(_ecm);
+    if (this->childLinkEntity == kNullEntity)
+      return;
+    _ecm.Each<components::ContactSensor, components::Name>(
+        [this, &_ecm](
+            const Entity &_entity,
+            const components::ContactSensor *,
+            const components::Name *_name)
+        {
+          if (_name->Data() != this->contactSensorName)
+            return true;
+          Entity ancestor = _entity;
+          while (ancestor != kNullEntity)
+          {
+            if (ancestor == this->childLinkEntity)
+            {
+              this->contactSensorEntity = _entity;
+              return false;
+            }
+            const auto parent = _ecm.Component<components::ParentEntity>(
+                ancestor);
+            if (parent == nullptr)
+              break;
+            ancestor = parent->Data();
+          }
+          return true;
+        });
+    if (this->contactSensorEntity == kNullEntity)
+      return;
+  }
+
+  const auto data = _ecm.Component<components::ContactSensorData>(
+      this->contactSensorEntity);
+  if (data == nullptr)
+    return;
+  auto contactState = data->Data();
+  auto stamp = contactState.mutable_header()->mutable_stamp();
+  stamp->set_sec(timestampNs / 1'000'000'000LL);
+  stamp->set_nsec(timestampNs % 1'000'000'000LL);
+  this->contactStatePub.Publish(contactState);
+  this->lastContactPublishTimestampNs = timestampNs;
 }
 
 //////////////////////////////////////////////////

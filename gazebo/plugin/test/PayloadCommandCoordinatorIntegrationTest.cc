@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include <gz/msgs/empty.pb.h>
+#include <gz/msgs/contacts.pb.h>
 #include <gz/msgs/stringmsg.pb.h>
 #include <gz/sim/EntityComponentManager.hh>
 #include <gz/sim/Server.hh>
@@ -23,6 +24,8 @@
 #include <gz/sim/System.hh>
 #include <gz/sim/Util.hh>
 #include <gz/sim/components/DetachableJoint.hh>
+#include <gz/sim/components/ContactSensor.hh>
+#include <gz/sim/components/ContactSensorData.hh>
 #include <gz/sim/components/Model.hh>
 #include <gz/sim/components/Name.hh>
 #include <gz/transport/Node.hh>
@@ -45,6 +48,33 @@ struct JointTruth
   std::int64_t timestampNs;
   std::string state;
 };
+
+struct ContactTruth
+{
+  std::int64_t timestampNs;
+  bool grounded;
+};
+
+ContactTruth ParseContactTruth(const gz::msgs::Contacts &_message)
+{
+  const auto &stamp = _message.header().stamp();
+  return ContactTruth{
+      stamp.sec() * 1'000'000'000LL + stamp.nsec(),
+      _message.contact_size() > 0};
+}
+
+bool HasExactContactCadence(const std::vector<ContactTruth> &_truth)
+{
+  if (_truth.size() < 2)
+    return false;
+  for (std::size_t index = 1; index < _truth.size(); ++index)
+  {
+    if (_truth[index].timestampNs - _truth[index - 1].timestampNs !=
+        50'000'000)
+      return false;
+  }
+  return true;
+}
 
 std::optional<JointTruth> ParseJointTruth(const std::string &_wire)
 {
@@ -161,6 +191,57 @@ class PhysicalObserver:
   public: std::atomic<double> payload4MaxError{0.0};
 };
 
+class ContactTruthDriver:
+    public gz::sim::System,
+    public gz::sim::ISystemPreUpdate
+{
+  public: void PreUpdate(
+      const gz::sim::UpdateInfo &_info,
+      gz::sim::EntityComponentManager &_ecm) final
+  {
+    std::vector<std::pair<gz::sim::Entity, bool>> sensors;
+    _ecm.Each<gz::sim::components::ContactSensor,
+              gz::sim::components::Name>(
+        [&sensors, &_ecm](
+            const gz::sim::Entity &_entity,
+            const gz::sim::components::ContactSensor *,
+            const gz::sim::components::Name *)
+        {
+          const auto name = gz::sim::scopedName(_entity, _ecm);
+          sensors.emplace_back(
+              _entity,
+              name.find("payload_3") != std::string::npos ||
+              name.find("payload_4") != std::string::npos);
+          return true;
+        });
+    for (const auto &[entity, grounded] : sensors)
+    {
+      gz::msgs::Contacts message;
+      const auto timestampNs = std::chrono::duration_cast<
+          std::chrono::nanoseconds>(_info.simTime).count();
+      message.mutable_header()->mutable_stamp()->set_sec(
+          timestampNs / 1'000'000'000LL);
+      message.mutable_header()->mutable_stamp()->set_nsec(
+          timestampNs % 1'000'000'000LL);
+      if (grounded)
+        message.add_contact();
+      auto data = _ecm.Component<gz::sim::components::ContactSensorData>(
+          entity);
+      if (data == nullptr)
+        _ecm.CreateComponent(
+            entity, gz::sim::components::ContactSensorData(message));
+      else
+        data->SetData(message, [](const auto &_left, const auto &_right)
+        {
+          return _left.SerializeAsString() == _right.SerializeAsString();
+        });
+    }
+    this->sensorCount = sensors.size();
+  }
+
+  public: std::atomic<std::size_t> sensorCount{0};
+};
+
 template<typename Predicate>
 bool AdvanceUntil(gz::sim::Server &_server, Predicate _predicate)
 {
@@ -213,6 +294,8 @@ int main(int argc, char **argv)
         <attach_topic>/payload/)" + id + R"(/physical/attach</attach_topic>
         <detach_topic>/payload/)" + id + R"(/physical/detach</detach_topic>
         <output_topic>/payload/)" + id + R"(/joint_state</output_topic>
+        <contact_sensor>ground_contact</contact_sensor>
+        <contact_state_topic>/payload/)" + id + R"(/contact_state</contact_state_topic>
         <initially_attached>)" +
         (_initiallyAttached ? "true" : "false") + R"(</initially_attached>
         <exclusive_parent>true</exclusive_parent>
@@ -245,19 +328,28 @@ int main(int argc, char **argv)
         <model name="payload_2">
           <link name="body"><inertial><mass>1</mass><inertia>
             <ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz>
-          </inertia></inertial></link>
+          </inertia></inertial>
+          <collision name="body_collision"><geometry><box><size>1 1 1</size></box></geometry></collision>
+          <sensor name="ground_contact" type="contact"><contact><collision>body_collision</collision></contact></sensor>
+          </link>
         </model>
         <model name="payload_3">
           <pose>2 0 0 0 0 0</pose>
           <link name="body"><inertial><mass>1</mass><inertia>
             <ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz>
-          </inertia></inertial></link>
+          </inertia></inertial>
+          <collision name="body_collision"><geometry><box><size>1 1 1</size></box></geometry></collision>
+          <sensor name="ground_contact" type="contact"><contact><collision>body_collision</collision></contact></sensor>
+          </link>
         </model>
         <model name="payload_4">
           <pose>-2 0 0 0 0 0</pose>
           <link name="body"><inertial><mass>1</mass><inertia>
             <ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz>
-          </inertia></inertial></link>
+          </inertia></inertial>
+          <collision name="body_collision"><geometry><box><size>1 1 1</size></box></geometry></collision>
+          <sensor name="ground_contact" type="contact"><contact><collision>body_collision</collision></contact></sensor>
+          </link>
         </model>
       </world>
     </sdf>)";
@@ -271,6 +363,9 @@ int main(int argc, char **argv)
   std::vector<std::string> payload2States;
   std::vector<std::string> payload3States;
   std::vector<std::string> payload4States;
+  std::vector<ContactTruth> payload2Contacts;
+  std::vector<ContactTruth> payload3Contacts;
+  std::vector<ContactTruth> payload4Contacts;
   std::atomic<int> attachTriggers{0};
   std::atomic<int> detachTriggers{0};
   auto record = [&mutex](std::vector<std::string> &_target,
@@ -302,6 +397,22 @@ int main(int argc, char **argv)
             }}),
         "joint-state subscription must configure");
   }
+  for (const auto &[topic, target] : std::vector<std::pair<
+      std::string, std::vector<ContactTruth> *>>{
+          {"/payload/2/contact_state", &payload2Contacts},
+          {"/payload/3/contact_state", &payload3Contacts},
+          {"/payload/4/contact_state", &payload4Contacts}})
+  {
+    Require(node.Subscribe<gz::msgs::Contacts>(
+        topic,
+        std::function<void(const gz::msgs::Contacts &)>{
+            [&mutex, target](const auto &_message)
+            {
+              std::lock_guard<std::mutex> guard(mutex);
+              target->push_back(ParseContactTruth(_message));
+            }}),
+        "contact-state subscription must configure");
+  }
   Require(node.Subscribe<gz::msgs::Empty>(
       "/payload/3/physical/attach",
       std::function<void(const gz::msgs::Empty &)>{
@@ -318,9 +429,20 @@ int main(int argc, char **argv)
       node.Advertise<gz::msgs::Empty>("/payload/2/physical/detach");
   gz::sim::Server server(config);
   auto observer = std::make_shared<PhysicalObserver>();
+  auto contactDriver = std::make_shared<ContactTruthDriver>();
   Require(server.AddSystem(observer).value_or(false),
       "physical observer must join the real server");
+  Require(server.AddSystem(contactDriver).value_or(false),
+      "contact truth driver must join the real server");
   Require(server.RunOnce(true), "server must configure all real joint systems");
+  Require(WaitFor([&]
+  {
+    std::vector<std::string> topics;
+    node.TopicList(topics);
+    return std::count(topics.begin(), topics.end(), "/payload/2/contact_state") == 1 &&
+        std::count(topics.begin(), topics.end(), "/payload/3/contact_state") == 1 &&
+        std::count(topics.begin(), topics.end(), "/payload/4/contact_state") == 1;
+  }), "all three recurrent contact publishers must advertise");
   Require(AdvanceUntil(server, [&]
   {
     std::lock_guard<std::mutex> guard(mutex);
@@ -340,12 +462,31 @@ int main(int argc, char **argv)
     std::lock_guard<std::mutex> guard(mutex);
     return payload3States.size() > initialTruthCount;
   }), "unchanged joint state must recur after one 50 ms truth period");
+  Require(AdvanceUntil(server, [&]
   {
     std::lock_guard<std::mutex> guard(mutex);
+    return HasExactContactCadence(payload2Contacts) &&
+        HasExactContactCadence(payload3Contacts) &&
+        HasExactContactCadence(payload4Contacts);
+  }), "contact truth must recur while simulation time advances");
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    Require(contactDriver->sensorCount == 3,
+        "contact driver must see all three child sensors");
     Require(HasExactTruthCadence(payload2States) &&
         HasExactTruthCadence(payload3States) &&
         HasExactTruthCadence(payload4States),
         "joint truth must carry exact recurrent 50 ms simulation timestamps");
+    Require(HasExactContactCadence(payload2Contacts) &&
+        HasExactContactCadence(payload3Contacts) &&
+        HasExactContactCadence(payload4Contacts),
+        "contact truth must recur on the same exact 50 ms simulation grid: " +
+        std::to_string(payload2Contacts.size()) + "," +
+        std::to_string(payload3Contacts.size()) + "," +
+        std::to_string(payload4Contacts.size()));
+    Require(!payload2Contacts.back().grounded &&
+        payload3Contacts.back().grounded && payload4Contacts.back().grounded,
+        "contact truth must preserve both physical false and true states");
   }
   Require(observer->currentJointCount == 1 && observer->maximumJointCount == 1,
       "initially detached payloads must never create a joint component");

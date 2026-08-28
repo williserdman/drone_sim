@@ -464,6 +464,8 @@
       <attach_topic>/gazebo/private/payload/2/physical/attach</attach_topic>
       <detach_topic>/gazebo/private/payload/2/physical/detach</detach_topic>
       <output_topic>/gazebo/private/payload/2/joint_state</output_topic>
+      <contact_sensor>ground_contact</contact_sensor>
+      <contact_state_topic>/gazebo/private/payload/2/contact_state</contact_state_topic>
       <initially_attached>true</initially_attached>
       <exclusive_parent>true</exclusive_parent>
       <state_publish_period>0.05</state_publish_period>
@@ -482,6 +484,8 @@
       <attach_topic>/gazebo/private/payload/3/physical/attach</attach_topic>
       <detach_topic>/gazebo/private/payload/3/physical/detach</detach_topic>
       <output_topic>/gazebo/private/payload/3/joint_state</output_topic>
+      <contact_sensor>ground_contact</contact_sensor>
+      <contact_state_topic>/gazebo/private/payload/3/contact_state</contact_state_topic>
       <initially_attached>false</initially_attached>
       <exclusive_parent>true</exclusive_parent>
       <state_publish_period>0.05</state_publish_period>
@@ -500,6 +504,8 @@
       <attach_topic>/gazebo/private/payload/4/physical/attach</attach_topic>
       <detach_topic>/gazebo/private/payload/4/physical/detach</detach_topic>
       <output_topic>/gazebo/private/payload/4/joint_state</output_topic>
+      <contact_sensor>ground_contact</contact_sensor>
+      <contact_state_topic>/gazebo/private/payload/4/contact_state</contact_state_topic>
       <initially_attached>false</initially_attached>
       <exclusive_parent>true</exclusive_parent>
       <state_publish_period>0.05</state_publish_period>

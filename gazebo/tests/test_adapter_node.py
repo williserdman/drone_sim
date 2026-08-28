@@ -202,6 +202,44 @@ def test_competition_node_activates_exact_reliable_camera_sources_once():
         rclpy.shutdown()
 
 
+def test_competition_node_consumes_only_reliable_recurrent_contact_truth():
+    """Physical contact truth is recurrent, reliable, and private to the adapter."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from rclpy.qos import ReliabilityPolicy
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=2,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        world_name="competition_mission",
+        width_px=640,
+        height_px=480,
+    )
+    graph = rclpy.create_node("competition_contact_source_observer")
+    try:
+        for aruco_id in (2, 3, 4):
+            selected = f"/gazebo/private/payload_{aruco_id}/contact_state"
+            legacy = f"/gazebo/private/payload_{aruco_id}/contacts"
+            endpoints = graph.get_subscriptions_info_by_topic(selected)
+            assert len(endpoints) == 1, selected
+            assert endpoints[0].qos_profile.reliability is ReliabilityPolicy.RELIABLE
+            local = [
+                subscription
+                for subscription in adapter.subscriptions
+                if subscription.topic_name == selected
+            ]
+            assert len(local) == 1
+            assert local[0].qos_profile.depth == 10
+            assert graph.get_subscriptions_info_by_topic(legacy) == []
+    finally:
+        graph.destroy_node()
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_live_ros_node_faults_when_pre_zero_outputs_exceed_two_public_epochs():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")

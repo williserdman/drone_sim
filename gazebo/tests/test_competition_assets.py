@@ -240,6 +240,8 @@ def test_payload_joint_topics_and_initial_states_are_exact(tmp_path):
         assert joint.findtext("attach_topic") == f"{base}/physical/attach"
         assert joint.findtext("detach_topic") == f"{base}/physical/detach"
         assert joint.findtext("output_topic") == f"{base}/joint_state"
+        assert joint.findtext("contact_sensor") == "ground_contact"
+        assert joint.findtext("contact_state_topic") == f"{base}/contact_state"
         assert joint.findtext("initially_attached") == expected_initial
         assert joint.findtext("exclusive_parent") == "true"
         assert joint.findtext("state_publish_period") == "0.05"

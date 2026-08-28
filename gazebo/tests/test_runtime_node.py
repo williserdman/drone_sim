@@ -33,7 +33,7 @@ def test_competition_bridge_is_minimal_and_directional():
         expected.update(
             {
                 f"/gazebo/private/payload_{aruco_id}/pose",
-                f"/gazebo/private/payload_{aruco_id}/contacts",
+                f"/gazebo/private/payload_{aruco_id}/contact_state",
                 f"/gazebo/private/payload_{aruco_id}/command",
                 f"/gazebo/private/payload_{aruco_id}/joint_state",
                 f"/gazebo/private/payload_{aruco_id}/result",
@@ -66,8 +66,8 @@ def test_competition_bridge_is_minimal_and_directional():
     )
 
 
-def test_competition_bridge_uses_gazebo_contact_system_publishers():
-    """Live Gazebo contact sensors ignore the SDF topic hint and use canonical paths."""
+def test_competition_bridge_uses_unique_recurrent_contact_truth_sources():
+    """The 1 kHz event-only sensor stream must not feed exact 20 Hz truth."""
     from drone_sim_gazebo.ros_adapter.topics import gazebo_topics_for_world
 
     bridge = yaml.safe_load(
@@ -79,16 +79,18 @@ def test_competition_bridge_uses_gazebo_contact_system_publishers():
     required = gazebo_topics_for_world("competition_mission")
 
     for aruco_id in (2, 3, 4):
-        native_topic = (
-            f"/world/competition_mission/model/payload_{aruco_id}/link/body/"
-            "sensor/ground_contact/contact"
-        )
+        native_topic = f"/gazebo/private/payload/{aruco_id}/contact_state"
         assert (
-            by_ros_topic[f"/gazebo/private/payload_{aruco_id}/contacts"]
+            by_ros_topic[f"/gazebo/private/payload_{aruco_id}/contact_state"]
             ["gz_topic_name"]
             == native_topic
         )
         assert native_topic in required
+        assert all(
+            f"model/payload_{aruco_id}/link/body/sensor/ground_contact" not in
+            item["gz_topic_name"]
+            for item in bridge
+        )
 
 
 class Server:

@@ -189,11 +189,11 @@ class GazeboAdapterNode(_node_base()):
                 )
                 self.create_subscription(
                     Contacts,
-                    private_payload_topic(aruco_id, "contacts"),
+                    private_payload_topic(aruco_id, "contact_state"),
                     lambda message, aruco_id=aruco_id: self._accept_payload_contact(
                         aruco_id, message
                     ),
-                    _qos(10, reliable=False),
+                    _qos(10, reliable=True),
                 )
                 self.create_subscription(
                     String,

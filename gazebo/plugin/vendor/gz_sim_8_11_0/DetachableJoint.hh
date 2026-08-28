@@ -24,6 +24,7 @@
 #define GZ_SIM_SYSTEMS_DETACHABLEJOINT_HH_
 
 #include <gz/msgs/empty.pb.h>
+#include <gz/msgs/contacts.pb.h>
 
 #include <chrono>
 #include <cstdint>
@@ -84,6 +85,11 @@ namespace gazebo
   /// - `<state_publish_period>` (optional): Positive simulation-time period in
   /// seconds for recurrent versioned joint level truth. Zero retains the
   /// upstream transition-only wire behavior. Defaults to zero.
+  ///
+  /// - `<contact_sensor>` and `<contact_state_topic>` (optional pair): Name of
+  /// a contact sensor on the child link and topic for recurrent contact truth.
+  /// When configured, the sensor data is published on the same simulation-time
+  /// grid as recurrent joint truth. Both parameters must be supplied together.
 
   class DetachableJoint
       : public gz::sim::System,
@@ -110,12 +116,20 @@ namespace gazebo
     /// \brief A publisher to send state of the detachment
     private: gz::transport::Node::Publisher outputPub;
 
+    /// \brief A publisher for recurrent contact level truth.
+    private: gz::transport::Node::Publisher contactStatePub;
+
     /// \brief Helper function to publish the state of the detachment
     private: void PublishJointState(bool attached, std::int64_t timestampNs);
 
     /// \brief Publish recurrent physical level truth on its exact grid.
     private: void PublishPeriodicJointState(
         const std::chrono::steady_clock::duration &_simTime);
+
+    /// \brief Publish recurrent child contact truth on the joint-state grid.
+    private: void PublishPeriodicContactState(
+        const std::chrono::steady_clock::duration &_simTime,
+        gz::sim::EntityComponentManager &_ecm);
 
     /// \brief Callback for detach request topic
     private: void OnDetachRequest(const gz::msgs::Empty &_msg);
@@ -142,6 +156,12 @@ namespace gazebo
     /// \brief Topic to be used for publishing detached state
     private: std::string outputTopic;
 
+    /// \brief Name of the contact sensor on the child link.
+    private: std::string contactSensorName;
+
+    /// \brief Topic for recurrent child contact level truth.
+    private: std::string contactStateTopic;
+
     /// \brief Whether to suppress warning about missing child model.
     private: bool suppressChildWarning{false};
 
@@ -150,6 +170,9 @@ namespace gazebo
 
     /// \brief Entity of attachment link in the child model
     private: gz::sim::Entity childLinkEntity{gz::sim::kNullEntity};
+
+    /// \brief Entity of the child contact sensor.
+    private: gz::sim::Entity contactSensorEntity{gz::sim::kNullEntity};
 
     /// \brief Entity of the detachable joint created by this system
     private: gz::sim::Entity detachableJointEntity{gz::sim::kNullEntity};
@@ -177,6 +200,9 @@ namespace gazebo
 
     /// \brief Last recurrent truth timestamp, preventing duplicate grid output.
     private: std::int64_t lastStatePublishTimestampNs{-1};
+
+    /// \brief Last recurrent contact timestamp, preventing duplicate output.
+    private: std::int64_t lastContactPublishTimestampNs{-1};
 
   };
 }

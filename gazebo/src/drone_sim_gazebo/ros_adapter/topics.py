@@ -37,7 +37,7 @@ def camera_topics_for_world(world_name: str) -> tuple[str, str]:
 def private_payload_topic(aruco_id: int, suffix: str) -> str:
     if aruco_id not in PAYLOAD_IDS:
         raise ValueError("aruco_id must identify an approved competition payload")
-    if suffix not in {"pose", "contacts", "command", "joint_state", "result"}:
+    if suffix not in {"pose", "contact_state", "command", "joint_state", "result"}:
         raise ValueError("suffix must identify an approved private payload topic")
     return f"/gazebo/private/payload_{aruco_id}/{suffix}"
 
@@ -57,7 +57,7 @@ def private_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
         competition.extend(
             (
                 private_payload_topic(aruco_id, "pose"),
-                private_payload_topic(aruco_id, "contacts"),
+                private_payload_topic(aruco_id, "contact_state"),
                 private_payload_topic(aruco_id, "joint_state"),
                 private_payload_topic(aruco_id, "result"),
             )
@@ -91,8 +91,7 @@ def gazebo_topics_for_world(world_name: str) -> tuple[str, ...]:
         competition.extend(
             (
                 f"/model/payload_{aruco_id}/pose",
-                f"/world/competition_mission/model/payload_{aruco_id}/link/body/"
-                "sensor/ground_contact/contact",
+                f"/gazebo/private/payload/{aruco_id}/contact_state",
                 f"/gazebo/private/payload/{aruco_id}/joint_state",
                 f"/gazebo/private/payload/{aruco_id}/result",
             )

@@ -241,6 +241,8 @@ def _add_payload_joints(model: ET.Element, payloads: tuple[Payload, ...]) -> Non
         _text(detachable, "attach_topic", f"{base}/physical/attach")
         _text(detachable, "detach_topic", f"{base}/physical/detach")
         _text(detachable, "output_topic", f"{base}/joint_state")
+        _text(detachable, "contact_sensor", "ground_contact")
+        _text(detachable, "contact_state_topic", f"{base}/contact_state")
         _text(detachable, "initially_attached", "true" if payload.initial == "attached" else "false")
         _text(detachable, "exclusive_parent", "true")
         _text(detachable, "state_publish_period", "0.05")
