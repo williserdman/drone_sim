@@ -263,20 +263,6 @@ class GazeboAdapterNode(_node_base()):
         if self._faulted or self._output_active or self._completion_reported:
             return
         try:
-            if not self._output_epoch.activation_pending:
-                for stream, topic in zip(
-                    ("onboard", "observer"),
-                    camera_topics_for_world(self._world_name),
-                    strict=True,
-                ):
-                    self.create_subscription(
-                        self._image_type,
-                        topic,
-                        lambda message, stream=stream: self._accept_image(
-                            stream, message
-                        ),
-                        _qos(5, reliable=True),
-                    )
             self._output_epoch.request_activation()
         except AdapterFault as error:
             self._fail(error)
@@ -307,6 +293,19 @@ class GazeboAdapterNode(_node_base()):
             public_timestamp_ns = self._output_epoch.accept_clock(timestamp_ns)
             if public_timestamp_ns is not None:
                 if public_timestamp_ns == 0 and not self._output_active:
+                    for stream, topic in zip(
+                        ("onboard", "observer"),
+                        camera_topics_for_world(self._world_name),
+                        strict=True,
+                    ):
+                        self.create_subscription(
+                            self._image_type,
+                            topic,
+                            lambda message, stream=stream: self._accept_image(
+                                stream, message
+                            ),
+                            _qos(5, reliable=True),
+                        )
                     self._output_active = True
                     self._publish_clock(0)
                     queued = tuple(self._pre_zero_outputs)

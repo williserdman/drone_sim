@@ -142,10 +142,11 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         rclpy.shutdown()
 
 
-def test_competition_node_activates_exact_reliable_camera_sources_once():
+def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_once():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")
     from rclpy.qos import ReliabilityPolicy
+    from rosgraph_msgs.msg import Clock
     from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
 
     rclpy.init()
@@ -170,6 +171,22 @@ def test_competition_node_activates_exact_reliable_camera_sources_once():
         ) == 1
 
         adapter.activate_output()
+        warmup_clock = Clock()
+        _set_stamp(warmup_clock.clock, PUBLIC_EPOCH_NATIVE_NS - 50_000_000)
+        adapter._accept_clock(warmup_clock)
+        rclpy.spin_once(graph, timeout_sec=0.1)
+        for topic in (selected, observer):
+            local = [
+                subscription
+                for subscription in adapter.subscriptions
+                if subscription.topic_name == topic
+            ]
+            assert local == [], topic
+            assert graph.get_subscriptions_info_by_topic(topic) == []
+
+        epoch_clock = Clock()
+        _set_stamp(epoch_clock.clock, PUBLIC_EPOCH_NATIVE_NS)
+        adapter._accept_clock(epoch_clock)
         _spin_until(
             graph,
             lambda: all(
@@ -190,6 +207,7 @@ def test_competition_node_activates_exact_reliable_camera_sources_once():
             assert local[0].qos_profile.depth == 5
 
         adapter.activate_output()
+        adapter._accept_clock(epoch_clock)
         rclpy.spin_once(graph, timeout_sec=0.1)
         for topic in (selected, observer):
             assert len(graph.get_subscriptions_info_by_topic(topic)) == 1
@@ -370,13 +388,8 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         assert completions == []
 
         adapter.activate_output()
-        # Independent DDS readers may deliver the first validated public
-        # frame/truth epoch before the reliable native clock reaches target.
-        first_public_native_ns = PUBLIC_EPOCH_NATIVE_NS + 50_000_000
-        adapter._accept_image("onboard", image(first_public_native_ns))
-        adapter._accept_image("observer", image(first_public_native_ns))
-        adapter._accept_contacts(contacts(first_public_native_ns, in_contact=True))
-        adapter._accept_odometry(odometry(first_public_native_ns))
+        adapter._accept_image("onboard", image(PUBLIC_EPOCH_NATIVE_NS - 50_000_000))
+        adapter._accept_image("observer", image(PUBLIC_EPOCH_NATIVE_NS - 50_000_000))
         rclpy.spin_once(observer, timeout_sec=0.1)
         assert clocks == []
         assert images == []
@@ -387,11 +400,16 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         epoch_clock = Clock()
         _set_stamp(epoch_clock.clock, PUBLIC_EPOCH_NATIVE_NS)
         adapter._accept_clock(epoch_clock)
+        _spin_until(observer, lambda: clocks == [0])
+
+        first_public_native_ns = PUBLIC_EPOCH_NATIVE_NS + 50_000_000
+        adapter._accept_image("onboard", image(first_public_native_ns))
+        adapter._accept_image("observer", image(first_public_native_ns))
+        adapter._accept_contacts(contacts(first_public_native_ns, in_contact=True))
+        adapter._accept_odometry(odometry(first_public_native_ns))
         _spin_until(
             observer,
-            lambda: clocks == [0, 50_000_000]
-            and len(images) == 2
-            and truths == [50_000_000],
+            lambda: len(images) == 2 and truths == [50_000_000],
         )
 
         assert images == [50_000_000, 50_000_000]
