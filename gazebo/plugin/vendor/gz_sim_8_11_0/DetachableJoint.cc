@@ -31,9 +31,10 @@
 
 #include <sdf/Element.hh>
 
-#include "gz/sim/components/DetachableJoint.hh"
+#include "gz/sim/components/Collision.hh"
 #include "gz/sim/components/ContactSensor.hh"
 #include "gz/sim/components/ContactSensorData.hh"
+#include "gz/sim/components/DetachableJoint.hh"
 #include "gz/sim/components/Link.hh"
 #include "gz/sim/components/Model.hh"
 #include "gz/sim/components/Name.hh"
@@ -382,6 +383,10 @@ void DetachableJoint::PreUpdate(
       this->PublishJointState(false, _info.simTime.count());
     this->publishInitialDetached = false;
   }
+  if (this->validConfig && !this->contactStateTopic.empty() &&
+      (this->childLinkEntity == kNullEntity ||
+       !_ecm.HasEntity(this->childLinkEntity)))
+    this->GetChildModelAndLinkEntities(_ecm);
 
   // only allow attaching if child entity is detached
   if (this->validConfig && !this->isAttached)
@@ -389,7 +394,6 @@ void DetachableJoint::PreUpdate(
     // return if attach is not requested.
     if (!this->attachRequested){
       this->PublishPeriodicJointState(_info.simTime);
-      this->PublishPeriodicContactState(_info.simTime, _ecm);
       return;
     }
 
@@ -410,7 +414,6 @@ void DetachableJoint::PreUpdate(
       if (parentOccupied)
       {
         this->PublishPeriodicJointState(_info.simTime);
-        this->PublishPeriodicContactState(_info.simTime, _ecm);
         return;
       }
     }
@@ -460,6 +463,14 @@ void DetachableJoint::PreUpdate(
     }
   }
   this->PublishPeriodicJointState(_info.simTime);
+}
+
+//////////////////////////////////////////////////
+void DetachableJoint::PostUpdate(
+  const UpdateInfo &_info,
+  const EntityComponentManager &_ecm)
+{
+  GZ_PROFILE("DetachableJoint::PostUpdate");
   this->PublishPeriodicContactState(_info.simTime, _ecm);
 }
 
@@ -481,7 +492,7 @@ void DetachableJoint::PublishPeriodicJointState(
 //////////////////////////////////////////////////
 void DetachableJoint::PublishPeriodicContactState(
     const std::chrono::steady_clock::duration &_simTime,
-    EntityComponentManager &_ecm)
+    const EntityComponentManager &_ecm)
 {
   if (!this->validConfig || this->contactStateTopic.empty() ||
       this->statePublishPeriodNs == 0)
@@ -492,43 +503,55 @@ void DetachableJoint::PublishPeriodicContactState(
       timestampNs == this->lastContactPublishTimestampNs)
     return;
 
+  if (this->childLinkEntity == kNullEntity ||
+      !_ecm.HasEntity(this->childLinkEntity))
+    return;
   if (this->contactSensorEntity == kNullEntity ||
       !_ecm.HasEntity(this->contactSensorEntity))
   {
-    if (this->childLinkEntity == kNullEntity)
-      this->GetChildModelAndLinkEntities(_ecm);
-    if (this->childLinkEntity == kNullEntity)
-      return;
-    _ecm.Each<components::ContactSensor, components::Name>(
-        [this, &_ecm](
+    _ecm.Each<components::ContactSensor,
+              components::Name,
+              components::ParentEntity>(
+        [this](
             const Entity &_entity,
             const components::ContactSensor *,
-            const components::Name *_name)
+            const components::Name *_name,
+            const components::ParentEntity *_parent)
         {
-          if (_name->Data() != this->contactSensorName)
-            return true;
-          Entity ancestor = _entity;
-          while (ancestor != kNullEntity)
+          if (_name->Data() == this->contactSensorName &&
+              _parent->Data() == this->childLinkEntity)
           {
-            if (ancestor == this->childLinkEntity)
-            {
-              this->contactSensorEntity = _entity;
-              return false;
-            }
-            const auto parent = _ecm.Component<components::ParentEntity>(
-                ancestor);
-            if (parent == nullptr)
-              break;
-            ancestor = parent->Data();
+            this->contactSensorEntity = _entity;
+            return false;
           }
           return true;
         });
     if (this->contactSensorEntity == kNullEntity)
       return;
   }
+  if (this->contactCollisionEntity == kNullEntity ||
+      !_ecm.HasEntity(this->contactCollisionEntity))
+  {
+    const auto sensor = _ecm.Component<components::ContactSensor>(
+        this->contactSensorEntity);
+    if (sensor == nullptr || sensor->Data() == nullptr ||
+        !sensor->Data()->HasElement("contact"))
+      return;
+    const auto contact = sensor->Data()->GetElement("contact");
+    if (contact == nullptr || !contact->HasElement("collision"))
+      return;
+    const auto collisionName =
+        contact->GetElement("collision")->Get<std::string>();
+    this->contactCollisionEntity = _ecm.EntityByComponents(
+        components::Collision(),
+        components::ParentEntity(this->childLinkEntity),
+        components::Name(collisionName));
+    if (this->contactCollisionEntity == kNullEntity)
+      return;
+  }
 
   const auto data = _ecm.Component<components::ContactSensorData>(
-      this->contactSensorEntity);
+      this->contactCollisionEntity);
   if (data == nullptr)
     return;
   auto contactState = data->Data();
@@ -565,7 +588,8 @@ void DetachableJoint::OnDetachRequest(const msgs::Empty &)
 GZ_ADD_PLUGIN(DetachableJoint,
                     System,
                     DetachableJoint::ISystemConfigure,
-                    DetachableJoint::ISystemPreUpdate)
+                    DetachableJoint::ISystemPreUpdate,
+                    DetachableJoint::ISystemPostUpdate)
 
 GZ_ADD_PLUGIN_ALIAS(DetachableJoint,
   "drone_sim::gazebo::DetachableJoint")

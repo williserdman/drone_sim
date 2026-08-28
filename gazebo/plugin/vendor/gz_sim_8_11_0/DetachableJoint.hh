@@ -94,7 +94,8 @@ namespace gazebo
   class DetachableJoint
       : public gz::sim::System,
         public gz::sim::ISystemConfigure,
-        public gz::sim::ISystemPreUpdate
+        public gz::sim::ISystemPreUpdate,
+        public gz::sim::ISystemPostUpdate
   {
     /// Documentation inherited
     public: DetachableJoint() = default;
@@ -109,6 +110,11 @@ namespace gazebo
     public: void PreUpdate(
                 const gz::sim::UpdateInfo &_info,
                 gz::sim::EntityComponentManager &_ecm) final;
+
+    /// Documentation inherited
+    public: void PostUpdate(
+                const gz::sim::UpdateInfo &_info,
+                const gz::sim::EntityComponentManager &_ecm) final;
 
     /// \brief Gazebo communication node.
     private: gz::transport::Node node;
@@ -129,7 +135,7 @@ namespace gazebo
     /// \brief Publish recurrent child contact truth on the joint-state grid.
     private: void PublishPeriodicContactState(
         const std::chrono::steady_clock::duration &_simTime,
-        gz::sim::EntityComponentManager &_ecm);
+        const gz::sim::EntityComponentManager &_ecm);
 
     /// \brief Callback for detach request topic
     private: void OnDetachRequest(const gz::msgs::Empty &_msg);
@@ -173,6 +179,9 @@ namespace gazebo
 
     /// \brief Entity of the child contact sensor.
     private: gz::sim::Entity contactSensorEntity{gz::sim::kNullEntity};
+
+    /// \brief Collision entity whose physical contact data feeds the sensor.
+    private: gz::sim::Entity contactCollisionEntity{gz::sim::kNullEntity};
 
     /// \brief Entity of the detachable joint created by this system
     private: gz::sim::Entity detachableJointEntity{gz::sim::kNullEntity};

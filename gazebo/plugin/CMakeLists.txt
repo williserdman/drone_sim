@@ -67,4 +67,21 @@ if(BUILD_TESTING)
   set_tests_properties(payload_command_coordinator_integration_test PROPERTIES
     TIMEOUT 30
   )
+
+  add_executable(detachable_joint_contact_integration_test
+    test/DetachableJointContactIntegrationTest.cc
+  )
+  target_link_libraries(detachable_joint_contact_integration_test PRIVATE
+    gz-sim8::gz-sim8
+    gz-transport13::gz-transport13
+    gz-msgs10::gz-msgs10
+  )
+  add_test(
+    NAME detachable_joint_contact_integration_test
+    COMMAND detachable_joint_contact_integration_test
+      $<TARGET_FILE:drone_sim_detachable_joint_system>
+  )
+  set_tests_properties(detachable_joint_contact_integration_test PROPERTIES
+    TIMEOUT 30
+  )
 endif()
