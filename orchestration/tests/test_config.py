@@ -204,7 +204,8 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
         fps=20,
         encoding="rgb8",
     )
-    assert resolved.startup_wall_seconds == 480
+    assert resolved.startup_wall_seconds == 1800
+    assert resolved.max_wall_seconds == 14400
     assert resolved.finalization_wall_seconds == 120
     assert resolved.output_root == (ROOT / "../runs").resolve()
     assert resolved.competition is not None

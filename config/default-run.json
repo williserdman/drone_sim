@@ -4,8 +4,8 @@
   "mission": "comp2026_auto",
   "scenario": "competition_v1",
   "output_root": "runs",
-  "max_wall_seconds": 5400,
-  "startup_wall_seconds": 480,
+  "max_wall_seconds": 14400,
+  "startup_wall_seconds": 1800,
   "finalization_wall_seconds": 120,
   "recording": {
     "width_px": 640,
