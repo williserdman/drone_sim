@@ -8,6 +8,7 @@ from decimal import Decimal
 import os
 from pathlib import Path
 import sys
+from threading import Event, Thread
 import time
 
 from artifacts.runtime_protocol import RuntimeProtocol
@@ -169,6 +170,17 @@ class PublicEpochRendezvous:
         self._begun = False
         self._run_to_requested = False
         self._released = False
+        self._unpause_done = Event()
+        self._unpause_error: Exception | None = None
+        self._unpause_thread: Thread | None = None
+
+    def _unpause(self) -> None:
+        try:
+            self._transport.set_paused(False)
+        except Exception as error:
+            self._unpause_error = error
+        finally:
+            self._unpause_done.set()
 
     def begin(self) -> None:
         if self._begun:
@@ -191,7 +203,18 @@ class PublicEpochRendezvous:
             return False
         if self._protocol.read_status("mission-command-delivered") is None:
             return False
-        self._transport.set_paused(False)
+        if self._unpause_thread is None:
+            self._unpause_thread = Thread(
+                target=self._unpause,
+                name="gazebo-public-epoch-unpause",
+                daemon=True,
+            )
+            self._unpause_thread.start()
+            return False
+        if not self._unpause_done.is_set():
+            return False
+        if self._unpause_error is not None:
+            raise self._unpause_error
         self._released = True
         return True
 

@@ -1,6 +1,8 @@
 import pytest
 import yaml
 from pathlib import Path
+from threading import Event, Thread
+import time
 
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
@@ -217,8 +219,100 @@ def test_public_epoch_rendezvous_steps_to_target_then_waits_for_delivery_ack():
     ]
     assert rendezvous.release_if_delivered() is False
     protocol.delivered = True
-    assert rendezvous.release_if_delivered() is True
+    assert rendezvous.release_if_delivered() is False
+    deadline = time.monotonic() + 2.0
+    while not rendezvous.release_if_delivered():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
     assert calls[-1] == ("paused", False)
+
+
+def test_public_epoch_rendezvous_does_not_block_ros_callback_progress_during_unpause():
+    calls = []
+    unpause_started = Event()
+    allow_unpause_reply = Event()
+
+    class Transport:
+        def set_paused(self, paused):
+            calls.append(("paused", paused))
+            if not paused:
+                unpause_started.set()
+                if not allow_unpause_reply.wait(2.0):
+                    raise RuntimeError("test did not release world-control reply")
+
+        def paused_sim_time_ns(self):
+            calls.append(("stats",))
+            return 44_000_000_000
+
+        def run_to_sim_time(self, target_ns):
+            calls.append(("run_to", target_ns))
+
+    class Protocol:
+        def read_status(self, name):
+            assert name == "mission-command-delivered"
+            return {"delivered": True}
+
+    rendezvous = PublicEpochRendezvous(
+        transport=Transport(),
+        protocol=Protocol(),
+        public_epoch_native_ns=90_000_000_000,
+        activate_output=lambda: calls.append(("activate",)),
+    )
+    rendezvous.begin()
+    assert rendezvous.release_if_delivered() is False
+
+    outcomes = []
+    caller = Thread(target=lambda: outcomes.append(rendezvous.release_if_delivered()))
+    caller.start()
+    assert unpause_started.wait(0.5)
+    try:
+        caller.join(0.1)
+        assert not caller.is_alive(), "world-control reply blocked ROS callback progress"
+        assert outcomes == [False]
+        assert rendezvous.release_if_delivered() is False
+    finally:
+        allow_unpause_reply.set()
+        caller.join(2.0)
+
+    deadline = time.monotonic() + 2.0
+    while not rendezvous.release_if_delivered():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert calls.count(("paused", False)) == 1
+
+
+def test_public_epoch_rendezvous_propagates_asynchronous_unpause_failure_once():
+    unpause_attempted = Event()
+
+    class Transport:
+        def set_paused(self, paused):
+            if not paused:
+                unpause_attempted.set()
+                raise TransportError("unpause control failed")
+
+        def paused_sim_time_ns(self):
+            return 44_000_000_000
+
+        def run_to_sim_time(self, _target_ns):
+            return None
+
+    class Protocol:
+        def read_status(self, _name):
+            return {"delivered": True}
+
+    rendezvous = PublicEpochRendezvous(
+        transport=Transport(),
+        protocol=Protocol(),
+        public_epoch_native_ns=90_000_000_000,
+        activate_output=lambda: None,
+    )
+    rendezvous.begin()
+    assert rendezvous.release_if_delivered() is False
+    assert rendezvous.release_if_delivered() is False
+    assert unpause_attempted.wait(0.5)
+
+    with pytest.raises(TransportError, match="unpause control failed"):
+        rendezvous.release_if_delivered()
 
 
 def test_public_epoch_rendezvous_waits_for_confirmed_pause_before_run_to():
