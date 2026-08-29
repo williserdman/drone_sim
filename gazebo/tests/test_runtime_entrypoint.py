@@ -339,6 +339,11 @@ def test_transport_applies_step_and_pause_with_shell_free_world_control():
     assert "pause: false" in calls[1][0]
     assert "run_to_sim_time { sec: 90 nsec: 50000000 }" in calls[2][0]
     assert all(call[1]["shell"] is False for call in calls)
+    assert all(
+        call[0][call[0].index("--timeout") + 1] == "15000"
+        for call in calls
+    )
+    assert all(call[1]["timeout"] == 17.0 for call in calls)
 
 
 @pytest.mark.parametrize(
