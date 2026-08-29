@@ -50,18 +50,25 @@ def gazebo_child_specs(
         ),
         environment,
     )
-    images = ChildSpec(
-        "image_bridge",
-        (
-            "ros2",
-            "run",
-            "ros_gz_image",
-            "image_bridge",
-            *camera_topics_for_world(world_name),
-        ),
-        environment,
+    image_bridges = tuple(
+        ChildSpec(
+            f"image_bridge_{stream}",
+            (
+                "ros2",
+                "run",
+                "ros_gz_image",
+                "image_bridge",
+                topic,
+            ),
+            environment,
+        )
+        for stream, topic in zip(
+            ("onboard", "observer"),
+            camera_topics_for_world(world_name),
+            strict=True,
+        )
     )
-    return (bridge, images)
+    return (bridge, *image_bridges)
 
 
 class ChildSupervisor:
