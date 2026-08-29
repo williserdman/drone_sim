@@ -149,11 +149,30 @@ def arm_and_takeoff(vehicle, target_alt_m):
         print("[!] Takeoff altitude tolerance not reached in time; continuing anyway.")
 
 
+def _send_guided_waypoint(vehicle, lat, lon, alt_m):
+    """Send a GUIDED waypoint without losing lat/lon precision to float32."""
+    vehicle._master.mav.mission_item_int_send(
+        0,
+        0,
+        0,
+        mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+        mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        int(round(lat * 1e7)),
+        int(round(lon * 1e7)),
+        alt_m,
+    )
+
+
 def goto(vehicle, lat, lon, alt_m):
     """Command a GUIDED move to lat/lon/alt (AGL)."""
-    target = LocationGlobalRelative(lat, lon, alt_m)
     vehicle.groundspeed = GROUND_SPEED
-    vehicle.simple_goto(target)
+    _send_guided_waypoint(vehicle, lat, lon, alt_m)
 
 
 class DroneControl:
@@ -539,8 +558,6 @@ class DroneControl:
         :param timeout: Maximum overall wait time (s).
         """
         navigation_alt = coord.alt if coord.alt is not None else self.cruise_alt
-        target = LocationGlobalRelative(coord.lat, coord.long, navigation_alt)
-
         print(
             f"[*] Holding waypoint ({coord.lat:.7f}, {coord.long:.7f}) and waiting {hold_seconds:.1f}s stable..."
         )
@@ -550,7 +567,9 @@ class DroneControl:
 
         while time.time() - t_start < timeout:
             # Re-issue target to emulate a GUIDED loiter-at-waypoint hold
-            self.vehicle.simple_goto(target)
+            _send_guided_waypoint(
+                self.vehicle, coord.lat, coord.long, navigation_alt
+            )
 
             loc = self.vehicle.location.global_relative_frame
             velocity = self.vehicle.velocity

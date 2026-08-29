@@ -1,5 +1,6 @@
 import importlib
 import runpy
+import struct
 import sys
 from types import SimpleNamespace
 from types import ModuleType
@@ -158,6 +159,14 @@ def test_disarm_observes_auto_disarm_just_after_fifteen_simulated_seconds():
     assert clock.now_value == pytest.approx(15.2, abs=1e-12)
 
 
+class RecordingMissionMav:
+    def __init__(self):
+        self.items = []
+
+    def mission_item_int_send(self, *args):
+        self.items.append(args)
+
+
 class StableVehicle:
     def __init__(self, clock):
         self.clock = clock
@@ -166,6 +175,9 @@ class StableVehicle:
         )
         self.attitude = SimpleNamespace(pitch=0.0)
         self.targets = []
+        self.groundspeed = None
+        self.mission_mav = RecordingMissionMav()
+        self._master = SimpleNamespace(mav=self.mission_mav)
 
     @property
     def velocity(self):
@@ -174,6 +186,81 @@ class StableVehicle:
 
     def simple_goto(self, target):
         self.targets.append(target)
+
+
+def test_guided_waypoint_uses_exact_mission_item_int_coordinates():
+    """The F2 scorer tolerance is tighter than legacy float waypoint precision."""
+    from drone.control.drone_control import GROUND_SPEED, goto
+    from pymavlink import mavutil
+
+    target_lat = 37.4003371
+    target_lon = -122.08175843013008
+    vehicle = StableVehicle(FakeClock())
+
+    goto(vehicle, target_lat, target_lon, 10.0)
+
+    assert vehicle.groundspeed == GROUND_SPEED
+    assert vehicle.targets == []
+    assert vehicle.mission_mav.items == [
+        (
+            0,
+            0,
+            0,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            374003371,
+            -1220817584,
+            10.0,
+        )
+    ]
+
+    legacy_lon = struct.unpack("f", struct.pack("f", target_lon))[0]
+    legacy = GPSCoord(target_lat, legacy_lon, 0)
+    exact = GPSCoord(target_lat, -1220817584 / 1e7, 0)
+    target = GPSCoord(target_lat, target_lon, 0)
+    assert horiz_distance_m_for_test(legacy, target) > 0.15
+    assert horiz_distance_m_for_test(exact, target) < 0.01
+
+
+def horiz_distance_m_for_test(a, b):
+    from drone.control.drone_control import horiz_distance_m
+
+    return horiz_distance_m(a, b)
+
+
+def test_release_hold_reissues_exact_integer_waypoint_every_two_tenths():
+    from pymavlink import mavutil
+
+    clock = FakeClock()
+    vehicle = StableVehicle(clock)
+    controller = controller_without_connect(vehicle)
+
+    with timebase.configured(clock):
+        stable = controller.hold_waypoint_until_stable(
+            GPSCoord(37.4003371, -122.08175843013008, 10.0),
+            FakeLidar(),
+            required_agl_m=10.0,
+            hold_seconds=0.4,
+            timeout=1.0,
+        )
+
+    assert stable is False
+    assert clock.sleeps == [0.2] * 5
+    assert vehicle.targets == []
+    assert len(vehicle.mission_mav.items) == 5
+    assert all(
+        item[3] == mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+        and item[4] == mavutil.mavlink.MAV_CMD_NAV_WAYPOINT
+        and item[5] == 2
+        and item[11:14] == (374003371, -1220817584, 10.0)
+        for item in vehicle.mission_mav.items
+    )
 
 
 def test_release_stability_uses_horizontal_speed_and_resets_continuous_window():
@@ -208,8 +295,8 @@ def test_release_stability_uses_lidar_agl_not_adjusted_navigation_altitude():
         )
 
     assert stable is True
-    assert vehicle.targets
-    assert all(target.alt == 15.0 for target in vehicle.targets)
+    assert vehicle.mission_mav.items
+    assert all(item[13] == 15.0 for item in vehicle.mission_mav.items)
 
 
 def test_release_stability_resets_below_ten_metres_agl_after_terrain_adjustment():
