@@ -246,11 +246,11 @@ class GazeboTransport:
                 "--reptype",
                 "gz.msgs.Boolean",
                 "--timeout",
-                "15000",
+                "30000",
                 "--req",
                 request,
             ),
-            timeout=17.0,
+            timeout=32.0,
         )
         if "true" not in result.stdout.lower():
             raise TransportError(f"Gazebo world control rejected request: {request}")
