@@ -20,7 +20,8 @@ def fm1(mt: MissonTracker, controller: DroneControl, cruise_alt: int, L: GPSCoor
     controller.goto_waypoint(GPSCoord(L.lat, L.long, cruise_alt))
 
     controller.simple_land()
-    controller.disarm()
+    if controller.disarm() != 0:
+        raise RuntimeError("FM1 disarm was not confirmed")
 
     log(
         "fm1: landed at L, awaiting flagger and judge approval to start fm2",

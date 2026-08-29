@@ -411,7 +411,7 @@ class DroneControl:
         self.vehicle.armed = False
         t0 = time.time()
         while self.vehicle.armed:
-            remaining = 15.0 - (time.time() - t0)
+            remaining = 16.0 - (time.time() - t0)
             if remaining <= 0:
                 print("[!] Disarm confirmation timed out.")
                 return -1

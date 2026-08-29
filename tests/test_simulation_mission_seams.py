@@ -64,6 +64,26 @@ class DelayedDisarmVehicle:
             self.requested_at = self.clock.now()
 
 
+class DeniedDisarmThenAutoDisarmVehicle:
+    """Model the preserved L-pad timing around ArduPilot auto-disarm."""
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.touchdown_at = 14.632541
+        self.auto_disarm_delay = 0.506915
+
+    @property
+    def armed(self):
+        return self.clock.now() < self.touchdown_at + self.auto_disarm_delay
+
+    @armed.setter
+    def armed(self, value):
+        if value is not False:
+            raise AssertionError("the focused fixture only accepts a disarm request")
+        # The first request is denied while airborne; ArduPilot auto-disarms
+        # after touchdown from its own physical state.
+
+
 def controller_without_connect(vehicle):
     from drone.control.drone_control import DroneControl
 
@@ -111,7 +131,7 @@ def test_disarm_waits_for_dronekit_to_observe_false():
     assert clock.sleeps
 
 
-def test_disarm_returns_failure_after_fifteen_simulated_seconds():
+def test_disarm_returns_failure_after_sixteen_simulated_seconds():
     """Regression: an unconfirmed disarm must not block forever or report success."""
     clock = FakeClock()
     controller = controller_without_connect(
@@ -121,7 +141,21 @@ def test_disarm_returns_failure_after_fifteen_simulated_seconds():
     with timebase.configured(clock):
         assert controller.disarm() == -1
 
-    assert clock.now_value == pytest.approx(15.0, abs=1e-12)
+    assert clock.now_value == pytest.approx(16.0, abs=1e-12)
+
+
+def test_disarm_observes_auto_disarm_just_after_fifteen_simulated_seconds():
+    """A denied airborne request must still observe the physical L auto-disarm."""
+    clock = FakeClock()
+    controller = controller_without_connect(
+        DeniedDisarmThenAutoDisarmVehicle(clock)
+    )
+
+    with timebase.configured(clock):
+        assert controller.disarm() == 0
+
+    assert controller.vehicle.armed is False
+    assert clock.now_value == pytest.approx(15.2, abs=1e-12)
 
 
 class StableVehicle:

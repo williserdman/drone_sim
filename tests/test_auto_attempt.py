@@ -132,6 +132,49 @@ class FailedFm2MissionFunctions(FakeMissionFunctions):
         return False
 
 
+class OriginalFm1ThenFailedFm2Functions(FakeMissionFunctions):
+    def fm1(self, tracker, controller, cruise_alt, waypoint_l):
+        from drone.missions.fm1 import fm1
+
+        return fm1(tracker, controller, cruise_alt, waypoint_l)
+
+    def fm2(
+        self,
+        tracker,
+        controller,
+        cruise_alt,
+        drop_target,
+        payload,
+        lidar,
+        desired_drop_height_m=10,
+    ):
+        self.calls.append(("mission", "FM2_WHILE_ARMED"))
+        return False
+
+
+class UnconfirmedLDisarmController:
+    def __init__(self, calls):
+        self.calls = calls
+        mav = type("Mav", (), {"statustext_send": lambda *_args: None})()
+        master = type("Master", (), {"mav": mav})()
+        self.vehicle = type("Vehicle", (), {"armed": True, "_master": master})()
+
+    def force_arm_takeoff(self, altitude):
+        self.calls.append(("takeoff", altitude))
+
+    def goto_waypoint(self, waypoint):
+        self.calls.append(("goto", waypoint))
+        return 0
+
+    def simple_land(self):
+        self.calls.append(("land", "L"))
+        return 0
+
+    def disarm(self):
+        self.calls.append(("disarm", "L"))
+        return -1
+
+
 class NoneFm3MissionFunctions(FakeMissionFunctions):
     def fm3(
         self,
@@ -335,6 +378,30 @@ def test_explicit_phase_failure_aborts_the_single_attempt():
         call[:2] in {("event", "FM3_3"), ("event", "FM3_4")}
         for call in calls
     )
+
+
+def test_unconfirmed_fm1_disarm_prevents_fm2_from_starting():
+    """FM1 must not return while the vehicle remains physically armed at L."""
+    calls = []
+    controller = UnconfirmedLDisarmController(calls)
+
+    with timebase.configured(FakeClock()):
+        with pytest.raises(RuntimeError, match="FM1 disarm was not confirmed"):
+            run_auto_attempt(
+                tracker=FakeTracker(calls),
+                controller=controller,
+                camera=object(),
+                lidar=object(),
+                payloads={
+                    marker: FakePayload(marker, calls) for marker in (2, 3, 4)
+                },
+                waypoints=fake_waypoints(),
+                emit=lambda phase, state: calls.append(("event", phase, state)),
+                mission_functions=OriginalFm1ThenFailedFm2Functions(calls),
+            )
+
+    assert controller.vehicle.armed is True
+    assert ("mission", "FM2_WHILE_ARMED") not in calls
 
 
 def test_fm3_requires_explicit_true_before_emitting_complete():
