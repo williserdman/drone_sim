@@ -306,9 +306,12 @@ class RosLidar:
             raise ValueError("downward range is invalid")
         if isinstance(sim_timestamp_ns, bool) or not isinstance(sim_timestamp_ns, int):
             raise TypeError("range simulation timestamp must be an integer")
+        current_clock_ns = self._clock.timestamp_ns
         with self._lock:
             if self._timestamp_ns is not None and sim_timestamp_ns < self._timestamp_ns:
                 raise ValueError("downward range timestamp regressed")
+            if current_clock_ns is None or sim_timestamp_ns > current_clock_ns:
+                return
             self._timestamp_ns = sim_timestamp_ns
             self._distance_m = distance_m
 

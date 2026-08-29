@@ -151,6 +151,22 @@ def test_lidar_rejects_range_older_than_half_a_simulated_second() -> None:
         lidar.get_distance()
 
 
+def test_lidar_retains_recent_committed_range_when_delivery_leads_clock() -> None:
+    clock = SimulationClock()
+    lidar = RosLidar(clock)
+    prior_scan = SimpleNamespace(ranges=[5.35], range_min=0.1, range_max=30.0)
+    leading_scan = SimpleNamespace(ranges=[5.40], range_min=0.1, range_max=30.0)
+    clock.accept(175_373_000_000)
+    lidar.accept(prior_scan, 175_350_000_000)
+
+    lidar.accept(leading_scan, 175_400_000_000)
+
+    assert lidar.get_distance() == pytest.approx(5.35)
+    clock.accept(175_400_000_000)
+    lidar.accept(leading_scan, 175_400_000_000)
+    assert lidar.get_distance() == pytest.approx(5.40)
+
+
 class FakePayloadClient:
     def __init__(self) -> None:
         self.requests: list[object] = []
