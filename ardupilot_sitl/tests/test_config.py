@@ -36,6 +36,14 @@ def test_descent_parameters_use_verified_competition_roll_rate_gains() -> None:
     assert parameters["ATC_RAT_RLL_D"] == "0.0018"
 
 
+def test_descent_parameters_use_verified_competition_pitch_rate_gains() -> None:
+    parameters = _descent_parameters()
+
+    assert parameters["ATC_RAT_PIT_P"] == "0.0675"
+    assert parameters["ATC_RAT_PIT_I"] == "0.0675"
+    assert parameters["ATC_RAT_PIT_D"] == "0.0018"
+
+
 def test_descent_parameters_balance_first_contact_speed_and_prompt_unloading() -> None:
     parameters = _descent_parameters()
 
