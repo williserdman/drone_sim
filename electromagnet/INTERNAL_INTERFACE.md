@@ -7,21 +7,24 @@ an immutable `PayloadWorld` and `PayloadRequest`, and returns an immutable
 completed identical requests replay with no wire, while conflicting ID reuse
 cannot reach Gazebo.
 
-`PayloadGateway` in `controller.py` joins the latest current-run vehicle and
-three payload facts, publishes a marker-specific coordinator command, and waits
-on a per-command wall-time event. Result callbacks populate those events from a
-different executor thread. A dedicated operation mutex spans validation through
-response caching; it is independent of the fact/result mutex. Concurrent exact
-duplicates therefore wait for and replay the original response, conflicts
-cannot replace that response, and distinct physical operations revalidate in
-order without blocking result callbacks.
+`PayloadGateway` in `controller.py` retains at most the latest 0.5 simulated
+seconds of monotonic current-run vehicle and three-payload facts. It joins the
+latest exact common timestamp, publishes a marker-specific coordinator command,
+and waits on a per-command wall-time event. A missing or expired common tick and
+any newer grounded or attachment-state transition fail closed. Result callbacks
+populate those events from a different executor thread. A dedicated operation
+mutex spans validation through response caching; it is independent of the
+fact/result mutex. Concurrent exact duplicates therefore wait for and replay
+the original response, conflicts cannot replace that response, and distinct
+physical operations revalidate in order without blocking result callbacks.
 
 Only an exact marker, command ID, status, and desired physical state can produce
 an accepted response. A confirmation updates the requested payload's local fact
 for the immediate response, then later monotonic recurrent `PayloadState` facts
-remain authoritative. Authorization requires one common timestamp across the
-vehicle and all payloads and rejects multiple attached facts explicitly. The
-gateway publishes one immutable `PayloadEventRecord` only after confirmation.
+remain authoritative. Authorization uses the latest recent exact common
+timestamp across the vehicle and all payloads and rejects multiple attached
+facts explicitly. The gateway publishes one immutable `PayloadEventRecord` only
+after confirmation.
 Validation rejection, coordinator error, mismatch, and timeout publish no
 physical event.
 

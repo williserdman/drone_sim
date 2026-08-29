@@ -507,12 +507,181 @@ def test_timestamp_regressions_do_not_overwrite_current_authorization_facts() ->
     assert result.accepted is True
 
 
-def test_mixed_timestamp_world_fails_closed_without_a_command() -> None:
+def test_common_tick_older_than_half_a_sim_second_fails_closed() -> None:
     commands: list[tuple[int, str]] = []
     gateway = ready_gateway(commands=commands, events=[], confirmation=None)
-    gateway.accept_vehicle(RUN_ID, 100_000_000, (-45.72, -9.144), True)
+    gateway.accept_vehicle(RUN_ID, 600_000_001, (-45.72, -9.144), True)
 
     result = gateway.execute(PayloadRequest(RUN_ID, 3, "attach", "stale:1"))
+
+    assert (result.accepted, result.code) == (False, "STALE_PHYSICAL_STATE")
+    assert commands == []
+
+
+def test_gateway_uses_latest_recent_exact_common_tick_when_payloads_arrive_ahead() -> None:
+    commands: list[tuple[int, str]] = []
+    events: list[object] = []
+    gateway_ref: list[PayloadGateway] = []
+
+    def publish_command(marker: int, wire: str) -> None:
+        commands.append((marker, wire))
+        gateway_ref[0].accept_result(
+            marker,
+            "payload-result-v1|run:2:release:1|confirmed|detached|OK",
+        )
+
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=publish_command,
+        publish_event=events.append,
+        confirmation_timeout_seconds=0.05,
+    )
+    gateway_ref.append(gateway)
+    seed_gateway(
+        gateway,
+        timestamp_ns=162_650_000_000,
+        vehicle_xy=(0.0, 0.0),
+        attached=frozenset({2}),
+    )
+    gateway.accept_payload(
+        RUN_ID, 162_850_000_000, 2, (0.01, 0.0), False, True
+    )
+    gateway.accept_payload(
+        RUN_ID, 162_850_000_000, 3, (-45.72, -9.144), True, False
+    )
+    gateway.accept_payload(
+        RUN_ID, 162_850_000_000, 4, (-45.72, 9.144), True, False
+    )
+
+    result = gateway.execute(
+        PayloadRequest(RUN_ID, 2, "release", "run:2:release:1")
+    )
+
+    assert (result.accepted, result.code) == (True, "OK")
+    assert commands == [
+        (2, "payload-command-v1|run:2:release:1|detach")
+    ]
+    assert len(events) == 1
+
+
+def test_latest_common_tick_cannot_fall_back_to_an_older_valid_world() -> None:
+    commands: list[tuple[int, str]] = []
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=lambda marker, wire: commands.append((marker, wire)),
+        publish_event=lambda _event: None,
+        confirmation_timeout_seconds=0.05,
+    )
+    seed_gateway(gateway, timestamp_ns=1_000_000_000)
+    gateway.accept_vehicle(
+        RUN_ID, 1_050_000_000, (-45.72, -9.144), False
+    )
+    gateway.accept_payload(
+        RUN_ID, 1_050_000_000, 2, (0.0, 0.0), False, False
+    )
+    gateway.accept_payload(
+        RUN_ID, 1_050_000_000, 3, (-45.72, -9.144), True, False
+    )
+    gateway.accept_payload(
+        RUN_ID, 1_050_000_000, 4, (-45.72, 9.144), True, False
+    )
+
+    result = gateway.execute(
+        PayloadRequest(RUN_ID, 3, "attach", "latest:moving")
+    )
+
+    assert (result.accepted, result.code) == (False, "NOT_LANDED")
+    assert commands == []
+
+
+def test_changed_grounded_or_attachment_truth_after_common_tick_fails_closed() -> None:
+    for mutation in ("grounded", "attachment"):
+        commands: list[tuple[int, str]] = []
+        gateway = PayloadGateway(
+            RuntimeConfig.competition_defaults(RUN_ID).authority(),
+            publish_command=lambda marker, wire: commands.append((marker, wire)),
+            publish_event=lambda _event: None,
+            confirmation_timeout_seconds=0.05,
+        )
+        seed_gateway(
+            gateway,
+            timestamp_ns=1_000_000_000,
+            vehicle_xy=(0.0, 0.0),
+            attached=frozenset({2}),
+        )
+        if mutation == "grounded":
+            gateway.accept_vehicle(RUN_ID, 1_050_000_000, (0.0, 0.0), False)
+        else:
+            gateway.accept_payload(
+                RUN_ID, 1_050_000_000, 2, (0.0, 0.0), False, False
+            )
+
+        result = gateway.execute(
+            PayloadRequest(RUN_ID, 2, "release", f"changed:{mutation}")
+        )
+
+        assert (result.accepted, result.code) == (
+            False,
+            "STALE_PHYSICAL_STATE",
+        )
+        assert commands == []
+
+
+def test_inconsistent_latest_attachment_history_fails_closed() -> None:
+    commands: list[tuple[int, str]] = []
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=lambda marker, wire: commands.append((marker, wire)),
+        publish_event=lambda _event: None,
+        confirmation_timeout_seconds=0.05,
+    )
+    seed_gateway(
+        gateway,
+        timestamp_ns=1_000_000_000,
+        vehicle_xy=(0.0, 0.0),
+        attached=frozenset({2}),
+    )
+    gateway.accept_payload(
+        RUN_ID, 1_050_000_000, 3, (-45.72, -9.144), True, True
+    )
+
+    result = gateway.execute(
+        PayloadRequest(RUN_ID, 2, "release", "inconsistent:attachment")
+    )
+
+    assert (result.accepted, result.code) == (False, "INVALID_PHYSICAL_STATE")
+    assert commands == []
+
+
+def test_pruned_history_cannot_be_restored_by_a_regressing_sample() -> None:
+    commands: list[tuple[int, str]] = []
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=lambda marker, wire: commands.append((marker, wire)),
+        publish_event=lambda _event: None,
+        confirmation_timeout_seconds=0.05,
+    )
+    seed_gateway(
+        gateway,
+        timestamp_ns=1_000_000_000,
+        vehicle_xy=(0.0, 0.0),
+        attached=frozenset({2}),
+    )
+    for marker, xy, grounded, attached in (
+        (2, (0.0, 0.0), False, True),
+        (3, (-45.72, -9.144), True, False),
+        (4, (-45.72, 9.144), True, False),
+    ):
+        gateway.accept_payload(
+            RUN_ID, 1_500_000_001, marker, xy, grounded, attached
+        )
+    gateway.accept_payload(
+        RUN_ID, 1_000_000_000, 2, (0.0, 0.0), False, True
+    )
+
+    result = gateway.execute(
+        PayloadRequest(RUN_ID, 2, "release", "pruned:regression")
+    )
 
     assert (result.accepted, result.code) == (False, "STALE_PHYSICAL_STATE")
     assert commands == []
@@ -551,3 +720,7 @@ def test_competition_readiness_requires_all_current_facts_and_result_publishers(
     assert gateway.ready(result_publishers=frozenset({2, 3}), service_ready=True) is False
     assert gateway.ready(result_publishers=frozenset({2, 3, 4}), service_ready=False) is False
     assert gateway.ready(result_publishers=frozenset({2, 3, 4}), service_ready=True) is True
+    gateway.accept_payload(
+        RUN_ID, 100_000_000, 2, (0.0, 0.0), True, True
+    )
+    assert gateway.ready(result_publishers=frozenset({2, 3, 4}), service_ready=True) is False

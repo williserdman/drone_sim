@@ -15,6 +15,9 @@ from .scenario import InactiveScenarioEvent, ScenarioPolicy
 from .payload import PayloadAuthority, PayloadDecision, PayloadRequest, PayloadWorld
 
 
+_PHYSICAL_HISTORY_HORIZON_NS = 500_000_000
+
+
 @dataclass(frozen=True)
 class PhysicalResult:
     command_id: str
@@ -106,6 +109,10 @@ class PayloadGateway:
         self._confirmation_timeout_seconds = confirmation_timeout_seconds
         self._vehicle: _VehicleFact | None = None
         self._payloads: dict[int, _PayloadFact] = {}
+        self._vehicle_history: dict[int, _VehicleFact] = {}
+        self._payload_histories: dict[int, dict[int, _PayloadFact]] = {
+            marker: {} for marker in (2, 3, 4)
+        }
         self._pending: dict[str, _PendingResult] = {}
         self._responses: dict[str, tuple[PayloadRequest, PayloadResponse]] = {}
         self._response_sequence = 0
@@ -140,6 +147,8 @@ class PayloadGateway:
             if self._vehicle is not None and timestamp_ns <= self._vehicle.timestamp_ns:
                 return
             self._vehicle = _VehicleFact(timestamp_ns, xy, grounded)
+            self._vehicle_history[timestamp_ns] = self._vehicle
+            self._prune_histories_locked()
 
     def accept_payload(
         self,
@@ -159,6 +168,24 @@ class PayloadGateway:
             self._payloads[aruco_id] = _PayloadFact(
                 timestamp_ns, xy, grounded, attached
             )
+            self._payload_histories[aruco_id][timestamp_ns] = self._payloads[aruco_id]
+            self._prune_histories_locked()
+
+    def _prune_histories_locked(self) -> None:
+        latest_timestamps = [fact.timestamp_ns for fact in self._payloads.values()]
+        if self._vehicle is not None:
+            latest_timestamps.append(self._vehicle.timestamp_ns)
+        if not latest_timestamps:
+            return
+        cutoff = max(latest_timestamps) - _PHYSICAL_HISTORY_HORIZON_NS
+        histories: tuple[dict[int, object], ...] = (
+            self._vehicle_history,
+            *self._payload_histories.values(),
+        )
+        for history in histories:
+            for timestamp_ns in tuple(history):
+                if timestamp_ns < cutoff:
+                    del history[timestamp_ns]
 
     def accept_result(self, aruco_id: int, wire: object) -> None:
         result = parse_physical_result(wire)
@@ -219,22 +246,46 @@ class PayloadGateway:
         with self._lock:
             if self._vehicle is None or set(self._payloads) != {2, 3, 4}:
                 return None, "NOT_READY"
-            timestamps = {
-                self._vehicle.timestamp_ns,
-                *(fact.timestamp_ns for fact in self._payloads.values()),
-            }
-            if len(timestamps) != 1:
+            common_timestamps = set(self._vehicle_history)
+            for history in self._payload_histories.values():
+                common_timestamps.intersection_update(history)
+            if not common_timestamps:
                 return None, "STALE_PHYSICAL_STATE"
-            attached_id, attachment_valid = self._attachment_state_locked()
+            timestamp_ns = max(common_timestamps)
+            vehicle = self._vehicle_history[timestamp_ns]
+            payloads = {
+                marker: history[timestamp_ns]
+                for marker, history in self._payload_histories.items()
+            }
+            attached_ids = [
+                marker for marker, fact in payloads.items() if fact.attached
+            ]
+            attached_id = attached_ids[0] if len(attached_ids) == 1 else None
+            attachment_valid = len(attached_ids) <= 1
             if not attachment_valid:
                 return None, "INVALID_PHYSICAL_STATE"
-            payload = self._payloads.get(request.aruco_id)
+            current_attached_id, current_attachment_valid = (
+                self._attachment_state_locked()
+            )
+            if not current_attachment_valid:
+                return None, "INVALID_PHYSICAL_STATE"
+            if (
+                current_attached_id != attached_id
+                or self._vehicle.grounded != vehicle.grounded
+                or any(
+                    self._payloads[marker].grounded != fact.grounded
+                    or self._payloads[marker].attached != fact.attached
+                    for marker, fact in payloads.items()
+                )
+            ):
+                return None, "STALE_PHYSICAL_STATE"
+            payload = payloads.get(request.aruco_id)
             if payload is None:
                 payload = _PayloadFact(0, (0.0, 0.0), False, False)
             return (
                 PayloadWorld(
-                    vehicle_xy=self._vehicle.xy,
-                    vehicle_grounded=self._vehicle.grounded,
+                    vehicle_xy=vehicle.xy,
+                    vehicle_grounded=vehicle.grounded,
                     payload_xy=payload.xy,
                     payload_grounded=payload.grounded,
                     attached_id=attached_id,
@@ -340,6 +391,9 @@ class PayloadGateway:
                 xy=fact.xy,
                 grounded=fact.grounded,
                 attached=request.action == "attach",
+            )
+            self._payload_histories[request.aruco_id][fact.timestamp_ns] = (
+                self._payloads[request.aruco_id]
             )
             timestamp_ns = max(
                 self._vehicle.timestamp_ns if self._vehicle is not None else 0,

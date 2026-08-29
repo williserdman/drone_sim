@@ -47,12 +47,14 @@ arrives while the original is pending. Reusing a command ID for a different
 request returns `COMMAND_ID_CONFLICT`. Physical operations are serialized, so a
 second command is validated only after the first reaches a terminal result.
 
-Vehicle and payload samples never regress their per-source timestamps. A
-request fails closed with `STALE_PHYSICAL_STATE` unless current vehicle truth
-and all three payload facts describe one common simulation tick. More than one
-physically attached payload returns `INVALID_PHYSICAL_STATE`; it is never
-treated as free capacity. Recurrent `PayloadState.attached` samples remain the
-attachment authority after coordinator confirmations.
+Vehicle and payload samples never regress their per-source timestamps. The
+gateway keeps only the latest 0.5 simulated seconds per source and selects the
+latest exact timestamp common to current vehicle truth and all three payload
+facts. A request fails closed with `STALE_PHYSICAL_STATE` when no such recent
+tick exists or when newer grounded or attachment truth conflicts with it. More
+than one physically attached payload returns `INVALID_PHYSICAL_STATE`; it is
+never treated as free capacity. Recurrent `PayloadState.attached` samples remain
+the attachment authority after coordinator confirmations.
 
 Competition readiness is emitted only after current-run vehicle truth, all
 three payload states, all three result publishers, and the service exist.
