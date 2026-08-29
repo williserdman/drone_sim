@@ -570,7 +570,7 @@ class PickupController:
         return GPSCoord(original.lat, original.long, original.alt)
 
     def goto_waypoint(self, waypoint, position_tol=None):
-        self.events.append(("goto", waypoint.alt))
+        self.events.append(("goto", waypoint.alt, position_tol))
         return 0
 
     def disarm(self):
@@ -637,6 +637,26 @@ def test_pickup_requires_five_distinct_centered_results_after_correction(monkeyp
     assert result is True
     assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6]
     assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
+def test_pickup_uses_precision_tolerance_for_marker_correction(monkeypatch):
+    """Regression: a one-metre correction must not stop at the default tolerance."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6]))
+    monkeypatch.setattr(active, "aruco_land_precision", lambda *args: True)
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is True
+    assert [event[2] for event in events if event[0] == "goto"] == [0.8, 0.15]
 
 
 def test_four_results_with_one_repeated_timestamp_cannot_acquire(monkeypatch):

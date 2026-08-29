@@ -201,7 +201,7 @@ def pickup_sequence(
                 corrected_wp = controller.get_location_metres(
                     current_gps, dNorth, dEast
                 )
-                val = controller.goto_waypoint(corrected_wp)
+                val = controller.goto_waypoint(corrected_wp, position_tol=0.15)
                 print(f"return of goto func: {val}")
 
                 time.sleep(1)  # Let it center before triggering land
