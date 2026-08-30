@@ -808,8 +808,8 @@ def test_pickup_requires_five_distinct_centered_results_after_correction(monkeyp
     assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
 
 
-def test_pickup_recenters_once_before_five_later_centered_results(monkeypatch):
-    """A first fresh off-center result must drive one bounded second correction."""
+def test_pickup_damps_one_recenter_before_five_later_centered_results(monkeypatch):
+    """A noisy fresh offset must drive one damped second correction."""
     active = importlib.import_module("drone.mock_mission")
     events = []
     camera = AcquisitionCamera(
@@ -841,7 +841,7 @@ def test_pickup_recenters_once_before_five_later_centered_results(monkeypatch):
 
     assert result is True
     assert controller.goto_tolerances == [0.15, 0.15, 0.15]
-    assert controller.location_offsets == [(0, 0), (0.1, 0.0), (0.6, 0.0)]
+    assert controller.location_offsets == [(0, 0), (0.1, 0.0), (0.18, 0.0)]
     assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6, 7]
     assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
 

@@ -270,7 +270,9 @@ def pickup_sequence(
                             if first_valid_result and horizontal_error > 0.50:
                                 current_gps = controller.get_current_gps()
                                 recentered_wp = controller.get_location_metres(
-                                    current_gps, centered_north, centered_east
+                                    current_gps,
+                                    centered_north * MULT,
+                                    centered_east * MULT,
                                 )
                                 if (
                                     controller.goto_waypoint(
