@@ -323,7 +323,7 @@ class DroneControl:
         msg = self.vehicle.message_factory.landing_target_encode(
             0,  # current_time_us,  # time_usec (0 = use autopilot system time)
             0,  # target_num (0 = default target)
-            mavutil.mavlink.MAV_FRAME_BODY_NED,  # coordinate frame
+            mavutil.mavlink.MAV_FRAME_BODY_FRD,  # coordinate frame
             angle_x,  # X-axis angular offset (radians)
             angle_y,  # Y-axis angular offset (radians)
             target_distance,  # Scalar distance to target
