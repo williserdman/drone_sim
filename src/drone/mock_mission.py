@@ -232,6 +232,7 @@ def pickup_sequence(
                 acquisition_start = time.time()
                 seen_frame_timestamps = {correction_frame_timestamp}
                 centered_fresh_results = 0
+                recenter_considered = False
                 while time.time() - acquisition_start < timeout:
                     centered_update = camera.vec_to_marker_3d(
                         target_id, quality=quality
@@ -263,7 +264,22 @@ def pickup_sequence(
                             horizontal_error = math.hypot(
                                 centered_north, centered_east
                             )
-                            if horizontal_error <= 0.50:
+                            first_valid_result = not recenter_considered
+                            recenter_considered = True
+                            if first_valid_result and horizontal_error > 0.50:
+                                current_gps = controller.get_current_gps()
+                                recentered_wp = controller.get_location_metres(
+                                    current_gps, centered_north, centered_east
+                                )
+                                if (
+                                    controller.goto_waypoint(
+                                        recentered_wp, position_tol=0.15
+                                    )
+                                    != 0
+                                ):
+                                    return False
+                                centered_fresh_results = 0
+                            elif horizontal_error <= 0.50:
                                 centered_fresh_results += 1
                                 if centered_fresh_results == 5:
                                     target_found = True

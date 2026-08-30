@@ -714,6 +714,25 @@ class TiltedPickupController(PickupController):
         return super().get_location_metres(original, north, east)
 
 
+class RecenterPickupController(PickupController):
+    def __init__(self, events, recenter_result=0):
+        super().__init__(events)
+        self.recenter_result = recenter_result
+        self.location_offsets = []
+        self.goto_tolerances = []
+
+    def get_location_metres(self, original, north, east):
+        self.location_offsets.append((north, east))
+        return super().get_location_metres(original, north, east)
+
+    def goto_waypoint(self, waypoint, position_tol=None):
+        self.goto_tolerances.append(position_tol)
+        self.events.append(("goto", waypoint.alt, position_tol))
+        if len(self.goto_tolerances) == 3:
+            return self.recenter_result
+        return 0
+
+
 def test_marker_offset_level_identity():
     active = importlib.import_module("drone.mock_mission")
 
@@ -787,6 +806,117 @@ def test_pickup_requires_five_distinct_centered_results_after_correction(monkeyp
     assert result is True
     assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6]
     assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
+def test_pickup_recenters_once_before_five_later_centered_results(monkeypatch):
+    """A first fresh off-center result must drive one bounded second correction."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(
+        [
+            (1, RelPosComplete(0.1, 0.0, 4.572)),
+            (2, RelPosComplete(0.6, 0.0, 4.572)),
+            (3, RelPosComplete(0.4, 0.0, 4.572)),
+            (4, RelPosComplete(0.4, 0.0, 4.572)),
+            (5, RelPosComplete(0.4, 0.0, 4.572)),
+            (6, RelPosComplete(0.4, 0.0, 4.572)),
+            (7, RelPosComplete(0.4, 0.0, 4.572)),
+        ]
+    )
+    controller = RecenterPickupController(events)
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            controller,
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is True
+    assert controller.goto_tolerances == [0.8, 0.15, 0.15]
+    assert controller.location_offsets == [(0, 0), (0.1, 0.0), (0.6, 0.0)]
+    assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6, 7]
+    assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
+def test_pickup_failed_recenter_cannot_land_or_attach(monkeypatch):
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(
+        [
+            (1, RelPosComplete(0.1, 0.0, 4.572)),
+            (2, RelPosComplete(0.6, 0.0, 4.572)),
+            (3, RelPosComplete(0.4, 0.0, 4.572)),
+            (4, RelPosComplete(0.4, 0.0, 4.572)),
+            (5, RelPosComplete(0.4, 0.0, 4.572)),
+            (6, RelPosComplete(0.4, 0.0, 4.572)),
+            (7, RelPosComplete(0.4, 0.0, 4.572)),
+        ]
+    )
+    controller = RecenterPickupController(events, recenter_result=-1)
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            controller,
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert controller.goto_tolerances == [0.8, 0.15, 0.15]
+    assert camera.consumed_timestamps == [1, 2]
+    assert ("landed", 3) not in events
+    assert ("attach", 3) not in events
+
+
+def test_pickup_recenter_still_requires_five_later_centered_results(monkeypatch):
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(
+        [
+            (1, RelPosComplete(0.1, 0.0, 4.572)),
+            (2, RelPosComplete(0.6, 0.0, 4.572)),
+            (3, RelPosComplete(0.4, 0.0, 4.572)),
+            (4, RelPosComplete(0.4, 0.0, 4.572)),
+            (5, RelPosComplete(0.4, 0.0, 4.572)),
+            (6, RelPosComplete(0.4, 0.0, 4.572)),
+        ]
+    )
+    controller = RecenterPickupController(events)
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            controller,
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert controller.goto_tolerances == [0.8, 0.15, 0.15]
+    assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6]
+    assert ("landed", 3) not in events
+    assert ("attach", 3) not in events
 
 
 def test_pickup_compensates_tilt_for_correction_and_centered_gate(monkeypatch):
