@@ -1191,6 +1191,34 @@ def test_pickup_agl_must_remain_valid_for_five_results(monkeypatch):
     assert result is False
 
 
+def test_pickup_corrects_acquisition_agl_drift_before_counting_results(monkeypatch):
+    """A post-centering AGL drift must command a return to 4.572 m."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6, 7]))
+    lidar = PickupLidar(
+        acquisition_values=[4.572, 5.705, 4.572, 4.572, 4.572, 4.572, 4.572]
+    )
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            lidar,
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is True
+    assert ("relative_down", pytest.approx(1.133)) in events
+    assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
 def test_transient_stale_acquisition_range_resets_window_without_aborting(monkeypatch):
     """Regression: one callback-lagged range must not abort the whole pickup."""
     active = importlib.import_module("drone.mock_mission")

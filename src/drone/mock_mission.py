@@ -234,6 +234,7 @@ def pickup_sequence(
                 seen_frame_timestamps = {correction_frame_timestamp}
                 centered_fresh_results = 0
                 recenter_considered = False
+                agl_recenter_considered = False
                 while time.time() - acquisition_start < timeout:
                     centered_update = camera.vec_to_marker_3d(
                         target_id, quality=quality
@@ -257,6 +258,20 @@ def pickup_sequence(
                                 > HOVER_ALT_TOL
                             ):
                                 centered_fresh_results = 0
+                                if not agl_recenter_considered:
+                                    agl_recenter_considered = True
+                                    if (
+                                        controller.guide_move_relative_frame(
+                                            RelPosComplete(
+                                                0,
+                                                0,
+                                                acquisition_agl
+                                                - TARGET_HOVER_HEIGHT,
+                                            )
+                                        )
+                                        != 0
+                                    ):
+                                        return False
                                 time.sleep(0.1)
                                 continue
                             centered_north, centered_east = _marker_offset_ne(
