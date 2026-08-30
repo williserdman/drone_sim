@@ -50,13 +50,6 @@
             <diffuse>0.35 0.35 0.35 1</diffuse>
           </material>
         </visual>
-        <sensor name="iris_ground_contact" type="contact">
-          <always_on>true</always_on>
-          <update_rate>20</update_rate>
-          <contact>
-            <collision>ground_collision</collision>
-          </contact>
-        </sensor>
       </link>
     </model>
     <model name="pad_h">

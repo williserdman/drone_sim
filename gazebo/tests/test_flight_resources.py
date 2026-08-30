@@ -175,8 +175,7 @@ def test_competition_runtime_routes_private_topics_to_the_selected_world():
     from drone_sim_gazebo.runtime.paths import bridge_config_for_world
 
     assert contact_topic_for_world("competition_mission") == (
-        "/world/competition_mission/model/ground_plane/link/ground_link/sensor/"
-        "iris_ground_contact/contact"
+        "/gazebo/private/iris/contact"
     )
     assert bridge_config_for_world("competition_mission") == Path(
         "/etc/drone_sim/gazebo-bridge-competition.yaml"

@@ -28,7 +28,7 @@ def test_competition_bridge_is_minimal_and_directional():
     expected = {
         "/gazebo/private/clock",
         "/gazebo/private/iris/odometry",
-        "/world/competition_mission/model/ground_plane/link/ground_link/sensor/iris_ground_contact/contact",
+        "/gazebo/private/iris/contact",
         "/gazebo/private/range/downward",
     }
     for aruco_id in (2, 3, 4):

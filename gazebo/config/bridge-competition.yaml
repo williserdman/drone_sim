@@ -14,8 +14,8 @@
   publisher_queue: 10
   subscriber_queue: 10
   lazy: false
-- ros_topic_name: "/world/competition_mission/model/ground_plane/link/ground_link/sensor/iris_ground_contact/contact"
-  gz_topic_name: "/world/competition_mission/model/ground_plane/link/ground_link/sensor/iris_ground_contact/contact"
+- ros_topic_name: "/gazebo/private/iris/contact"
+  gz_topic_name: "/gazebo/private/iris/contact"
   ros_type_name: "ros_gz_interfaces/msg/Contacts"
   gz_type_name: "gz.msgs.Contacts"
   direction: "GZ_TO_ROS"

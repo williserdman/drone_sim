@@ -37,6 +37,13 @@ PAYLOAD_HARDPOINT_Z_M = -0.13
 VEHICLE_INITIAL_Z_M = 0.195
 POSE_RATE_HZ = 20
 PAD_THICKNESS_M = 0.01
+VEHICLE_CONTACT_TOPIC = "/gazebo/private/iris/contact"
+VEHICLE_LEG_COLLISIONS = (
+    "front_left_leg_collision",
+    "front_right_leg_collision",
+    "rear_left_leg_collision",
+    "rear_right_leg_collision",
+)
 
 
 def _fmt(value: float) -> str:
@@ -123,6 +130,52 @@ def _add_pose_publisher(model: ET.Element) -> None:
         ("update_frequency", str(POSE_RATE_HZ)),
     ):
         _text(plugin, tag, value)
+
+
+def _embed_competition_airframe(
+    source_root: Path, vehicle: ET.Element
+) -> None:
+    source = source_root / "models/iris_phase3/model.sdf"
+    try:
+        airframe = ET.parse(source).getroot().find("model")
+    except (OSError, ET.ParseError) as error:
+        raise RuntimeError(
+            f"unable to parse source Iris airframe {source}: {error}"
+        ) from error
+    if airframe is None or airframe.attrib.get("name") != "iris_phase3":
+        raise RuntimeError("source Iris airframe must be named iris_phase3")
+    base_link = airframe.find("link[@name='base_link']")
+    if base_link is None:
+        raise RuntimeError("source Iris airframe must expose base_link")
+    collisions = {
+        node.attrib.get("name") for node in base_link.findall("collision")
+    }
+    if not set(VEHICLE_LEG_COLLISIONS).issubset(collisions):
+        raise RuntimeError("source Iris airframe must expose all four leg collisions")
+
+    airframe.attrib["name"] = "airframe"
+    for uri in airframe.findall(".//uri"):
+        if uri.text is not None and not uri.text.startswith("model://"):
+            uri.text = f"model://iris_phase3/{uri.text}"
+
+    sensor = ET.SubElement(
+        base_link,
+        "sensor",
+        {"name": "vehicle_leg_contact", "type": "contact"},
+    )
+    _text(sensor, "always_on", "true")
+    _text(sensor, "update_rate", str(POSE_RATE_HZ))
+    contact = ET.SubElement(sensor, "contact")
+    for collision in VEHICLE_LEG_COLLISIONS:
+        _text(contact, "collision", collision)
+    _text(contact, "topic", VEHICLE_CONTACT_TOPIC)
+
+    include = vehicle.find("include")
+    if include is None:
+        raise RuntimeError("competition vehicle must include its source airframe")
+    index = list(vehicle).index(include)
+    vehicle.remove(include)
+    vehicle.insert(index, airframe)
 
 
 def _add_sensor_link(model: ET.Element, camera: Camera, range_sensor: RangeSensor) -> None:
@@ -264,6 +317,7 @@ def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfi
         control.find("cmd_max").text = _fmt(PAYLOAD_MOTOR_TORQUE_NM)
         control.find("cmd_min").text = _fmt(-PAYLOAD_MOTOR_TORQUE_NM)
     model.attrib["name"] = "iris_competition"
+    _embed_competition_airframe(source_root, model)
     _add_sensor_link(model, scenario.camera, scenario.range_sensor)
     _add_hardpoint(model)
     _add_payload_joints(model, scenario.payloads)
@@ -508,16 +562,6 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
     material = ET.SubElement(visual, "material")
     _text(material, "ambient", "0.25 0.25 0.25 1")
     _text(material, "diffuse", "0.35 0.35 0.35 1")
-    ground_contact = ET.SubElement(
-        ground_link,
-        "sensor",
-        {"name": "iris_ground_contact", "type": "contact"},
-    )
-    _text(ground_contact, "always_on", "true")
-    _text(ground_contact, "update_rate", "20")
-    ground_contact_sdf = ET.SubElement(ground_contact, "contact")
-    _text(ground_contact_sdf, "collision", "ground_collision")
-
     for name in ("H", "L", "F2", "WA", "WM"):
         _add_pad(world, course, name)
 

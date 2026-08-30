@@ -185,6 +185,41 @@ def test_generated_vehicle_has_centered_camera_offset_range_and_one_hardpoint(tm
     assert model.findtext("joint[@name='payload_hardpoint_joint']/child") == "payload_hardpoint"
 
 
+def test_generated_competition_vehicle_contact_source_covers_only_its_four_legs(
+    tmp_path,
+):
+    """Pad or payload contact must not masquerade as Iris landing truth."""
+    _prepare_assets(tmp_path)
+    model = ET.parse(
+        tmp_path / "models/iris_competition/model.sdf"
+    ).getroot().find("model")
+
+    assert model is not None
+    airframe = model.find("model[@name='airframe']")
+    assert airframe is not None
+    sensor = airframe.find(
+        "link[@name='base_link']/sensor[@name='vehicle_leg_contact']"
+    )
+    assert sensor is not None
+    assert sensor.attrib["type"] == "contact"
+    assert sensor.find("topic") is None
+    assert sensor.findtext("always_on") == "true"
+    assert sensor.findtext("update_rate") == "20"
+    assert [node.text for node in sensor.findall("contact/collision")] == [
+        "front_left_leg_collision",
+        "front_right_leg_collision",
+        "rear_left_leg_collision",
+        "rear_right_leg_collision",
+    ]
+    assert sensor.findtext("contact/topic") == "/gazebo/private/iris/contact"
+
+    inherited = ET.parse(
+        RESOURCES / "models/iris_phase3/model.sdf"
+    ).getroot().find("model")
+    assert inherited is not None
+    assert inherited.find(".//sensor[@name='vehicle_leg_contact']") is None
+
+
 def test_generated_payload_uses_current_scenario_geometry_and_marker_identity(tmp_path):
     """Stale transfer geometry or the wrong ArUco dictionary corrupts pickup physics."""
     _prepare_assets(tmp_path)

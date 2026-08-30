@@ -18,6 +18,8 @@ def _world(world_name: str) -> str:
 
 def contact_topic_for_world(world_name: str) -> str:
     world_name = _world(world_name)
+    if world_name == "competition_mission":
+        return "/gazebo/private/iris/contact"
     return (
         f"/world/{world_name}/model/ground_plane/link/ground_link/sensor/"
         "iris_ground_contact/contact"
