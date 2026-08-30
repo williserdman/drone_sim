@@ -81,6 +81,47 @@ class LandingController:
         return False
 
 
+class AutoDisarmLandingController(LandingController):
+    def get_current_gps(self):
+        return GPSCoord(0.0, 0.0, 0.20)
+
+
+class AutoDisarmingLandingCamera(LandingCamera):
+    def __init__(self, controller):
+        self.controller = controller
+
+    def vec_to_marker_3d(self, target_id, lidar_alt=None, quality=4):
+        self.controller.vehicle.armed = False
+        return super().vec_to_marker_3d(target_id, lidar_alt, quality)
+
+
+class StaleAfterInitialLandingRange:
+    def __init__(self):
+        self.calls = 0
+
+    def get_distance(self):
+        self.calls += 1
+        if self.calls == 1:
+            return 1.45
+        raise RuntimeError("downward range is older than 0.5 simulated seconds")
+
+
+def test_precision_land_accepts_auto_disarm_when_range_and_landed_state_lag():
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = AutoDisarmLandingController()
+
+    with timebase.configured(clock):
+        result = active.aruco_land_precision(
+            controller,
+            AutoDisarmingLandingCamera(controller),
+            StaleAfterInitialLandingRange(),
+            3,
+        )
+
+    assert result is True
+
+
 def test_precision_land_confirms_touchdown_after_old_iteration_cap():
     """A physical touchdown at 55s is inside the declared 60s allowance."""
     active = importlib.import_module("drone.mock_mission")

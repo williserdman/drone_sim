@@ -113,7 +113,11 @@ def aruco_land_precision(
             time.sleep(0.05)
             i += 1
         else:
-            touchdown_confirmed = alt <= ALT_TOL or controller.is_landed()
+            touchdown_confirmed = (
+                not controller.vehicle.armed
+                or alt <= ALT_TOL
+                or controller.is_landed()
+            )
             break
 
     if touchdown_confirmed:
