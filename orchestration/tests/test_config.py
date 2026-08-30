@@ -119,7 +119,7 @@ def _phase2_document() -> dict:
         "output_root": "runs",
         "max_wall_seconds": 3600,
         "startup_wall_seconds": 120,
-        "finalization_wall_seconds": 120,
+        "finalization_wall_seconds": 600,
         "recording": {
             "width_px": 320,
             "height_px": 240,
@@ -206,7 +206,7 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
     )
     assert resolved.startup_wall_seconds == 1800
     assert resolved.max_wall_seconds == 14400
-    assert resolved.finalization_wall_seconds == 120
+    assert resolved.finalization_wall_seconds == 600
     assert resolved.output_root == (ROOT / "../runs").resolve()
     assert resolved.competition is not None
     assert resolved.competition.course_source == CONFIG / "course.yaml"
