@@ -466,6 +466,19 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     return exit_code
 
 
+def _create_simulator_camera(
+    camera_manager_type: Any,
+    camera_type: Any,
+    frame_source: Any,
+) -> Any:
+    calibration_path = Path(__file__).with_name("gazebo_camera_calibration.json")
+    manager = camera_manager_type(
+        frame_source=frame_source,
+        calibration_path=calibration_path,
+    )
+    return camera_type(100, manager=manager)
+
+
 def _run_comp2026(config: RuntimeConfig) -> int:
     """Host one original nested attempt behind current ROS/lifecycle seams."""
 
@@ -662,8 +675,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             current_home = controller.get_current_gps()
             home = GPSCoord(current_home.lat, current_home.long, 0.0)
             waypoints = load_course_waypoints(config.course_path, home)
-            manager = CameraManager(frame_source=frame_source)
-            camera = Camera(100, manager=manager)
+            camera = _create_simulator_camera(
+                CameraManager,
+                Camera,
+                frame_source,
+            )
             tracker = MissonTracker(600)
             payloads = {
                 marker: PayloadDropper(config.run_id, marker, payload_client, clock)
