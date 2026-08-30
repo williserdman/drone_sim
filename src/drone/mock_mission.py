@@ -223,7 +223,9 @@ def pickup_sequence(
                                 acquisition_agl = lidar.get_distance()
                             except Exception as error:
                                 print(f"[ERR] Cannot verify acquisition AGL: {error}")
-                                return False
+                                centered_fresh_results = 0
+                                time.sleep(0.1)
+                                continue
                             if (
                                 abs(acquisition_agl - TARGET_HOVER_HEIGHT)
                                 > HOVER_ALT_TOL

@@ -617,6 +617,17 @@ class PickupLidar:
         return 4.572
 
 
+class ScriptedPickupLidar:
+    def __init__(self, results):
+        self.results = list(results)
+
+    def get_distance(self):
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 def test_pickup_requires_five_distinct_centered_results_after_correction(monkeypatch):
     """Regression: the first marker sighting must not immediately trigger LAND."""
     active = importlib.import_module("drone.mock_mission")
@@ -816,6 +827,70 @@ def test_pickup_agl_must_remain_valid_for_five_results(monkeypatch):
         )
 
     assert result is False
+
+
+def test_transient_stale_acquisition_range_resets_window_without_aborting(monkeypatch):
+    """Regression: one callback-lagged range must not abort the whole pickup."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6, 7, 8]))
+    lidar = ScriptedPickupLidar(
+        [
+            10.0,
+            4.572,
+            4.572,
+            RuntimeError("downward range is older than 0.5 simulated seconds"),
+            4.572,
+            4.572,
+            4.572,
+            4.572,
+            4.572,
+        ]
+    )
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            lidar,
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is True
+    assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
+def test_persistently_stale_acquisition_range_still_fails_closed(monkeypatch):
+    """Regression: no physically current range must never trigger LAND."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6]))
+    stale = RuntimeError("downward range is older than 0.5 simulated seconds")
+    lidar = ScriptedPickupLidar([10.0, 4.572, stale, stale, stale, stale, stale])
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: pytest.fail("LAND requires physically current range"),
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            lidar,
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert not any(event[0] == "landed" for event in events)
 
 
 class InjectedFrameSource:
