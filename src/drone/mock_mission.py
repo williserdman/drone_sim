@@ -199,7 +199,7 @@ def pickup_sequence(
 
         # Use your robust spin-wait goto!
         # The drone will fight the wind until it reaches this exact earth coordinate.
-        val = controller.goto_waypoint(target_wp, position_tol=0.8)
+        val = controller.goto_waypoint(target_wp, position_tol=0.15)
         print(f"return of goto func: {val}")
         # Wait a moment for the drone to stabilize its tilt/roll after stopping
         # controller.wait_until_stable()

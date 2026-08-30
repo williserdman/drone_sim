@@ -840,7 +840,7 @@ def test_pickup_recenters_once_before_five_later_centered_results(monkeypatch):
         )
 
     assert result is True
-    assert controller.goto_tolerances == [0.8, 0.15, 0.15]
+    assert controller.goto_tolerances == [0.15, 0.15, 0.15]
     assert controller.location_offsets == [(0, 0), (0.1, 0.0), (0.6, 0.0)]
     assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6, 7]
     assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
@@ -877,7 +877,7 @@ def test_pickup_failed_recenter_cannot_land_or_attach(monkeypatch):
         )
 
     assert result is False
-    assert controller.goto_tolerances == [0.8, 0.15, 0.15]
+    assert controller.goto_tolerances == [0.15, 0.15, 0.15]
     assert camera.consumed_timestamps == [1, 2]
     assert ("landed", 3) not in events
     assert ("attach", 3) not in events
@@ -913,7 +913,7 @@ def test_pickup_recenter_still_requires_five_later_centered_results(monkeypatch)
         )
 
     assert result is False
-    assert controller.goto_tolerances == [0.8, 0.15, 0.15]
+    assert controller.goto_tolerances == [0.15, 0.15, 0.15]
     assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6]
     assert ("landed", 3) not in events
     assert ("attach", 3) not in events
@@ -947,8 +947,8 @@ def test_pickup_compensates_tilt_for_correction_and_centered_gate(monkeypatch):
     assert controller.location_offsets[1] == pytest.approx((0.0, 0.0), abs=1e-9)
 
 
-def test_pickup_uses_precision_tolerance_for_marker_correction(monkeypatch):
-    """Regression: a one-metre correction must not stop at the default tolerance."""
+def test_pickup_uses_precision_tolerance_for_search_and_marker_correction(monkeypatch):
+    """Regression: search arrival must not leave the drone outside acquisition range."""
     active = importlib.import_module("drone.mock_mission")
     events = []
     camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6]))
@@ -964,7 +964,7 @@ def test_pickup_uses_precision_tolerance_for_marker_correction(monkeypatch):
         )
 
     assert result is True
-    assert [event[2] for event in events if event[0] == "goto"] == [0.8, 0.15]
+    assert [event[2] for event in events if event[0] == "goto"] == [0.15, 0.15]
 
 
 def test_four_results_with_one_repeated_timestamp_cannot_acquire(monkeypatch):
