@@ -10,7 +10,7 @@ from .model import NativeGroundTruth
 
 
 TRUTH_PERIOD_NS = 50_000_000
-_COMPLETED_CAPACITY = 2
+_COMPLETED_CAPACITY = 3
 
 
 class AggregationFault(RuntimeError):
