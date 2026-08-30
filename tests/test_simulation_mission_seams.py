@@ -1,4 +1,5 @@
 import importlib
+import math
 import runpy
 import struct
 import sys
@@ -548,7 +549,7 @@ class PickupController:
         self.events = events
         self.vehicle = SimpleNamespace(
             armed=True,
-            attitude=SimpleNamespace(yaw=0.0),
+            attitude=SimpleNamespace(roll=0.0, pitch=0.0, yaw=0.0),
             flush=lambda: None,
         )
 
@@ -597,6 +598,41 @@ class PickupController:
 
 def centered_updates(timestamps):
     return [(timestamp, RelPosComplete(0.5, 0.0, 4.572)) for timestamp in timestamps]
+
+
+class TiltedPickupController(PickupController):
+    def __init__(self, events):
+        super().__init__(events)
+        self.vehicle.attitude = SimpleNamespace(roll=0.2, pitch=0.0, yaw=0.0)
+        self.location_offsets = []
+
+    def get_location_metres(self, original, north, east):
+        self.location_offsets.append((north, east))
+        return super().get_location_metres(original, north, east)
+
+
+def test_marker_offset_level_identity():
+    active = importlib.import_module("drone.mock_mission")
+
+    north, east = active._marker_offset_ne(
+        RelPosComplete(1.2, -0.4, 5.0),
+        SimpleNamespace(roll=0.0, pitch=0.0, yaw=0.0),
+    )
+
+    assert (north, east) == pytest.approx((1.2, -0.4))
+
+
+def test_marker_offset_uses_roll_pitch_and_yaw():
+    active = importlib.import_module("drone.mock_mission")
+
+    north, east = active._marker_offset_ne(
+        RelPosComplete(1.2, -0.4, 5.0),
+        SimpleNamespace(roll=0.2, pitch=-0.1, yaw=0.3),
+    )
+
+    assert (north, east) == pytest.approx(
+        (1.0902947109674521, -1.1128740280589786)
+    )
 
 
 class PickupLidar:
@@ -648,6 +684,34 @@ def test_pickup_requires_five_distinct_centered_results_after_correction(monkeyp
     assert result is True
     assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6]
     assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
+def test_pickup_compensates_tilt_for_correction_and_centered_gate(monkeypatch):
+    """A tilted view of an earth-centered marker must remain earth-centered."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    body_right = math.sin(0.2) * 5.0
+    body_down = math.cos(0.2) * 5.0
+    camera = AcquisitionCamera(
+        [
+            (timestamp, RelPosComplete(0.0, body_right, body_down))
+            for timestamp in [1, 2, 3, 4, 5, 6]
+        ]
+    )
+    controller = TiltedPickupController(events)
+    monkeypatch.setattr(active, "aruco_land_precision", lambda *args: True)
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            controller,
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is True
+    assert controller.location_offsets[1] == pytest.approx((0.0, 0.0), abs=1e-9)
 
 
 def test_pickup_uses_precision_tolerance_for_marker_correction(monkeypatch):

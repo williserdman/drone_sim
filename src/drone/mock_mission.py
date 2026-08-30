@@ -30,6 +30,26 @@ WINDOW = 5
 MULT = 0.3
 
 
+def _marker_offset_ne(update: RelPosComplete, attitude) -> Tuple[float, float]:
+    """Project one body-FRD marker vector into earth North/East."""
+    roll = attitude.roll
+    pitch = attitude.pitch
+    yaw = attitude.yaw
+
+    cos_roll, sin_roll = math.cos(roll), math.sin(roll)
+    cos_pitch, sin_pitch = math.cos(pitch), math.sin(pitch)
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+
+    rolled_right = cos_roll * update.y - sin_roll * update.z
+    rolled_down = sin_roll * update.y + cos_roll * update.z
+    pitched_forward = cos_pitch * update.x + sin_pitch * rolled_down
+    pitched_right = rolled_right
+
+    north = cos_yaw * pitched_forward - sin_yaw * pitched_right
+    east = sin_yaw * pitched_forward + cos_yaw * pitched_right
+    return north, east
+
+
 def _read_lidar_or_fallback(
     lidar: Lidar, controller: DroneControl
 ) -> Tuple[Optional[float], bool]:
@@ -195,9 +215,9 @@ def pickup_sequence(
                 # Convert vision-relative correction into an absolute GPS target,
                 # similar to the grid-search GPS waypoint approach.
                 current_gps = controller.get_current_gps()
-                yaw = controller.vehicle.attitude.yaw
-                dNorth = update.x * math.cos(yaw) - update.y * math.sin(yaw)  # type: ignore
-                dEast = update.x * math.sin(yaw) + update.y * math.cos(yaw)  # type: ignore
+                dNorth, dEast = _marker_offset_ne(
+                    update, controller.vehicle.attitude
+                )
                 corrected_wp = controller.get_location_metres(
                     current_gps, dNorth, dEast
                 )
@@ -233,8 +253,11 @@ def pickup_sequence(
                                 centered_fresh_results = 0
                                 time.sleep(0.1)
                                 continue
+                            centered_north, centered_east = _marker_offset_ne(
+                                centered_update, controller.vehicle.attitude
+                            )
                             horizontal_error = math.hypot(
-                                centered_update.x, centered_update.y
+                                centered_north, centered_east
                             )
                             if horizontal_error <= 0.50:
                                 centered_fresh_results += 1
