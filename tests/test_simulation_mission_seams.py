@@ -292,9 +292,9 @@ class StableVehicle:
         self.targets.append(target)
 
 
-def test_guided_waypoint_uses_exact_mission_item_int_coordinates():
-    """The F2 scorer tolerance is tighter than legacy float waypoint precision."""
-    from drone.control.drone_control import GROUND_SPEED, goto
+def test_guided_waypoint_uses_stable_speed_and_exact_mission_item_int_coordinates():
+    """Guided transit must avoid the observed unstable 20 m/s approach."""
+    from drone.control.drone_control import goto
     from pymavlink import mavutil
 
     target_lat = 37.4003371
@@ -303,7 +303,7 @@ def test_guided_waypoint_uses_exact_mission_item_int_coordinates():
 
     goto(vehicle, target_lat, target_lon, 10.0)
 
-    assert vehicle.groundspeed == GROUND_SPEED
+    assert vehicle.groundspeed == 10.0
     assert vehicle.targets == []
     assert vehicle.mission_mav.items == [
         (
