@@ -30,6 +30,8 @@ FLTMODE_CH 0
 LAND_SPD_MS 0.10
 PLND_ENABLED 1
 PLND_TYPE 1
+# Compensate the measured onboard-frame to MAVLink receipt latency.
+PLND_LAG 0.08
 LOG_BACKEND_TYPE 1
 LOG_DISARMED 1
 SERIAL0_PROTOCOL 2

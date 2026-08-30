@@ -35,6 +35,10 @@ def test_descent_parameters_enable_mavlink_precision_landing() -> None:
     assert parameters["PLND_TYPE"] == "1"
 
 
+def test_descent_parameters_compensate_measured_simulator_camera_latency() -> None:
+    assert float(_descent_parameters()["PLND_LAG"]) == pytest.approx(0.08)
+
+
 def test_descent_parameters_use_verified_competition_roll_rate_gains() -> None:
     parameters = _descent_parameters()
 
