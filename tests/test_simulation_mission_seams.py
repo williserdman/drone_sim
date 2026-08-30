@@ -1100,6 +1100,71 @@ def test_pickup_fails_when_lidar_never_reaches_acquisition_agl(monkeypatch):
     assert ("relative_down", 10.0 - 4.572) in events
 
 
+def test_transient_stale_hover_range_waits_for_fresh_acquisition_agl(monkeypatch):
+    """A callback-lagged hover sample must not abort the bounded AGL wait."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    camera = AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6]))
+    stale = RuntimeError("downward range is older than 0.5 simulated seconds")
+    lidar = ScriptedPickupLidar(
+        [10.0, 6.0, stale, 5.5, 4.572, 4.572, 4.572, 4.572, 4.572]
+    )
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: events.append(("landed", 3)) or True,
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            lidar,
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is True
+    assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
+def test_persistently_stale_hover_range_uses_timeout_and_fails_closed(monkeypatch):
+    """No fresh hover AGL may advance to marker search or LAND."""
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    clock = FakeClock()
+    stale = RuntimeError("downward range is older than 0.5 simulated seconds")
+
+    class PersistentlyStaleHoverLidar:
+        def __init__(self):
+            self.calls = 0
+
+        def get_distance(self):
+            self.calls += 1
+            if self.calls == 1:
+                return 10.0
+            raise stale
+
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: pytest.fail("LAND requires a fresh acquisition AGL"),
+    )
+
+    with timebase.configured(clock):
+        result = active.pickup_sequence(
+            PickupController(events),
+            AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6])),
+            PersistentlyStaleHoverLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert clock.now_value == pytest.approx(60.0, abs=0.11)
+    assert not any(event[0] == "landed" for event in events)
+
+
 def test_pickup_agl_must_remain_valid_for_five_results(monkeypatch):
     """Regression: an AGL excursion must reset the acquisition window."""
     active = importlib.import_module("drone.mock_mission")

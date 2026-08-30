@@ -160,7 +160,8 @@ def pickup_sequence(
             hover_alt = lidar.get_distance()
         except Exception as error:
             print(f"[ERR] Cannot verify acquisition AGL: {error}")
-            return False
+            time.sleep(0.1)
+            continue
         if abs(hover_alt - TARGET_HOVER_HEIGHT) <= HOVER_ALT_TOL:
             break
         time.sleep(0.1)
