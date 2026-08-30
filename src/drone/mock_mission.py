@@ -75,15 +75,14 @@ def aruco_land_precision(
     if alt is None:
         raise RuntimeError("Unable to determine altitude from LiDAR or GPS.")
 
-    i = 1
     quality = 4
     t0 = time.time()
     timeout = 60.0
 
     # Loop until ArduPilot explicitly confirms touchdown
-    # this for loop will exit after timeout -> 60 seconds
     touchdown_confirmed = False
-    for i in range(1_000):
+    i = 0
+    while True:
         if alt > ALT_TOL and controller.vehicle.armed:
             if time.time() - t0 > timeout:
                 break
@@ -112,6 +111,7 @@ def aruco_land_precision(
 
             # Add a tiny sleep to prevent maxing out the CPU loop
             time.sleep(0.05)
+            i += 1
         else:
             touchdown_confirmed = alt <= ALT_TOL or controller.is_landed()
             break

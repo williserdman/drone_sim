@@ -48,6 +48,68 @@ class FakeClock:
         self.now_value += seconds
 
 
+class TimedTouchdownLidar:
+    def __init__(self, clock, touchdown_at=None):
+        self.clock = clock
+        self.touchdown_at = touchdown_at
+
+    def get_distance(self):
+        if self.touchdown_at is not None and self.clock.now() >= self.touchdown_at:
+            return 0.0
+        return 1.0
+
+
+class LandingCamera:
+    def vec_to_marker_3d(self, target_id, lidar_alt=None, quality=4):
+        assert (target_id, quality) == (3, 4)
+        return RelPosComplete(0.0, 0.0, lidar_alt)
+
+
+class LandingController:
+    def __init__(self):
+        self.vehicle = SimpleNamespace(armed=True)
+        self.targets = []
+        self.land_mode_calls = 0
+
+    def set_land_mode(self):
+        self.land_mode_calls += 1
+
+    def land_send_landing_target(self, update):
+        self.targets.append(update)
+
+    def is_landed(self):
+        return False
+
+
+def test_precision_land_confirms_touchdown_after_old_iteration_cap():
+    """A physical touchdown at 55s is inside the declared 60s allowance."""
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = LandingController()
+
+    with timebase.configured(clock):
+        result = active.aruco_land_precision(
+            controller, LandingCamera(), TimedTouchdownLidar(clock, 55.0), 3
+        )
+
+    assert result is True
+    assert 55.0 <= clock.now_value <= 55.30
+
+
+def test_precision_land_without_touchdown_uses_full_timeout_and_fails_closed():
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = LandingController()
+
+    with timebase.configured(clock):
+        result = active.aruco_land_precision(
+            controller, LandingCamera(), TimedTouchdownLidar(clock), 3
+        )
+
+    assert result is False
+    assert clock.now_value == pytest.approx(60.05, abs=0.06)
+
+
 class DelayedDisarmVehicle:
     def __init__(self, clock, confirmation_delay=None):
         self.clock = clock
