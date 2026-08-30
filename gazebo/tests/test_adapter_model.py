@@ -461,13 +461,17 @@ def test_adapter_pairs_exact_frames_when_one_camera_callback_leads_by_one(
     assert adapter.complete
 
 
-def test_adapter_rejects_a_two_frame_camera_callback_lead_without_dropping():
+def test_adapter_tolerates_observed_three_frame_camera_callback_lead():
     adapter = AdapterModel(run_id=RUN_ID, expected_frames=3)
     adapter.accept_frame("onboard", native_image(stamp_ns=50_000_000))
     adapter.accept_frame("onboard", native_image(stamp_ns=100_000_000))
+    adapter.accept_frame("onboard", native_image(stamp_ns=150_000_000))
 
-    with pytest.raises(AdapterFault, match="onboard camera lookahead buffer is full"):
-        adapter.accept_frame("onboard", native_image(stamp_ns=150_000_000))
+    for stamp_ns in (50_000_000, 100_000_000, 150_000_000):
+        adapter.accept_frame("observer", native_image(stamp_ns=stamp_ns))
+        adapter.accept_ground_truth(native_ground_truth(stamp_ns))
+
+    assert adapter.complete
 
 
 def test_adapter_buffers_one_lookahead_pair_while_prior_pair_awaits_truth():
