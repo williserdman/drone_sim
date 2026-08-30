@@ -32,6 +32,9 @@ PLND_ENABLED 1
 PLND_TYPE 1
 # Compensate the measured onboard-frame to MAVLink receipt latency.
 PLND_LAG 0.08
+# The simulator target is stationary and camera measurements are physically accurate;
+# consume each measurement directly instead of the oscillatory Kalman estimate.
+PLND_EST_TYPE 0
 LOG_BACKEND_TYPE 1
 LOG_DISARMED 1
 SERIAL0_PROTOCOL 2

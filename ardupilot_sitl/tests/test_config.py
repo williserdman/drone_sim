@@ -39,6 +39,10 @@ def test_descent_parameters_compensate_measured_simulator_camera_latency() -> No
     assert float(_descent_parameters()["PLND_LAG"]) == pytest.approx(0.08)
 
 
+def test_descent_parameters_use_each_accurate_stationary_target_measurement() -> None:
+    assert _descent_parameters()["PLND_EST_TYPE"] == "0"
+
+
 def test_descent_parameters_use_verified_competition_roll_rate_gains() -> None:
     parameters = _descent_parameters()
 
