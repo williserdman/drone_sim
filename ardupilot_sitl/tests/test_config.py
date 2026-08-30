@@ -28,6 +28,13 @@ def test_descent_parameters_enable_passive_extended_status_readiness() -> None:
     assert _descent_parameters()["MAV1_EXT_STAT"] == "1"
 
 
+def test_descent_parameters_enable_mavlink_precision_landing() -> None:
+    parameters = _descent_parameters()
+
+    assert parameters["PLND_ENABLED"] == "1"
+    assert parameters["PLND_TYPE"] == "1"
+
+
 def test_descent_parameters_use_verified_competition_roll_rate_gains() -> None:
     parameters = _descent_parameters()
 

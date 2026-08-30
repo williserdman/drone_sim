@@ -28,6 +28,8 @@ FLTMODE_CH 0
 # Copter 4.7's final LAND-stage descent target. The selected 0.10 m/s balances
 # inferred first-contact speed headroom against prompt post-contact unloading.
 LAND_SPD_MS 0.10
+PLND_ENABLED 1
+PLND_TYPE 1
 LOG_BACKEND_TYPE 1
 LOG_DISARMED 1
 SERIAL0_PROTOCOL 2
