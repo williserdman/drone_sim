@@ -102,7 +102,7 @@ def test_truth_lookahead_rejects_nonadvancing_odometry_stamps():
         aggregator.accept_odometry(_odometry())
 
 
-def test_completed_truth_lookahead_holds_observed_three_camera_epochs():
+def test_completed_truth_lookahead_holds_observed_four_camera_epochs():
     aggregator = PrivateTruthAggregator()
     aggregator.accept_contact(STAMP, False)
     aggregator.accept_odometry(_odometry())
@@ -110,14 +110,17 @@ def test_completed_truth_lookahead_holds_observed_three_camera_epochs():
     second = aggregator.accept_odometry(_odometry(STAMP * 2))
     aggregator.accept_contact(STAMP * 3, False)
     third = aggregator.accept_odometry(_odometry(STAMP * 3))
+    aggregator.accept_contact(STAMP * 4, False)
+    fourth = aggregator.accept_odometry(_odometry(STAMP * 4))
 
     assert second is not None
     assert aggregator.take(STAMP).sim_timestamp_ns == STAMP
     assert aggregator.take(STAMP * 2) is second
     assert aggregator.take(STAMP * 3) is third
+    assert aggregator.take(STAMP * 4) is fourth
 
 
-def test_completed_truth_lookahead_rejects_a_fourth_camera_epoch():
+def test_completed_truth_lookahead_rejects_a_fifth_camera_epoch():
     aggregator = PrivateTruthAggregator()
     aggregator.accept_contact(STAMP, False)
     aggregator.accept_odometry(_odometry())
@@ -125,6 +128,8 @@ def test_completed_truth_lookahead_rejects_a_fourth_camera_epoch():
     aggregator.accept_odometry(_odometry(STAMP * 2))
     aggregator.accept_contact(STAMP * 3, False)
     aggregator.accept_odometry(_odometry(STAMP * 3))
+    aggregator.accept_contact(STAMP * 4, False)
+    aggregator.accept_odometry(_odometry(STAMP * 4))
 
     with pytest.raises(AggregationFault, match="lookahead is full"):
-        aggregator.accept_odometry(_odometry(STAMP * 4))
+        aggregator.accept_odometry(_odometry(STAMP * 5))

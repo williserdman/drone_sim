@@ -10,7 +10,7 @@ from .model import NativeGroundTruth
 
 
 TRUTH_PERIOD_NS = 50_000_000
-_COMPLETED_CAPACITY = 3
+_COMPLETED_CAPACITY = 4
 
 
 class AggregationFault(RuntimeError):
@@ -64,7 +64,7 @@ def _odometry(value: object) -> NativeOdometry:
 
 
 class PrivateTruthAggregator:
-    """Hold one native input and one completed-truth epoch of lookahead."""
+    """Hold one native input and bounded completed-truth lookahead."""
 
     def __init__(self) -> None:
         self._odometry: NativeOdometry | None = None
