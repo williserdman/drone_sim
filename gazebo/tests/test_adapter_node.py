@@ -204,7 +204,7 @@ def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_o
                 if subscription.topic_name == topic
             ]
             assert len(local) == 1, topic
-            assert local[0].qos_profile.depth == 5
+            assert local[0].qos_profile.depth == 10
 
         adapter.activate_output()
         adapter._accept_clock(epoch_clock)
