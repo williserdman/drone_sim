@@ -140,7 +140,7 @@ class GazeboAdapterNode(_node_base()):
             for stream in ("onboard", "observer")
         }
         self._ground_truth_publisher = self.create_publisher(
-            GroundTruth, "/simulation/ground_truth", _qos(10, reliable=True)
+            GroundTruth, "/simulation/ground_truth", _qos(100, reliable=True)
         )
         self._payload_state_publisher = None
         self._range_publisher = None

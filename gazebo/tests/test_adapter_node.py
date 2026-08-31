@@ -109,7 +109,7 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         "/camera/onboard/frame_metadata": (ReliabilityPolicy.RELIABLE, 100),
         "/camera/observer/image_raw": (ReliabilityPolicy.RELIABLE, 100),
         "/camera/observer/frame_metadata": (ReliabilityPolicy.RELIABLE, 100),
-        "/simulation/ground_truth": (ReliabilityPolicy.RELIABLE, 10),
+        "/simulation/ground_truth": (ReliabilityPolicy.RELIABLE, 100),
     }
     try:
         deadline = time.monotonic() + 5.0
