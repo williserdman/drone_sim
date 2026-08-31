@@ -191,6 +191,20 @@ def test_output_epoch_gate_caps_camera_at_configured_final_frame():
     )
 
 
+def test_output_epoch_gate_caps_physical_samples_at_configured_final_frame():
+    gate = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    gate.request_activation()
+
+    assert (
+        gate.rebase_sample(PUBLIC_EPOCH_NATIVE_NS + 60_000_000_000)
+        == 60_000_000_000
+    )
+    assert gate.rebase_sample(PUBLIC_EPOCH_NATIVE_NS + 60_050_000_000) is None
+
+
 def test_offset_native_run_assigns_frame_zero_at_50_ms_and_frame_1199_at_60_seconds():
     epoch = PublicEpoch(PUBLIC_EPOCH_NATIVE_NS)
     adapter = AdapterModel(run_id=RUN_ID, expected_frames=1_200)

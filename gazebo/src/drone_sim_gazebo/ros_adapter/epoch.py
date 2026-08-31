@@ -112,4 +112,7 @@ class OutputEpochGate:
     def rebase_sample(self, native_timestamp_ns: object) -> int | None:
         if not self._activation_requested:
             return None
-        return PublicEpoch(self._target_native_epoch_ns).rebase(native_timestamp_ns)
+        public = PublicEpoch(self._target_native_epoch_ns).rebase(native_timestamp_ns)
+        if public is not None and public > self._maximum_public_timestamp_ns:
+            return None
+        return public
