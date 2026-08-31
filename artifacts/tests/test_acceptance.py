@@ -362,6 +362,93 @@ def test_acceptance_inspector_accepts_complete_partial_bundle_read_only(tmp_path
     assert before == after
 
 
+def test_acceptance_inspector_accepts_manifest_verified_module_log_over_four_mib(
+    tmp_path,
+):
+    """Production frame evidence can legitimately exceed the generic document cap."""
+    from artifacts.acceptance import inspect_phase3_bundle
+
+    def enlarge_artifacts_log(run_directory: Path) -> None:
+        path = run_directory / "logs/artifacts.jsonl"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["fields"]["frame_evidence"] = "x" * (4 * 1024 * 1024)
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+
+    _completed_bundle(tmp_path, log_mutator=enlarge_artifacts_log)
+
+    report = inspect_phase3_bundle(
+        tmp_path,
+        rules_path=RULES_PATH,
+        **_expected_provenance_kwargs(),
+        compose_resources=lambda _project: (),
+        semantic_check=lambda *_args: _physical_evidence(tmp_path, achieved=60.0),
+    )
+
+    assert report.run_id == RUN_ID
+
+
+def test_production_semantic_check_uses_configured_competition_video_geometry(
+    tmp_path, monkeypatch
+):
+    """A 640x480 competition video must not be checked as a Phase 2 video."""
+    from artifacts import acceptance
+    from artifacts.validation import ValidationResult, ValidationStatus
+
+    configuration = {
+        "scenario": "competition_v1",
+        "runtime_profile": "phase3",
+        "recording": {
+            "width_px": 640,
+            "height_px": 480,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+        "simulation": {"duration_sim_seconds": 600.0},
+    }
+    config_path = tmp_path / "configuration/run.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(json.dumps(configuration), encoding="utf-8")
+    valid = ValidationResult(ValidationStatus.VALID, 1, "a" * 64, "valid")
+    evidence = object()
+
+    class GeometryValidator:
+        def __init__(self, *, width_px=320, height_px=240, fps=20):
+            self.geometry = (width_px, height_px, fps)
+
+        def validate(self, *_args, **_kwargs):
+            return (
+                valid
+                if self.geometry == (640, 480, 20)
+                else ValidationResult(
+                    ValidationStatus.INVALID, None, None, "video dimensions are wrong"
+                )
+            )
+
+    class ValidBag:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def validate(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=ValidationStatus.VALID,
+                detail="valid",
+                physical_evidence=evidence,
+            )
+
+    monkeypatch.setattr(acceptance, "VideoValidator", GeometryValidator)
+    monkeypatch.setattr(acceptance, "RosbagValidator", ValidBag)
+    monkeypatch.setattr(acceptance, "validate_gazebo_state", lambda *_args: valid)
+    monkeypatch.setattr(
+        acceptance, "validate_nonempty_regular_file", lambda *_args: valid
+    )
+
+    result = acceptance._production_semantic_check(
+        tmp_path, RUN_ID, 12_000, "b" * 64
+    )
+
+    assert result is evidence
+
+
 def test_acceptance_inspector_optionally_requires_maximum_score(tmp_path):
     from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
 

@@ -2,19 +2,29 @@
 
 ## What this delivers
 
-The Phase 3 production profile starts exactly seven Docker Compose services:
-orchestration, artifacts, companion, ArduPilot SITL, Gazebo, electromagnet, and
-scorekeeper. ArduPilot controls an Iris in Gazebo through normal MAVLink
-`GUIDED -> arm -> takeoff to 1.5 m -> LAND -> disarm`. Gazebo owns simulation
-time and physical truth; the companion never controls Gazebo directly.
+The production profile integrates the original nested
+`companion/comp2026` mission into the seven-service Docker Compose runtime:
+orchestration, artifacts, companion, ArduPilot SITL, Gazebo, electromagnet,
+and scorekeeper. ArduPilot flies the Iris through MAVLink while Gazebo owns
+simulation time, vehicle physics, payload attachment/release, cameras, range,
+and ground truth.
 
-The yellow circle is the start and landing target. The vehicle intentionally
-takes off vertically, stabilizes briefly, and lands on the same marker. The
-nested `companion/comp2026` repository is not part of this runtime.
+The automatic competition attempt completes the full physical mission:
+
+1. Fly from home to the landing site, land, and disarm.
+2. Fly to field 2 and release marker 2 for the `80/150` checkpoint.
+3. Acquire and release marker 3 for `145/150`.
+4. Acquire and release marker 4 for `150/150`.
+5. Return home, land, and disarm before 600 simulated seconds.
+
+Mission waits, timeouts, stability windows, freshness, and the deadline use
+elapsed simulation time through the existing clock adapter. QGC command
+handling and broader determinism/clock cleanup remain deferred.
 
 ## Run from a clean checkout
 
-Requirements are Docker with Compose v2 and `uv`. No credentials are required.
+Requirements are Docker with Compose v2 and `uv`; no credentials are needed.
+The nested `companion/comp2026` checkout must be present at that exact path.
 
 ```bash
 uv sync
@@ -22,47 +32,52 @@ docker compose --profile phase3 build
 uv run drone-sim start --config config/default-run.json
 ```
 
-The default run may take substantially longer than its 60 seconds of public
-simulation time because ArduPilot boots during private lockstep warmup and the
-configured real-time factor is `0.1`. The command prints the run ID and exits
-only after finalization. Inspect it with:
+The command performs one automatic mission attempt, prints the run ID, and
+exits only after evidence finalization and Compose teardown. Finalization may
+take several wall minutes because it semantically scans the full MCAP bag.
 
 ```bash
 uv run drone-sim status RUN_ID
 uv run drone-sim collect-results RUN_ID
 ```
 
-Outputs are under `runs/RUN_ID/`. A completed bundle contains both MP4s, the
-ten-topic MCAP bag, Gazebo native state and server log, seven structured module
-logs, configuration snapshots, scoring files, and `manifest.json`.
+Outputs are under `runs/RUN_ID/`. Independent host inspection additionally
+requires FFmpeg/ffprobe and the ROS Jazzy `rosbag2_py` environment used by the
+artifacts runtime:
+
+```bash
+uv run python scripts/inspect_competition_run.py runs/RUN_ID
+```
 
 ## Acceptance contract
 
 - Terminal state is `COMPLETED` with reason `mission_complete`.
-- Public `/clock` is exactly 0 through 60,000,000,000 ns.
-- Each camera and matching ground-truth stream contains exactly 1,200 samples
-  on a contiguous 50 ms grid; both MP4s are H.264/yuv420p at 320x240 and 20 FPS.
-- The mission reaches landed/disarmed state through positive MAVLink command
-  acknowledgements.
-- `descent_v1` awards 100/100 for airborne/contact, touchdown precision, safe
-  pre-impact speed, and stable contact.
-- `make inspect-phase3` performs independent semantic inspection when supplied
-  the source revision/dirty flag and seven image digests captured at launch.
+- The physical score is exactly `150/150` under `competition_v1`.
+- Home landing/disarm occurs before the 600-second mission deadline.
+- Public `/clock` covers exactly 0 through 600,000,000,000 ns.
+- Each camera, metadata, range, and ground-truth stream contains exactly 12,000
+  samples on a contiguous 50 ms grid.
+- Both MP4s are H.264/yuv420p at 640x480 and 20 FPS with exactly 12,000 frames.
+- The MCAP contains the configured competition streams, physical payload and
+  mission evidence, and score evidence.
+- The manifest binds source revisions, dirty states, image digests,
+  configuration, scores, and SHA-256 records for every inventoried artifact.
+- The run-specific Compose project has no remaining containers or networks.
 
-## Preserved local evidence
+## Preserved accepted evidence
 
-These ignored run directories accompany the handoff on this machine but are
-not part of Git clones:
+Run `77eaf844-d295-491a-97eb-c0aa4b4be322` is preserved locally and accepted
+at `150/150`. The mission returned home and disarmed at 509.10 simulated
+seconds, with mission completion at 509.15 seconds. Its manifest SHA-256 is
+`8692b2c0b3e18db714b17c73d1f41e2b79e799a4ea93a6e77c5b03280c382b01`.
 
-| Run | Condition | Result | Manifest SHA-256 |
-| --- | --- | --- | --- |
-| `06c87df1-92ab-48eb-a4bc-abed25a4004b` | Baseline | Accepted 100/100 | `02c90288baf27da49d18d77278066c21abc6ded8f62c62a8664679f35dd34705` |
-| `40b5d3aa-c1ac-49f6-bced-3f9c12247381` | Gazebo and SITL limited to 0.75 CPU through source completion | Accepted 100/100 | `21707fb7195a3edb71e3642ec0525c1fc066be7c5b08c9a007ef0254871663a2` |
+See [`comp2026-mvp.md`](comp2026-mvp.md) for immutable evidence paths, source
+revisions, the scoring checksum, and checkpoint summary. Run directories are
+ignored evidence and do not travel with a Git clone; transfer this preserved
+directory separately when the recipient needs the original videos and bag.
 
-## Scope and next step
+## Deferred work
 
-This is a vertical-descent infrastructure MVP, not the complete competition
-mission. The next intended integration is the nested `companion/comp2026`
-vision/autonomy code. Active electromagnet physics, payload/dropper behavior,
-LiDAR, precision navigation, and broader scoring remain explicitly deferred in
-`docs/technical-debt/vertical-slice-hardening.md`.
+- QGC command handling.
+- Broader deterministic scheduling and clock cleanup.
+- Hardening and optimization beyond evidence-backed MVP corrections.

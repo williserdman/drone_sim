@@ -52,6 +52,7 @@ _LOG_FIELDS = {
 }
 _ARTIFACTS_RUNTIME_IMAGE = "drone-sim-artifacts-runtime:phase2"
 _FRAME_INTERVAL_NS = 50_000_000
+_MODULE_LOG_MAX_BYTES = 32 * 1024 * 1024
 _PHASE3_IMAGE_NAMES = (
     "drone-sim-orchestration-runtime:phase2",
     "drone-sim-artifacts-runtime:phase2",
@@ -396,7 +397,11 @@ def _validate_module_logs(
         raise BundleAcceptanceError("bundle must contain exactly seven JSONL module logs")
     documents_by_module: dict[str, list[dict[str, Any]]] = {}
     for relative_path in MODULE_LOGS:
-        validation, payload = read_regular_file_bytes(run_directory, relative_path)
+        validation, payload = read_regular_file_bytes(
+            run_directory,
+            relative_path,
+            max_bytes=_MODULE_LOG_MAX_BYTES,
+        )
         if validation.status is not ValidationStatus.VALID or payload is None:
             raise BundleAcceptanceError(f"module log is unsafe: {relative_path}")
         module = Path(relative_path).stem
@@ -509,7 +514,18 @@ def _production_semantic_check(
     config_sha256: str,
 ) -> PhysicalBagEvidence:
     deadline = time.monotonic() + 120.0
-    video_validator = VideoValidator()
+    configuration, _digest = _read_json(run_directory, "configuration/run.json")
+    try:
+        contract = resolve_recording_runtime_config(configuration)
+    except ValueError as error:
+        raise BundleAcceptanceError(
+            f"recording configuration is invalid: {error}"
+        ) from error
+    video_validator = VideoValidator(
+        width_px=contract.width_px,
+        height_px=contract.height_px,
+        fps=contract.fps,
+    )
     for stream in ("onboard", "observer"):
         result = video_validator.validate(
             run_directory,
@@ -520,13 +536,6 @@ def _production_semantic_check(
         )
         if result.status is not ValidationStatus.VALID:
             raise BundleAcceptanceError(f"{stream} video is invalid: {result.detail}")
-    configuration, _digest = _read_json(run_directory, "configuration/run.json")
-    try:
-        contract = resolve_recording_runtime_config(configuration)
-    except ValueError as error:
-        raise BundleAcceptanceError(
-            f"recording configuration is invalid: {error}"
-        ) from error
     bag = RosbagValidator(
         run_id,
         expected_camera_frames=expected_camera_frames,
