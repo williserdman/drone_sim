@@ -35,9 +35,10 @@ sample unacceptable. All returned collections and payloads are immutable
 tuples or bytes. This package depends only on the Python standard library.
 
 The live layer adds `PrivateTruthAggregator` and `LiveAdapter`. The aggregator
-holds only the current odometry/contact candidate and at most four completed
-truth values, covering the observed callback lead over camera pairing. Gazebo
-emits a contact sample when contact exists but does not emit an
+holds only the current odometry/contact candidate and at most ten completed
+truth values. That fixed bound matches the existing odometry/contact
+subscription depth and covers the observed callback lead over camera pairing.
+Gazebo emits a contact sample when contact exists but does not emit an
 empty sample for every no-contact tick; advancing odometry therefore closes
 the preceding candidate as `in_contact=false`. An explicit same-stamp contact
 closes it with the native state. The live adapter supports either callback

@@ -102,34 +102,21 @@ def test_truth_lookahead_rejects_nonadvancing_odometry_stamps():
         aggregator.accept_odometry(_odometry())
 
 
-def test_completed_truth_lookahead_holds_observed_four_camera_epochs():
+def test_completed_truth_lookahead_holds_observed_five_camera_epochs():
     aggregator = PrivateTruthAggregator()
-    aggregator.accept_contact(STAMP, False)
-    aggregator.accept_odometry(_odometry())
-    aggregator.accept_contact(STAMP * 2, False)
-    second = aggregator.accept_odometry(_odometry(STAMP * 2))
-    aggregator.accept_contact(STAMP * 3, False)
-    third = aggregator.accept_odometry(_odometry(STAMP * 3))
-    aggregator.accept_contact(STAMP * 4, False)
-    fourth = aggregator.accept_odometry(_odometry(STAMP * 4))
+    for index in range(1, 6):
+        aggregator.accept_contact(STAMP * index, False)
+        aggregator.accept_odometry(_odometry(STAMP * index))
 
-    assert second is not None
-    assert aggregator.take(STAMP).sim_timestamp_ns == STAMP
-    assert aggregator.take(STAMP * 2) is second
-    assert aggregator.take(STAMP * 3) is third
-    assert aggregator.take(STAMP * 4) is fourth
+    for index in range(1, 6):
+        assert aggregator.take(STAMP * index).sim_timestamp_ns == STAMP * index
 
 
-def test_completed_truth_lookahead_rejects_a_fifth_camera_epoch():
+def test_completed_truth_lookahead_rejects_an_eleventh_camera_epoch():
     aggregator = PrivateTruthAggregator()
-    aggregator.accept_contact(STAMP, False)
-    aggregator.accept_odometry(_odometry())
-    aggregator.accept_contact(STAMP * 2, False)
-    aggregator.accept_odometry(_odometry(STAMP * 2))
-    aggregator.accept_contact(STAMP * 3, False)
-    aggregator.accept_odometry(_odometry(STAMP * 3))
-    aggregator.accept_contact(STAMP * 4, False)
-    aggregator.accept_odometry(_odometry(STAMP * 4))
+    for index in range(1, 11):
+        aggregator.accept_contact(STAMP * index, False)
+        aggregator.accept_odometry(_odometry(STAMP * index))
 
     with pytest.raises(AggregationFault, match="lookahead is full"):
-        aggregator.accept_odometry(_odometry(STAMP * 5))
+        aggregator.accept_odometry(_odometry(STAMP * 11))
