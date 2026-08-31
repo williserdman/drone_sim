@@ -15,7 +15,7 @@
   durability: transient_local
 /simulation/ground_truth:
   history: keep_last
-  depth: 10
+  depth: 100
   reliability: reliable
   durability: volatile
 /simulation/scenario_events:

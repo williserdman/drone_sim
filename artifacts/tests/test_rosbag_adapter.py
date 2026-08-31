@@ -213,7 +213,7 @@ def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
     assert "durability: volatile" in score_events
     assert "depth: 1000" in clock
     assert "reliability: reliable" in clock
-    assert "depth: 10" in ground_truth
+    assert "depth: 100" in ground_truth
     assert "reliability: reliable" in ground_truth
     assert "depth: 4" in run_state
     # A five-sample writer/reader history lost two observer metadata samples
