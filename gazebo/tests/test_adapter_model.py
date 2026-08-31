@@ -486,9 +486,9 @@ def test_adapter_tolerates_observed_four_frame_observer_callback_lead():
     assert adapter.complete
 
 
-def test_adapter_tolerates_private_subscription_depth_observer_callback_lead():
-    adapter = AdapterModel(run_id=RUN_ID, expected_frames=10)
-    stamps_ns = tuple(range(50_000_000, 550_000_000, 50_000_000))
+def test_adapter_tolerates_one_second_private_callback_burst():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=20)
+    stamps_ns = tuple(range(50_000_000, 1_050_000_000, 50_000_000))
     for stamp_ns in stamps_ns:
         adapter.accept_frame("observer", native_image(stamp_ns=stamp_ns))
 

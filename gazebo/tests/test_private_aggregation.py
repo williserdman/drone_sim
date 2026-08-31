@@ -102,21 +102,21 @@ def test_truth_lookahead_rejects_nonadvancing_odometry_stamps():
         aggregator.accept_odometry(_odometry())
 
 
-def test_completed_truth_lookahead_holds_observed_five_camera_epochs():
+def test_completed_truth_lookahead_holds_observed_eleven_camera_epochs():
     aggregator = PrivateTruthAggregator()
-    for index in range(1, 6):
+    for index in range(1, 12):
         aggregator.accept_contact(STAMP * index, False)
         aggregator.accept_odometry(_odometry(STAMP * index))
 
-    for index in range(1, 6):
+    for index in range(1, 12):
         assert aggregator.take(STAMP * index).sim_timestamp_ns == STAMP * index
 
 
-def test_completed_truth_lookahead_rejects_an_eleventh_camera_epoch():
+def test_completed_truth_lookahead_rejects_a_twenty_first_camera_epoch():
     aggregator = PrivateTruthAggregator()
-    for index in range(1, 11):
+    for index in range(1, 21):
         aggregator.accept_contact(STAMP * index, False)
         aggregator.accept_odometry(_odometry(STAMP * index))
 
     with pytest.raises(AggregationFault, match="lookahead is full"):
-        aggregator.accept_odometry(_odometry(STAMP * 11))
+        aggregator.accept_odometry(_odometry(STAMP * 21))

@@ -304,7 +304,7 @@ class GazeboAdapterNode(_node_base()):
                             lambda message, stream=stream: self._accept_image(
                                 stream, message
                             ),
-                            _qos(10, reliable=True),
+                            _qos(20, reliable=True),
                         )
                     self._output_active = True
                     self._publish_clock(0)

@@ -12,12 +12,12 @@ camera samples with that exact ID and native timestamp form the current pair.
 `accept_ground_truth(sample)` requires that pair and returns its single frozen
 `PublicGroundTruth` with unchanged world-frame ENU values.
 
-Buffering is fail-closed and constant: each stream may hold at most ten
+Buffering is fail-closed and constant: each stream may hold at most twenty
 unmatched frames, and at most two aligned camera pairs await ground truth.
 Camera frames pair from the heads of the two per-stream FIFOs by exact frame ID
-and native timestamp; an eleventh unmatched frame on either stream raises
-`AdapterFault` instead of being dropped. The ten-frame bound matches the
-reliable private camera subscription depth and covers the observed callback
+and native timestamp; a twenty-first unmatched frame on either stream raises
+`AdapterFault` instead of being dropped. The twenty-frame bound matches the
+reliable private camera subscription depth and covers one second of callback
 lead between the independent image bridges. A third aligned pair still raises
 `AdapterFault`; ground truth is never buffered as an independent pose stream.
 
@@ -35,9 +35,9 @@ sample unacceptable. All returned collections and payloads are immutable
 tuples or bytes. This package depends only on the Python standard library.
 
 The live layer adds `PrivateTruthAggregator` and `LiveAdapter`. The aggregator
-holds only the current odometry/contact candidate and at most ten completed
+holds only the current odometry/contact candidate and at most twenty completed
 truth values. That fixed bound matches the existing odometry/contact
-subscription depth and covers the observed callback lead over camera pairing.
+subscription depth and covers one second of callback lead over camera pairing.
 Gazebo emits a contact sample when contact exists but does not emit an
 empty sample for every no-contact tick; advancing odometry therefore closes
 the preceding candidate as `in_contact=false`. An explicit same-stamp contact
