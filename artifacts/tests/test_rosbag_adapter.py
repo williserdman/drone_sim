@@ -1051,6 +1051,38 @@ def test_competition_bag_decodes_three_payloads_events_and_downward_range(tmp_pa
     assert evidence.downward_ranges == (DownwardRangeEvidence(50_000_000, 10.0),)
 
 
+def test_competition_bag_allows_empty_optional_scenario_event_diagnostics(tmp_path):
+    _bag_directory(tmp_path)
+    messages = [
+        item
+        for item in _valid_competition_messages()
+        if item.topic != "/simulation/scenario_events"
+    ]
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_competition_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="competition_v1",
+        width_px=320,
+        height_px=240,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+    scenario = next(
+        topic for topic in result.topics
+        if topic.name == "/simulation/scenario_events"
+    )
+    assert scenario.message_count == 0
+    assert scenario.first_sim_timestamp_ns is None
+    assert scenario.last_sim_timestamp_ns is None
+
+
 def test_competition_payload_timestamps_are_monotonic_per_marker(tmp_path):
     """Independent marker callbacks may cross without reversing any marker history."""
     _bag_directory(tmp_path)

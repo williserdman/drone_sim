@@ -1326,8 +1326,8 @@ class RosbagValidator:
                 topic,
                 topics_by_name[topic].message_type,
                 counts[topic],
-                timestamps[topic][0],
-                timestamps[topic][-1],
+                timestamps[topic][0] if timestamps[topic] else None,
+                timestamps[topic][-1] if timestamps[topic] else None,
             )
             for topic in self.topics
         )
