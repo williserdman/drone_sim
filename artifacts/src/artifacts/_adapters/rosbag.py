@@ -922,6 +922,7 @@ class RosbagValidator:
         scenario_events: list[Any] = []
         score_events: list[Any] = []
         payload_states: list[PayloadStateEvidence] = []
+        payload_state_timestamps: dict[int, int] = {}
         payload_events: list[PayloadEventEvidence] = []
         mission_events: list[MissionEventEvidence] = []
         downward_ranges: list[DownwardRangeEvidence] = []
@@ -986,9 +987,11 @@ class RosbagValidator:
                             f"rosbag topic {record.topic} contains wrong run_id {message.run_id!r}",
                         )
                     sim_timestamp_ns = _timestamp_ns(message.sim_timestamp)
-                    if timestamps[record.topic] and sim_timestamp_ns < timestamps[
-                        record.topic
-                    ][-1]:
+                    if (
+                        record.topic != "/simulation/payload_state"
+                        and timestamps[record.topic]
+                        and sim_timestamp_ns < timestamps[record.topic][-1]
+                    ):
                         return self._result(
                             filesystem,
                             ValidationStatus.INVALID,
@@ -1018,9 +1021,17 @@ class RosbagValidator:
                     elif record.topic == "/simulation/score_events":
                         score_events.append(message)
                     elif record.topic == "/simulation/payload_state":
-                        payload_states.append(
-                            _payload_state_evidence(message, sim_timestamp_ns)
-                        )
+                        sample = _payload_state_evidence(message, sim_timestamp_ns)
+                        previous = payload_state_timestamps.get(sample.aruco_id)
+                        if previous is not None and sim_timestamp_ns < previous:
+                            return self._result(
+                                filesystem,
+                                ValidationStatus.INVALID,
+                                "rosbag competition payload timestamps are "
+                                f"nonmonotonic for ID {sample.aruco_id}",
+                            )
+                        payload_state_timestamps[sample.aruco_id] = sim_timestamp_ns
+                        payload_states.append(sample)
                     elif record.topic == "/simulation/payload_events":
                         payload_events.append(
                             _payload_event_evidence(message, sim_timestamp_ns)

@@ -579,7 +579,11 @@ class VideoStreamRecorder:
         self._process_factory = process_factory
         self._command_runner = command_runner
         self._validator = validator or VideoValidator(
-            command_runner=command_runner, monotonic=monotonic
+            width_px=width_px,
+            height_px=height_px,
+            fps=fps,
+            command_runner=command_runner,
+            monotonic=monotonic,
         )
         self._monotonic = monotonic
         self._diagnostic_sink = diagnostic_sink or (lambda _item: None)

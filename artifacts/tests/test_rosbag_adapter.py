@@ -1051,6 +1051,65 @@ def test_competition_bag_decodes_three_payloads_events_and_downward_range(tmp_pa
     assert evidence.downward_ranges == (DownwardRangeEvidence(50_000_000, 10.0),)
 
 
+def test_competition_payload_timestamps_are_monotonic_per_marker(tmp_path):
+    """Independent marker callbacks may cross without reversing any marker history."""
+    _bag_directory(tmp_path)
+    messages = [
+        item
+        for item in _valid_competition_messages()
+        if item.topic != "/simulation/payload_state"
+    ]
+    final_state_index = next(
+        index
+        for index, item in enumerate(messages)
+        if item.topic == "/simulation/run_state" and item.message.state == 4
+    )
+    messages[final_state_index] = BagMessage(
+        "/simulation/run_state",
+        _run_state(100_000_000, 4, reason="mission_complete"),
+        messages[final_state_index].recorded_timestamp_ns,
+    )
+    messages.extend(
+        (
+            BagMessage("/clock", SimpleNamespace(clock=_stamp(100_000_000)), 300),
+            BagMessage("/simulation/ground_truth", _ground_truth(100_000_000), 301),
+            BagMessage("/camera/onboard/image_raw", _physical_image(100_000_000), 302),
+            BagMessage(
+                "/camera/onboard/frame_metadata",
+                _custom_message(100_000_000, frame_id=1, stream="onboard"),
+                303,
+            ),
+            BagMessage("/camera/observer/image_raw", _physical_image(100_000_000), 304),
+            BagMessage(
+                "/camera/observer/frame_metadata",
+                _custom_message(100_000_000, frame_id=1, stream="observer"),
+                305,
+            ),
+            BagMessage("/competition/range/downward", _range(100_000_000), 306),
+            BagMessage("/simulation/payload_state", _payload_state(50_000_000, 2), 307),
+            BagMessage("/simulation/payload_state", _payload_state(50_000_000, 3), 308),
+            BagMessage("/simulation/payload_state", _payload_state(100_000_000, 2), 309),
+            BagMessage("/simulation/payload_state", _payload_state(100_000_000, 3), 310),
+            BagMessage("/simulation/payload_state", _payload_state(50_000_000, 4), 311),
+            BagMessage("/simulation/payload_state", _payload_state(100_000_000, 4), 312),
+        )
+    )
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_competition_metadata_for(messages),
+        ),
+        expected_camera_frames=2,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="competition_v1",
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+
+
 def test_competition_bag_rejects_missing_payload_id_on_grid_tick(tmp_path):
     """Two payload samples at a tick cannot stand in for the required IDs 2, 3, and 4."""
     messages = [

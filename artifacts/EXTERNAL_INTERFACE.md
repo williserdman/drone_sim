@@ -38,6 +38,9 @@ delivery promise.
 depth 100), and `/competition/range/downward` (`LaserScan`, reliable volatile
 depth 100). The competition bag requires IDs 2, 3, and 4 at every exact 50 ms
 grid point and uses the resolved 640x480 image shape and byte count.
+Payload-state timestamps must be monotonic independently for each marker ID;
+delivery order may cross between IDs only when the exact three-marker grid
+still proves every required sample is present.
 
 Competition acceptance dispatches by `ruleset_id` to a physically independent
 oracle. It decodes vehicle, payload, mission, event, and downward-range facts

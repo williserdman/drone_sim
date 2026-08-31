@@ -246,6 +246,40 @@ def test_competition_geometry_controls_ffmpeg_and_raw_frame_contract(tmp_path):
     assert factory.process.stdin.getvalue() == frame
 
 
+def test_competition_geometry_finalizes_with_its_configured_dimensions(tmp_path):
+    runner = FakeCommandRunner(
+        {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "pix_fmt": "yuv420p",
+                    "avg_frame_rate": "20/1",
+                    "width": 640,
+                    "height": 480,
+                    "nb_read_frames": "1",
+                }
+            ]
+        }
+    )
+    recorder = _recorder(
+        tmp_path,
+        width_px=640,
+        height_px=480,
+        command_runner=runner,
+        validator=None,
+    )
+    _write_anonymous_output(recorder, b"encoded")
+
+    result = recorder.finalize(
+        deadline=time.monotonic() + 10, outcome="COMPLETED"
+    )
+
+    assert result.published is True
+    assert recorder.final_path.read_bytes() == b"encoded"
+    assert not recorder.partial_path.exists()
+
+
 def test_start_keeps_encoded_inode_anonymous_until_finalization(tmp_path):
     factory = FakeProcessFactory()
     recorder = _recorder(tmp_path, process_factory=factory)
