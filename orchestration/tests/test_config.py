@@ -206,7 +206,7 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
     )
     assert resolved.startup_wall_seconds == 1800
     assert resolved.max_wall_seconds == 14400
-    assert resolved.finalization_wall_seconds == 600
+    assert resolved.finalization_wall_seconds == 900
     assert resolved.output_root == (ROOT / "../runs").resolve()
     assert resolved.competition is not None
     assert resolved.competition.course_source == CONFIG / "course.yaml"
