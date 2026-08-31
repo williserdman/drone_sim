@@ -171,6 +171,7 @@ class FakePayloadClient:
     def __init__(self) -> None:
         self.requests: list[object] = []
         self._responses: list[PayloadResponse] = []
+        self._responses_returned = 0
         self._condition = threading.Condition()
 
     def call(self, request: object) -> PayloadResponse:
@@ -178,16 +179,27 @@ class FakePayloadClient:
             self.requests.append(request)
             self._condition.notify_all()
             self._condition.wait_for(lambda: bool(self._responses), timeout=1.0)
-            return self._responses.pop(0)
+            response = self._responses.pop(0)
+            self._responses_returned += 1
+            self._condition.notify_all()
+            return response
 
-    def wait_for_request(self) -> None:
+    def wait_for_request(self, count: int = 1) -> None:
         with self._condition:
-            assert self._condition.wait_for(lambda: bool(self.requests), timeout=1.0)
+            assert self._condition.wait_for(
+                lambda: len(self.requests) >= count, timeout=1.0
+            )
 
     def complete(self, response: PayloadResponse) -> None:
         with self._condition:
             self._responses.append(response)
             self._condition.notify_all()
+
+    def wait_for_response_return(self, count: int = 1) -> None:
+        with self._condition:
+            assert self._condition.wait_for(
+                lambda: self._responses_returned >= count, timeout=1.0
+            )
 
 
 def test_payload_dropper_waits_for_matching_confirmation() -> None:
@@ -208,6 +220,38 @@ def test_payload_dropper_waits_for_matching_confirmation() -> None:
     assert request.aruco_id == 3
     assert request.action == request.RELEASE
     assert request.command_id == "run:3:release:1"
+
+
+def test_payload_dropper_retries_one_stale_release_after_simulated_delay() -> None:
+    clock = SimulationClock()
+    clock.accept(10_000_000_000)
+    client = FakePayloadClient()
+    dropper = PayloadDropper(RUN_ID, 4, client, clock)
+    returned: list[bool] = []
+    worker = threading.Thread(target=lambda: returned.append(dropper.drop()))
+    worker.start()
+    client.wait_for_request()
+    client.complete(
+        PayloadResponse(
+            False,
+            "STALE_PHYSICAL_STATE",
+            "truth callbacks are between ticks",
+            "run:4:release:1",
+            1,
+        )
+    )
+
+    client.wait_for_response_return()
+    clock.accept(10_100_000_000)
+    client.wait_for_request(2)
+    client.complete(PayloadResponse(True, "OK", "", "run:4:release:2", 2))
+    worker.join(timeout=1.0)
+
+    assert returned == [True]
+    assert [request.command_id for request in client.requests] == [
+        "run:4:release:1",
+        "run:4:release:2",
+    ]
 
 
 def test_payload_dropper_attach_returns_literal_true_and_rejects_bad_correlation() -> None:

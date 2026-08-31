@@ -382,34 +382,45 @@ class PayloadDropper:
         return self._command(PayloadRequest.RELEASE, "release")
 
     def _command(self, action: int, action_name: str) -> bool:
-        with self._lock:
-            self._sequence[action] += 1
-            command_id = (
-                f"run:{self._aruco_id}:{action_name}:{self._sequence[action]}"
+        for attempt in range(2):
+            with self._lock:
+                self._sequence[action] += 1
+                command_id = (
+                    f"run:{self._aruco_id}:{action_name}:{self._sequence[action]}"
+                )
+            request = PayloadRequest(
+                self._run_id,
+                self._aruco_id,
+                action,
+                command_id,
             )
-        request = PayloadRequest(
-            self._run_id,
-            self._aruco_id,
-            action,
-            command_id,
-        )
-        response = self._client.call(request)
-        if response is None:
-            raise RuntimeError(f"payload {command_id} returned no confirmation")
-        if getattr(response, "command_id", None) != command_id:
-            raise RuntimeError(f"payload response command_id did not match {command_id}")
-        response_sequence = getattr(response, "response_sequence", None)
-        if (
-            isinstance(response_sequence, bool)
-            or not isinstance(response_sequence, int)
-            or response_sequence <= 0
-        ):
-            raise RuntimeError(f"payload {command_id} returned an invalid response sequence")
-        if getattr(response, "accepted", None) is not True:
+            response = self._client.call(request)
+            if response is None:
+                raise RuntimeError(f"payload {command_id} returned no confirmation")
+            if getattr(response, "command_id", None) != command_id:
+                raise RuntimeError(f"payload response command_id did not match {command_id}")
+            response_sequence = getattr(response, "response_sequence", None)
+            if (
+                isinstance(response_sequence, bool)
+                or not isinstance(response_sequence, int)
+                or response_sequence <= 0
+            ):
+                raise RuntimeError(
+                    f"payload {command_id} returned an invalid response sequence"
+                )
+            if getattr(response, "accepted", None) is True:
+                return True
             code = getattr(response, "code", "REJECTED")
             detail = getattr(response, "detail", "")
+            if (
+                action == PayloadRequest.RELEASE
+                and code == "STALE_PHYSICAL_STATE"
+                and attempt == 0
+            ):
+                self._clock.sleep(0.1)
+                continue
             raise RuntimeError(f"payload {command_id} failed: {code}: {detail}")
-        return True
+        raise AssertionError("unreachable payload retry state")
 
 
 @dataclass(frozen=True)
