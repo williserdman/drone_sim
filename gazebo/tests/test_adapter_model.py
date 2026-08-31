@@ -486,6 +486,25 @@ def test_adapter_tolerates_observed_four_frame_observer_callback_lead():
     assert adapter.complete
 
 
+def test_adapter_tolerates_observed_five_frame_observer_callback_lead():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=5)
+    stamps_ns = (
+        50_000_000,
+        100_000_000,
+        150_000_000,
+        200_000_000,
+        250_000_000,
+    )
+    for stamp_ns in stamps_ns:
+        adapter.accept_frame("observer", native_image(stamp_ns=stamp_ns))
+
+    for stamp_ns in stamps_ns:
+        adapter.accept_frame("onboard", native_image(stamp_ns=stamp_ns))
+        adapter.accept_ground_truth(native_ground_truth(stamp_ns))
+
+    assert adapter.complete
+
+
 def test_adapter_buffers_one_lookahead_pair_while_prior_pair_awaits_truth():
     adapter = AdapterModel(run_id=RUN_ID, expected_frames=2)
     accept_pair(adapter, 50_000_000)

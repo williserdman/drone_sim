@@ -12,14 +12,14 @@ camera samples with that exact ID and native timestamp form the current pair.
 `accept_ground_truth(sample)` requires that pair and returns its single frozen
 `PublicGroundTruth` with unchanged world-frame ENU values.
 
-Buffering is fail-closed and constant: each stream may hold at most four
+Buffering is fail-closed and constant: each stream may hold at most five
 unmatched frames, and at most two aligned camera pairs await ground truth.
 Camera frames pair from the heads of the two per-stream FIFOs by exact frame ID
-and native timestamp; a fifth unmatched frame on either stream raises
-`AdapterFault` instead of being dropped. The four-frame bound covers the
-observed callback lead between the independent image bridges. A third aligned
-pair still raises `AdapterFault`; ground truth is never buffered as an
-independent pose stream.
+and native timestamp; a sixth unmatched frame on either stream raises
+`AdapterFault` instead of being dropped. The five-frame bound matches the
+reliable private camera subscription depth and covers the observed callback
+lead between the independent image bridges. A third aligned pair still raises
+`AdapterFault`; ground truth is never buffered as an independent pose stream.
 
 Every `AdapterFault` raised while accepting a native frame or ground-truth
 sample irreversibly latches the relevant sequence and adapter. All later
