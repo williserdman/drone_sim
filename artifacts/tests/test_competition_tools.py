@@ -72,6 +72,36 @@ def test_competition_inspector_uses_current_parent_nested_and_image_provenance(t
     assert len(commands) == 11
 
 
+def test_competition_inspector_accepts_external_remote_image_provenance(tmp_path):
+    module = _load("inspect_competition_run")
+    expected_images = {image: f"{index + 1:064x}" for index, image in enumerate(IMAGES)}
+    commands = []
+
+    def runner(command, **kwargs):
+        commands.append(tuple(command))
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            output = "a" * 40 if command[2] == str(ROOT) else "b" * 40
+        else:
+            output = ""
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    captured = {}
+
+    def inspector(run_directory, **kwargs):
+        captured.update(run_directory=run_directory, **kwargs)
+        return SimpleNamespace(to_dict=lambda: {"accepted": True, "run_id": RUN_ID})
+
+    module.inspect_competition_run(
+        tmp_path,
+        runner=runner,
+        bundle_inspector=inspector,
+        expected_image_digests=expected_images,
+    )
+
+    assert captured["expected_image_digests"] == expected_images
+    assert not any(command[:3] == ("docker", "image", "inspect") for command in commands)
+
+
 def _accepted_documents(run_directory: Path, *, complete=True, achieved=150.0):
     (run_directory / "scoring").mkdir(parents=True)
     manifest = {
@@ -131,16 +161,22 @@ def test_verification_writer_names_accepted_evidence_and_checkpoints(
 
     inspected = []
 
-    def inspector(directory):
-        inspected.append(directory)
+    expected_images = {image: f"{index + 1:064x}" for index, image in enumerate(IMAGES)}
+
+    def inspector(directory, *, expected_image_digests=None):
+        inspected.append((directory, expected_image_digests))
         return _canonical_report(directory)
 
     monkeypatch.setattr(module, "_canonical_inspection", inspector)
 
-    module.write_competition_verification(run_directory, output)
+    module.write_competition_verification(
+        run_directory,
+        output,
+        expected_image_digests=expected_images,
+    )
 
     note = output.read_text(encoding="utf-8")
-    assert inspected == [run_directory.resolve()]
+    assert inspected == [(run_directory.resolve(), expected_images)]
     for expected in (
         RUN_ID,
         "a" * 40,

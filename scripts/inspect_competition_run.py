@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 from pathlib import Path
 import subprocess
@@ -81,6 +82,7 @@ def inspect_competition_run(
     *,
     runner: Callable[..., Any] = subprocess.run,
     bundle_inspector: Callable[..., Any] = inspect_phase3_bundle,
+    expected_image_digests: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Return the canonical accepted report without modifying run evidence."""
     sources = (
@@ -92,9 +94,11 @@ def inspect_competition_run(
         rules_path=RULES_PATH,
         expected_source_revisions={name: revision for name, revision, _dirty in sources},
         expected_source_dirty={name: dirty for name, _revision, dirty in sources},
-        expected_image_digests={
-            image: _image_digest(runner, image) for image in PHASE3_IMAGES
-        },
+        expected_image_digests=(
+            dict(expected_image_digests)
+            if expected_image_digests is not None
+            else {image: _image_digest(runner, image) for image in PHASE3_IMAGES}
+        ),
         require_maximum_score=True,
     )
     return report.to_dict()
@@ -103,9 +107,22 @@ def inspect_competition_run(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_directory", type=Path)
+    parser.add_argument("--expected-image-digests", type=Path)
     arguments = parser.parse_args()
     try:
-        report = inspect_competition_run(arguments.run_directory)
+        expected_image_digests = None
+        if arguments.expected_image_digests is not None:
+            document = json.loads(arguments.expected_image_digests.read_text())
+            if not isinstance(document, dict) or not all(
+                isinstance(name, str) and isinstance(digest, str)
+                for name, digest in document.items()
+            ):
+                raise ValueError("expected image digests must be a JSON object of strings")
+            expected_image_digests = document
+        report = inspect_competition_run(
+            arguments.run_directory,
+            expected_image_digests=expected_image_digests,
+        )
     except Exception as error:
         print(
             json.dumps(

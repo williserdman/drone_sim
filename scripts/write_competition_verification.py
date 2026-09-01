@@ -10,10 +10,17 @@ import json
 from pathlib import Path
 
 
-def _canonical_inspection(run_directory: Path) -> Mapping[str, object]:
+def _canonical_inspection(
+    run_directory: Path,
+    *,
+    expected_image_digests: Mapping[str, str] | None = None,
+) -> Mapping[str, object]:
     from inspect_competition_run import inspect_competition_run
 
-    return inspect_competition_run(run_directory)
+    return inspect_competition_run(
+        run_directory,
+        expected_image_digests=expected_image_digests,
+    )
 
 
 def _document(path: Path) -> dict[str, object]:
@@ -33,13 +40,21 @@ def _score_text(value: float) -> str:
 def write_competition_verification(
     run_directory: Path | str,
     output: Path | str,
+    *,
+    expected_image_digests: Mapping[str, str] | None = None,
 ) -> Path:
     """Pass canonical read-only acceptance, then write its evidence pointers."""
     directory = Path(run_directory).resolve()
     try:
-        inspection = _canonical_inspection(directory)
+        if expected_image_digests is None:
+            inspection = _canonical_inspection(directory)
+        else:
+            inspection = _canonical_inspection(
+                directory,
+                expected_image_digests=expected_image_digests,
+            )
     except Exception as error:
-        raise ValueError("canonical competition inspection failed") from error
+        raise ValueError(f"canonical competition inspection failed: {error}") from error
     expected_inspection_keys = {
         "accepted",
         "run_id",
@@ -125,10 +140,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_directory", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--expected-image-digests", type=Path)
     arguments = parser.parse_args()
     try:
-        write_competition_verification(arguments.run_directory, arguments.output)
-    except ValueError as error:
+        expected_image_digests = None
+        if arguments.expected_image_digests is not None:
+            document = json.loads(arguments.expected_image_digests.read_text())
+            if not isinstance(document, dict) or not all(
+                isinstance(name, str) and isinstance(digest, str)
+                for name, digest in document.items()
+            ):
+                raise ValueError("expected image digests must be a JSON object of strings")
+            expected_image_digests = document
+        write_competition_verification(
+            arguments.run_directory,
+            arguments.output,
+            expected_image_digests=expected_image_digests,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as error:
         parser.error(str(error))
     return 0
 
