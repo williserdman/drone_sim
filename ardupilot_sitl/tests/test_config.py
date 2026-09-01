@@ -59,15 +59,15 @@ def test_descent_parameters_use_verified_competition_pitch_rate_gains() -> None:
     assert parameters["ATC_RAT_PIT_D"] == "0.0018"
 
 
-def test_descent_parameters_balance_first_contact_speed_and_prompt_unloading() -> None:
+def test_descent_parameters_use_faster_final_landing_speed() -> None:
     parameters = _descent_parameters()
 
     assert "LAND_SPD_MS" in parameters
     final_descent_speed_mps = float(parameters["LAND_SPD_MS"])
 
-    # The 0.05 m/s run touched down gently but unloaded too slowly and rebounded;
-    # 0.10 m/s retains contact-speed headroom while advancing the target twice as fast.
-    assert final_descent_speed_mps == pytest.approx(0.10)
+    # Use ArduPilot's recommended minimum instead of the deliberately slow
+    # 0.10 m/s target, while retaining ample headroom below the 1.0 m/s limit.
+    assert final_descent_speed_mps == pytest.approx(0.30)
 
 
 def test_descent_parameters_mark_sitl_accelerometers_calibrated() -> None:

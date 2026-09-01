@@ -40,23 +40,20 @@ defaults require the small non-zero offsets so its two simulated
 accelerometers are recognized as calibrated. The mission uses ordinary
 GUIDED-mode arming and never sends the force-arm magic value.
 
-The overlay sets the pinned Copter 4.7 parameter `LAND_SPD_MS=0.10`, making
-the final LAND-stage vertical target 0.10 m/s. Copter 4.7 renamed the legacy
+The overlay sets the pinned Copter 4.7 parameter `LAND_SPD_MS=0.30`, making
+the final LAND-stage vertical target 0.30 m/s. Copter 4.7 renamed the legacy
 centimetres-per-second `LAND_SPEED` parameter to the metres-per-second
 `LAND_SPD_MS`; the runtime uses the new name directly because every run wipes
 SITL storage.
 
-The selected target balances first-contact speed against prompt post-contact
-unloading. Preserved run `62e27049-3cd7-4d4d-8798-1290c8b29a78` used 0.05
-m/s and first contacted at 0.022855 m/s, but the target advanced only about 5
-mm per 0.1 s and just 5 of the frozen window's 11 samples remained in contact.
-The 0.10 m/s target doubles that post-contact advance. Comparison with the
-preserved 0.5 m/s baseline infers first-contact speed near 0.07 m/s, below the
-frozen 0.1 m/s limit, but the next production run remains authoritative. This
-value is below the upstream parameter metadata's recommended 0.3 m/s minimum;
-the pinned defaults-file loader accepts the float without clamping and the
-LAND controller applies its absolute value directly as the final descent
-limit.
+The selected target is ArduPilot's recommended minimum and replaces the
+deliberately slow 0.10 m/s setting. Preserved run
+`62e27049-3cd7-4d4d-8798-1290c8b29a78` used 0.05 m/s and first contacted at
+0.022855 m/s, but the target advanced only about 5 mm per 0.1 s and just 5 of
+the frozen window's 11 samples remained in contact. A preserved 0.5 m/s
+baseline inferred first-contact speed near 0.07 m/s. The next monitored
+production run remains authoritative for the 0.30 m/s target's contact speed,
+settling, and precision behavior.
 
 ## Failure behavior
 
