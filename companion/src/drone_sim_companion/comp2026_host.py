@@ -279,6 +279,8 @@ class RosLidar:
         self._lock = threading.Lock()
         self._distance_m: float | None = None
         self._timestamp_ns: int | None = None
+        self._pending_distance_m: float | None = None
+        self._pending_timestamp_ns: int | None = None
 
     @property
     def ready(self) -> bool:
@@ -308,18 +310,29 @@ class RosLidar:
             raise TypeError("range simulation timestamp must be an integer")
         current_clock_ns = self._clock.timestamp_ns
         with self._lock:
-            if self._timestamp_ns is not None and sim_timestamp_ns < self._timestamp_ns:
+            self._promote_pending_through(current_clock_ns)
+            latest_timestamp_ns = (
+                self._pending_timestamp_ns
+                if self._pending_timestamp_ns is not None
+                else self._timestamp_ns
+            )
+            if latest_timestamp_ns is not None and sim_timestamp_ns < latest_timestamp_ns:
                 raise ValueError("downward range timestamp regressed")
-            if current_clock_ns is None or sim_timestamp_ns > current_clock_ns:
-                return
-            self._timestamp_ns = sim_timestamp_ns
-            self._distance_m = distance_m
+            if current_clock_ns is not None and sim_timestamp_ns <= current_clock_ns:
+                self._timestamp_ns = sim_timestamp_ns
+                self._distance_m = distance_m
+                self._pending_timestamp_ns = None
+                self._pending_distance_m = None
+            else:
+                self._pending_timestamp_ns = sim_timestamp_ns
+                self._pending_distance_m = distance_m
 
     def get_distance(self) -> float:
+        now_ns = self._clock.timestamp_ns
         with self._lock:
+            self._promote_pending_through(now_ns)
             timestamp_ns = self._timestamp_ns
             distance_m = self._distance_m
-        now_ns = self._clock.timestamp_ns
         if timestamp_ns is None or distance_m is None or now_ns is None:
             raise StaleSensorError("downward range is not ready")
         age_ns = now_ns - timestamp_ns
@@ -328,6 +341,17 @@ class RosLidar:
         if age_ns > MAX_RANGE_AGE_NS:
             raise StaleSensorError("downward range is older than 0.5 simulated seconds")
         return distance_m
+
+    def _promote_pending_through(self, clock_timestamp_ns: int | None) -> None:
+        if (
+            clock_timestamp_ns is not None
+            and self._pending_timestamp_ns is not None
+            and self._pending_timestamp_ns <= clock_timestamp_ns
+        ):
+            self._timestamp_ns = self._pending_timestamp_ns
+            self._distance_m = self._pending_distance_m
+            self._pending_timestamp_ns = None
+            self._pending_distance_m = None
 
 
 @dataclass(frozen=True)

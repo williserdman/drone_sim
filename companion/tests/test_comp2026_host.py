@@ -163,8 +163,20 @@ def test_lidar_retains_recent_committed_range_when_delivery_leads_clock() -> Non
 
     assert lidar.get_distance() == pytest.approx(5.35)
     clock.accept(175_400_000_000)
-    lidar.accept(leading_scan, 175_400_000_000)
     assert lidar.get_distance() == pytest.approx(5.40)
+
+
+def test_lidar_promotes_each_pending_same_tick_range_as_clock_catches_up() -> None:
+    clock = SimulationClock()
+    lidar = RosLidar(clock)
+    scan = SimpleNamespace(ranges=[4.572], range_min=0.1, range_max=30.0)
+    clock.accept(1_000_000_000)
+
+    lidar.accept(scan, 1_050_000_000)
+    clock.accept(1_050_000_000)
+    lidar.accept(scan, 1_100_000_000)
+
+    assert lidar.get_distance() == pytest.approx(4.572)
 
 
 class FakePayloadClient:
