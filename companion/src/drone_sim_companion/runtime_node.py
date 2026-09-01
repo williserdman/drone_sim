@@ -750,7 +750,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         LaserScan,
         "/competition/range/downward",
         range_callback,
-        qos(100),
+        qos(1),
         callback_group=range_callback_group,
     )
     signal.signal(signal.SIGTERM, stop)

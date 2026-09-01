@@ -299,6 +299,14 @@ def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -
         assert isinstance(callback_group, ast.Name)
         assert callback_group.id == expected_groups[callback.id]
 
+        if callback.id == "range_callback":
+            qos_call = subscription.args[3]
+            assert isinstance(qos_call, ast.Call)
+            assert isinstance(qos_call.func, ast.Name)
+            assert qos_call.func.id == "qos"
+            assert isinstance(qos_call.args[0], ast.Constant)
+            assert qos_call.args[0].value == 1
+
     executors = [
         node
         for node in ast.walk(run_comp2026)
