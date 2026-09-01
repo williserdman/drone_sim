@@ -54,7 +54,9 @@ def main(
         return int(exc.code)
 
     try:
-        controller = controller_factory(event_stream=output)
+        controller = controller_factory(
+            project_directory=Path.cwd().resolve(), event_stream=output
+        )
         if arguments.command == "start":
             config = (
                 Path(arguments.config)

@@ -92,6 +92,29 @@ def test_start_defaults_to_repository_competition_config(tmp_path):
     assert controller.calls == [("start", tmp_path / "config/default-run.json")]
 
 
+def test_cli_binds_controller_project_directory_to_invocation_checkout(tmp_path):
+    controller = FakeController()
+    factory_kwargs = {}
+
+    def factory(**kwargs):
+        factory_kwargs.update(kwargs)
+        return controller
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    old = Path.cwd()
+    try:
+        import os
+
+        os.chdir(tmp_path)
+        code = main(["start"], controller_factory=factory, stdout=stdout, stderr=stderr)
+    finally:
+        os.chdir(old)
+
+    assert code == 0
+    assert factory_kwargs["project_directory"] == tmp_path.resolve()
+
+
 @pytest.mark.parametrize("command", ["status", "abort", "collect-results"])
 def test_run_directory_commands_default_to_resolved_invocation_runs_and_print_one_json(
     tmp_path, command
