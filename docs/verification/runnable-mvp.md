@@ -66,10 +66,12 @@ uv run python scripts/inspect_competition_run.py runs/RUN_ID
 
 ## Preserved accepted evidence
 
-Run `77eaf844-d295-491a-97eb-c0aa4b4be322` is preserved locally and accepted
-at `150/150`. The mission returned home and disarmed at 509.10 simulated
-seconds, with mission completion at 509.15 seconds. Its manifest SHA-256 is
-`8692b2c0b3e18db714b17c73d1f41e2b79e799a4ea93a6e77c5b03280c382b01`.
+Run `8c47f8a1-7823-464b-98f3-894dfbc043ac` was executed on an ephemeral Vast
+VM, retrieved to the control server, and accepted at `150/150`. The mission
+returned home and disarmed at about 315.18 simulated seconds, with mission
+completion at about 315.24 seconds and the required evidence tail through
+exactly 600 seconds. Its manifest SHA-256 is
+`423820264c6a4d587d9f44f614c241842cec53fa763421b120aa3e778e3857bc`.
 
 See [`comp2026-mvp.md`](comp2026-mvp.md) for immutable evidence paths, source
 revisions, the scoring checksum, and checkpoint summary. Run directories are
