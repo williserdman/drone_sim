@@ -262,7 +262,7 @@ def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> Non
     assert heartbeat_timeout.attr == "startup_timeout_seconds"
 
 
-def test_competition_ros_callbacks_use_the_multithreaded_executor_concurrently() -> None:
+def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -> None:
     source = (
         Path(__file__).parents[1]
         / "src/drone_sim_companion/runtime_node.py"
@@ -282,13 +282,22 @@ def test_competition_ros_callbacks_use_the_multithreaded_executor_concurrently()
     ]
 
     assert len(subscriptions) == 5
+    expected_groups = {
+        "state_callback": "control_callback_group",
+        "clock_callback": "control_callback_group",
+        "range_callback": "control_callback_group",
+        "image_callback": "camera_callback_group",
+        "metadata_callback": "camera_callback_group",
+    }
     for subscription in subscriptions:
+        callback = subscription.args[2]
+        assert isinstance(callback, ast.Name)
         callback_group = next(
             (keyword.value for keyword in subscription.keywords if keyword.arg == "callback_group"),
             None,
         )
         assert isinstance(callback_group, ast.Name)
-        assert callback_group.id == "callback_group"
+        assert callback_group.id == expected_groups[callback.id]
 
 
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:
