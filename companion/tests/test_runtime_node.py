@@ -283,9 +283,9 @@ def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -
 
     assert len(subscriptions) == 5
     expected_groups = {
-        "state_callback": "control_callback_group",
-        "clock_callback": "control_callback_group",
-        "range_callback": "control_callback_group",
+        "state_callback": "clock_callback_group",
+        "clock_callback": "clock_callback_group",
+        "range_callback": "range_callback_group",
         "image_callback": "camera_callback_group",
         "metadata_callback": "camera_callback_group",
     }

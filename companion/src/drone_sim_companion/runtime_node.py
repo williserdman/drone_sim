@@ -520,7 +520,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
 
     rclpy.init()
     node = Node("drone_sim_companion")
-    control_callback_group = MutuallyExclusiveCallbackGroup()
+    clock_callback_group = MutuallyExclusiveCallbackGroup()
+    range_callback_group = MutuallyExclusiveCallbackGroup()
     camera_callback_group = MutuallyExclusiveCallbackGroup()
     service_callback_group = MutuallyExclusiveCallbackGroup()
     executor = MultiThreadedExecutor(num_threads=4)
@@ -720,14 +721,14 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         "/simulation/run_state",
         state_callback,
         qos(1, transient=True),
-        callback_group=control_callback_group,
+        callback_group=clock_callback_group,
     )
     node.create_subscription(
         Clock,
         "/clock",
         clock_callback,
         qos(1000),
-        callback_group=control_callback_group,
+        callback_group=clock_callback_group,
     )
     node.create_subscription(
         Image,
@@ -748,7 +749,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         "/competition/range/downward",
         range_callback,
         qos(100),
-        callback_group=control_callback_group,
+        callback_group=range_callback_group,
     )
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
