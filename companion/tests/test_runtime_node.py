@@ -262,6 +262,35 @@ def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> Non
     assert heartbeat_timeout.attr == "startup_timeout_seconds"
 
 
+def test_competition_ros_callbacks_use_the_multithreaded_executor_concurrently() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "src/drone_sim_companion/runtime_node.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    run_comp2026 = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_comp2026"
+    )
+    subscriptions = [
+        node
+        for node in ast.walk(run_comp2026)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "create_subscription"
+    ]
+
+    assert len(subscriptions) == 5
+    for subscription in subscriptions:
+        callback_group = next(
+            (keyword.value for keyword in subscription.keywords if keyword.arg == "callback_group"),
+            None,
+        )
+        assert isinstance(callback_group, ast.Name)
+        assert callback_group.id == "callback_group"
+
+
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:
     attempts = 0
     clock = iter((0.0, 0.2, 0.4))

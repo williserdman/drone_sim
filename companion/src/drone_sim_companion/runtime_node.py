@@ -498,6 +498,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     from drone.sensors.camera._camera_manager import CameraManager
     from drone.sensors.camera.camera import Camera
     from dronekit import VehicleMode
+    from rclpy.callback_groups import ReentrantCallbackGroup
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -519,6 +520,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
 
     rclpy.init()
     node = Node("drone_sim_companion")
+    callback_group = ReentrantCallbackGroup()
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     executor_thread = threading.Thread(
@@ -538,6 +540,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     ros_payload_client = node.create_client(
         PayloadCommand,
         "/simulation/payload_command",
+        callback_group=callback_group,
     )
     payload_client = _RosPayloadClient(ros_payload_client, PayloadCommand)
     finalizing = False
@@ -715,25 +718,35 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         "/simulation/run_state",
         state_callback,
         qos(1, transient=True),
+        callback_group=callback_group,
     )
-    node.create_subscription(Clock, "/clock", clock_callback, qos(1000))
+    node.create_subscription(
+        Clock,
+        "/clock",
+        clock_callback,
+        qos(1000),
+        callback_group=callback_group,
+    )
     node.create_subscription(
         Image,
         "/camera/onboard/image_raw",
         image_callback,
         qos(100),
+        callback_group=callback_group,
     )
     node.create_subscription(
         FrameMetadata,
         "/camera/onboard/frame_metadata",
         metadata_callback,
         qos(100),
+        callback_group=callback_group,
     )
     node.create_subscription(
         LaserScan,
         "/competition/range/downward",
         range_callback,
         qos(100),
+        callback_group=callback_group,
     )
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
