@@ -437,6 +437,16 @@ def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> Non
 
     assert gate.mission_ready is True
     assert gate.mission_start_ready is False
+    assert gate.readiness == {
+        "process_ready": True,
+        "running": False,
+        "clock": False,
+        "frame_ready": False,
+        "range_ready": False,
+        "payload_service_ready": False,
+        "heartbeat_live": False,
+        "armable": False,
+    }
 
     gate.accept_running()
     gate.accept_clock()

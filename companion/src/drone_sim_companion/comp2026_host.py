@@ -590,6 +590,20 @@ class Comp2026StartGate:
         with self._condition:
             return self._mission_start_ready()
 
+    @property
+    def readiness(self) -> dict[str, bool]:
+        with self._condition:
+            return {
+                "process_ready": self._process_ready,
+                "running": self._running,
+                "clock": self._clock,
+                "frame_ready": self._frame_ready,
+                "range_ready": self._range_ready,
+                "payload_service_ready": self._payload_service_ready,
+                "heartbeat_live": self._heartbeat_live,
+                "armable": self._armable,
+            }
+
     def mark_process_ready(self) -> None:
         self._mark("_process_ready")
 

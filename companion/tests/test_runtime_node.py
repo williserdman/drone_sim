@@ -316,6 +316,16 @@ def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -
     assert thread_count.value == 5
 
 
+def test_competition_runtime_emits_start_readiness_changes() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "src/drone_sim_companion/runtime_node.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"mission_start_readiness"' in source
+    assert "gate.readiness" in source
+
+
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:
     attempts = 0
     clock = iter((0.0, 0.2, 0.4))

@@ -556,6 +556,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     exit_code = 0
     controller: Any | None = None
     mission_worker: threading.Thread | None = None
+    last_start_readiness: dict[str, bool] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
@@ -796,6 +797,14 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     attempt_failure.fail(
                         f"competition start readiness failed: {error}"
                     )
+                readiness = gate.readiness
+                if readiness != last_start_readiness:
+                    lifecycle.emit(
+                        "mission_start_readiness",
+                        clock.timestamp_ns,
+                        readiness,
+                    )
+                    last_start_readiness = readiness
                 if (
                     clock.timestamp_ns == 0
                     and not initial_command_delivered
