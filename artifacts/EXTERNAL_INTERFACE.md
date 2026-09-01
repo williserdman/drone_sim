@@ -3,22 +3,25 @@
 ## Inputs
 
 - Orchestration start and finalize lifecycle events
-- `/clock`, both full image and frame-metadata streams, artifact status, ground
-  truth, scenario events, score events, and run state
+- `/clock`, both full image streams for MP4 encoding, both frame-metadata
+  streams for MCAP correlation, artifact status, ground truth, scenario events,
+  score events, and run state
 - Structured stdout from every module
 - Gazebo server log and native state
 - Scorekeeper result files
 
-The fixed ROS subscriptions are `/clock` at best-effort depth 1,
+The fixed MCAP subscriptions are `/clock` at best-effort depth 1,
 `/simulation/run_state` at reliable transient-local depth 4,
 `/simulation/artifact_status` at reliable transient-local depth 2,
 `/simulation/ground_truth` at best-effort depth 10,
 `/simulation/scenario_events` and `/simulation/score_events` at reliable depth
-100. The live video pipelines request camera topics at reliable, volatile depth
+100. The live video pipelines request raw camera topics at reliable, volatile depth
 100 for physical production profiles and retain reliable, volatile depth 5 for
-synthetic Phase 2. The private rosbag recorder requests the same topics at
-reliable depth 100 so a bounded writer stall cannot lose exact evidence. The
-metadata topics are `/camera/onboard/frame_metadata` and
+synthetic Phase 2. Raw images are encoded once into the two required H.264 MP4
+files and are intentionally omitted from MCAP. The private rosbag recorder
+requests the frame-metadata topics at reliable depth 100 so a bounded writer
+stall cannot lose the timing and correlation evidence. The metadata topics are
+`/camera/onboard/frame_metadata` and
 `/camera/observer/frame_metadata`, both using
 `simulation_interfaces/msg/FrameMetadata`. The exact private rosbag subscriber
 overrides are stored in `artifacts/recording-qos.yaml`. The public
@@ -26,18 +29,20 @@ overrides are stored in `artifacts/recording-qos.yaml`. The public
 private recorder requests depth 2 so its cache retains both startup samples
 until rosbag takes them.
 
-The archival reliability request is scoped to the recorder path. A reliable
+The metadata reliability request is scoped to the recorder path. A reliable
 camera publisher remains compatible with later mission consumers that request
-best effort; exact bag and video acceptance does not rely on a best-effort
-delivery promise.
+best effort; exact metadata and video acceptance does not rely on a best-effort
+delivery promise. Pixel evidence lives in the videos, while MCAP retains the
+contiguous frame IDs and simulation timestamps needed to align each video with
+ground truth.
 
-`BASE_TOPICS` remains the ten-topic descent inventory. `competition_v1` adds
+`BASE_TOPICS` is the eight-topic lean-video descent inventory. `competition_v1` adds
 `/simulation/payload_state` (`PayloadState`, reliable volatile depth 100),
 `/simulation/payload_events` (`PayloadEvent`, reliable transient-local depth
 100), `/simulation/mission_events` (`MissionEvent`, reliable transient-local
 depth 100), and `/competition/range/downward` (`LaserScan`, reliable volatile
 depth 100). The competition bag requires IDs 2, 3, and 4 at every exact 50 ms
-grid point and uses the resolved 640x480 image shape and byte count.
+grid point. Video validation separately enforces the resolved 640x480 shape.
 Payload-state timestamps must be monotonic independently for each marker ID;
 delivery order may cross between IDs only when the exact three-marker grid
 still proves every required sample is present.
@@ -53,7 +58,7 @@ on `/simulation/camera_pair_ack` after both exact camera pairs have drained into
 their recorders. It reuses `simulation_interfaces/msg/FrameMetadata` with the
 current canonical `run_id`, `stream="aggregate"`, contiguous `frame_id=N`, and
 `sim_timestamp=(N+1)*50_000_000` nanoseconds. QoS is reliable, transient-local, depth
-1. This acknowledgement is intentionally absent from the fixed ten-topic bag
+1. This acknowledgement is intentionally absent from the fixed eight-topic bag
 inventory and models neither camera latency nor simulation time.
 
 For every non-Phase-2 physical profile, the artifact runtime derives the exact
@@ -62,10 +67,11 @@ It neither creates nor discovers `/simulation/camera_pair_ack`; recorder
 readiness and physics advancement are independent of that synthetic transport.
 Completed Phase 3 acceptance binds this configured cadence to the recorded
 evidence: `/clock` spans exactly zero through the configured duration, both
-camera streams and matching ground truth occupy exactly 50 ms through that
-duration, `RUNNING` is stamped at zero, and `FINALIZING` is stamped at the
-duration. Manifest `start_ns`, `end_ns`, and `duration_ns` must describe that
-same public epoch exactly.
+frame-metadata streams and matching ground truth occupy exactly 50 ms through
+that duration, both videos contain the configured frame count, `RUNNING` is
+stamped at zero, and `FINALIZING` is stamped at the duration. Manifest
+`start_ns`, `end_ns`, and `duration_ns` must describe that same public epoch
+exactly.
 
 ## Outputs
 

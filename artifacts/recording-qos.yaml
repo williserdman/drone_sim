@@ -44,11 +44,9 @@
   depth: 100
   reliability: reliable
   durability: volatile
-/camera/onboard/image_raw: &image_qos
+/camera/onboard/frame_metadata: &metadata_qos
   history: keep_last
   depth: 100
   reliability: reliable
   durability: volatile
-/camera/onboard/frame_metadata: *image_qos
-/camera/observer/image_raw: *image_qos
-/camera/observer/frame_metadata: *image_qos
+/camera/observer/frame_metadata: *metadata_qos

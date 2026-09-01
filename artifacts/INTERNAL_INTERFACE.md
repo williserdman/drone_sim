@@ -57,16 +57,16 @@ and no validator hashes the mutable named bag. The silent process remains alive
 so the controller reaches its work deadline, reserves timeout-invalid/null-hash
 records, and then terminates the container during bounded teardown.
 
-The synthetic aggregate runtime places separate reliable archival image and metadata
+The synthetic aggregate runtime places separate reliable raw-image and metadata
 arrivals in a fixed 40-pair buffer keyed by exact simulation stamp and frame ID.
-It drains only contiguous exact pairs through the unchanged fail-closed Task 4
-recorder. Once both streams have drained frame `N`, it publishes the internal
-camera-pair acknowledgement. Duplicate, malformed, missing, or excess buffered
-inputs fail closed; finalization freezes and clears the buffer without waiting
-for another acknowledgement.
+It drains only contiguous exact pairs through the fail-closed video recorder;
+the MCAP recorder archives only the metadata half. Once both inputs have drained
+frame `N`, it publishes the internal camera-pair acknowledgement. Duplicate,
+malformed, missing, or excess buffered inputs fail closed; finalization freezes
+and clears the buffer without waiting for another acknowledgement.
 
 Physical profiles use a buffer bounded by the exact configured camera-frame
-count only to reorder the paired archival topics. They publish no pair
+count only to reorder the paired video inputs. They publish no pair
 acknowledgement, make no ACK discovery check, and exert no physics backpressure.
 The same configured count is passed to both video recorders and both final
 video validators.

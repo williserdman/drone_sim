@@ -23,9 +23,7 @@ BASE_TOPICS = (
     "/simulation/ground_truth",
     "/simulation/scenario_events",
     "/simulation/score_events",
-    "/camera/onboard/image_raw",
     "/camera/onboard/frame_metadata",
-    "/camera/observer/image_raw",
     "/camera/observer/frame_metadata",
 )
 FIXED_TOPICS = BASE_TOPICS
@@ -38,9 +36,7 @@ BASE_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
         "/simulation/ground_truth": "simulation_interfaces/msg/GroundTruth",
         "/simulation/scenario_events": "simulation_interfaces/msg/ScenarioEvent",
         "/simulation/score_events": "simulation_interfaces/msg/ScoreEvent",
-        "/camera/onboard/image_raw": "sensor_msgs/msg/Image",
         "/camera/onboard/frame_metadata": "simulation_interfaces/msg/FrameMetadata",
-        "/camera/observer/image_raw": "sensor_msgs/msg/Image",
         "/camera/observer/frame_metadata": "simulation_interfaces/msg/FrameMetadata",
     }
 )
@@ -945,27 +941,6 @@ class RosbagValidator:
                     sim_timestamp_ns = _timestamp_ns(message.clock)
                     if first_clock_index is None:
                         first_clock_index = record_index
-                elif record.topic.endswith("/image_raw"):
-                    if not message.data:
-                        return self._result(
-                            filesystem,
-                            ValidationStatus.INVALID,
-                            f"rosbag topic {record.topic} contains a missing image payload",
-                        )
-                    if self.physical_run and (
-                        message.height != self.height_px
-                        or message.width != self.width_px
-                        or message.encoding != "rgb8"
-                        or message.step != self.step_bytes
-                        or len(message.data) != self.image_payload_bytes
-                    ):
-                        return self._result(
-                            filesystem,
-                            ValidationStatus.INVALID,
-                            "rosbag topic "
-                            f"{record.topic} has invalid physical image shape or payload",
-                        )
-                    sim_timestamp_ns = _timestamp_ns(message.header.stamp)
                 elif record.topic == "/competition/range/downward":
                     sim_timestamp_ns = _timestamp_ns(message.header.stamp)
                     if timestamps[record.topic] and sim_timestamp_ns < timestamps[
@@ -1094,20 +1069,7 @@ class RosbagValidator:
                 )
 
         for stream in ("onboard", "observer"):
-            image_topic = f"/camera/{stream}/image_raw"
             metadata_topic = f"/camera/{stream}/frame_metadata"
-            if counts[image_topic] != counts[metadata_topic]:
-                return self._result(
-                    filesystem,
-                    ValidationStatus.INVALID,
-                    f"{stream} image/metadata count mismatch",
-                )
-            if timestamps[image_topic] != timestamps[metadata_topic]:
-                return self._result(
-                    filesystem,
-                    ValidationStatus.INVALID,
-                    f"{stream} image/metadata timestamps do not pair exactly",
-                )
             if frame_ids[stream] != list(range(counts[metadata_topic])):
                 return self._result(
                     filesystem,
@@ -1257,9 +1219,7 @@ class RosbagValidator:
 
         if self.expected_camera_frames is not None:
             exact_topics = (
-                "/camera/onboard/image_raw",
                 "/camera/onboard/frame_metadata",
-                "/camera/observer/image_raw",
                 "/camera/observer/frame_metadata",
                 "/simulation/ground_truth",
             )

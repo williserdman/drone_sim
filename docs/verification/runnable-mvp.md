@@ -55,8 +55,9 @@ uv run python scripts/inspect_competition_run.py runs/RUN_ID
 - The physical score is exactly `150/150` under `competition_v1`.
 - Home landing/disarm occurs before the 600-second mission deadline.
 - Public `/clock` covers exactly 0 through 600,000,000,000 ns.
-- Each camera, metadata, range, and ground-truth stream contains exactly 12,000
-  samples on a contiguous 50 ms grid.
+- Each frame-metadata, range, and ground-truth stream in the MCAP contains
+  exactly 12,000 samples on a contiguous 50 ms grid. Raw camera images are
+  intentionally omitted from MCAP.
 - Both MP4s are H.264/yuv420p at 640x480 and 20 FPS with exactly 12,000 frames.
 - The MCAP contains the configured competition streams, physical payload and
   mission evidence, and score evidence.

@@ -14,10 +14,10 @@ Own per-run ROS 2 bag recording, onboard and observer MP4 encoding, Gazebo logs 
 
 1. Define bundle and manifest schemas.
 2. Capture structured stdout into per-module JSONL files.
-3. Record the ten fixed ROS 2 topics, including both full image and matching
-   frame-metadata streams, using the private overrides in
-   `artifacts/recording-qos.yaml`.
-4. Encode both streams as 20-FPS H.264 MP4 files.
+3. Record the eight fixed lean-video ROS 2 topics, including both
+   frame-metadata streams but excluding duplicate raw images, using the private
+   overrides in `artifacts/recording-qos.yaml`.
+4. Encode both raw image streams as 20-FPS H.264 MP4 files.
 5. Preserve Gazebo native state, logs, configuration, and scoring results.
 6. Publish aggregate readiness and completeness on
    `/simulation/artifact_status`, and persist the matching status files.

@@ -154,6 +154,12 @@ def test_competition_bag_contract_extends_descent_without_changing_base_topics(t
     )
 
     assert BASE_TOPICS == FIXED_TOPICS
+    assert "/camera/onboard/image_raw" not in BASE_TOPICS
+    assert "/camera/observer/image_raw" not in BASE_TOPICS
+    assert "/camera/onboard/frame_metadata" in BASE_TOPICS
+    assert "/camera/observer/frame_metadata" in BASE_TOPICS
+    assert "/camera/onboard/image_raw" not in COMPETITION_TOPIC_TYPES
+    assert "/camera/observer/image_raw" not in COMPETITION_TOPIC_TYPES
     assert COMPETITION_TOPICS == BASE_TOPICS + (
         "/simulation/payload_state",
         "/simulation/payload_events",
@@ -193,7 +199,7 @@ def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
         "/simulation/score_events:", 1
     )[0]
     score_events = override.split("/simulation/score_events:", 1)[1].split(
-        "/camera/onboard/image_raw:", 1
+        "/camera/onboard/frame_metadata:", 1
     )[0]
     clock = override.split("/clock:", 1)[1].split(
         "/simulation/run_state:", 1
@@ -201,7 +207,7 @@ def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
     ground_truth = override.split("/simulation/ground_truth:", 1)[1].split(
         "/simulation/scenario_events:", 1
     )[0]
-    camera = override.split("/camera/onboard/image_raw:", 1)[1]
+    camera = override.split("/camera/onboard/frame_metadata:", 1)[1]
 
     assert "history: keep_last" in artifact_status
     assert "depth: 2" in artifact_status
@@ -221,6 +227,7 @@ def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
     # camera history keeps the exact 20 Hz evidence intact through a bounded
     # host-side recording stall.
     assert "depth: 100" in camera
+    assert "image_raw" not in override
     assert (
         "COPY artifacts/recording-qos.yaml /etc/drone_sim/recording-qos.yaml"
         in dockerfile
@@ -533,32 +540,6 @@ def _custom_message(timestamp_ns, *, run_id=RUN_ID, **fields):
     return SimpleNamespace(run_id=run_id, sim_timestamp=_stamp(timestamp_ns), **fields)
 
 
-def _image(
-    timestamp_ns,
-    *,
-    data=b"rgb",
-    height=None,
-    width=None,
-    encoding=None,
-    step=None,
-):
-    fields = {"header": SimpleNamespace(stamp=_stamp(timestamp_ns)), "data": data}
-    if height is not None:
-        fields.update(height=height, width=width, encoding=encoding, step=step)
-    return SimpleNamespace(**fields)
-
-
-def _physical_image(timestamp_ns):
-    return _image(
-        timestamp_ns,
-        data=b"\x00" * (320 * 240 * 3),
-        height=240,
-        width=320,
-        encoding="rgb8",
-        step=320 * 3,
-    )
-
-
 def _ground_truth(timestamp_ns, *, value=0.0, in_contact=False):
     return _custom_message(
         timestamp_ns,
@@ -631,13 +612,11 @@ def _valid_messages():
         BagMessage("/simulation/ground_truth", _custom_message(0), 104),
         BagMessage("/simulation/scenario_events", _custom_message(0), 105),
         BagMessage("/simulation/score_events", _custom_message(0), 106),
-        BagMessage("/camera/onboard/image_raw", _image(0), 107),
         BagMessage(
             "/camera/onboard/frame_metadata",
             _custom_message(0, frame_id=0, stream="onboard"),
             108,
         ),
-        BagMessage("/camera/observer/image_raw", _image(0), 109),
         BagMessage(
             "/camera/observer/frame_metadata",
             _custom_message(0, frame_id=0, stream="observer"),
@@ -718,15 +697,9 @@ def _valid_physical_messages():
         ),
         *score_events,
         BagMessage(
-            "/camera/onboard/image_raw", _physical_image(50_000_000), 120
-        ),
-        BagMessage(
             "/camera/onboard/frame_metadata",
             _custom_message(50_000_000, frame_id=0, stream="onboard"),
             121,
-        ),
-        BagMessage(
-            "/camera/observer/image_raw", _physical_image(50_000_000), 122
         ),
         BagMessage(
             "/camera/observer/frame_metadata",
@@ -940,16 +913,9 @@ def test_physical_bag_requires_ground_truth_aligned_to_both_cameras(tmp_path):
     """Matching only one camera could hide cross-stream physical evidence loss."""
     _bag_directory(tmp_path)
     messages = _valid_physical_messages()
-    image_index = next(
-        index for index, item in enumerate(messages)
-        if item.topic == "/camera/observer/image_raw"
-    )
     metadata_index = next(
         index for index, item in enumerate(messages)
         if item.topic == "/camera/observer/frame_metadata"
-    )
-    messages[image_index] = replace(
-        messages[image_index], message=_physical_image(100_000_000)
     )
     messages[metadata_index] = replace(
         messages[metadata_index],
@@ -1105,13 +1071,11 @@ def test_competition_payload_timestamps_are_monotonic_per_marker(tmp_path):
         (
             BagMessage("/clock", SimpleNamespace(clock=_stamp(100_000_000)), 300),
             BagMessage("/simulation/ground_truth", _ground_truth(100_000_000), 301),
-            BagMessage("/camera/onboard/image_raw", _physical_image(100_000_000), 302),
             BagMessage(
                 "/camera/onboard/frame_metadata",
                 _custom_message(100_000_000, frame_id=1, stream="onboard"),
                 303,
             ),
-            BagMessage("/camera/observer/image_raw", _physical_image(100_000_000), 304),
             BagMessage(
                 "/camera/observer/frame_metadata",
                 _custom_message(100_000_000, frame_id=1, stream="observer"),
@@ -1177,8 +1141,6 @@ def test_physical_bag_rejects_camera_and_ground_truth_epoch_starting_at_zero(
     for item in messages:
         if item.topic == "/simulation/ground_truth":
             item.message.sim_timestamp = _stamp(0)
-        elif item.topic.endswith("/image_raw"):
-            item.message.header.stamp = _stamp(0)
         elif item.topic.endswith("/frame_metadata"):
             item.message.sim_timestamp = _stamp(0)
 
@@ -1300,54 +1262,6 @@ def test_physical_bag_requires_exact_current_config_lifecycle(tmp_path):
 
     assert result.status is ValidationStatus.INVALID
     assert "lifecycle" in result.detail
-
-
-def test_physical_bag_requires_fixed_rgb8_image_shape(tmp_path):
-    messages = _valid_physical_messages()
-    image_index = next(
-        index for index, item in enumerate(messages)
-        if item.topic == "/camera/onboard/image_raw"
-    )
-    messages[image_index].message.width = 319
-
-    result = _validate_physical_messages(tmp_path, messages)
-
-    assert result.status is ValidationStatus.INVALID
-    assert "image shape" in result.detail
-
-
-def test_physical_bag_validates_resolved_image_geometry_instead_of_descent_literals(
-    tmp_path,
-):
-    """A valid configured 640x480 frame must not be checked as 320x240."""
-    messages = [
-        replace(
-            item,
-            message=_image(
-                50_000_000,
-                data=b"\x00" * (640 * 480 * 3),
-                height=480,
-                width=640,
-                encoding="rgb8",
-                step=640 * 3,
-            ),
-        )
-        if item.topic.endswith("/image_raw")
-        else item
-        for item in _valid_physical_messages()
-    ]
-    _bag_directory(tmp_path)
-    result = RosbagValidator(
-        RUN_ID,
-        backend=FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
-        expected_camera_frames=1,
-        physical_run=True,
-        config_sha256=CONFIG_SHA256,
-        width_px=640,
-        height_px=480,
-    ).validate(tmp_path, "rosbag")
-
-    assert result.status is ValidationStatus.VALID
 
 
 def test_physical_bag_rejects_nonfinite_ground_truth(tmp_path):
@@ -1570,48 +1484,15 @@ def test_validation_rejects_nonmonotonic_custom_simulation_timestamps(tmp_path):
     assert "nonmonotonic" in result.detail
 
 
-def test_validation_rejects_image_without_payload(tmp_path):
-    _bag_directory(tmp_path)
-    backend = FakeBagBackend()
-    backend.messages[7] = replace(backend.messages[7], message=_image(0, data=b""))
-
-    result = _validate(tmp_path, backend)
-
-    assert result.status is ValidationStatus.INVALID
-    assert "image payload" in result.detail
-
-
-def test_validation_rejects_mismatched_image_and_metadata_counts(tmp_path):
-    _bag_directory(tmp_path)
-    messages = _valid_messages()
-    messages.append(BagMessage("/camera/onboard/image_raw", _image(50_000_000), 110))
-    backend = FakeBagBackend(messages=messages, metadata=_metadata_for(messages))
-
-    result = _validate(tmp_path, backend)
-
-    assert result.status is ValidationStatus.INVALID
-    assert "image/metadata count" in result.detail
-
-
-def test_validation_rejects_unpaired_image_and_metadata_timestamps(tmp_path):
-    _bag_directory(tmp_path)
-    backend = FakeBagBackend()
-    backend.messages[8] = replace(
-        backend.messages[8],
-        message=_custom_message(50_000_000, frame_id=0, stream="onboard"),
-    )
-
-    result = _validate(tmp_path, backend)
-
-    assert result.status is ValidationStatus.INVALID
-    assert "image/metadata timestamps" in result.detail
-
-
 def test_validation_rejects_wrong_frame_metadata_stream(tmp_path):
     _bag_directory(tmp_path)
     backend = FakeBagBackend()
-    backend.messages[8] = replace(
-        backend.messages[8],
+    metadata_index = next(
+        index for index, item in enumerate(backend.messages)
+        if item.topic == "/camera/onboard/frame_metadata"
+    )
+    backend.messages[metadata_index] = replace(
+        backend.messages[metadata_index],
         message=_custom_message(0, frame_id=0, stream="observer"),
     )
 
@@ -1624,8 +1505,12 @@ def test_validation_rejects_wrong_frame_metadata_stream(tmp_path):
 def test_validation_rejects_noncontiguous_frame_ids(tmp_path):
     _bag_directory(tmp_path)
     backend = FakeBagBackend()
-    backend.messages[8] = replace(
-        backend.messages[8],
+    metadata_index = next(
+        index for index, item in enumerate(backend.messages)
+        if item.topic == "/camera/onboard/frame_metadata"
+    )
+    backend.messages[metadata_index] = replace(
+        backend.messages[metadata_index],
         message=_custom_message(0, frame_id=1, stream="onboard"),
     )
 
@@ -1640,7 +1525,6 @@ def test_validation_rejects_frame_interval_other_than_50_ms(tmp_path):
     messages = _valid_messages()
     messages.extend(
         [
-            BagMessage("/camera/onboard/image_raw", _image(40_000_000), 110),
             BagMessage(
                 "/camera/onboard/frame_metadata",
                 _custom_message(
@@ -1689,8 +1573,6 @@ def test_real_jazzy_mcap_fixture_is_read_via_rosbag2_and_deserialized(tmp_path):
     from builtin_interfaces.msg import Time
     from rclpy.serialization import serialize_message
     from rosgraph_msgs.msg import Clock
-    from sensor_msgs.msg import Image
-    from std_msgs.msg import Header
     from simulation_interfaces.msg import (
         ArtifactStatus,
         FrameMetadata,
@@ -1736,24 +1618,8 @@ def test_real_jazzy_mcap_fixture_is_read_via_rosbag2_and_deserialized(tmp_path):
             run_id=RUN_ID, sim_timestamp=stamp
         ),
         "/simulation/score_events": ScoreEvent(run_id=RUN_ID, sim_timestamp=stamp),
-        "/camera/onboard/image_raw": Image(
-            header=Header(stamp=stamp),
-            height=1,
-            width=1,
-            encoding="rgb8",
-            step=3,
-            data=[1, 2, 3],
-        ),
         "/camera/onboard/frame_metadata": FrameMetadata(
             run_id=RUN_ID, sim_timestamp=stamp, frame_id=0, stream="onboard"
-        ),
-        "/camera/observer/image_raw": Image(
-            header=Header(stamp=stamp),
-            height=1,
-            width=1,
-            encoding="rgb8",
-            step=3,
-            data=[4, 5, 6],
         ),
         "/camera/observer/frame_metadata": FrameMetadata(
             run_id=RUN_ID, sim_timestamp=stamp, frame_id=0, stream="observer"
