@@ -286,8 +286,8 @@ def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -
         "state_callback": "clock_callback_group",
         "clock_callback": "clock_callback_group",
         "range_callback": "range_callback_group",
-        "image_callback": "camera_callback_group",
-        "metadata_callback": "camera_callback_group",
+        "image_callback": "image_callback_group",
+        "metadata_callback": "metadata_callback_group",
     }
     for subscription in subscriptions:
         callback = subscription.args[2]
@@ -298,6 +298,22 @@ def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -
         )
         assert isinstance(callback_group, ast.Name)
         assert callback_group.id == expected_groups[callback.id]
+
+    executors = [
+        node
+        for node in ast.walk(run_comp2026)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "MultiThreadedExecutor"
+    ]
+    assert len(executors) == 1
+    thread_count = next(
+        keyword.value
+        for keyword in executors[0].keywords
+        if keyword.arg == "num_threads"
+    )
+    assert isinstance(thread_count, ast.Constant)
+    assert thread_count.value == 5
 
 
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:

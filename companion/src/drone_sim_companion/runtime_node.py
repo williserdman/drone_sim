@@ -522,9 +522,10 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     node = Node("drone_sim_companion")
     clock_callback_group = MutuallyExclusiveCallbackGroup()
     range_callback_group = MutuallyExclusiveCallbackGroup()
-    camera_callback_group = MutuallyExclusiveCallbackGroup()
+    image_callback_group = MutuallyExclusiveCallbackGroup()
+    metadata_callback_group = MutuallyExclusiveCallbackGroup()
     service_callback_group = MutuallyExclusiveCallbackGroup()
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = MultiThreadedExecutor(num_threads=5)
     executor.add_node(node)
     executor_thread = threading.Thread(
         target=executor.spin,
@@ -735,14 +736,14 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         "/camera/onboard/image_raw",
         image_callback,
         qos(100),
-        callback_group=camera_callback_group,
+        callback_group=image_callback_group,
     )
     node.create_subscription(
         FrameMetadata,
         "/camera/onboard/frame_metadata",
         metadata_callback,
         qos(100),
-        callback_group=camera_callback_group,
+        callback_group=metadata_callback_group,
     )
     node.create_subscription(
         LaserScan,
