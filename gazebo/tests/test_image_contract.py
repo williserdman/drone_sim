@@ -26,6 +26,20 @@ DIRECT_PACKAGES = {
     "ros-jazzy-gz-sim-vendor": "0.0.10-1noble.20260604.111001",
     "ros-jazzy-sdformat-vendor": "0.0.11-1noble.20260604.104102",
 }
+UPGRADED_BASE_PACKAGES = {
+    "bsdutils": "1:2.39.3-9ubuntu6.6",
+    "bzip2": "1.0.8-5.1ubuntu0.1",
+    "libblkid1": "2.39.3-9ubuntu6.6",
+    "libbz2-1.0": "1.0.8-5.1ubuntu0.1",
+    "libmount1": "2.39.3-9ubuntu6.6",
+    "libsmartcols1": "2.39.3-9ubuntu6.6",
+    "libuuid1": "2.39.3-9ubuntu6.6",
+    "mount": "2.39.3-9ubuntu6.6",
+    "util-linux": "2.39.3-9ubuntu6.6",
+    "uuid-dev": "2.39.3-9ubuntu6.6",
+    "zlib1g-dev": "1:1.3.dfsg-3.1ubuntu2.2",
+    "zlib1g": "1:1.3.dfsg-3.1ubuntu2.2",
+}
 
 
 def _dockerfile() -> str:
@@ -69,6 +83,15 @@ def test_complete_added_package_delta_is_compared_with_the_lock():
     assert dockerfile.count("dpkg-query -W") >= 2
     assert "comm -13" in dockerfile
     assert "diff --unified" in dockerfile
+
+
+def test_upgraded_base_packages_are_part_of_the_exact_runtime_lock():
+    """Security upgrades from the pinned base are runtime changes, not additions."""
+    locked = set(_locked_packages())
+
+    assert {
+        f"{package}={version}" for package, version in UPGRADED_BASE_PACKAGES.items()
+    } <= locked
 
 
 def test_runtime_copies_local_resources_and_only_fetches_the_pinned_plugin_source():
