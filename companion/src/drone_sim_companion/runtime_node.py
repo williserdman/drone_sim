@@ -729,7 +729,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         Clock,
         "/clock",
         clock_callback,
-        qos(1000),
+        qos(1),
         callback_group=clock_callback_group,
     )
     node.create_subscription(
