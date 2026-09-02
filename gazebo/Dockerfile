@@ -47,7 +47,8 @@ COPY gazebo/plugin /tmp/ardupilot_gazebo-build
 RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5" \
     && git init /tmp/ardupilot_gazebo \
     && git -C /tmp/ardupilot_gazebo remote add origin https://github.com/ArduPilot/ardupilot_gazebo.git \
-    && git -C /tmp/ardupilot_gazebo fetch --depth=1 origin "${ARDUPILOT_GAZEBO_COMMIT}" \
+    && git -C /tmp/ardupilot_gazebo -c http.version=HTTP/1.1 \
+        fetch --depth=1 origin "${ARDUPILOT_GAZEBO_COMMIT}" \
     && git -C /tmp/ardupilot_gazebo checkout --detach FETCH_HEAD \
     && test "$(git -C /tmp/ardupilot_gazebo rev-parse HEAD)" = "${ARDUPILOT_GAZEBO_COMMIT}" \
     && git -C /tmp/ardupilot_gazebo apply \
