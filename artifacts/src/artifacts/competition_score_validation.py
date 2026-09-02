@@ -381,7 +381,7 @@ class _PhysicalOracle:
         before = [
             row
             for row in self.payload_states[marker]
-            if row.sim_timestamp_ns <= event.sim_timestamp_ns
+            if row.sim_timestamp_ns < event.sim_timestamp_ns
         ]
         detached = next(
             (

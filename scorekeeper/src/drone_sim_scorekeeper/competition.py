@@ -683,7 +683,7 @@ class CompetitionScorer:
             for sample in window
         )
 
-    def _state_at_or_before(
+    def _state_before(
         self, marker: int, timestamp_ns: int
     ) -> PayloadStateSample | None:
         if self.start_sim_time_ns is None:
@@ -691,12 +691,12 @@ class CompetitionScorer:
         eligible = [
             sample
             for sample in self._payload_states[marker]
-            if self.start_sim_time_ns <= sample.sim_timestamp_ns <= timestamp_ns
+            if self.start_sim_time_ns <= sample.sim_timestamp_ns < timestamp_ns
         ]
         return eligible[-1] if eligible else None
 
     def _physical_release(self, marker: int, event: PayloadEventSample) -> bool:
-        attached = self._state_at_or_before(marker, event.sim_timestamp_ns)
+        attached = self._state_before(marker, event.sim_timestamp_ns)
         detached = next(
             (
                 sample

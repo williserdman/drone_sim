@@ -248,6 +248,7 @@ class AttemptTrace:
         settle_speed: float = 0.0,
         pickup_xy: tuple[float, float] | None = None,
         defer_settle: bool = False,
+        detach_truth_at_event: bool = False,
     ) -> None:
         phase_start = self.cursor_ns + 1_000_000_000
         self.advance_to(
@@ -328,7 +329,9 @@ class AttemptTrace:
                 payload_updates={
                     marker: {
                         "xy": release_xy,
-                        "attached": True,
+                        "attached": not (
+                            detach_truth_at_event and timestamp_ns == release_time
+                        ),
                         "grounded": False,
                     }
                 },
@@ -613,6 +616,18 @@ def test_release_before_two_full_seconds_cannot_award_payload():
     result = trace.scorer.finalize()
 
     assert rule_passed(result, "payload_2") is False
+
+
+def test_detached_truth_at_release_timestamp_uses_prior_attached_sample():
+    """A transition published with the event must retain the prior physical state."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2", detach_truth_at_event=True)
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4")
+    trace.home()
+
+    assert rule_passed(trace.scorer.finalize(), "payload_2") is True
 
 
 def test_release_speed_above_exact_threshold_cannot_award_payload():

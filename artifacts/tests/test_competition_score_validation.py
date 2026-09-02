@@ -288,6 +288,30 @@ def test_independent_competition_validation_recomputes_150_from_physical_evidenc
     assert metadata.elapsed_simulated_ns == 23_100_000_000
 
 
+def test_independent_validation_accepts_detached_truth_at_release_timestamp(tmp_path):
+    """A release transition may share its timestamp with the detached state."""
+    from artifacts.competition_score_validation import (
+        validate_competition_score_outputs,
+    )
+
+    evidence = _fixture(tmp_path)
+    payload_states = tuple(
+        replace(sample, attached=False)
+        if sample.aruco_id == 2 and sample.sim_timestamp_ns == _at(5.0)
+        else sample
+        for sample in evidence.payload_states
+    )
+
+    metadata = validate_competition_score_outputs(
+        tmp_path,
+        run_id=RUN_ID,
+        rules_path=RULES_PATH,
+        physical_evidence=replace(evidence, payload_states=payload_states),
+    )
+
+    assert metadata.achieved_score == 150.0
+
+
 def test_independent_competition_validation_uses_mission_relative_deadline(tmp_path):
     """A 900-second absolute epoch must not consume a 23.1-second attempt deadline."""
     from artifacts.competition_score_validation import (
