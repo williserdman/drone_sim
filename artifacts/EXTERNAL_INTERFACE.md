@@ -104,9 +104,9 @@ artifacts, companion, ArduPilot SITL, Gazebo, electromagnet, and scorekeeper,
 plus `scoring/events.jsonl` and `scoring/result.json`.
 For a physical profile, the coordinator constructs `ArtifactSession` with
 `physical_gazebo=true`: `gazebo/server.log` must then be nonempty, and
-`gazebo/state/` must be a nonempty safe tree containing a nonempty regular
-an integrity-checked `state.tlog.zst`. The default preserves the Phase 2 synthetic-state contract;
-placeholders cannot satisfy completed physical-run validation.
+`gazebo/state/` must be a nonempty safe tree containing an integrity-checked
+regular `state.tlog.zst`. The default preserves the Phase 2 synthetic-state
+contract; placeholders cannot satisfy completed physical-run validation.
 
 Completed Phase 3 provenance contains exactly one source revision named
 `drone_sim` and exactly one uniquely digested image record for each of the

@@ -32,6 +32,17 @@ docker compose --profile phase3 build
 uv run drone-sim start --config config/default-run.json
 ```
 
+The explicit pacing experiment uses the same mission and artifact contract but
+asks Gazebo and SITL to target 1x real time:
+
+```bash
+uv run drone-sim start --config config/realtime-run.json
+```
+
+The target is a pacing ceiling, not an acceptance threshold or performance
+guarantee. Mission behavior and the 600-second evidence horizon remain based on
+simulation time when the host runs slower than the requested factor.
+
 The command performs one automatic mission attempt, prints the run ID, and
 exits only after evidence finalization and Compose teardown. Finalization may
 take several wall minutes because it semantically scans the full MCAP bag.
@@ -61,18 +72,25 @@ uv run python scripts/inspect_competition_run.py runs/RUN_ID
 - Both MP4s are H.264/yuv420p at 640x480 and 20 FPS with exactly 12,000 frames.
 - The MCAP contains the configured competition streams, physical payload and
   mission evidence, and score evidence.
+- Gazebo native state is stored as an integrity-checked
+  `gazebo/state/state.tlog.zst`; consumers can stream-decompress it without
+  expanding the artifact bundle in place.
 - The manifest binds source revisions, dirty states, image digests,
   configuration, scores, and SHA-256 records for every inventoried artifact.
 - The run-specific Compose project has no remaining containers or networks.
 
 ## Preserved accepted evidence
 
-Run `8c47f8a1-7823-464b-98f3-894dfbc043ac` was executed on an ephemeral Vast
-VM, retrieved to the control server, and accepted at `150/150`. The mission
-returned home and disarmed at about 315.18 simulated seconds, with mission
-completion at about 315.24 seconds and the required evidence tail through
+Run `3dc895c3-a5aa-4651-a893-d21884fa43f5` used the explicit 1x profile on an
+ephemeral Vast VM, was retrieved to the control server, and was independently
+accepted at `150/150`. The mission returned Home and disarmed at 511.122
+simulated seconds, completed at 511.2 seconds, and retained evidence through
 exactly 600 seconds. Its manifest SHA-256 is
-`423820264c6a4d587d9f44f614c241842cec53fa763421b120aa3e778e3857bc`.
+`5b88d1ca377e85b12aabb083bc5f24c66c8724c41248cd1d7a7982b8ab519653`.
+The full bundle is 373,552,227 bytes, including a 251,710,608-byte compressed
+Gazebo state file. The public 600-second interval sustained about 0.272x real
+time, demonstrating correctness at the requested 1x configuration without
+claiming the host achieved that pace.
 
 See [`comp2026-mvp.md`](comp2026-mvp.md) for immutable evidence paths, source
 revisions, the scoring checksum, and checkpoint summary. Run directories are

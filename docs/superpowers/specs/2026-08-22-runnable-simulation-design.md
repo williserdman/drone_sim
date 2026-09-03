@@ -51,7 +51,11 @@ Owns Docker Compose lifecycle, run identity, configuration validation, endpoint 
 
 ### Artifacts
 
-Owns ROS 2 bag recording, onboard and observer MP4 encoding, Gazebo log collection, structured module-log collection, checksums, completeness validation, and final bundle assembly. Gazebo produces camera streams; the artifacts module records and organizes them.
+Owns ROS 2 bag recording, onboard and observer MP4 encoding, compressed Gazebo
+state, structured module-log collection, checksums, completeness validation,
+and final bundle assembly. Gazebo produces camera streams and native state;
+the artifacts module records, validates, and organizes them without duplicating
+raw image payloads in MCAP.
 
 ### Existing simulation modules
 
@@ -92,6 +96,7 @@ runs/<run_id>/
 ├── gazebo/
 │   ├── server.log
 │   └── state/
+│       └── state.tlog.zst
 ├── video/
 │   ├── onboard.mp4
 │   └── observer.mp4
@@ -127,9 +132,24 @@ Gazebo publishes two simulation-time camera streams:
 - onboard: exactly the imagery delivered to companion vision;
 - observer: an external view containing the aircraft and landing area.
 
-Both streams use simulation timestamps and are encoded into MP4 files by the artifacts module. Camera publication represents 20 frames per simulated second regardless of real-time factor.
+Both streams use simulation timestamps and are encoded once into H.264 MP4
+files by the artifacts module. Camera publication represents 20 frames per
+simulated second regardless of real-time factor. These videos are the canonical
+pixel evidence.
 
-Every run also records a ROS 2 bag containing `/clock`, both complete image streams, ground truth, scenario events, score events, and run lifecycle events. Storage usage is measured and reported but does not remove the required image payloads. The outcome is deterministic replay plus both standalone videos.
+Every run also records an MCAP ROS 2 bag containing `/clock`, frame metadata for
+both cameras, ground truth, scenario and score events, run lifecycle events,
+and profile-specific physical evidence. Raw camera images are intentionally
+excluded from MCAP because the MP4 files already preserve their pixels. Frame
+IDs and simulation timestamps in MCAP provide the correlation needed to align
+the videos with physical truth.
+
+Gazebo native replay state is recorded as `gazebo/state/state.tlog`, compressed
+with zstd during finalization, integrity-tested, and published only as
+`state.tlog.zst`. The uncompressed source is removed only after successful
+compression and validation. Viewers may stream-decompress this member while
+leaving the bundle itself compressed; they must not require a second expanded
+copy beside the bundle.
 
 ## Observability
 
@@ -236,9 +256,10 @@ Test each module through its documented interface. Use synthetic ROS 2 publisher
 
 A real end-to-end descent must finish with status `COMPLETED` and validate:
 
-- Gazebo server log and native state;
+- Gazebo server log and integrity-checked `gazebo/state/state.tlog.zst`;
 - playable onboard and observer MP4 files;
-- readable ROS 2 bag with required topics;
+- readable MCAP with required metadata, lifecycle, physical-truth, and scoring
+  topics, without duplicate raw image topics;
 - valid per-module JSONL logs;
 - score events and final result;
 - manifest checksums, source revisions, image digests, timing, and artifact completeness;
@@ -259,11 +280,19 @@ With an eight-thread limit, prefer one coordinator and up to seven workers only 
 - Fast DDS, the ROS 2 Jazzy default middleware, unless container discovery verification demonstrates a concrete defect.
 - Docker Compose for local lifecycle.
 - ROS 2 image transport for cameras.
-- ROS 2 bag recording for replay.
+- MCAP recording for synchronized metadata, lifecycle, physical-truth, and
+  scoring replay; MP4 files retain camera pixels.
 - FFmpeg with H.264/libx264 and `yuv420p` pixel format for portable MP4 output at 20 frames per simulated second.
+- Zstandard level 3 for native Gazebo state, with a full integrity test before
+  atomic publication and deletion of the uncompressed source.
 - JSON Lines for structured logs and score events.
 - JSON for manifests, configuration snapshots where applicable, and final score results.
 - SHA-256 artifact and configuration checksums.
 - Source assets are copied selectively into their owning module; generated legacy outputs are not copied.
 - ROS topic names start with `/simulation/run_state`, `/simulation/ground_truth`, `/simulation/scenario_events`, `/simulation/score_events`, `/camera/onboard/image_raw`, `/camera/observer/image_raw`, and standard `/clock`.
-- `/clock` uses best-effort depth 1; each image stream uses best-effort depth 5; ground truth uses best-effort depth 10; lifecycle state uses reliable, transient-local depth 1; scenario and scoring events use reliable depth 100.
+- `/clock` uses best-effort depth 1; physical video inputs use reliable,
+  volatile depth 100; frame metadata uses reliable, volatile depth 100 for the
+  private recorder; ground truth uses best-effort depth 10; lifecycle state
+  uses reliable, transient-local depth 1; scenario and scoring events use
+  reliable depth 100. Synthetic Phase 2 retains its smaller test-profile
+  depths.
