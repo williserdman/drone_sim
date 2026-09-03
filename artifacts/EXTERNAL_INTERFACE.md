@@ -105,7 +105,7 @@ plus `scoring/events.jsonl` and `scoring/result.json`.
 For a physical profile, the coordinator constructs `ArtifactSession` with
 `physical_gazebo=true`: `gazebo/server.log` must then be nonempty, and
 `gazebo/state/` must be a nonempty safe tree containing a nonempty regular
-`state.tlog`. The default preserves the Phase 2 synthetic-state contract;
+an integrity-checked `state.tlog.zst`. The default preserves the Phase 2 synthetic-state contract;
 placeholders cannot satisfy completed physical-run validation.
 
 Completed Phase 3 provenance contains exactly one source revision named

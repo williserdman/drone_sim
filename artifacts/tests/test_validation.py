@@ -1,6 +1,7 @@
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -25,25 +26,51 @@ def test_validate_nonempty_regular_file_rejects_empty_server_log(tmp_path):
     )
 
 
-def test_validate_gazebo_state_requires_nonempty_native_state_tlog(tmp_path):
+def _write_zstd(path: Path, contents: bytes = b"native gazebo state") -> None:
+    source = path.with_suffix(".source")
+    source.write_bytes(contents)
+    subprocess.run(
+        ("zstd", "-3", "--quiet", "--force", str(source), "-o", str(path)),
+        check=True,
+    )
+    source.unlink()
+
+
+def test_validate_gazebo_state_requires_nonempty_compressed_native_state(tmp_path):
     """An unrelated file must not satisfy the native Gazebo state requirement."""
     state = tmp_path / "gazebo/state"
     state.mkdir(parents=True)
     (state / "metadata.txt").write_text("not native state", encoding="utf-8")
 
     assert validate_gazebo_state(tmp_path, "gazebo/state") == ValidationResult(
-        ValidationStatus.INVALID, None, None, "gazebo state requires nonempty state.tlog"
+        ValidationStatus.INVALID,
+        None,
+        None,
+        "gazebo state requires valid state.tlog.zst",
     )
 
 
-def test_validate_gazebo_state_returns_tree_inventory_for_native_state(tmp_path):
-    """A real state.tlog should retain the canonical whole-tree checksum contract."""
+def test_validate_gazebo_state_returns_tree_inventory_for_compressed_native_state(tmp_path):
+    """A valid state.tlog.zst retains the canonical whole-tree checksum contract."""
     state = tmp_path / "gazebo/state"
     state.mkdir(parents=True)
-    (state / "state.tlog").write_bytes(b"native gazebo state")
+    _write_zstd(state / "state.tlog.zst")
 
     assert validate_gazebo_state(tmp_path, "gazebo/state") == validate_tree(
         tmp_path, "gazebo/state"
+    )
+
+
+def test_validate_gazebo_state_rejects_corrupt_zstd_frame(tmp_path):
+    state = tmp_path / "gazebo/state"
+    state.mkdir(parents=True)
+    (state / "state.tlog.zst").write_bytes(b"not a zstd frame")
+
+    assert validate_gazebo_state(tmp_path, "gazebo/state") == ValidationResult(
+        ValidationStatus.INVALID,
+        None,
+        None,
+        "gazebo state requires valid state.tlog.zst",
     )
 
 

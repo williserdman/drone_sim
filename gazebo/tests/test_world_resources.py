@@ -39,6 +39,7 @@ EXPECTED_RESOURCE_PATHS = (
     "models/payload_4/model.config",
     "models/payload_4/model.sdf",
     "worlds/competition_mission.sdf",
+    "worlds/competition_mission_1x.sdf",
     "worlds/phase3_foundation.sdf",
     "worlds/vertical_descent.sdf",
 )

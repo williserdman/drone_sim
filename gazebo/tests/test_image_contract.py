@@ -25,6 +25,7 @@ DIRECT_PACKAGES = {
     "ros-jazzy-ros-gz-sim": "1.0.22-1noble.20260615.173223",
     "ros-jazzy-gz-sim-vendor": "0.0.10-1noble.20260604.111001",
     "ros-jazzy-sdformat-vendor": "0.0.11-1noble.20260604.104102",
+    "zstd": "1.5.5+dfsg2-2build1.1",
 }
 UPGRADED_BASE_PACKAGES = {
     "bsdutils": "1:2.39.3-9ubuntu6.6",

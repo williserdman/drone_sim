@@ -67,7 +67,20 @@ def _completed_bundle(
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"artifact")
-    (run_directory / "gazebo/state/state.tlog").write_bytes(b"native state")
+    state_source = run_directory / "gazebo/state/state.source"
+    state_source.write_bytes(b"native state")
+    subprocess.run(
+        (
+            "zstd",
+            "-3",
+            "--quiet",
+            str(state_source),
+            "-o",
+            str(run_directory / "gazebo/state/state.tlog.zst"),
+        ),
+        check=True,
+    )
+    state_source.unlink()
     (run_directory / "rosbag/data.mcap").write_bytes(b"mcap")
 
     configuration = {

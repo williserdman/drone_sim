@@ -1738,6 +1738,7 @@ def test_test_image_apt_dependencies_match_recorded_exact_versions():
         "python3-pip-whl": "24.0+dfsg-1ubuntu1.3",
         "python3-setuptools-whl": "68.1.2-2ubuntu1.2",
         "python3-wheel": "0.42.0-2",
+        "zstd": "1.5.5+dfsg2-2build1.1",
         "ros-jazzy-rosbag2": "0.26.11-1noble.20260616.084050",
         "ros-jazzy-rosbag2-storage-mcap": "0.26.11-1noble.20260616.074830",
     }

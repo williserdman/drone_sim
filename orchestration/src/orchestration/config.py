@@ -220,16 +220,17 @@ def _validate_simulation(document: Any) -> SimulationConfig:
         raise ValueError("simulation duration must contain an integral camera frame count")
     target = document["target_real_time_factor"]
     if isinstance(target, bool) or not isinstance(target, (int, float)):
-        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25")
+        raise ValueError("target_real_time_factor must be exactly 0.1, 0.25, or 1.0")
     try:
         target_decimal = Decimal(str(target))
     except InvalidOperation as exc:
-        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25") from exc
+        raise ValueError("target_real_time_factor must be exactly 0.1, 0.25, or 1.0") from exc
     if not target_decimal.is_finite() or target_decimal not in {
         Decimal("0.1"),
         Decimal("0.25"),
+        Decimal("1.0"),
     }:
-        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25")
+        raise ValueError("target_real_time_factor must be exactly 0.1, 0.25, or 1.0")
     public_epoch = document["public_epoch_native_sim_seconds"]
     if isinstance(public_epoch, bool) or not isinstance(public_epoch, (int, float)):
         raise ValueError(

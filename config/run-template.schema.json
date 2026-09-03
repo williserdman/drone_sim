@@ -99,7 +99,7 @@
           "exclusiveMinimum": 0,
           "multipleOf": 0.05
         },
-        "target_real_time_factor": {"enum": [0.1, 0.25]}
+        "target_real_time_factor": {"enum": [0.1, 0.25, 1.0]}
       }
     }
   }

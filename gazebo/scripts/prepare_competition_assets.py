@@ -599,6 +599,9 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
     _add_observer(world)
     world_path = output_root / "worlds/competition_mission.sdf"
     _write_xml(root, world_path)
+    physics.find("real_time_factor").text = "1.0"
+    physics.find("real_time_update_rate").text = "1000"
+    _write_xml(root, output_root / "worlds/competition_mission_1x.sdf")
     return world_path
 
 

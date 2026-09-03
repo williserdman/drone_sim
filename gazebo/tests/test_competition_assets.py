@@ -87,6 +87,20 @@ def test_generated_competition_world_has_exact_course_and_payload_layout(tmp_pat
     assert "set_pose" not in output.read_text(encoding="utf-8").lower()
 
 
+def test_generated_realtime_world_preserves_identity_at_one_x(tmp_path):
+    _prepare_assets(tmp_path)
+    world = ET.parse(
+        tmp_path / "worlds/competition_mission_1x.sdf"
+    ).getroot().find("world")
+
+    assert world is not None
+    assert world.attrib["name"] == "competition_mission"
+    physics = world.find("physics")
+    assert physics.findtext("max_step_size") == "0.001"
+    assert physics.findtext("real_time_factor") == "1.0"
+    assert physics.findtext("real_time_update_rate") == "1000"
+
+
 def test_grounded_payload_bottom_meets_pad_top_without_interpenetration(tmp_path):
     """A center at ground height embeds each payload through its physical pad."""
     world = ET.parse(_prepare_assets(tmp_path)).getroot().find("world")

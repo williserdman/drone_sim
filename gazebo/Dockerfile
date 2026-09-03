@@ -7,6 +7,7 @@ ARG ROS_GZ_INTERFACES_PACKAGE=ros-jazzy-ros-gz-interfaces=1.0.22-1noble.20260615
 ARG ROS_GZ_SIM_PACKAGE=ros-jazzy-ros-gz-sim=1.0.22-1noble.20260615.173223
 ARG GZ_SIM_VENDOR_PACKAGE=ros-jazzy-gz-sim-vendor=0.0.10-1noble.20260604.111001
 ARG SDFORMAT_VENDOR_PACKAGE=ros-jazzy-sdformat-vendor=0.0.11-1noble.20260604.104102
+ARG ZSTD_PACKAGE=zstd=1.5.5+dfsg2-2build1.1
 ARG ARDUPILOT_GAZEBO_COMMIT=082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5
 
 COPY gazebo/harmonic-packages.lock /etc/drone_sim/harmonic-packages.lock
@@ -23,7 +24,8 @@ RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
         "$ROS_GZ_INTERFACES_PACKAGE" \
         "$ROS_GZ_SIM_PACKAGE" \
         "$GZ_SIM_VENDOR_PACKAGE" \
-        "$SDFORMAT_VENDOR_PACKAGE"; do \
+        "$SDFORMAT_VENDOR_PACKAGE" \
+        "$ZSTD_PACKAGE"; do \
         grep --fixed-strings --line-regexp "$direct_package" \
             /etc/drone_sim/harmonic-packages.lock; \
     done \

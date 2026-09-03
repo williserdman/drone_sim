@@ -7,6 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import subprocess
 
 
 _CHUNK_SIZE = 1024 * 1024
@@ -514,13 +515,13 @@ def validate_gazebo_state(
     *,
     deadline_check: DeadlineCheck | None = None,
 ) -> ValidationResult:
-    """Validate the native Gazebo state tree and its required state.tlog payload."""
+    """Validate the native Gazebo state tree and its compressed state payload."""
     tree = validate_tree(run_directory, relative_path, deadline_check=deadline_check)
     if tree.status is not ValidationStatus.VALID:
         return tree
     state = validate_nonempty_regular_file(
         run_directory,
-        Path(relative_path) / "state.tlog",
+        Path(relative_path) / "state.tlog.zst",
         deadline_check=deadline_check,
     )
     if state.status is not ValidationStatus.VALID:
@@ -528,6 +529,28 @@ def validate_gazebo_state(
             ValidationStatus.INVALID,
             None,
             None,
-            "gazebo state requires nonempty state.tlog",
+            "gazebo state requires valid state.tlog.zst",
+        )
+    try:
+        _check_deadline(deadline_check)
+        subprocess.run(
+            (
+                "zstd",
+                "--test",
+                "--quiet",
+                str(Path(run_directory) / relative_path / "state.tlog.zst"),
+            ),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _check_deadline(deadline_check)
+    except (OSError, subprocess.CalledProcessError):
+        return ValidationResult(
+            ValidationStatus.INVALID,
+            None,
+            None,
+            "gazebo state requires valid state.tlog.zst",
         )
     return tree

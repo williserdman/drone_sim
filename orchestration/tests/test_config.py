@@ -22,6 +22,7 @@ from orchestration.config import (
 ROOT = Path(__file__).parents[1]
 CONFIG = (ROOT / "../config").resolve()
 DEFAULT_TEMPLATE = CONFIG / "default-run.json"
+REALTIME_TEMPLATE = CONFIG / "realtime-run.json"
 VERTICAL_DESCENT_TEMPLATE = CONFIG / "vertical-descent-run.json"
 FIXED_RUN_ID = UUID("00000000-0000-4000-8000-000000000222")
 
@@ -230,6 +231,13 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
     assert (written.parent / "scenario.yaml").read_bytes() == (
         CONFIG / "scenario.yaml"
     ).read_bytes()
+
+
+def test_realtime_template_resolves_competition_attempt_at_one_x():
+    config = resolve_run_config(REALTIME_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+
+    assert config.world == "competition_mission"
+    assert config.simulation.target_real_time_factor == 1.0
 
 
 def test_authoritative_competition_sources_have_approved_physical_values():
@@ -484,7 +492,7 @@ def test_runtime_topology_rejects_noncanonical_profile_ownership_pairs(
             "seed": 1,
             "duration_sim_seconds": 2.0,
             "public_epoch_native_sim_seconds": 90.0,
-            "target_real_time_factor": 1.0,
+            "target_real_time_factor": 0.5,
         },
         {
             "seed": True,

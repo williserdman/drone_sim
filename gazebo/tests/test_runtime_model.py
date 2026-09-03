@@ -59,7 +59,7 @@ def _native_summary(
     graceful: bool = True,
 ):
     run = tmp_path / run_id
-    state = run / "gazebo/state/state.tlog"
+    state = run / "gazebo/state/state.tlog.zst"
     log = run / "gazebo/server.log"
     state.parent.mkdir(parents=True, exist_ok=True)
     log.write_bytes(b"log")

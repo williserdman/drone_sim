@@ -291,7 +291,20 @@ def _complete_runtime_outputs(
     if score_mutator is not None:
         score_mutator(run_directory / "scoring/result.json")
     (run_directory / "gazebo/state").mkdir(parents=True, exist_ok=True)
-    (run_directory / "gazebo/state/state.tlog").write_bytes(b"native state")
+    state_source = run_directory / "gazebo/state/state.source"
+    state_source.write_bytes(b"native state")
+    subprocess.run(
+        (
+            "zstd",
+            "-3",
+            "--quiet",
+            str(state_source),
+            "-o",
+            str(run_directory / "gazebo/state/state.tlog.zst"),
+        ),
+        check=True,
+    )
+    state_source.unlink()
     (run_directory / "rosbag").mkdir(parents=True, exist_ok=True)
     (run_directory / "rosbag/metadata.yaml").write_bytes(b"storage_identifier: mcap")
     (run_directory / "rosbag/data.mcap").write_bytes(b"valid synthetic mcap")
@@ -1119,7 +1132,7 @@ def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
 
 def test_phase3_completed_run_requires_native_state_tlog(tmp_path):
     def remove_native_state(run: Path) -> None:
-        (run / "gazebo/state/state.tlog").unlink()
+        (run / "gazebo/state/state.tlog.zst").unlink()
         (run / "gazebo/state/state.json").write_bytes(b"{}")
 
     controller, _trace, _clock, _holder = _controller(
@@ -1162,12 +1175,12 @@ def test_phase3_completed_run_requires_native_state_tlog(tmp_path):
         if record["relative_path"] == "gazebo/state"
     )
     assert state["validation"] == "invalid"
-    assert state["detail"] == "gazebo state requires nonempty state.tlog"
+    assert state["detail"] == "gazebo state requires valid state.tlog.zst"
 
 
 def test_phase2_preserves_synthetic_state_and_score_completion_contract(tmp_path):
     def restore_synthetic_state(run: Path) -> None:
-        (run / "gazebo/state/state.tlog").unlink()
+        (run / "gazebo/state/state.tlog.zst").unlink()
         (run / "gazebo/state/state.json").write_bytes(b"{}")
 
     def restore_synthetic_score(path: Path) -> None:

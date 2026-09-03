@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -30,10 +31,21 @@ def _write(run_dir, relative_path, contents=b"artifact"):
     return path
 
 
+def _write_zstd(path, contents=b"native state"):
+    source = path.with_suffix(".source")
+    source.write_bytes(contents)
+    subprocess.run(
+        ("zstd", "-3", "--quiet", str(source), "-o", str(path)), check=True
+    )
+    source.unlink()
+
+
 def _complete_run_directory(run_dir):
     for relative_path in REQUIRED_ARTIFACT_PATHS:
         if relative_path == "gazebo/state":
-            _write(run_dir, "gazebo/state/state.tlog")
+            state = run_dir / "gazebo/state/state.tlog.zst"
+            state.parent.mkdir(parents=True, exist_ok=True)
+            _write_zstd(state)
         elif relative_path in {"configuration", "rosbag"}:
             _write(run_dir, f"{relative_path}/content.bin")
         else:
@@ -44,7 +56,7 @@ def test_completed_manifest_rejects_nonphysical_gazebo_evidence(tmp_path):
     """Generic nonempty files must not allow a false completed physical bundle."""
     _complete_run_directory(tmp_path)
     (tmp_path / "gazebo/server.log").write_bytes(b"")
-    (tmp_path / "gazebo/state/state.tlog").unlink()
+    (tmp_path / "gazebo/state/state.tlog.zst").unlink()
     _write(tmp_path, "gazebo/state/unrelated.bin")
 
     path = ArtifactSession(tmp_path, physical_gazebo=True).finalize(_finalization_input())
@@ -57,7 +69,7 @@ def test_completed_manifest_rejects_nonphysical_gazebo_evidence(tmp_path):
 def test_default_session_preserves_phase2_synthetic_gazebo_evidence(tmp_path):
     """Native state validation must not retroactively invalidate Phase 2 fixtures."""
     _complete_run_directory(tmp_path)
-    (tmp_path / "gazebo/state/state.tlog").unlink()
+    (tmp_path / "gazebo/state/state.tlog.zst").unlink()
     _write(tmp_path, "gazebo/state/synthetic-state.json")
 
     path = ArtifactSession(tmp_path).finalize(_finalization_input())

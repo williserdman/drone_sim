@@ -136,6 +136,64 @@ SignalProcessGroup = Callable[[int, int], None]
 GetProcessGroup = Callable[[int], int]
 ProcessGroupExists = Callable[[int, int], bool]
 ObserveLeaderExit = Callable[[int], bool]
+StateCompressor = Callable[[Path, Path, float], None]
+
+
+def _compress_state_log(source: Path, destination: Path, timeout: float) -> None:
+    """Publish one checked zstd frame without ever deleting an uncompressed failure."""
+    if timeout <= 0:
+        raise TimeoutError("native state compression deadline expired")
+    partial = destination.with_name(destination.name + ".partial")
+    if destination.exists() or partial.exists():
+        raise FileExistsError("compressed native state output already exists")
+    started = time.monotonic()
+    published = False
+    try:
+        subprocess.run(
+            (
+                "zstd",
+                "-3",
+                "-T0",
+                "--quiet",
+                str(source),
+                "-o",
+                str(partial),
+            ),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+        remaining = timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            raise TimeoutError("native state compression deadline expired")
+        subprocess.run(
+            ("zstd", "--test", "--quiet", str(partial)),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=remaining,
+        )
+        with partial.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.link(partial, destination)
+        published = True
+        partial.unlink()
+        source.unlink()
+        directory_fd = os.open(source.parent, _DIRECTORY_FLAGS)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        if not published:
+            try:
+                partial.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def _observe_leader_exit_without_reap(pid: int) -> bool:
@@ -300,9 +358,9 @@ def _validate_config(config: object) -> SimulationConfig:
         isinstance(config.target_real_time_factor, bool)
         or not isinstance(config.target_real_time_factor, (int, float))
         or not math.isfinite(config.target_real_time_factor)
-        or config.target_real_time_factor not in {0.1, 0.25}
+        or config.target_real_time_factor not in {0.1, 0.25, 1.0}
     ):
-        raise ValueError("target_real_time_factor must be exactly 0.1 or 0.25")
+        raise ValueError("target_real_time_factor must be exactly 0.1, 0.25, or 1.0")
     return config
 
 
@@ -356,7 +414,11 @@ class ServerSpec:
         environment = MappingProxyType(dict(self.environment))
         object.__setattr__(self, "environment", environment)
         flight = bool(self.argv) and self.argv[-1].endswith(
-            ("/vertical_descent.sdf", "/competition_mission.sdf")
+            (
+                "/vertical_descent.sdf",
+                "/competition_mission.sdf",
+                "/competition_mission_1x.sdf",
+            )
         )
         expected_environment_keys = (
             _FLIGHT_ENVIRONMENT_KEYS if flight else _PASSIVE_ENVIRONMENT_KEYS
@@ -416,6 +478,7 @@ class ServerSpec:
                 "phase3_foundation.sdf",
                 "vertical_descent.sdf",
                 "competition_mission.sdf",
+                "competition_mission_1x.sdf",
             }
             or world_path.parent.name != "worlds"
             or world_path.parent.parent != resource_path.parent
@@ -440,7 +503,7 @@ class NativeArtifactSummary:
         if server_log.name != "server.log" or server_log.parent.name != "gazebo":
             raise ValueError("server_log_path must be the canonical Gazebo server log")
         if (
-            state_log.name != "state.tlog"
+            state_log.name != "state.tlog.zst"
             or state_log.parent.name != "state"
             or state_log.parent.parent != server_log.parent
         ):
@@ -468,14 +531,29 @@ def server_spec(
         raise ValueError("run directory name must match run_id")
     resolved_world = _validate_world(resolved_world)
     config = _validate_config(config)
-    expected_factor = (
-        0.25 if resolved_world.world_name == "competition_mission" else 0.1
+    expected_factors = (
+        {0.25, 1.0} if resolved_world.world_name == "competition_mission" else {0.1}
     )
-    if config.target_real_time_factor != expected_factor:
+    if config.target_real_time_factor not in expected_factors:
         raise ValueError(
             f"{resolved_world.world_name} target_real_time_factor must be "
-            f"exactly {expected_factor}"
+            f"one of {sorted(expected_factors)}"
         )
+    world_path = resolved_world.path
+    world_sha256 = resolved_world.world_sha256
+    if (
+        resolved_world.world_name == "competition_mission"
+        and config.target_real_time_factor == 1.0
+    ):
+        world_path = _safe_existing_path(
+            resolved_world.resource_path.parent / "worlds/competition_mission_1x.sdf",
+            field="world path",
+            directory=False,
+        )
+        world_sha256 = dict(resolved_world.resource_sha256s).get(
+            "worlds/competition_mission_1x.sdf", ""
+        )
+        _digest(world_sha256, field="world_sha256")
     gazebo_directory = run_directory / "gazebo"
     state_directory = gazebo_directory / "state"
     environment_values = {
@@ -489,7 +567,7 @@ def server_spec(
     return ServerSpec(
         run_id=canonical_run_id,
         seed=config.seed,
-        world_sha256=resolved_world.world_sha256,
+        world_sha256=world_sha256,
         resource_sha256s=resolved_world.resource_sha256s,
         argv=(
             "gz",
@@ -500,7 +578,7 @@ def server_spec(
             str(config.seed),
             "--record-path",
             str(state_directory),
-            str(resolved_world.path),
+            str(world_path),
         ),
         environment=environment,
         partial_log_path=gazebo_directory / "server.log.partial",
@@ -523,6 +601,7 @@ class GazeboServer:
         process_group_exists: ProcessGroupExists = _linux_process_group_exists,
         observe_leader_exit: ObserveLeaderExit = _observe_leader_exit_without_reap,
         signal_process_group: SignalProcessGroup = os.killpg,
+        state_compressor: StateCompressor = _compress_state_log,
     ) -> None:
         if not isinstance(spec, ServerSpec):
             raise TypeError("spec must be a ServerSpec")
@@ -534,6 +613,7 @@ class GazeboServer:
         self._process_group_exists = process_group_exists
         self._observe_leader_exit = observe_leader_exit
         self._signal_process_group = signal_process_group
+        self._state_compressor = state_compressor
         self._process: _Process | None = None
         self._process_group_id: int | None = None
         self._session_id: int | None = None
@@ -1063,11 +1143,21 @@ class GazeboServer:
             self._verify_owned_directories()
             self._validate_native_state(deadline)
             self._verify_native_state_binding(deadline)
+            compressed_state_path = self.spec.native_state_path.with_name(
+                "state.tlog.zst"
+            )
+            self._check_deadline(deadline, operation="native state compression")
+            self._state_compressor(
+                self.spec.native_state_path,
+                compressed_state_path,
+                self._remaining(deadline),
+            )
+            self._check_deadline(deadline, operation="native state compression")
             self._publish_log(deadline)
             self._close_log_handle_best_effort()
             self._summary = NativeArtifactSummary(
                 self.spec.final_log_path,
-                self.spec.native_state_path,
+                compressed_state_path,
                 returncode,
                 graceful,
             )

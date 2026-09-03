@@ -87,7 +87,7 @@ validation and no-clobber publication. Existing callers may omit both. A work
 timeout marks the current and remaining required records invalid without
 continuing discovery or hashing; requested `ABORTED` is never upgraded.
 For physical profiles, orchestration also passes `physical_gazebo=True`; this
-selects nonempty server-log and native `state/state.tlog` validation. The
+selects nonempty server-log and valid native `state/state.tlog.zst` validation. The
 default remains the Phase 2-compatible generic Gazebo evidence validator.
 `finalize_with_result(...)` returns a frozen `FinalizationResult` containing
 the published path and exact committed run ID, terminal status, and reason.

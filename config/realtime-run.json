@@ -1,0 +1,27 @@
+{
+  "world": "competition_mission",
+  "vehicle": "iris_competition",
+  "mission": "comp2026_auto",
+  "scenario": "competition_v1",
+  "output_root": "runs",
+  "max_wall_seconds": 14400,
+  "startup_wall_seconds": 1800,
+  "finalization_wall_seconds": 900,
+  "recording": {
+    "width_px": 640,
+    "height_px": 480,
+    "fps": 20,
+    "encoding": "rgb8"
+  },
+  "runtime_profile": "phase3",
+  "simulation": {
+    "seed": 2026,
+    "duration_sim_seconds": 600.0,
+    "public_epoch_native_sim_seconds": 90.0,
+    "target_real_time_factor": 1.0
+  },
+  "competition": {
+    "course": "course.yaml",
+    "scenario": "scenario.yaml"
+  }
+}

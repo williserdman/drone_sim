@@ -32,6 +32,9 @@ directory and its exact `state.tlog`, then fsyncs and validates the nonempty
 single-link regular file without releasing either identity. After validation,
 one final no-follow inventory and descriptor-to-canonical-name check detects a
 renamed directory, replacement file, or unexpected sibling before publication.
+It then creates same-directory `state.tlog.zst.partial` output at zstd level 3,
+tests the frame, publishes `state.tlog.zst` through a no-clobber hard link, and
+removes `state.tlog` only after the compressed name exists.
 
 The startup log descriptor remains open through publication. Before linking,
 its device/inode/type must match the named single-link partial. The temporary

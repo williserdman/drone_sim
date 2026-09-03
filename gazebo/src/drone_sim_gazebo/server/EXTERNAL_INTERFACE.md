@@ -28,7 +28,11 @@ each group probe, so a probe that consumes the deadline cannot be followed by
 a sleep, signal, or artifact work. It never uses wall time as simulation time.
 
 The successful native artifact paths are exactly `gazebo/server.log` and
-`gazebo/state/state.tlog` below the current canonical run. The `state`
+`gazebo/state/state.tlog.zst` below the current canonical run. Gazebo first
+writes `state.tlog`; bounded finalization compresses it at zstd level 3,
+checks the frame, atomically publishes the compressed name, and only then
+removes the uncompressed source. A compression failure retains `state.tlog`
+for diagnosis and does not publish a successful summary. The `state`
 record-path is absent at spawn so Gazebo creates that exact path instead of a
 collision-suffixed sibling. Publication descriptor-binds the startup log inode
 and retains descriptors for the native state directory and file through a final
@@ -38,7 +42,7 @@ the deadline immediately before committing by removing the partial name. A
 deadline at that edge leaves both diagnostic names; after the commit, no later
 clock sample or cleanup failure reverses success. The final name is durable;
 the implementation does not claim that absence of the partial name survives a
-crash. Missing, empty, linked, replaced, or unsafe evidence raises
+crash. Missing, empty, linked, replaced, corrupt, or unsafe evidence raises
 `ServerProcessError` and preserves a named diagnostic. Repeated successful stop
 returns the same immutable summary; the first lifecycle failure remains
 authoritative on every later call.

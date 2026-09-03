@@ -73,7 +73,7 @@ class Server:
 def _executor(tmp_path, *, activate_output=lambda: None):
     summary = NativeArtifactSummary(
         tmp_path / RUN_ID / "gazebo/server.log",
-        tmp_path / RUN_ID / "gazebo/state/state.tlog",
+        tmp_path / RUN_ID / "gazebo/state/state.tlog.zst",
         0,
         True,
     )

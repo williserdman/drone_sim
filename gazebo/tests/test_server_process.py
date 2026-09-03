@@ -84,6 +84,8 @@ def _resolved_competition_world(tmp_path: Path) -> ResolvedWorld:
     worlds.mkdir()
     world = worlds / "competition_mission.sdf"
     world.write_text("<sdf version='1.10'/>", encoding="utf-8")
+    realtime_world = worlds / "competition_mission_1x.sdf"
+    realtime_world.write_text("<sdf version='1.10'/>", encoding="utf-8")
     return ResolvedWorld(
         path=world.resolve(),
         world_name="competition_mission",
@@ -93,6 +95,7 @@ def _resolved_competition_world(tmp_path: Path) -> ResolvedWorld:
         resource_sha256s=(
             ("models/iris_competition/model.sdf", MODEL_DIGEST),
             ("worlds/competition_mission.sdf", WORLD_DIGEST),
+            ("worlds/competition_mission_1x.sdf", WORLD_DIGEST),
         ),
     )
 
@@ -206,6 +209,7 @@ def _start(
     sleep=lambda _seconds: None,
     group: FakeProcessGroup | None = None,
     observe_leader_exit=None,
+    state_compressor=None,
 ):
     process = process or FakeProcess()
     factory = PopenFactory(process)
@@ -219,10 +223,16 @@ def _start(
         "signal_process_group": group.signal,
     }
     options["observe_leader_exit"] = observe_leader_exit or process.observe_exit
+    options["state_compressor"] = state_compressor or _fake_state_compressor
     server = GazeboServer(spec, **options)
     server.start()
     spec.native_state_path.parent.mkdir()
     return server, factory, group.signals
+
+
+def _fake_state_compressor(source: Path, destination: Path, _timeout: float) -> None:
+    destination.write_bytes(b"zstd fixture:" + source.read_bytes())
+    source.unlink()
 
 
 def test_server_spec_is_paused_local_partitioned_and_records_native_state(tmp_path: Path):
@@ -330,6 +340,18 @@ def test_competition_server_accepts_quarter_speed_and_loads_physical_plugins(tmp
     assert spec.environment["GZ_SIM_SYSTEM_PLUGIN_PATH"] == (
         "/opt/drone_sim/gazebo/plugins"
     )
+
+
+def test_competition_server_selects_one_x_world_for_realtime_config(tmp_path: Path):
+    spec = server_spec(
+        run_id=RUN_ID,
+        run_directory=_run_directory(tmp_path),
+        resolved_world=_resolved_competition_world(tmp_path),
+        config=SimulationConfig(2026, 600_000_000_000, 1.0),
+    )
+
+    assert spec.argv[-1].endswith("/worlds/competition_mission_1x.sdf")
+    assert spec.world_sha256 == WORLD_DIGEST
 
 
 def test_server_spec_ignores_hostile_ambient_environment(tmp_path: Path, monkeypatch):
@@ -512,7 +534,12 @@ def test_start_leaves_record_path_absent_for_gazebo_to_create(tmp_path: Path):
     assert not spec.native_state_path.parent.exists()
     spec.native_state_path.parent.mkdir()
     spec.native_state_path.write_bytes(b"native")
-    server.stop(20.0)
+    summary = server.stop(20.0)
+
+    assert not spec.native_state_path.exists()
+    subprocess.run(
+        ("zstd", "--test", "--quiet", str(summary.state_log_path)), check=True
+    )
 
 
 def test_start_preamble_is_one_escaped_data_only_json_record(tmp_path: Path):
@@ -606,12 +633,30 @@ def test_stop_gracefully_terminates_group_reaps_and_publishes_native_artifacts(t
     assert process.wait_timeouts == [pytest.approx(10.0)]
     assert summary == NativeArtifactSummary(
         server_log_path=spec.final_log_path,
-        state_log_path=spec.native_state_path,
+        state_log_path=spec.native_state_path.with_name("state.tlog.zst"),
         server_returncode=0,
         graceful=True,
     )
     assert spec.final_log_path.is_file()
     assert not spec.partial_log_path.exists()
+    assert not spec.native_state_path.exists()
+    assert summary.state_log_path.read_bytes() == b"zstd fixture:native state"
+
+
+def test_stop_preserves_native_state_when_compression_fails(tmp_path: Path):
+    spec = _spec(tmp_path)
+
+    def fail_compression(_source: Path, _destination: Path, _timeout: float) -> None:
+        raise OSError("compression failed")
+
+    server, _factory, _signals = _start(spec, state_compressor=fail_compression)
+    spec.native_state_path.write_bytes(b"native state")
+
+    with pytest.raises(ServerProcessError, match="compression failed"):
+        server.stop(20.0)
+
+    assert spec.native_state_path.read_bytes() == b"native state"
+    assert not spec.native_state_path.with_name("state.tlog.zst").exists()
 
 
 def test_stop_of_already_exited_child_never_signals_reused_pid(tmp_path: Path):
@@ -1051,7 +1096,8 @@ def test_successful_no_clobber_commit_is_not_reversed_by_later_deadline(
 
     def expiring_unlink(*args, **kwargs):
         real_unlink(*args, **kwargs)
-        clock["now"] = 20.0
+        if args and args[0] == "server.log.partial":
+            clock["now"] = 20.0
 
     monkeypatch.setattr(process_module.os, "unlink", expiring_unlink)
 
