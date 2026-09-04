@@ -216,6 +216,16 @@ def comp2026_initial_command_timestamp_ns(
     return latest_clock_ns
 
 
+def comp2026_start_gate_poll_required(
+    *,
+    mission_running: bool,
+    command_delivered: bool,
+    failed: bool,
+) -> bool:
+    """Keep dynamic start checks out of the active mission data path."""
+    return mission_running and not command_delivered and not failed
+
+
 def connect_autotune_vehicle(
     factory: Callable[..., Any],
     endpoint: str,
@@ -1087,7 +1097,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             )
 
         while rclpy.ok() and not requested_stop and not finalizing:
-            if mission_running and controller is not None:
+            if controller is not None and comp2026_start_gate_poll_required(
+                mission_running=mission_running,
+                command_delivered=initial_command_delivered,
+                failed=attempt_failure.failed,
+            ):
                 try:
                     refresh_comp2026_start_gate(
                         gate,
