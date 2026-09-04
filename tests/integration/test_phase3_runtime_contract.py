@@ -58,17 +58,30 @@ def _phase3_document(*compose_files: str) -> dict:
 
 def test_gpu_override_is_opt_in_and_reserved_only_for_gazebo() -> None:
     base_services = _phase3_document()["services"]
-    assert all("runtime" not in service for service in base_services.values())
+    assert all(
+        not service.get("deploy", {}).get("resources", {}).get("reservations", {}).get("devices")
+        for service in base_services.values()
+    )
 
     gpu_services = _phase3_document("compose.yaml", "compose.gpu.yaml")["services"]
-    assert gpu_services["gazebo-runtime"]["runtime"] == "nvidia"
-    assert gpu_services["gazebo-runtime"]["environment"]["NVIDIA_VISIBLE_DEVICES"] == "all"
+    gpu_request = gpu_services["gazebo-runtime"]["deploy"]["resources"]["reservations"][
+        "devices"
+    ]
+    assert gpu_request == [
+        {
+            "capabilities": ["gpu"],
+            "count": 1,
+            "driver": "nvidia",
+        }
+    ]
     assert gpu_services["gazebo-runtime"]["environment"]["NVIDIA_DRIVER_CAPABILITIES"] == (
         "compute,graphics,utility"
     )
     for name, service in gpu_services.items():
         if name != "gazebo-runtime":
-            assert "runtime" not in service
+            assert not service.get("deploy", {}).get("resources", {}).get("reservations", {}).get(
+                "devices"
+            )
 
 
 def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_roles() -> None:
