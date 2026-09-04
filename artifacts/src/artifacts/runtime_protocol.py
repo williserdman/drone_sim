@@ -42,6 +42,7 @@ _STATUS_NAMES = frozenset(
         "terminal-notified",
     }
 )
+_INITIAL_COMMAND_WINDOW_NS = 50_000_000
 _FLIGHT_EXCHANGE_KEYS = frozenset(
     {
         "online",
@@ -197,7 +198,8 @@ def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> Non
             set(document)
             == {"run_id", "command", "sim_timestamp_ns", "delivered"}
             and document["command"] == "SET_GUIDED"
-            and document["sim_timestamp_ns"] == 0
+            and _nonnegative_integer(document["sim_timestamp_ns"])
+            and document["sim_timestamp_ns"] <= _INITIAL_COMMAND_WINDOW_NS
             and document["delivered"] is True
         )
     elif name == "runtime-running":

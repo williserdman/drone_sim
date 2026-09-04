@@ -24,6 +24,7 @@ CONFIG = (ROOT / "../config").resolve()
 DEFAULT_TEMPLATE = CONFIG / "default-run.json"
 REALTIME_TEMPLATE = CONFIG / "realtime-run.json"
 VERTICAL_DESCENT_TEMPLATE = CONFIG / "vertical-descent-run.json"
+ROLL_AUTOTUNE_TEMPLATE = CONFIG / "autotune-roll-run.json"
 FIXED_RUN_ID = UUID("00000000-0000-4000-8000-000000000222")
 
 
@@ -267,6 +268,41 @@ def test_explicit_vertical_descent_template_preserves_prior_profile():
         target_real_time_factor=0.1,
     )
     assert resolved.competition is None
+
+
+def test_roll_autotune_template_uses_the_lightweight_flight_world():
+    resolved = resolve_run_config(
+        ROLL_AUTOTUNE_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID
+    )
+
+    assert (resolved.world, resolved.vehicle, resolved.mission, resolved.scenario) == (
+        "vertical_descent",
+        "iris_flight",
+        "autotune_roll",
+        "descent_v1",
+    )
+    assert resolved.recording == RecordingConfig(320, 240, 20, "rgb8")
+    assert resolved.simulation == config_module.SimulationConfig(
+        seed=2026,
+        duration_ns=120_000_000_000,
+        target_real_time_factor=0.1,
+        public_epoch_native_ns=15_000_000_000,
+    )
+    assert resolved.competition is None
+
+
+def test_roll_autotune_template_and_resolved_snapshot_match_public_schemas(
+    tmp_path: Path,
+) -> None:
+    template_document = json.loads(ROLL_AUTOTUNE_TEMPLATE.read_text(encoding="utf-8"))
+    _load_validator("run-template.schema.json").validate(template_document)
+
+    resolved = resolve_run_config(
+        ROLL_AUTOTUNE_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID
+    )
+    resolved_path = write_resolved_config(tmp_path, resolved)
+    resolved_document = json.loads(resolved_path.read_text(encoding="utf-8"))
+    _load_validator("run.schema.json").validate(resolved_document)
 
 
 @pytest.mark.parametrize(

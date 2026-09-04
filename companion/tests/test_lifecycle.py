@@ -3,7 +3,7 @@ from __future__ import annotations
 from io import StringIO
 
 from drone_sim_companion.lifecycle import CompanionLifecycle
-from drone_sim_companion.mission import MissionPhase, MissionState
+from drone_sim_companion.mission import CommandKind, MissionPhase, MissionState
 
 
 class Protocol:
@@ -16,6 +16,42 @@ class Protocol:
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
+
+
+def test_command_delivery_persists_a_skipped_zero_timestamp() -> None:
+    protocol = Protocol()
+    lifecycle = CompanionLifecycle(
+        run_id="00000000-0000-4000-8000-000000000001",
+        protocol=protocol,
+        stream=StringIO(),
+    )
+
+    lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 50_000_000)
+
+    assert protocol.statuses == [
+        (
+            "mission-command-delivered",
+            {
+                "run_id": "00000000-0000-4000-8000-000000000001",
+                "command": "SET_GUIDED",
+                "sim_timestamp_ns": 50_000_000,
+                "delivered": True,
+            },
+        )
+    ]
+
+
+def test_command_delivery_rejects_a_timestamp_after_the_paused_window() -> None:
+    protocol = Protocol()
+    lifecycle = CompanionLifecycle(
+        run_id="00000000-0000-4000-8000-000000000001",
+        protocol=protocol,
+        stream=StringIO(),
+    )
+
+    lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 50_000_001)
+
+    assert protocol.statuses == []
 
 
 def test_lifecycle_persists_transport_readiness_landed_completion_and_silence_boundary() -> None:

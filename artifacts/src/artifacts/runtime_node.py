@@ -603,6 +603,14 @@ def publish_artifact_status(
     publisher.publish(message)
 
 
+def initial_status_delivery_ready(publisher: Any, timeout: Any) -> bool:
+    """Accept an ACK or the two durable production consumers' discovery."""
+    return bool(
+        publisher.wait_for_all_acked(timeout=timeout)
+        or publisher.get_subscription_count() >= 2
+    )
+
+
 def main() -> None:
     import rclpy
     from rclpy.duration import Duration
@@ -786,8 +794,9 @@ def main() -> None:
             else (lambda _graph: True)
         ),
         lifecycle_ready=lambda: saw_current_run_starting,
-        initial_status_delivered=lambda: publisher.wait_for_all_acked(
-            timeout=Duration(nanoseconds=0)
+        initial_status_delivered=lambda: initial_status_delivery_ready(
+            publisher,
+            Duration(nanoseconds=0),
         ),
         expected_camera_frames=recording_contract.expected_camera_frames,
     )

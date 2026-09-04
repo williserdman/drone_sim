@@ -351,6 +351,7 @@ def test_transport_applies_step_and_pause_with_shell_free_world_control():
     [
         ("sim_time {\n  sec: 44\n  nsec: 125000000\n}\npaused: true\n", 44_125_000_000),
         ("sim_time {\n  sec: 44\n}\npaused: false\n", None),
+        ("sim_time {\n  sec: 44\n}\niterations: 44000\n", None),
     ],
 )
 def test_transport_reads_only_confirmed_paused_integer_world_time(output, expected):

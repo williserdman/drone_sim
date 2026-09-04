@@ -171,6 +171,8 @@ def test_competition_runtime_routes_private_topics_to_the_selected_world():
         contact_topic_for_world,
         gazebo_topics_for_world,
         private_publisher_topics_for_world,
+        readiness_publisher_topics_for_world,
+        recorder_topics_for_world,
     )
     from drone_sim_gazebo.runtime.paths import bridge_config_for_world
 
@@ -191,6 +193,13 @@ def test_competition_runtime_routes_private_topics_to_the_selected_world():
     assert inherited not in gazebo_topics_for_world("competition_mission")
     assert inherited not in private_publisher_topics_for_world(
         "competition_mission"
+    )
+    assert readiness_publisher_topics_for_world("competition_mission") == ()
+    assert "/competition/range/downward" not in recorder_topics_for_world(
+        "competition_mission", competition_evidence=False
+    )
+    assert "/competition/range/downward" in recorder_topics_for_world(
+        "competition_mission", competition_evidence=True
     )
 
 

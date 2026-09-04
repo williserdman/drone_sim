@@ -180,14 +180,11 @@ def test_adapter_fault_retains_exact_reason_in_structured_log(monkeypatch):
 
 def test_public_epoch_rendezvous_steps_to_target_then_waits_for_delivery_ack():
     calls = []
+    epoch_reached = False
 
     class Transport:
         def set_paused(self, paused):
             calls.append(("paused", paused))
-
-        def paused_sim_time_ns(self):
-            calls.append(("stats",))
-            return 44_000_000_000
 
         def run_to_sim_time(self, target_ns):
             calls.append(("run_to", target_ns))
@@ -205,26 +202,53 @@ def test_public_epoch_rendezvous_steps_to_target_then_waits_for_delivery_ack():
         protocol=protocol,
         public_epoch_native_ns=90_000_000_000,
         activate_output=lambda: calls.append(("activate",)),
+        prepare_output=lambda: calls.append(("prepare",)),
+        epoch_reached=lambda: epoch_reached,
     )
 
-    rendezvous.begin()
+    rendezvous.start_warmup()
     assert calls == [
-        ("activate",),
-        ("paused", True),
+        ("prepare",),
+        ("run_to", 90_050_000_000),
     ]
-    assert rendezvous.release_if_delivered() is False
-    assert calls[-2:] == [
-        ("stats",),
-        ("run_to", 90_000_000_000),
-    ]
+    rendezvous.begin()
+    assert calls[-1] == ("activate",)
     assert rendezvous.release_if_delivered() is False
     protocol.delivered = True
     assert rendezvous.release_if_delivered() is False
+    epoch_reached = True
+    assert rendezvous.release_if_delivered() is True
     deadline = time.monotonic() + 2.0
-    while not rendezvous.release_if_delivered():
+    while calls.count(("paused", False)) < 2:
         assert time.monotonic() < deadline
         time.sleep(0.01)
-    assert calls[-1] == ("paused", False)
+    assert calls.count(("paused", False)) == 2
+
+
+def test_public_epoch_rendezvous_keeps_run_to_after_rejected_reply():
+    calls = []
+
+    class Transport:
+        def run_to_sim_time(self, target_ns):
+            calls.append(target_ns)
+            raise TransportError(
+                "Gazebo world control rejected request: "
+                "run_to_sim_time { sec: 15 nsec: 50000000 }"
+            )
+
+    rendezvous = PublicEpochRendezvous(
+        transport=Transport(),
+        protocol=object(),
+        public_epoch_native_ns=15_000_000_000,
+        activate_output=lambda: None,
+        prepare_output=lambda: None,
+        epoch_reached=lambda: False,
+    )
+
+    rendezvous.start_warmup()
+    rendezvous.start_warmup()
+
+    assert calls == [15_050_000_000]
 
 
 def test_public_epoch_rendezvous_does_not_block_ros_callback_progress_during_unpause():
@@ -242,7 +266,7 @@ def test_public_epoch_rendezvous_does_not_block_ros_callback_progress_during_unp
 
         def paused_sim_time_ns(self):
             calls.append(("stats",))
-            return 44_000_000_000
+            return 90_000_000_000
 
         def run_to_sim_time(self, target_ns):
             calls.append(("run_to", target_ns))
@@ -257,7 +281,10 @@ def test_public_epoch_rendezvous_does_not_block_ros_callback_progress_during_unp
         protocol=Protocol(),
         public_epoch_native_ns=90_000_000_000,
         activate_output=lambda: calls.append(("activate",)),
+        prepare_output=lambda: calls.append(("prepare",)),
+        epoch_reached=lambda: True,
     )
+    rendezvous.start_warmup()
     rendezvous.begin()
     assert rendezvous.release_if_delivered() is False
 
@@ -278,10 +305,10 @@ def test_public_epoch_rendezvous_does_not_block_ros_callback_progress_during_unp
     while not rendezvous.release_if_delivered():
         assert time.monotonic() < deadline
         time.sleep(0.01)
-    assert calls.count(("paused", False)) == 1
+    assert calls.count(("paused", False)) == 2
 
 
-def test_public_epoch_rendezvous_propagates_asynchronous_unpause_failure_once():
+def test_public_epoch_rendezvous_propagates_unpause_failure_before_epoch():
     unpause_attempted = Event()
 
     class Transport:
@@ -291,7 +318,7 @@ def test_public_epoch_rendezvous_propagates_asynchronous_unpause_failure_once():
                 raise TransportError("unpause control failed")
 
         def paused_sim_time_ns(self):
-            return 44_000_000_000
+            return 90_000_000_000
 
         def run_to_sim_time(self, _target_ns):
             return None
@@ -305,9 +332,11 @@ def test_public_epoch_rendezvous_propagates_asynchronous_unpause_failure_once():
         protocol=Protocol(),
         public_epoch_native_ns=90_000_000_000,
         activate_output=lambda: None,
+        prepare_output=lambda: None,
+        epoch_reached=lambda: False,
     )
+    rendezvous.start_warmup()
     rendezvous.begin()
-    assert rendezvous.release_if_delivered() is False
     assert rendezvous.release_if_delivered() is False
     assert unpause_attempted.wait(0.5)
 
@@ -315,28 +344,74 @@ def test_public_epoch_rendezvous_propagates_asynchronous_unpause_failure_once():
         rendezvous.release_if_delivered()
 
 
-def test_public_epoch_rendezvous_waits_for_confirmed_pause_before_run_to():
+def test_public_epoch_rendezvous_tolerates_rejected_reply_after_epoch_progress():
+    calls = []
+
+    class Transport:
+        def set_paused(self, paused):
+            calls.append(("paused", paused))
+            if len(calls) == 1:
+                raise TransportError("Gazebo world control rejected request: pause: false")
+
+        def run_to_sim_time(self, _target_ns):
+            return None
+
+    class Protocol:
+        def read_status(self, _name):
+            return {"delivered": True}
+
+    rendezvous = PublicEpochRendezvous(
+        transport=Transport(),
+        protocol=Protocol(),
+        public_epoch_native_ns=90_000_000_000,
+        activate_output=lambda: None,
+        prepare_output=lambda: None,
+        epoch_reached=lambda: True,
+    )
+    rendezvous.start_warmup()
+    rendezvous.begin()
+    assert rendezvous.release_if_delivered() is False
+
+    deadline = time.monotonic() + 2.0
+    while not rendezvous.release_if_delivered():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    while len(calls) < 2:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert calls == [("paused", False), ("paused", False)]
+
+
+def test_public_epoch_rendezvous_waits_for_command_delivery():
     calls = []
 
     class Transport:
         def set_paused(self, paused):
             calls.append(("paused", paused))
 
-        def paused_sim_time_ns(self):
-            calls.append(("stats",))
-            return None
-
         def run_to_sim_time(self, target_ns):
             calls.append(("run_to", target_ns))
 
+    class Protocol:
+        def read_status(self, _name):
+            return None
+
     rendezvous = PublicEpochRendezvous(
         transport=Transport(),
-        protocol=object(),
+        protocol=Protocol(),
         public_epoch_native_ns=90_000_000_000,
         activate_output=lambda: calls.append(("activate",)),
+        prepare_output=lambda: calls.append(("prepare",)),
+        epoch_reached=lambda: True,
     )
 
+    rendezvous.start_warmup()
     rendezvous.begin()
     assert rendezvous.release_if_delivered() is False
 
-    assert calls == [("activate",), ("paused", True), ("stats",)]
+    assert calls == [
+        ("prepare",),
+        ("run_to", 90_050_000_000),
+        ("activate",),
+    ]

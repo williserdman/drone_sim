@@ -67,6 +67,40 @@ def private_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
     return (*topics, *competition)
 
 
+def readiness_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
+    """Private ROS publishers available before the world is released.
+
+    Gazebo-to-ROS bridges advertise lazily after their first native message.
+    Flight worlds are paused at startup, so native Gazebo Transport discovery
+    and supervised bridge children establish that side of readiness instead.
+    """
+    world_name = _world(world_name)
+    if world_name in {"vertical_descent", "competition_mission"}:
+        return ()
+    cameras = set(camera_topics_for_world(world_name))
+    return tuple(
+        topic
+        for topic in private_publisher_topics_for_world(world_name)
+        if topic not in cameras
+    )
+
+
+def recorder_topics_for_world(
+    world_name: str, *, competition_evidence: bool
+) -> tuple[str, ...]:
+    _world(world_name)
+    topics = (
+        "/camera/onboard/image_raw",
+        "/camera/onboard/frame_metadata",
+        "/camera/observer/image_raw",
+        "/camera/observer/frame_metadata",
+        "/simulation/ground_truth",
+    )
+    if world_name == "competition_mission" and competition_evidence:
+        return (*topics, "/simulation/payload_state", "/competition/range/downward")
+    return topics
+
+
 def private_command_topics_for_world(world_name: str) -> tuple[str, ...]:
     world_name = _world(world_name)
     if world_name != "competition_mission":

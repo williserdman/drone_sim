@@ -96,6 +96,21 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
         protocol.write_status("runtime-running", changed)
 
 
+def test_mission_command_delivery_accepts_the_paused_startup_window(run_directory):
+    document = {
+        "run_id": RUN_ID,
+        "command": "SET_GUIDED",
+        "sim_timestamp_ns": 50_000_000,
+        "delivered": True,
+    }
+
+    path = RuntimeProtocol(run_directory, RUN_ID).write_status(
+        "mission-command-delivered", document
+    )
+
+    assert json.loads(path.read_text()) == document
+
+
 @pytest.mark.parametrize(
     ("name", "document"),
     [
@@ -105,7 +120,7 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
         ("companion-ready", {"run_id": RUN_ID, "ready": True, "mavlink_endpoint": "tcp://ardupilot-sitl:5760", "mavlink_transport_connected": False}),
         ("mission-ready", {"run_id": RUN_ID, "ready": True, "heartbeat_observed": True, "prearm_checks_healthy": False}),
         ("mission-command-delivered", {"run_id": RUN_ID, "command": "ARM", "sim_timestamp_ns": 0, "delivered": True}),
-        ("mission-command-delivered", {"run_id": RUN_ID, "command": "SET_GUIDED", "sim_timestamp_ns": 1, "delivered": True}),
+        ("mission-command-delivered", {"run_id": RUN_ID, "command": "SET_GUIDED", "sim_timestamp_ns": 50_000_001, "delivered": True}),
         ("runtime-running", {"run_id": RUN_ID, "state": "READY", "sim_timestamp_ns": 0}),
         ("runtime-running", {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": True}),
         ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": -1}),

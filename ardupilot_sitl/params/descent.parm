@@ -2,10 +2,10 @@
 FRAME_CLASS 1
 FRAME_TYPE 1
 AHRS_EKF_TYPE 10
-# Verified competition roll-rate gains retain stable physical takeoff response.
-ATC_RAT_RLL_P 0.0675
-ATC_RAT_RLL_I 0.0675
-ATC_RAT_RLL_D 0.0018
+# Roll-only AutoTune gains promoted from run 881fe09d-08ef-4ca5-8304-fe79c5220e61.
+ATC_RAT_RLL_P 0.0503722
+ATC_RAT_RLL_I 0.0503722
+ATC_RAT_RLL_D 0.000375
 ATC_RAT_PIT_P 0.0675
 ATC_RAT_PIT_I 0.0675
 ATC_RAT_PIT_D 0.0018
@@ -41,3 +41,5 @@ SERIAL0_PROTOCOL 2
 SERIAL0_BAUD 115
 # Passive pre-RUNNING SYS_STATUS keeps pre-arm readiness observable.
 MAV1_EXT_STAT 1
+ATC_ANG_RLL_P 13.1974
+ATC_ACC_R_MAX 2547.76

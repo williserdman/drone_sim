@@ -128,7 +128,19 @@ def test_output_epoch_gate_fails_closed_when_activation_is_late():
         gate.request_activation()
 
 
-def test_output_epoch_gate_fails_closed_when_reliable_clock_skips_target():
+def test_output_epoch_gate_accepts_one_late_sensor_interval_at_the_fixed_epoch():
+    gate = OutputEpochGate(
+        expected_frames=1_200,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS - 1_000_000)
+    gate.request_activation()
+
+    assert gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS + 50_000_000) == 50_000_000
+    assert gate.native_epoch_ns == PUBLIC_EPOCH_NATIVE_NS
+
+
+def test_output_epoch_gate_fails_closed_when_clock_skips_bounded_latch_window():
     gate = OutputEpochGate(
         expected_frames=1_200,
         public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
@@ -137,7 +149,7 @@ def test_output_epoch_gate_fails_closed_when_reliable_clock_skips_target():
     gate.request_activation()
 
     with pytest.raises(AdapterFault, match="skipped configured native epoch"):
-        gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS + 1_000_000)
+        gate.accept_clock(PUBLIC_EPOCH_NATIVE_NS + 51_000_000)
 
 
 def test_output_epoch_gate_drops_epoch_queue_and_rebases_all_later_native_stamps():
@@ -547,13 +559,25 @@ def test_adapter_buffers_one_lookahead_pair_while_prior_pair_awaits_truth():
     assert adapter.complete
 
 
-def test_adapter_rejects_a_third_pair_while_two_pairs_await_truth():
-    adapter = AdapterModel(run_id=RUN_ID, expected_frames=3)
-    accept_pair(adapter, 50_000_000)
-    accept_pair(adapter, 100_000_000)
+def test_adapter_tolerates_one_second_pair_callback_burst():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=20)
+    stamps_ns = tuple(range(50_000_000, 1_050_000_000, 50_000_000))
+    for stamp_ns in stamps_ns:
+        accept_pair(adapter, stamp_ns)
+
+    for stamp_ns in stamps_ns:
+        adapter.accept_ground_truth(native_ground_truth(stamp_ns))
+
+    assert adapter.complete
+
+
+def test_adapter_rejects_a_twenty_first_pair_while_twenty_await_truth():
+    adapter = AdapterModel(run_id=RUN_ID, expected_frames=21)
+    for stamp_ns in range(50_000_000, 1_050_000_000, 50_000_000):
+        accept_pair(adapter, stamp_ns)
 
     with pytest.raises(AdapterFault, match="lookahead"):
-        adapter.accept_frame("onboard", native_image(stamp_ns=150_000_000))
+        adapter.accept_frame("onboard", native_image(stamp_ns=1_050_000_000))
 
 
 def test_ground_truth_maps_world_enu_values_unchanged_once_pair_is_ready():
