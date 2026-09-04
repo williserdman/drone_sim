@@ -77,11 +77,38 @@ def test_gpu_override_is_opt_in_and_reserved_only_for_gazebo() -> None:
     assert gpu_services["gazebo-runtime"]["environment"]["NVIDIA_DRIVER_CAPABILITIES"] == (
         "compute,graphics,utility"
     )
+    assert gpu_services["gazebo-runtime"]["environment"][
+        "__EGL_VENDOR_LIBRARY_FILENAMES"
+    ] == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+    assert [
+        {
+            "source": Path(volume["source"]).relative_to(ROOT).as_posix(),
+            "target": volume["target"],
+            "read_only": volume["read_only"],
+        }
+        for volume in gpu_services["gazebo-runtime"]["volumes"]
+        if volume["target"] == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+    ] == [
+        {
+            "source": "gazebo/config/10_nvidia.json",
+            "target": "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+            "read_only": True,
+        }
+    ]
     for name, service in gpu_services.items():
         if name != "gazebo-runtime":
             assert not service.get("deploy", {}).get("resources", {}).get("reservations", {}).get(
                 "devices"
             )
+
+
+def test_gpu_override_nvidia_egl_descriptor_selects_the_driver_library() -> None:
+    descriptor = json.loads((ROOT / "gazebo/config/10_nvidia.json").read_text())
+
+    assert descriptor == {
+        "file_format_version": "1.0.0",
+        "ICD": {"library_path": "libEGL_nvidia.so.0"},
+    }
 
 
 def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_roles() -> None:

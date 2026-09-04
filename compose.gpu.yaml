@@ -2,6 +2,9 @@ services:
   gazebo-runtime:
     environment:
       NVIDIA_DRIVER_CAPABILITIES: compute,graphics,utility
+      __EGL_VENDOR_LIBRARY_FILENAMES: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+    volumes:
+      - ./gazebo/config/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/10_nvidia.json:ro
     deploy:
       resources:
         reservations:
