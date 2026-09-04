@@ -111,6 +111,9 @@ class ComposeRuntime:
         environment = dict(os.environ if base_environment is None else base_environment)
         for selector in _AMBIENT_COMPOSE_SELECTORS:
             environment.pop(selector, None)
+        overlay = environment.pop("SIM_COMPOSE_OVERLAY", "")
+        if overlay not in {"", "gpu"}:
+            raise ValueError("SIM_COMPOSE_OVERLAY must be empty or 'gpu'")
         self.environment = {
             **environment,
             "COMPOSE_DISABLE_ENV_FILE": "1",
@@ -126,6 +129,11 @@ class ComposeRuntime:
             "compose",
             "--file",
             str(self.project_directory / "compose.yaml"),
+            *(
+                ["--file", str(self.project_directory / "compose.gpu.yaml")]
+                if overlay == "gpu"
+                else []
+            ),
             "--project-directory",
             str(self.project_directory),
             "-p",

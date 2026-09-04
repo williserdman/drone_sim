@@ -102,7 +102,10 @@ transition because it has no durable flight-readiness tuple.
 `.env` loading, removes ambient Compose file/env-file/profile/project
 selectors, and sets `COMPOSE_PROFILES` only from the immutable topology. Docker
 host, TLS, certificate, and context variables remain available for daemon
-connectivity. Health observation runs exact `ps --all --format json` and
+connectivity. The explicit `SIM_COMPOSE_OVERLAY=gpu` selector adds only the
+repository-owned `compose.gpu.yaml`; any other overlay value fails closed and
+the selector is not forwarded to services. Health observation runs exact
+`ps --all --format json` and
 requires the selected seven unique service names to be present and
 running/restarting; missing, extra, duplicate, malformed, exited, or unhealthy
 rows fail closed. No operation reads an ambient topology selector.

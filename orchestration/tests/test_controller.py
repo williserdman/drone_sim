@@ -785,6 +785,54 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
     assert timeout == 9.5
 
 
+def test_compose_runtime_gpu_overlay_uses_only_the_owned_gpu_file(tmp_path):
+    calls = []
+
+    def runner(command, *, env, timeout):
+        calls.append((command, env, timeout))
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    project = tmp_path.resolve()
+    run_directory = (tmp_path / "runs" / RUN_ID).resolve()
+    runtime = ComposeRuntime(
+        project_directory=project,
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_path=run_directory / "configuration/run.json",
+        topology=_topology("phase3"),
+        runner=runner,
+        base_environment={"PATH": "/bin", "SIM_COMPOSE_OVERLAY": "gpu"},
+    )
+
+    runtime.up(timeout=9.5)
+
+    command, environment, _timeout = calls[0]
+    assert command[:7] == [
+        "docker",
+        "compose",
+        "--file",
+        str(project / "compose.yaml"),
+        "--file",
+        str(project / "compose.gpu.yaml"),
+        "--project-directory",
+    ]
+    assert "SIM_COMPOSE_OVERLAY" not in environment
+
+
+def test_compose_runtime_rejects_unknown_overlay(tmp_path):
+    run_directory = (tmp_path / "runs" / RUN_ID).resolve()
+
+    with pytest.raises(ValueError, match="SIM_COMPOSE_OVERLAY"):
+        ComposeRuntime(
+            project_directory=tmp_path.resolve(),
+            run_id=RUN_ID,
+            run_directory=run_directory,
+            config_path=run_directory / "configuration/run.json",
+            topology=_topology("phase3"),
+            base_environment={"SIM_COMPOSE_OVERLAY": "../../hostile.yaml"},
+        )
+
+
 def test_non_phase2_recording_geometry_is_rejected_before_compose_construction(tmp_path):
     template = _template(tmp_path)
     document = json.loads(template.read_text(encoding="utf-8"))
