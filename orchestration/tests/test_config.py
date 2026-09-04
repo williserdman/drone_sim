@@ -239,6 +239,7 @@ def test_realtime_template_resolves_competition_attempt_at_one_x():
 
     assert config.world == "competition_mission"
     assert config.simulation.target_real_time_factor == 1.0
+    assert config.simulation.public_epoch_native_ns == 90_050_000_000
 
 
 def test_authoritative_competition_sources_have_approved_physical_values():
