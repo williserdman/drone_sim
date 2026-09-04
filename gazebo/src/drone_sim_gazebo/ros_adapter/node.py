@@ -8,7 +8,7 @@ import copy
 from dataclasses import dataclass
 
 from .aggregation import AggregationFault, NativeOdometry
-from .epoch import OutputEpochGate
+from .epoch import FRAME_INTERVAL_NS, OutputEpochGate
 from .live import LiveAdapter
 from .model import (
     AdapterFault,
@@ -313,11 +313,14 @@ class GazeboAdapterNode(_node_base()):
         self._publish(queued)
 
     def _publish_clock(self, timestamp_ns: int, message=None) -> None:
-        if (
-            self._last_public_clock_ns is not None
-            and timestamp_ns <= self._last_public_clock_ns
-        ):
-            return
+        if self._last_public_clock_ns is not None:
+            if timestamp_ns <= self._last_public_clock_ns:
+                return
+            if (
+                timestamp_ns // FRAME_INTERVAL_NS
+                <= self._last_public_clock_ns // FRAME_INTERVAL_NS
+            ):
+                return
         if message is None:
             message = self._clock_type()
             _set_stamp(message.clock, timestamp_ns)

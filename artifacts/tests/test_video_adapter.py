@@ -219,6 +219,29 @@ def test_command_is_exact_and_start_is_shell_free(tmp_path):
     assert factory.calls[0][1]["stdin"] is subprocess.PIPE
 
 
+def test_gpu_profile_selects_nvenc_without_changing_the_local_default(
+    tmp_path, monkeypatch
+):
+    class NvencCommandRunner(FakeCommandRunner):
+        def __call__(self, command, **kwargs):
+            if "-encoders" in command:
+                command = tuple(command)
+                self.calls.append((command, kwargs))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    " V..... libx264 H.264\n V....D h264_nvenc NVIDIA NVENC H.264\n",
+                    "",
+                )
+            return super().__call__(command, **kwargs)
+
+    monkeypatch.setenv("SIM_VIDEO_ENCODER", "h264_nvenc")
+    recorder = _recorder(tmp_path, command_runner=NvencCommandRunner())
+
+    codec_index = recorder.command().index("-c:v") + 1
+    assert recorder.command()[codec_index] == "h264_nvenc"
+
+
 def test_competition_geometry_controls_ffmpeg_and_raw_frame_contract(tmp_path):
     factory = FakeProcessFactory()
     recorder = _recorder(

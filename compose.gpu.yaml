@@ -1,4 +1,17 @@
 services:
+  artifacts-runtime:
+    devices:
+      - /dev/nvidia-caps/nvidia-cap2:/dev/nvidia-caps/nvidia-cap2
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      SIM_VIDEO_ENCODER: h264_nvenc
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   gazebo-runtime:
     environment:
       NVIDIA_DRIVER_CAPABILITIES: compute,graphics,utility

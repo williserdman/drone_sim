@@ -687,12 +687,6 @@ def main() -> None:
 
     def paired(stream: str, frame_id: int, timestamp_ns: int) -> None:
         nonlocal last_pair_ack
-        emit_log(
-            "camera_stream_pair_drained",
-            stream=stream,
-            frame_id=frame_id,
-            sim_timestamp_ns=timestamp_ns,
-        )
         paired_frames[stream] = frame_id
         if pair_ack_publisher is None:
             return
@@ -737,18 +731,6 @@ def main() -> None:
             failure=report_failure,
             pair_buffer_limit=recording_contract.expected_camera_frames,
             paired=paired,
-            received=lambda configured_stream, kind, message: emit_log(
-                "camera_message_received",
-                stream=configured_stream,
-                kind=kind,
-                frame_id=(
-                    message.frame_id
-                    if kind == "metadata"
-                    else int(message.header.stamp.sec) * 20
-                    + int(message.header.stamp.nanosec) // 50_000_000
-                    - 1
-                ),
-            ),
         )
 
     video_node = VideoRecorderNode(

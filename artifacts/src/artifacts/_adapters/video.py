@@ -574,6 +574,9 @@ class VideoStreamRecorder:
         self.height_px = height_px
         self.fps = fps
         self.encoding = encoding
+        self.video_encoder = os.environ.get("SIM_VIDEO_ENCODER", "libx264")
+        if self.video_encoder not in {"libx264", "h264_nvenc"}:
+            raise ValueError("SIM_VIDEO_ENCODER must be libx264 or h264_nvenc")
         self.step_bytes = width_px * 3
         self.payload_bytes = width_px * height_px * 3
         self._process_factory = process_factory
@@ -656,7 +659,7 @@ class VideoStreamRecorder:
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size",
             f"{self.width_px}x{self.height_px}", "-framerate", str(self.fps),
-            "-i", "pipe:0", "-an", "-c:v", "libx264",
+            "-i", "pipe:0", "-an", "-c:v", self.video_encoder,
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4",
             f"/proc/self/fd/{descriptor}",
         )
@@ -708,7 +711,11 @@ class VideoStreamRecorder:
             for line in encoders.stdout.splitlines()
             if len(fields := line.split()) >= 2 and len(fields[0]) == 6
         }
-        if encoders.returncode != 0 or "libx264" not in encoder_names or probe.returncode != 0:
+        if (
+            encoders.returncode != 0
+            or self.video_encoder not in encoder_names
+            or probe.returncode != 0
+        ):
             raise RuntimeError("FFmpeg/ffprobe preflight failed")
 
     def _prepare_output(self) -> None:

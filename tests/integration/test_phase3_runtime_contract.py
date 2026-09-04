@@ -56,7 +56,7 @@ def _phase3_document(*compose_files: str) -> dict:
     return json.loads(result.stdout)
 
 
-def test_gpu_override_is_opt_in_and_reserved_only_for_gazebo() -> None:
+def test_gpu_override_is_opt_in_for_rendering_and_video_encoding() -> None:
     base_services = _phase3_document()["services"]
     assert all(
         not service.get("deploy", {}).get("resources", {}).get("reservations", {}).get("devices")
@@ -95,8 +95,31 @@ def test_gpu_override_is_opt_in_and_reserved_only_for_gazebo() -> None:
             "read_only": True,
         }
     ]
+    artifact_gpu_request = gpu_services["artifacts-runtime"]["deploy"]["resources"][
+        "reservations"
+    ]["devices"]
+    assert artifact_gpu_request == [
+        {
+            "capabilities": ["gpu"],
+            "count": 1,
+            "driver": "nvidia",
+        }
+    ]
+    assert gpu_services["artifacts-runtime"]["environment"][
+        "NVIDIA_DRIVER_CAPABILITIES"
+    ] == "compute,video,utility"
+    assert gpu_services["artifacts-runtime"]["environment"][
+        "SIM_VIDEO_ENCODER"
+    ] == "h264_nvenc"
+    assert gpu_services["artifacts-runtime"]["devices"] == [
+        {
+            "source": "/dev/nvidia-caps/nvidia-cap2",
+            "target": "/dev/nvidia-caps/nvidia-cap2",
+            "permissions": "rwm",
+        }
+    ]
     for name, service in gpu_services.items():
-        if name != "gazebo-runtime":
+        if name not in {"gazebo-runtime", "artifacts-runtime"}:
             assert not service.get("deploy", {}).get("resources", {}).get("reservations", {}).get(
                 "devices"
             )

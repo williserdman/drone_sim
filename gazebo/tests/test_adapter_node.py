@@ -504,3 +504,54 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         observer.destroy_node()
         adapter.destroy_node()
         rclpy.shutdown()
+
+
+def test_live_ros_node_publishes_public_clock_at_camera_evidence_cadence():
+    """Native physics clock callbacks must not flood every public ROS process."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from rosgraph_msgs.msg import Clock
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    clocks = []
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=10,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+    )
+    observer = rclpy.create_node("gazebo_adapter_clock_cadence_observer")
+    observer.create_subscription(
+        Clock,
+        "/clock",
+        lambda message: clocks.append(
+            message.clock.sec * 1_000_000_000 + message.clock.nanosec
+        ),
+        QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT),
+    )
+    try:
+        _spin_until(observer, lambda: adapter.count_subscribers("/clock") >= 1)
+        adapter.activate_output()
+        for public_timestamp_ns in (
+            0,
+            1_000_000,
+            49_000_000,
+            50_000_000,
+            51_000_000,
+            99_000_000,
+            100_000_000,
+        ):
+            message = Clock()
+            _set_stamp(
+                message.clock,
+                PUBLIC_EPOCH_NATIVE_NS + public_timestamp_ns,
+            )
+            adapter._accept_clock(message)
+        _spin_until(observer, lambda: len(clocks) >= 3)
+
+        assert clocks == [0, 50_000_000, 100_000_000]
+    finally:
+        observer.destroy_node()
+        adapter.destroy_node()
+        rclpy.shutdown()
