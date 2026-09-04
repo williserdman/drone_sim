@@ -23,7 +23,7 @@ PHASE3_SERVICES = {
 }
 
 
-def _phase3_document() -> dict:
+def _phase3_document(*compose_files: str) -> dict:
     environment = os.environ.copy()
     for name in (
         "SIM_RUN_ID",
@@ -34,8 +34,18 @@ def _phase3_document() -> dict:
         "SIM_SYNTHETIC_QUIESCENCE_DELAY_MS",
     ):
         environment.pop(name, None)
+    file_arguments = [argument for path in compose_files for argument in ("-f", path)]
     result = subprocess.run(
-        ["docker", "compose", "--profile", "phase3", "config", "--format", "json"],
+        [
+            "docker",
+            "compose",
+            *file_arguments,
+            "--profile",
+            "phase3",
+            "config",
+            "--format",
+            "json",
+        ],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -44,6 +54,34 @@ def _phase3_document() -> dict:
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def test_gpu_override_is_opt_in_and_reserved_only_for_gazebo() -> None:
+    base_services = _phase3_document()["services"]
+    assert all(
+        not service.get("deploy", {}).get("resources", {}).get("reservations", {}).get("devices")
+        for service in base_services.values()
+    )
+
+    gpu_services = _phase3_document("compose.yaml", "compose.gpu.yaml")["services"]
+    gpu_request = gpu_services["gazebo-runtime"]["deploy"]["resources"]["reservations"][
+        "devices"
+    ]
+    assert gpu_request == [
+        {
+            "capabilities": ["gpu"],
+            "count": 1,
+            "driver": "nvidia",
+        }
+    ]
+    assert gpu_services["gazebo-runtime"]["environment"]["NVIDIA_DRIVER_CAPABILITIES"] == (
+        "compute,graphics,utility"
+    )
+    for name, service in gpu_services.items():
+        if name != "gazebo-runtime":
+            assert not service.get("deploy", {}).get("resources", {}).get("reservations", {}).get(
+                "devices"
+            )
 
 
 def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_roles() -> None:

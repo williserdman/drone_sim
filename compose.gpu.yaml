@@ -1,0 +1,11 @@
+services:
+  gazebo-runtime:
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,graphics,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
