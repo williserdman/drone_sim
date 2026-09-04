@@ -299,6 +299,34 @@ def test_home_complete_has_a_later_simulation_timestamp_than_disarmed():
     assert disarmed_time < complete_time
 
 
+def test_payload_phases_complete_after_one_physical_evidence_interval():
+    """A phase cannot close before its 20 Hz attach or release fact is observable."""
+    calls = []
+    events = []
+    clock = FakeClock()
+
+    with timebase.configured(clock):
+        run_auto_attempt(
+            tracker=FakeTracker(calls),
+            controller=FakeController(calls),
+            camera=object(),
+            lidar=object(),
+            payloads={marker: FakePayload(marker, calls) for marker in (2, 3, 4)},
+            waypoints=fake_waypoints(),
+            emit=lambda phase, state: events.append((phase, state, clock.now())),
+            mission_functions=FakeMissionFunctions(calls),
+        )
+
+    completion_times = {
+        phase: timestamp
+        for phase, state, timestamp in events
+        if state == "COMPLETE" and phase in {"FM2", "FM3_3", "FM3_4"}
+    }
+    assert completion_times == pytest.approx(
+        {"FM2": 0.05, "FM3_3": 0.1, "FM3_4": 0.15}
+    )
+
+
 def test_auto_attempt_deadline_is_relative_to_nonzero_mission_start():
     """Regression: a 600-second deadline must not be compared to clock epoch zero."""
     calls = []

@@ -9,6 +9,7 @@ from .common_types import GPSCoord
 
 MISSION_DEADLINE_SECONDS = 600.0
 MISSION_ALTITUDE_METERS = 10.0
+PHYSICAL_EVIDENCE_INTERVAL_SECONDS = 0.05
 
 
 def _original_mission_functions():
@@ -39,7 +40,13 @@ def run_auto_attempt(
         if timebase.time() - mission_start_sim_time > MISSION_DEADLINE_SECONDS:
             raise TimeoutError("automatic mission exceeded 600 simulated seconds")
 
-    def run_phase(name: str, action, *, require_true: bool = False) -> None:
+    def run_phase(
+        name: str,
+        action,
+        *,
+        require_true: bool = False,
+        await_physical_evidence: bool = False,
+    ) -> None:
         require_deadline()
         emit(name, "STARTED")
         with timebase._deadline(
@@ -48,6 +55,8 @@ def run_auto_attempt(
             result = action()
         if (require_true and result is not True) or result is False:
             raise RuntimeError(f"{name} failed")
+        if await_physical_evidence:
+            timebase.sleep(PHYSICAL_EVIDENCE_INTERVAL_SECONDS)
         require_deadline()
         emit(name, "COMPLETE")
 
@@ -68,6 +77,7 @@ def run_auto_attempt(
             lidar,
             desired_drop_height_m=int(MISSION_ALTITUDE_METERS),
         ),
+        await_physical_evidence=True,
     )
     run_phase(
         "FM3_3",
@@ -82,6 +92,7 @@ def run_auto_attempt(
             waypoints["F2"],
         ),
         require_true=True,
+        await_physical_evidence=True,
     )
     run_phase(
         "FM3_4",
@@ -96,6 +107,7 @@ def run_auto_attempt(
             waypoints["F2"],
         ),
         require_true=True,
+        await_physical_evidence=True,
     )
 
     require_deadline()
