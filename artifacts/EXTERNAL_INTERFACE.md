@@ -29,6 +29,12 @@ overrides are stored in `artifacts/recording-qos.yaml`. The public
 private recorder requests depth 2 so its cache retains both startup samples
 until rosbag takes them.
 
+The default/local encoder is `libx264`. An explicit GPU deployment may set
+`SIM_VIDEO_ENCODER=h264_nvenc`; the runtime preflights the selected encoder and
+the same validator still requires H.264, `yuv420p`, 20 FPS, configured geometry,
+and the exact completed frame count. Encoder selection therefore changes the
+compute backend, not the recording contract.
+
 The metadata reliability request is scoped to the recorder path. A reliable
 camera publisher remains compatible with later mission consumers that request
 best effort; exact metadata and video acceptance does not rely on a best-effort

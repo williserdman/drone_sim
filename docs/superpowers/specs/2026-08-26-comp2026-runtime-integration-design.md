@@ -306,6 +306,13 @@ passing unit suite, mocked mission, partial route, synthetic score, or merely
 plausible final manifest is insufficient. The integration goal remains incomplete
 until an actual preserved run satisfies every acceptance item.
 
+The portable recording contract is encoder-independent: both streams must be
+H.264, `yuv420p`, 20 FPS, 640x480, and contain the exact public-frame count.
+Local/default execution uses `libx264`; an explicit GPU deployment may use
+`h264_nvenc` only after a real hardware-encode preflight. Native Gazebo and SITL
+clocking remain unchanged when public `/clock` fan-out is bounded to the same
+50 ms evidence cadence.
+
 ## Deferred technical debt
 
 - Restore optional QGC command-driven mission selection.

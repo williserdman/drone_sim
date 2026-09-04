@@ -71,6 +71,13 @@ acknowledgement, make no ACK discovery check, and exert no physics backpressure.
 The same configured count is passed to both video recorders and both final
 video validators.
 
+`VideoStreamRecorder` selects CPU `libx264` unless the deployment explicitly
+sets `SIM_VIDEO_ENCODER=h264_nvenc`. The Vast GPU overlay grants the artifact
+container the normal GPU reservation plus `/dev/nvidia-caps/nvidia-cap2`, which
+is required by nested Docker for NVENC. Startup fails closed if FFmpeg does not
+advertise the selected encoder. Both paths produce the same validated H.264
+artifact contract.
+
 The recorder-local report has exactly three path-keyed records for the two
 videos and bag. A valid record carries the descriptor-stable byte count and
 SHA-256/tree SHA-256 returned by its semantic validator plus a nonempty
