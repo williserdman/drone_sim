@@ -76,6 +76,10 @@ services:
     <<: *runtime-defaults
     profiles: [phase3]
     image: drone-sim-companion-runtime:phase3
+    depends_on:
+      ardupilot-sitl:
+        condition: service_started
+        required: true
     build:
       context: .
       dockerfile: companion/Dockerfile

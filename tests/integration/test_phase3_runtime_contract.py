@@ -90,6 +90,17 @@ def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_rol
     assert not any(name.startswith("synthetic-") for name in document["services"])
 
 
+def test_companion_starts_only_after_ardupilot_container() -> None:
+    companion = _phase3_document()["services"]["companion-runtime"]
+
+    assert companion["depends_on"] == {
+        "ardupilot-sitl": {
+            "condition": "service_started",
+            "required": True,
+        }
+    }
+
+
 def test_phase3_production_images_builds_commands_and_modules_are_exact() -> None:
     services = _phase3_document()["services"]
     expected = {
