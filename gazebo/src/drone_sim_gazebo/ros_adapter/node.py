@@ -128,6 +128,7 @@ class GazeboAdapterNode(_node_base()):
         )
         self._pre_zero_outputs: deque[object] = deque()
         self._last_public_clock_ns: int | None = None
+        self._camera_subscriptions_armed = False
         self._clock_type = Clock
         self._image_type = Image
         self._metadata_type = FrameMetadata
@@ -268,8 +269,25 @@ class GazeboAdapterNode(_node_base()):
             return
         try:
             self._output_epoch.request_activation()
+            self._arm_camera_subscriptions()
         except AdapterFault as error:
             self._fail(error)
+
+    def _arm_camera_subscriptions(self) -> None:
+        if self._camera_subscriptions_armed:
+            return
+        for stream, topic in zip(
+            ("onboard", "observer"),
+            camera_topics_for_world(self._world_name),
+            strict=True,
+        ):
+            self.create_subscription(
+                self._image_type,
+                topic,
+                lambda message, stream=stream: self._accept_image(stream, message),
+                _qos(20, reliable=True),
+            )
+        self._camera_subscriptions_armed = True
 
     def activate_output(self) -> None:
         """Expose public zero only after the lifecycle enters RUNNING."""
@@ -287,17 +305,7 @@ class GazeboAdapterNode(_node_base()):
     def _enable_public_output(self) -> None:
         if self._output_active:
             return
-        for stream, topic in zip(
-            ("onboard", "observer"),
-            camera_topics_for_world(self._world_name),
-            strict=True,
-        ):
-            self.create_subscription(
-                self._image_type,
-                topic,
-                lambda message, stream=stream: self._accept_image(stream, message),
-                _qos(20, reliable=True),
-            )
+        self._arm_camera_subscriptions()
         self._output_active = True
         self._publish_clock(0)
         queued = tuple(self._pre_zero_outputs)

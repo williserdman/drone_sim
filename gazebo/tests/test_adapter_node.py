@@ -142,7 +142,7 @@ def test_live_ros_node_offers_exact_public_topics_qos_and_no_ack_subscription():
         rclpy.shutdown()
 
 
-def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_once():
+def test_competition_node_arms_exact_reliable_camera_sources_before_warmup_once():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")
     from rclpy.qos import ReliabilityPolicy
@@ -172,6 +172,13 @@ def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_o
         ) == 1
 
         adapter.prepare_output_epoch()
+        _spin_until(
+            graph,
+            lambda: all(
+                len(graph.get_subscriptions_info_by_topic(topic)) == 1
+                for topic in (selected, observer)
+            ),
+        )
         warmup_clock = Clock()
         _set_stamp(warmup_clock.clock, PUBLIC_EPOCH_NATIVE_NS - 50_000_000)
         adapter._accept_clock(warmup_clock)
@@ -183,15 +190,15 @@ def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_o
                 for subscription in adapter.subscriptions
                 if subscription.topic_name == topic
             ]
-            assert local == [], topic
-            assert graph.get_subscriptions_info_by_topic(topic) == []
+            assert len(local) == 1, topic
+            assert local[0].qos_profile.reliability is ReliabilityPolicy.RELIABLE
+            assert local[0].qos_profile.depth == 20
+            assert len(graph.get_subscriptions_info_by_topic(topic)) == 1
 
         epoch_clock = Clock()
         _set_stamp(epoch_clock.clock, PUBLIC_EPOCH_NATIVE_NS)
         adapter._accept_clock(epoch_clock)
         assert adapter.public_epoch_reached() is True
-        assert graph.get_subscriptions_info_by_topic(selected) == []
-        assert graph.get_subscriptions_info_by_topic(observer) == []
         adapter.activate_output()
         _spin_until(
             graph,
