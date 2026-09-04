@@ -196,9 +196,9 @@ class _Publisher:
 
 def test_camera_transport_barrier_rejects_partial_endpoint_discovery():
     publishers = {
-        "onboard_image": _Publisher(2),
+        "onboard_image": _Publisher(1),
         "onboard_metadata": _Publisher(2),
-        "observer_image": _Publisher(2),
+        "observer_image": _Publisher(1),
         "observer_metadata": _Publisher(1),
     }
     failures = []

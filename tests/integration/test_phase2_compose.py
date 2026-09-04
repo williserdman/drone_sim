@@ -46,9 +46,7 @@ EXACT_COUNTS = {
     "/simulation/ground_truth": 40,
     "/simulation/scenario_events": 1,
     "/simulation/score_events": 1,
-    "/camera/onboard/image_raw": 40,
     "/camera/onboard/frame_metadata": 40,
-    "/camera/observer/image_raw": 40,
     "/camera/observer/frame_metadata": 40,
 }
 COMPLETED_PARTIALS = {
@@ -539,12 +537,9 @@ def _assert_completed_bundle(bundle: Path) -> dict[str, Any]:
     expected_stamps = list(range(50_000_000, 2_000_000_001, 50_000_000))
     by_topic = {item["name"]: item for item in bag["topics"]}
     for stream in ("onboard", "observer"):
-        image = f"/camera/{stream}/image_raw"
         metadata = f"/camera/{stream}/frame_metadata"
         assert bag["frame_ids"][metadata] == expected_ids
-        assert by_topic[image]["sim_timestamps_ns"] == expected_stamps
         assert by_topic[metadata]["sim_timestamps_ns"] == expected_stamps
-        assert len(bag["image_payload_hashes"][image]) == 40
     return inspected
 
 

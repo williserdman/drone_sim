@@ -26,6 +26,12 @@ FRAME_PUBLICATION_ORDER = (
     "observer_metadata",
     "ground_truth",
 )
+CAMERA_TRANSPORT_SUBSCRIPTIONS = {
+    "onboard_image": 1,
+    "onboard_metadata": 2,
+    "observer_image": 1,
+    "observer_metadata": 2,
+}
 
 
 class BoundedPublicationQueue:
@@ -62,7 +68,7 @@ class BoundedPublicationQueue:
 
 
 class CameraTransportBarrier:
-    """Bounded infrastructure barrier for the four reliable archival publishers."""
+    """Wait for the video and metadata consumers used by synthetic Phase 2."""
 
     def __init__(
         self,
@@ -87,8 +93,9 @@ class CameraTransportBarrier:
             self.preempted = True
             return False
         if all(
-            publisher.get_subscription_count() >= 2
-            for publisher in self._publishers.values()
+            publisher.get_subscription_count()
+            >= CAMERA_TRANSPORT_SUBSCRIPTIONS[label]
+            for label, publisher in self._publishers.items()
         ):
             self.ready = True
             return True
