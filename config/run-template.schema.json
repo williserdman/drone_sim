@@ -37,12 +37,17 @@
       "else": {"not": {"required": ["simulation"]}}
     },
     {
-      "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
-      "then": {
-        "required": ["competition"],
-        "properties": {"recording": {"$ref": "#/$defs/competition_recording"}}
+      "if": {
+        "properties": {
+          "mission": {"const": "comp2026_auto"}
+        }
       },
+      "then": {"properties": {"recording": {"$ref": "#/$defs/competition_recording"}}},
       "else": {"properties": {"recording": {"$ref": "#/$defs/baseline_recording"}}}
+    },
+    {
+      "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
+      "then": {"required": ["competition"]}
     }
   ],
   "$defs": {

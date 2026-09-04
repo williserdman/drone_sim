@@ -166,6 +166,9 @@ class ArtifactSession:
 
     def _optional_paths(self) -> tuple[str, ...]:
         discovered: set[str] = set()
+        autotune_parameters = self.run_directory / "ardupilot_sitl/autotune-roll.parm"
+        if autotune_parameters.exists():
+            discovered.add("ardupilot_sitl/autotune-roll.parm")
         docker_logs = self.run_directory / "logs/docker"
         if docker_logs.exists():
             for directory, directory_names, file_names in os.walk(

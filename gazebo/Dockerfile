@@ -74,6 +74,12 @@ RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f
     && rm -rf /tmp/ardupilot_gazebo
 
 COPY artifacts orchestration gazebo ros_ws/src/simulation_interfaces /opt/drone_sim/source/
+# These cross-package runtime modules must invalidate independently when an
+# isolated worktree changes shared configuration or paused-flight readiness.
+COPY orchestration/src/orchestration/config.py /opt/drone_sim/source/src/orchestration/config.py
+COPY gazebo/src/drone_sim_gazebo/ros_adapter/topics.py /opt/drone_sim/source/src/drone_sim_gazebo/ros_adapter/topics.py
+COPY gazebo/src/drone_sim_gazebo/ros_adapter/node.py /opt/drone_sim/source/src/drone_sim_gazebo/ros_adapter/node.py
+COPY gazebo/src/drone_sim_gazebo/runtime/runtime_node.py /opt/drone_sim/source/src/drone_sim_gazebo/runtime/runtime_node.py
 RUN mkdir -p /opt/drone_sim/gazebo /etc/drone_sim \
     && cp -a /opt/drone_sim/source/resources /opt/drone_sim/gazebo/resources \
     && cp -a /opt/drone_sim/source/provenance /opt/drone_sim/gazebo/provenance \

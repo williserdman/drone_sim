@@ -30,7 +30,8 @@ from .topics import (
     contact_topic_for_world,
     private_command_topics_for_world,
     private_payload_topic,
-    private_publisher_topics_for_world,
+    readiness_publisher_topics_for_world,
+    recorder_topics_for_world,
 )
 
 
@@ -88,6 +89,7 @@ class GazeboAdapterNode(_node_base()):
         world_name: str = "phase3_foundation",
         width_px: int = 320,
         height_px: int = 240,
+        require_competition_recorders: bool | None = None,
         on_completed: Callable[[AdapterSummary], None] | None = None,
         on_fault: Callable[[str], None] | None = None,
     ) -> None:
@@ -101,6 +103,11 @@ class GazeboAdapterNode(_node_base()):
         self._run_id = run_id
         self._world_name = world_name
         self._competition = world_name == "competition_mission"
+        self._require_competition_recorders = (
+            self._competition
+            if require_competition_recorders is None
+            else require_competition_recorders
+        )
         self._expected_frames = expected_frames
         self._contact_topic = contact_topic_for_world(world_name)
         self._live = LiveAdapter(
@@ -114,6 +121,7 @@ class GazeboAdapterNode(_node_base()):
         self._completion_reported = False
         self._faulted = False
         self._output_active = False
+        self._public_output_requested = False
         self._output_epoch = OutputEpochGate(
             expected_frames=expected_frames,
             public_epoch_native_ns=public_epoch_native_ns,
@@ -229,7 +237,7 @@ class GazeboAdapterNode(_node_base()):
         """Return true once every private bridge publisher is visible."""
         publishers_ready = all(
             self.count_publishers(topic) == 1
-            for topic in private_publisher_topics_for_world(self._world_name)
+            for topic in readiness_publisher_topics_for_world(self._world_name)
         )
         commands_ready = all(
             self.count_subscribers(topic) == 1
@@ -239,33 +247,62 @@ class GazeboAdapterNode(_node_base()):
 
     def recorders_ready(self) -> bool:
         """Require at least one archival consumer for every physical sample."""
-        topics = (
-            "/camera/onboard/image_raw",
-            "/camera/onboard/frame_metadata",
-            "/camera/observer/image_raw",
-            "/camera/observer/frame_metadata",
-            "/simulation/ground_truth",
+        topics = recorder_topics_for_world(
+            self._world_name,
+            competition_evidence=self._require_competition_recorders,
         )
-        if self._competition:
-            topics = (
-                *topics,
-                "/simulation/payload_state",
-                "/competition/range/downward",
-            )
         return all(self.count_subscribers(topic) >= 1 for topic in topics)
 
     def freeze_output(self) -> None:
         self._faulted = True
         self._output_active = False
 
-    def activate_output(self) -> None:
-        """Arm output before the configured native public epoch."""
-        if self._faulted or self._output_active or self._completion_reported:
+    def prepare_output_epoch(self) -> None:
+        """Privately arm the epoch gate before warmup reaches its target."""
+        if (
+            self._faulted
+            or self._completion_reported
+            or self._output_epoch.activation_pending
+            or self.public_epoch_reached()
+        ):
             return
         try:
             self._output_epoch.request_activation()
         except AdapterFault as error:
             self._fail(error)
+
+    def activate_output(self) -> None:
+        """Expose public zero only after the lifecycle enters RUNNING."""
+        if self._faulted or self._output_active or self._completion_reported:
+            return
+        self._public_output_requested = True
+        self.prepare_output_epoch()
+        if self.public_epoch_reached():
+            self._enable_public_output()
+
+    def public_epoch_reached(self) -> bool:
+        """Report the epoch latched from the reliable private Gazebo clock."""
+        return self._output_epoch.native_epoch_ns is not None
+
+    def _enable_public_output(self) -> None:
+        if self._output_active:
+            return
+        for stream, topic in zip(
+            ("onboard", "observer"),
+            camera_topics_for_world(self._world_name),
+            strict=True,
+        ):
+            self.create_subscription(
+                self._image_type,
+                topic,
+                lambda message, stream=stream: self._accept_image(stream, message),
+                _qos(20, reliable=True),
+            )
+        self._output_active = True
+        self._publish_clock(0)
+        queued = tuple(self._pre_zero_outputs)
+        self._pre_zero_outputs.clear()
+        self._publish(queued)
 
     def _publish_clock(self, timestamp_ns: int, message=None) -> None:
         if (
@@ -292,25 +329,12 @@ class GazeboAdapterNode(_node_base()):
             timestamp_ns = _nanoseconds(message.clock)
             public_timestamp_ns = self._output_epoch.accept_clock(timestamp_ns)
             if public_timestamp_ns is not None:
-                if public_timestamp_ns == 0 and not self._output_active:
-                    for stream, topic in zip(
-                        ("onboard", "observer"),
-                        camera_topics_for_world(self._world_name),
-                        strict=True,
-                    ):
-                        self.create_subscription(
-                            self._image_type,
-                            topic,
-                            lambda message, stream=stream: self._accept_image(
-                                stream, message
-                            ),
-                            _qos(20, reliable=True),
-                        )
-                    self._output_active = True
-                    self._publish_clock(0)
-                    queued = tuple(self._pre_zero_outputs)
-                    self._pre_zero_outputs.clear()
-                    self._publish(queued)
+                if (
+                    public_timestamp_ns == 0
+                    and not self._output_active
+                    and self._public_output_requested
+                ):
+                    self._enable_public_output()
                 elif self._output_active:
                     self._publish_clock(public_timestamp_ns)
         except (AdapterFault, ValueError, TypeError) as error:

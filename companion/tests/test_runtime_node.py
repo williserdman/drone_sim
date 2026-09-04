@@ -11,6 +11,9 @@ import pytest
 import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.runtime_node import (
     RuntimeConfig,
+    autotune_control_timestamp_ns,
+    comp2026_initial_command_timestamp_ns,
+    connect_autotune_vehicle,
     connect_mavlink,
     quiesce_comp2026_runtime,
 )
@@ -20,6 +23,55 @@ from drone_sim_companion.mission import CommandKind, Telemetry
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() -> None:
+    assert autotune_control_timestamp_ns(
+        mission_running=True, latest_clock_ns=None, first_command_pending=True
+    ) == 0
+    assert autotune_control_timestamp_ns(
+        mission_running=True, latest_clock_ns=None, first_command_pending=False
+    ) is None
+    assert autotune_control_timestamp_ns(
+        mission_running=True, latest_clock_ns=12, first_command_pending=False
+    ) == 12
+    assert autotune_control_timestamp_ns(
+        mission_running=False, latest_clock_ns=12, first_command_pending=True
+    ) is None
+
+
+def test_comp2026_delivers_initial_command_after_public_zero_was_skipped() -> None:
+    assert comp2026_initial_command_timestamp_ns(
+        mission_running=True,
+        latest_clock_ns=2_000_000,
+        mission_ready=True,
+        command_delivered=False,
+        failed=False,
+    ) == 2_000_000
+    assert comp2026_initial_command_timestamp_ns(
+        mission_running=True,
+        latest_clock_ns=50_000_000,
+        mission_ready=True,
+        command_delivered=False,
+        failed=False,
+    ) == 50_000_000
+
+    for overrides in (
+        {"mission_running": False},
+        {"latest_clock_ns": None},
+        {"mission_ready": False},
+        {"command_delivered": True},
+        {"failed": True},
+    ):
+        inputs = {
+            "mission_running": True,
+            "latest_clock_ns": 2_000_000,
+            "mission_ready": True,
+            "command_delivered": False,
+            "failed": False,
+            **overrides,
+        }
+        assert comp2026_initial_command_timestamp_ns(**inputs) is None
 
 
 def write_resolved_config(
@@ -66,6 +118,42 @@ def test_runtime_config_uses_resolved_run_startup_deadline(tmp_path: Path) -> No
     assert config.mission == "controlled_descent"
 
 
+def test_runtime_config_accepts_roll_autotune_without_competition_sources(
+    tmp_path: Path,
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory, mission="autotune_roll")
+
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+
+    assert config.mission == "autotune_roll"
+    assert config.course_path is None
+    assert config.scenario_path is None
+
+
+def test_runtime_config_accepts_roll_hover_without_competition_sources(
+    tmp_path: Path,
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory, mission="hover_roll")
+
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+
+    assert config.mission == "hover_roll"
+
+
 def test_runtime_config_preserves_explicit_startup_timeout_override(tmp_path: Path) -> None:
     run_directory = tmp_path / RUN_ID
     config_path = write_resolved_config(run_directory)
@@ -110,6 +198,39 @@ def test_runtime_selects_original_competition_host_from_resolved_mission(
     assert selected == ["comp2026"]
 
 
+def test_runtime_selects_roll_autotune_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory, mission="autotune_roll")
+    selected: list[str] = []
+    monkeypatch.setattr(
+        runtime_node,
+        "_run_controlled_descent",
+        lambda _config: selected.append("controlled") or 0,
+    )
+    monkeypatch.setattr(
+        runtime_node,
+        "_run_autotune_roll",
+        lambda _config: selected.append("autotune") or 0,
+    )
+    monkeypatch.setattr(
+        runtime_node,
+        "_run_comp2026",
+        lambda _config: selected.append("comp2026") or 0,
+    )
+    monkeypatch.setattr(
+        runtime_node.os,
+        "environ",
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        },
+    )
+
+    assert runtime_node.main() == 0
+    assert selected == ["autotune"]
+
+
 def test_first_heartbeat_ignores_startup_wall_deadline_after_transport_connects() -> None:
     assert (
         runtime_node.first_heartbeat_wall_failure(
@@ -124,6 +245,33 @@ def test_first_heartbeat_ignores_startup_wall_deadline_after_transport_connects(
         wall_now=3600.0,
         overall_wall_deadline=3600.0,
     ) == "MAVLink heartbeat was unavailable before the overall run wall failsafe"
+
+
+def test_autotune_vehicle_connection_requires_run_state_subscription() -> None:
+    calls: list[tuple[str, bool, float]] = []
+
+    def connect(endpoint: str, *, wait_ready: bool, heartbeat_timeout: float) -> object:
+        calls.append((endpoint, wait_ready, heartbeat_timeout))
+        return object()
+
+    with pytest.raises(RuntimeError, match="run-state subscription"):
+        connect_autotune_vehicle(
+            connect,
+            "tcp:ardupilot-sitl:5760",
+            heartbeat_timeout=120.0,
+            run_state_subscription=None,
+        )
+
+    subscription = object()
+    vehicle = connect_autotune_vehicle(
+        connect,
+        "tcp:ardupilot-sitl:5760",
+        heartbeat_timeout=120.0,
+        run_state_subscription=subscription,
+    )
+
+    assert vehicle is not None
+    assert calls == [("tcp:ardupilot-sitl:5760", False, 120.0)]
 
 
 def test_runtime_config_rejects_config_outside_current_run(tmp_path: Path) -> None:

@@ -11,6 +11,9 @@ from artifacts.structured_log import StructuredEvent, write_event
 from .mission import CommandKind, MissionPhase, MissionState
 
 
+INITIAL_COMMAND_WINDOW_NS = 50_000_000
+
+
 class LifecycleProtocol(Protocol):
     def write_status(self, name: str, document: dict[str, object]) -> Any: ...
 
@@ -86,7 +89,10 @@ class CompanionLifecycle:
         self._mission_ready = True
 
     def observe_command_delivery(self, command: CommandKind, timestamp_ns: int) -> None:
-        if command is not CommandKind.SET_GUIDED or timestamp_ns != 0:
+        if (
+            command is not CommandKind.SET_GUIDED
+            or not 0 <= timestamp_ns <= INITIAL_COMMAND_WINDOW_NS
+        ):
             return
         self._protocol.write_status(
             "mission-command-delivered",

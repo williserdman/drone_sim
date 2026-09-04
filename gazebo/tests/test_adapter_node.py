@@ -163,6 +163,7 @@ def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_o
     observer = "/gazebo/private/camera/observer/image"
     inherited = "/gazebo/private/camera/onboard/image"
     try:
+        assert adapter.public_epoch_reached() is False
         assert graph.get_subscriptions_info_by_topic(selected) == []
         assert graph.get_subscriptions_info_by_topic(observer) == []
         assert graph.get_subscriptions_info_by_topic(inherited) == []
@@ -170,10 +171,11 @@ def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_o
             graph.get_publishers_info_by_topic("/camera/onboard/image_raw")
         ) == 1
 
-        adapter.activate_output()
+        adapter.prepare_output_epoch()
         warmup_clock = Clock()
         _set_stamp(warmup_clock.clock, PUBLIC_EPOCH_NATIVE_NS - 50_000_000)
         adapter._accept_clock(warmup_clock)
+        assert adapter.public_epoch_reached() is False
         rclpy.spin_once(graph, timeout_sec=0.1)
         for topic in (selected, observer):
             local = [
@@ -187,6 +189,10 @@ def test_competition_node_creates_exact_reliable_camera_sources_at_public_zero_o
         epoch_clock = Clock()
         _set_stamp(epoch_clock.clock, PUBLIC_EPOCH_NATIVE_NS)
         adapter._accept_clock(epoch_clock)
+        assert adapter.public_epoch_reached() is True
+        assert graph.get_subscriptions_info_by_topic(selected) == []
+        assert graph.get_subscriptions_info_by_topic(observer) == []
+        adapter.activate_output()
         _spin_until(
             graph,
             lambda: all(

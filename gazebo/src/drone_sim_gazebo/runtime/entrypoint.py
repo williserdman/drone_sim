@@ -276,9 +276,11 @@ class GazeboTransport:
         output = result.stdout
         paused = re.search(r"^paused:\s*(true|false)\s*$", output, re.MULTILINE)
         sim_time = re.search(r"sim_time\s*\{(?P<body>.*?)\}", output, re.DOTALL)
-        if paused is None or sim_time is None:
+        if sim_time is None:
             raise TransportError("Gazebo world statistics were malformed")
-        if paused.group(1) != "true":
+        # Gazebo's protobuf text output omits scalar fields at their default;
+        # an absent boolean therefore means paused=false.
+        if paused is None or paused.group(1) != "true":
             return None
         body = sim_time.group("body")
         seconds_match = re.search(r"^\s*sec:\s*(\d+)\s*$", body, re.MULTILINE)
@@ -341,6 +343,7 @@ class ActionExecutor:
         children,
         server,
         activate_output: Callable[[], None],
+        start_warmup: Callable[[], None] | None = None,
         observe: Callable[[object], None] | None = None,
     ) -> None:
         self._run_id = run_id
@@ -350,6 +353,7 @@ class ActionExecutor:
         self._children = children
         self._server = server
         self._activate_output = activate_output
+        self._start_warmup = start_warmup
         self._observe = observe or (lambda _action: None)
 
     def apply(self, actions: tuple[object, ...]) -> tuple[object, ...]:
@@ -361,7 +365,10 @@ class ActionExecutor:
             elif isinstance(action, RequestSteps):
                 self._transport.request_steps(action.count)
             elif isinstance(action, SetPaused):
-                self._transport.set_paused(action.paused)
+                if not action.paused and self._start_warmup is not None:
+                    self._start_warmup()
+                else:
+                    self._transport.set_paused(action.paused)
             elif isinstance(action, ActivateOutput):
                 self._activate_output()
             elif isinstance(action, WriteSourceFinished):

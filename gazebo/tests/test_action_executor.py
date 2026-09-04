@@ -70,7 +70,7 @@ class Server:
         return self.summary
 
 
-def _executor(tmp_path, *, activate_output=lambda: None):
+def _executor(tmp_path, *, activate_output=lambda: None, start_warmup=None):
     summary = NativeArtifactSummary(
         tmp_path / RUN_ID / "gazebo/server.log",
         tmp_path / RUN_ID / "gazebo/state/state.tlog",
@@ -88,6 +88,7 @@ def _executor(tmp_path, *, activate_output=lambda: None):
         children=children,
         server=server,
         activate_output=activate_output,
+        start_warmup=start_warmup,
     )
     return executor, protocol, status, transport, children, server, summary
 
@@ -131,6 +132,20 @@ def test_unpause_does_not_activate_public_output_during_private_warmup(tmp_path)
     executor.apply((SetPaused(False),))
 
     assert ordering == [("pause", False)]
+
+
+def test_flight_warmup_runs_to_public_epoch_instead_of_unbounded_unpause(tmp_path):
+    ordering = []
+    executor, _protocol, _status, transport, *_ = _executor(
+        tmp_path,
+        activate_output=lambda: ordering.append("activate"),
+        start_warmup=lambda: ordering.append("run_to_epoch"),
+    )
+
+    executor.apply((SetPaused(False),))
+
+    assert ordering == ["run_to_epoch"]
+    assert transport.calls == []
 
 
 def test_explicit_activate_output_action_does_not_unpause_a_second_time(tmp_path):

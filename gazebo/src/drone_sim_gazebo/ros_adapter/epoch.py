@@ -8,6 +8,7 @@ from .model import AdapterFault
 
 
 FRAME_INTERVAL_NS = 50_000_000
+EPOCH_LATCH_TOLERANCE_NS = FRAME_INTERVAL_NS
 
 
 def _native_timestamp(value: object) -> int:
@@ -91,11 +92,11 @@ class OutputEpochGate:
             self._latest_native_clock_ns = native
         if not self._activation_requested:
             return None
-        if native > self._target_native_epoch_ns:
+        if native > self._target_native_epoch_ns + EPOCH_LATCH_TOLERANCE_NS:
             raise AdapterFault("reliable native clock skipped configured native epoch")
-        if native == self._target_native_epoch_ns:
+        if native >= self._target_native_epoch_ns:
             self._epoch = PublicEpoch(self._target_native_epoch_ns)
-            return 0
+            return native - self._target_native_epoch_ns
         return None
 
     def accept_camera(self, stream: object, native_timestamp_ns: object) -> int | None:

@@ -378,6 +378,21 @@ def test_inventory_includes_optional_diagnostics_without_treating_them_as_requir
     assert manifest["incomplete_paths"] == ["video/observer.mp4"]
 
 
+def test_inventory_includes_saved_roll_autotune_parameters(tmp_path):
+    _complete_run_directory(tmp_path)
+    _write(
+        tmp_path,
+        "ardupilot_sitl/autotune-roll.parm",
+        b"ATC_RAT_RLL_P 0.04\n",
+    )
+
+    path = ArtifactSession(tmp_path).finalize(_finalization_input())
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    records = {record["relative_path"]: record for record in manifest["artifacts"]}
+
+    assert records["ardupilot_sitl/autotune-roll.parm"]["validation"] == "valid"
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [

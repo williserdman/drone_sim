@@ -48,6 +48,7 @@ _RUN_STATE_NAMES = (
     "FAILED",
     "ABORTED",
 )
+_EPOCH_CLOCK_LOOKAHEAD_NS = 50_000_000
 
 
 def _event(run_id: str, name: str, *, fields=None, sim_timestamp_ns=None) -> None:
@@ -162,17 +163,22 @@ class PublicEpochRendezvous:
         protocol: RuntimeProtocol,
         public_epoch_native_ns: int,
         activate_output,
+        prepare_output,
+        epoch_reached,
     ) -> None:
         self._transport = transport
         self._protocol = protocol
         self._target_ns = public_epoch_native_ns
         self._activate_output = activate_output
+        self._prepare_output = prepare_output
+        self._epoch_reached = epoch_reached
         self._begun = False
         self._run_to_requested = False
         self._released = False
         self._unpause_done = Event()
         self._unpause_error: Exception | None = None
         self._unpause_thread: Thread | None = None
+        self._unpause_attempts_started = 0
 
     def _unpause(self) -> None:
         try:
@@ -182,39 +188,66 @@ class PublicEpochRendezvous:
         finally:
             self._unpause_done.set()
 
+    def _start_unpause(self) -> None:
+        self._unpause_done = Event()
+        self._unpause_error = None
+        self._unpause_thread = Thread(
+            target=self._unpause,
+            name=f"gazebo-public-epoch-unpause-{self._unpause_attempts_started + 1}",
+            daemon=True,
+        )
+        self._unpause_attempts_started += 1
+        self._unpause_thread.start()
+
     def begin(self) -> None:
         if self._begun:
             return
         self._activate_output()
-        self._transport.set_paused(True)
         self._begun = True
+
+    def start_warmup(self) -> None:
+        """Advance private simulation to the epoch and let Gazebo pause there."""
+        if self._run_to_requested:
+            return
+        self._prepare_output()
+        # Gazebo may stop before its terminal clock sample crosses the ROS bridge.
+        # Stay well inside the 50 ms camera grid while making the epoch observable.
+        try:
+            self._transport.run_to_sim_time(
+                self._target_ns + _EPOCH_CLOCK_LOOKAHEAD_NS
+            )
+        except TransportError:
+            # Gazebo may execute a long run-to request but reject or omit the
+            # service reply under load.  The adapter's independently observed
+            # native clock remains the authority for whether the epoch was hit.
+            pass
+        self._run_to_requested = True
 
     def release_if_delivered(self) -> bool:
         if not self._begun or self._released:
             return False
         if not self._run_to_requested:
-            paused_ns = self._transport.paused_sim_time_ns()
-            if paused_ns is None:
-                return False
-            if paused_ns >= self._target_ns:
-                raise TransportError("world paused at or after the public epoch")
-            self._transport.run_to_sim_time(self._target_ns)
-            self._run_to_requested = True
             return False
         if self._protocol.read_status("mission-command-delivered") is None:
             return False
-        if self._unpause_thread is None:
-            self._unpause_thread = Thread(
-                target=self._unpause,
-                name="gazebo-public-epoch-unpause",
-                daemon=True,
-            )
-            self._unpause_thread.start()
+        if self._unpause_attempts_started == 0:
+            self._start_unpause()
             return False
         if not self._unpause_done.is_set():
             return False
-        if self._unpause_error is not None:
+        epoch_reached = self._epoch_reached()
+        if self._unpause_error is not None and not epoch_reached:
             raise self._unpause_error
+        if self._unpause_attempts_started == 1:
+            if not epoch_reached:
+                return False
+            # Gazebo can apply world control but fail to answer its service call
+            # under load.  Reaching the epoch proves the first request took
+            # effect.  The scheduled run-to pauses there, so issue the final
+            # unpause and release without waiting for another unreliable reply.
+            self._start_unpause()
+            self._released = True
+            return True
         self._released = True
         return True
 
@@ -271,6 +304,7 @@ def main() -> int:
         world_name=resolved.world_name,
         width_px=config.recording.width_px,
         height_px=config.recording.height_px,
+        require_competition_recorders=config.scenario == "competition_v1",
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
         on_fault=lambda reason: _record_adapter_fault(run_id, inbox, reason),
     )
@@ -293,6 +327,8 @@ def main() -> int:
             protocol=protocol,
             public_epoch_native_ns=config.simulation.public_epoch_native_ns,
             activate_output=adapter.activate_output,
+            prepare_output=adapter.prepare_output_epoch,
+            epoch_reached=adapter.public_epoch_reached,
         )
         if resolved.world_name in {"vertical_descent", "competition_mission"}
         else None
@@ -308,6 +344,11 @@ def main() -> int:
             epoch_rendezvous.begin
             if epoch_rendezvous is not None
             else adapter.activate_output
+        ),
+        start_warmup=(
+            epoch_rendezvous.start_warmup
+            if epoch_rendezvous is not None
+            else None
         ),
         observe=lambda action: _event(
             run_id, "runtime_action", fields={"action": type(action).__name__}

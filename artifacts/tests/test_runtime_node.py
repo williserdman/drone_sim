@@ -14,6 +14,15 @@ from artifacts.validation import ValidationStatus
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 
 
+def test_initial_status_delivery_accepts_two_reliable_discovered_consumers():
+    publisher = SimpleNamespace(
+        wait_for_all_acked=lambda **_kwargs: False,
+        get_subscription_count=lambda: 2,
+    )
+
+    assert runtime_node.initial_status_delivery_ready(publisher, object()) is True
+
+
 @pytest.mark.parametrize(
     ("physical_run", "expected_depth", "geometry"),
     [(True, 100, (640, 480)), (False, 5, (320, 240))],

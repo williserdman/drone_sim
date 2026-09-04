@@ -183,7 +183,11 @@ def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
         or (width, height) not in {(320, 240), (640, 480)}
     ):
         raise ValueError("recording dimensions must be 320x240 or 640x480")
-    required_dimensions = (640, 480) if mission == "comp2026_auto" else (320, 240)
+    required_dimensions = (
+        (640, 480)
+        if mission == "comp2026_auto"
+        else (320, 240)
+    )
     if (width, height) != required_dimensions:
         raise ValueError(
             f"{mission} recording dimensions must be exactly "

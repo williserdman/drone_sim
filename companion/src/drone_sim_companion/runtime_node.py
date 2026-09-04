@@ -20,6 +20,12 @@ from uuid import UUID
 
 from artifacts.runtime_protocol import RuntimeProtocol
 
+from .autotune import Observation as AutoTuneObservation
+from .autotune import Phase as AutoTunePhase
+from .autotune import RollAutoTuneDriver
+from .hover import Observation as HoverObservation
+from .hover import Phase as HoverPhase
+from .hover import RollHoverDriver
 from .controller import MissionController, mission_policy_active, process_telemetry
 from .lifecycle import CompanionLifecycle
 from .mavlink_adapter import MavlinkAdapter
@@ -102,7 +108,12 @@ class RuntimeConfig:
         ):
             raise ValueError("finalization_wall_seconds must be a positive integer")
         mission = document.get("mission")
-        if mission not in {"controlled_descent", "comp2026_auto"}:
+        if mission not in {
+            "controlled_descent",
+            "comp2026_auto",
+            "autotune_roll",
+            "hover_roll",
+        }:
             raise ValueError("resolved mission must select an approved companion host")
         course_path: Path | None = None
         scenario_path: Path | None = None
@@ -169,6 +180,57 @@ def first_heartbeat_wall_failure(
     if heartbeat_observed or wall_now < overall_wall_deadline:
         return None
     return "MAVLink heartbeat was unavailable before the overall run wall failsafe"
+
+
+def autotune_control_timestamp_ns(
+    *,
+    mission_running: bool,
+    latest_clock_ns: int | None,
+    first_command_pending: bool,
+) -> int | None:
+    """Permit the first control write at public zero while physics is paused."""
+    if not mission_running:
+        return None
+    if latest_clock_ns is not None:
+        return latest_clock_ns
+    return 0 if first_command_pending else None
+
+
+def comp2026_initial_command_timestamp_ns(
+    *,
+    mission_running: bool,
+    latest_clock_ns: int | None,
+    mission_ready: bool,
+    command_delivered: bool,
+    failed: bool,
+) -> int | None:
+    """Latch the first available public instant for the startup handshake."""
+    if (
+        not mission_running
+        or latest_clock_ns is None
+        or not mission_ready
+        or command_delivered
+        or failed
+    ):
+        return None
+    return latest_clock_ns
+
+
+def connect_autotune_vehicle(
+    factory: Callable[..., Any],
+    endpoint: str,
+    *,
+    heartbeat_timeout: float,
+    run_state_subscription: Any,
+) -> Any:
+    """Connect only after ROS can receive the READY state that starts simulation."""
+    if run_state_subscription is None:
+        raise RuntimeError("AutoTune requires a run-state subscription before connecting")
+    return factory(
+        endpoint,
+        wait_ready=False,
+        heartbeat_timeout=heartbeat_timeout,
+    )
 
 
 class _ProductionProtocol:
@@ -463,6 +525,247 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
         connection.close()
         protocol.close()
         rclpy.shutdown()
+    return exit_code
+
+
+def _run_autotune_roll(config: RuntimeConfig) -> int:
+    """Run roll-only AutoTune or its short post-promotion hover check."""
+
+    protocol = _ProductionProtocol(config)
+    lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
+    lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
+    _enable_dronekit_python312_compatibility()
+
+    import rclpy
+    from dronekit import VehicleMode, connect
+    from rclpy.node import Node
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from rosgraph_msgs.msg import Clock
+    from simulation_interfaces.msg import RunState
+
+    started = time.monotonic()
+    overall_wall_deadline = started + config.max_wall_seconds
+    rclpy.init()
+    node = Node("drone_sim_companion")
+    latest_clock_ns: int | None = None
+    mission_running = False
+    finalizing = False
+    requested_stop = False
+    command_delivered = False
+    failure: str | None = None
+    last_override_refresh = 0.0
+
+    def stop(_signum: int, _frame: Any) -> None:
+        nonlocal requested_stop
+        requested_stop = True
+
+    def clock_callback(message: Any) -> None:
+        nonlocal latest_clock_ns, failure
+        if not mission_running:
+            return
+        value = stamp_ns(message.clock)
+        if latest_clock_ns is not None and value < latest_clock_ns:
+            failure = "authoritative simulation clock regressed"
+            return
+        latest_clock_ns = value
+
+    def state_callback(message: Any) -> None:
+        nonlocal finalizing, mission_running
+        if message.run_id != config.run_id:
+            return
+        if message.state == RunState.RUNNING:
+            mission_running = True
+        elif message.state == RunState.FINALIZING:
+            finalizing = True
+
+    node.create_subscription(
+        Clock,
+        "/clock",
+        clock_callback,
+        QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE),
+    )
+    run_state_subscription = node.create_subscription(
+        RunState,
+        "/simulation/run_state",
+        state_callback,
+        QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        ),
+    )
+    try:
+        vehicle = connect_autotune_vehicle(
+            connect,
+            config.mavlink_endpoint,
+            heartbeat_timeout=config.startup_timeout_seconds,
+            run_state_subscription=run_state_subscription,
+        )
+    except Exception as error:
+        reason = f"DroneKit connection failed: {error}"
+        lifecycle.observe_terminal(
+            MissionState(MissionPhase.FAILED, last_timestamp_ns=0, failure_reason=reason)
+        )
+        lifecycle.finalize(None)
+        node.destroy_node()
+        rclpy.shutdown()
+        protocol.close()
+        return 1
+
+    lifecycle.mark_transport_ready()
+    hover_only = config.mission == "hover_roll"
+    driver = (RollHoverDriver if hover_only else RollAutoTuneDriver)(
+        vehicle,
+        run_directory=config.run_directory,
+        run_id=config.run_id,
+        mode_factory=VehicleMode,
+    )
+    status_texts: collections.deque[str] = collections.deque()
+    status_lock = threading.Lock()
+
+    def status_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        text = getattr(message, "text", "")
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", errors="replace")
+        normalized = str(text).rstrip("\x00").strip()
+        if normalized:
+            with status_lock:
+                status_texts.append(normalized)
+
+    vehicle.add_message_listener("STATUSTEXT", status_callback)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    exit_code = 0
+    try:
+        while rclpy.ok() and not requested_stop and not finalizing:
+            rclpy.spin_once(node, timeout_sec=0.02)
+            heartbeat = (
+                isinstance(getattr(vehicle, "last_heartbeat", None), (int, float))
+                and not isinstance(vehicle.last_heartbeat, bool)
+                and math.isfinite(vehicle.last_heartbeat)
+                and 0.0 <= vehicle.last_heartbeat <= 60.0
+            )
+            armable = getattr(vehicle, "is_armable", False) is True
+            lifecycle.observe_mission_readiness(
+                heartbeat_observed=heartbeat,
+                prearm_checks_healthy=armable,
+            )
+
+            control_timestamp_ns = autotune_control_timestamp_ns(
+                mission_running=mission_running,
+                latest_clock_ns=latest_clock_ns,
+                first_command_pending=driver.state.phase
+                is (HoverPhase.WAIT_READY if hover_only else AutoTunePhase.WAIT_READY),
+            )
+            if control_timestamp_ns is not None and failure is None:
+                with status_lock:
+                    status_text = status_texts.popleft() if status_texts else None
+                mode_value = getattr(vehicle, "mode", None)
+                mode = getattr(mode_value, "name", str(mode_value))
+                armed = getattr(vehicle, "armed", None)
+                altitude = getattr(
+                    getattr(getattr(vehicle, "location", None), "global_relative_frame", None),
+                    "alt",
+                    None,
+                )
+                landed = (
+                    armed is False
+                    and isinstance(altitude, (int, float))
+                    and math.isfinite(altitude)
+                    and altitude <= 0.3
+                )
+                try:
+                    previous_phase = driver.state.phase
+                    observation_type = HoverObservation if hover_only else AutoTuneObservation
+                    transition = driver.observe(
+                        observation_type(
+                            control_timestamp_ns,
+                            heartbeat=heartbeat,
+                            prearm_checks_healthy=armable,
+                            mode=mode,
+                            armed=armed,
+                            landed=landed,
+                            relative_altitude_m=altitude,
+                            status_text=status_text,
+                        )
+                    )
+                    if transition.state.phase is not previous_phase:
+                        lifecycle.emit(
+                            "hover_phase" if hover_only else "autotune_phase",
+                            control_timestamp_ns,
+                            {"phase": transition.state.phase.value},
+                        )
+                    if status_text is not None:
+                        lifecycle.emit(
+                            "ardupilot_status_text",
+                            control_timestamp_ns,
+                            {"text": status_text},
+                        )
+                    if previous_phase is (
+                        HoverPhase.WAIT_READY if hover_only else AutoTunePhase.WAIT_READY
+                    ) and not command_delivered:
+                        lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 0)
+                        command_delivered = True
+                except Exception as error:
+                    mission_name = "roll hover" if hover_only else "roll AutoTune"
+                    failure = f"{mission_name} control failed: {error}"
+
+                wall_now = time.monotonic()
+                if failure is None and wall_now - last_override_refresh >= 0.5:
+                    try:
+                        driver.refresh_override()
+                    except Exception as error:
+                        mission_name = "roll hover" if hover_only else "roll AutoTune"
+                        failure = f"{mission_name} RC override failed: {error}"
+                    last_override_refresh = wall_now
+
+                complete_phase = HoverPhase.COMPLETE if hover_only else AutoTunePhase.COMPLETE
+                failed_phase = HoverPhase.FAILED if hover_only else AutoTunePhase.FAILED
+                if driver.state.phase is complete_phase:
+                    lifecycle.observe_terminal(
+                        MissionState(MissionPhase.LANDED, last_timestamp_ns=latest_clock_ns)
+                    )
+                elif driver.state.phase is failed_phase:
+                    failure = driver.state.failure_reason
+
+            if failure is not None:
+                lifecycle.observe_terminal(
+                    MissionState(
+                        MissionPhase.FAILED,
+                        last_timestamp_ns=latest_clock_ns or 0,
+                        failure_reason=failure,
+                    )
+                )
+                exit_code = 1
+                break
+            heartbeat_failure = first_heartbeat_wall_failure(
+                heartbeat_observed=heartbeat,
+                wall_now=time.monotonic(),
+                overall_wall_deadline=overall_wall_deadline,
+            )
+            if heartbeat_failure is not None:
+                failure = heartbeat_failure
+                lifecycle.observe_terminal(
+                    MissionState(
+                        MissionPhase.FAILED,
+                        last_timestamp_ns=latest_clock_ns or 0,
+                        failure_reason=failure,
+                    )
+                )
+                exit_code = 1
+                break
+            if protocol.read_finalize_request() is not None:
+                finalizing = True
+    finally:
+        try:
+            vehicle.channels.overrides = {}
+            vehicle.remove_message_listener("STATUSTEXT", status_callback)
+            vehicle.close()
+        finally:
+            lifecycle.finalize(latest_clock_ns)
+            node.destroy_node()
+            protocol.close()
+            rclpy.shutdown()
     return exit_code
 
 
@@ -805,14 +1108,18 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         readiness,
                     )
                     last_start_readiness = readiness
-                if (
-                    clock.timestamp_ns == 0
-                    and not initial_command_delivered
-                    and gate.mission_ready
-                    and not attempt_failure.failed
-                ):
+                initial_command_timestamp_ns = comp2026_initial_command_timestamp_ns(
+                    mission_running=mission_running,
+                    latest_clock_ns=clock.timestamp_ns,
+                    mission_ready=gate.mission_ready,
+                    command_delivered=initial_command_delivered,
+                    failed=attempt_failure.failed,
+                )
+                if initial_command_timestamp_ns is not None:
                     controller.vehicle.mode = VehicleMode("GUIDED")
-                    lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 0)
+                    lifecycle.observe_command_delivery(
+                        CommandKind.SET_GUIDED, initial_command_timestamp_ns
+                    )
                     initial_command_delivered = True
             if attempt_failure.failed and (
                 mission_worker is None or not mission_worker.is_alive()
@@ -855,6 +1162,8 @@ def main() -> int:
     config = RuntimeConfig.from_environment(os.environ)
     if config.mission == "controlled_descent":
         return _run_controlled_descent(config)
+    if config.mission in {"autotune_roll", "hover_roll"}:
+        return _run_autotune_roll(config)
     return _run_comp2026(config)
 
 

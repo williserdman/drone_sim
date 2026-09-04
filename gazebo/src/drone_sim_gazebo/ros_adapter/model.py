@@ -12,6 +12,7 @@ _STREAMS = ("onboard", "observer")
 _FRAME_INTERVAL_NS = 50_000_000
 _ENCODING = "rgb8"
 _UNMATCHED_FRAME_CAPACITY = 20
+_PENDING_PAIR_CAPACITY = 20
 _APPROVED_IMAGE_GEOMETRIES = {(320, 240), (640, 480)}
 
 
@@ -388,7 +389,7 @@ class AdapterModel:
 
     def _accept_frame(self, stream: str, sample: NativeImage) -> PublicFrame:
         stream = _validate_stream(stream)
-        if len(self._pending_pairs) == 2:
+        if len(self._pending_pairs) == _PENDING_PAIR_CAPACITY:
             raise AdapterFault("camera-pair lookahead buffer is full")
         frames = self._unmatched_frames[stream]
         if len(frames) == _UNMATCHED_FRAME_CAPACITY:
