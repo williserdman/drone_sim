@@ -74,25 +74,25 @@ def test_comp2026_delivers_initial_command_after_public_zero_was_skipped() -> No
         assert comp2026_initial_command_timestamp_ns(**inputs) is None
 
 
-def test_comp2026_stops_polling_start_inputs_after_command_delivery() -> None:
+def test_comp2026_polls_start_inputs_until_complete_gate_is_ready() -> None:
     assert runtime_node.comp2026_start_gate_poll_required(
         mission_running=True,
-        command_delivered=False,
+        mission_start_ready=False,
         failed=False,
     )
     assert not runtime_node.comp2026_start_gate_poll_required(
         mission_running=True,
-        command_delivered=True,
+        mission_start_ready=True,
         failed=False,
     )
     assert not runtime_node.comp2026_start_gate_poll_required(
         mission_running=True,
-        command_delivered=False,
+        mission_start_ready=False,
         failed=True,
     )
     assert not runtime_node.comp2026_start_gate_poll_required(
         mission_running=False,
-        command_delivered=False,
+        mission_start_ready=False,
         failed=False,
     )
 
