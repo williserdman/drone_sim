@@ -324,9 +324,6 @@ def write_json_object_at(
                 raise OSError("protocol write made no progress")
             written += count
         os.fsync(descriptor)
-        descriptor_to_close = descriptor
-        descriptor = None
-        os.close(descriptor_to_close)
         if not _temporary_path_matches(
             directory_fd,
             temporary,
@@ -396,14 +393,6 @@ def write_json_object_at(
                             ),
                         )
                     )
-        if descriptor is not None:
-            descriptor_to_close = descriptor
-            descriptor = None
-            _attempt_cleanup(
-                cleanup_failures,
-                "close write descriptor",
-                lambda: os.close(descriptor_to_close),
-            )
         if remove_temporary:
             try:
                 remove_temporary = _temporary_path_matches(
@@ -434,6 +423,14 @@ def write_json_object_at(
                         ),
                     )
                 )
+        if descriptor is not None:
+            descriptor_to_close = descriptor
+            descriptor = None
+            _attempt_cleanup(
+                cleanup_failures,
+                "close write descriptor",
+                lambda: os.close(descriptor_to_close),
+            )
         if locked:
             _attempt_cleanup(
                 cleanup_failures,

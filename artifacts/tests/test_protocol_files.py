@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import stat
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,54 @@ def directory_fd(tmp_path: Path):
 
 def _temporary_siblings(tmp_path: Path, name: str = "state.json") -> list[Path]:
     return list(tmp_path.glob(f".{name}.*.tmp"))
+
+
+def _simulate_temp_inode_reuse_on_close(monkeypatch, tmp_path: Path):
+    foreign_payload = b"belongs to another actor"
+    state = {
+        "descriptor": None,
+        "identity": None,
+        "name": None,
+        "takeover_attempted": False,
+    }
+    real_open = os.open
+    real_close = os.close
+    real_stat = os.stat
+
+    def record_temporary_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if isinstance(path, str) and path.startswith(".state.json."):
+            metadata = os.fstat(descriptor)
+            state["descriptor"] = descriptor
+            state["identity"] = (metadata.st_dev, metadata.st_ino)
+            state["name"] = path
+        return descriptor
+
+    def take_over_at_close(descriptor):
+        real_close(descriptor)
+        if descriptor != state["descriptor"] or state["takeover_attempted"]:
+            return
+        temporary = tmp_path / state["name"]
+        temporary.unlink(missing_ok=True)
+        temporary.write_bytes(foreign_payload)
+        state["takeover_attempted"] = True
+
+    def report_reused_identity(path, *args, **kwargs):
+        metadata = real_stat(path, *args, **kwargs)
+        if state["takeover_attempted"] and path == state["name"]:
+            device, inode = state["identity"]
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_nlink=metadata.st_nlink,
+                st_dev=device,
+                st_ino=inode,
+            )
+        return metadata
+
+    monkeypatch.setattr(os, "open", record_temporary_open)
+    monkeypatch.setattr(os, "close", take_over_at_close)
+    monkeypatch.setattr(os, "stat", report_reused_identity)
+    return state, foreign_payload
 
 
 def test_canonical_json_is_strict_sorted_and_newline_terminated():
@@ -552,7 +601,7 @@ def test_write_preserves_primary_error_and_attempts_every_cleanup(
         )
 
     assert raised.value.__cause__ is write_error
-    assert cleanup_calls == ["close", "unlink", "unlock"]
+    assert cleanup_calls == ["unlink", "close", "unlock"]
     assert len(raised.value.__notes__) == 3
     assert _temporary_siblings(tmp_path) == []
 
@@ -670,6 +719,57 @@ def test_write_does_not_unlink_temporary_takeover_during_failure_cleanup(
     assert any("temporary file ownership" in note for note in raised.value.__notes__)
     assert taken_over is not None
     assert taken_over.read_bytes() == foreign_payload
+
+
+def test_write_pins_temporary_inode_through_publication(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    state, foreign_payload = _simulate_temp_inode_reuse_on_close(
+        monkeypatch,
+        tmp_path,
+    )
+    document = {"run_id": "x"}
+
+    assert write_json_object_at(
+        directory_fd,
+        "state.json",
+        document,
+        mode=0o600,
+        policy=WritePolicy.REPLACE,
+    ) == (document, True)
+
+    assert state["takeover_attempted"] is True
+    assert (tmp_path / "state.json").read_bytes() == canonical_json(document)
+    assert (tmp_path / state["name"]).read_bytes() == foreign_payload
+
+
+def test_write_pins_temporary_inode_through_failure_cleanup(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    state, foreign_payload = _simulate_temp_inode_reuse_on_close(
+        monkeypatch,
+        tmp_path,
+    )
+    primary_error = InterruptedError("simulated write interruption")
+
+    def interrupt_write(_descriptor, _payload):
+        raise primary_error
+
+    monkeypatch.setattr(os, "write", interrupt_write)
+
+    with pytest.raises(ProtocolIOError, match="could not persist") as raised:
+        write_json_object_at(
+            directory_fd,
+            "state.json",
+            {"run_id": "x"},
+            mode=0o600,
+            policy=WritePolicy.REPLACE,
+        )
+
+    assert raised.value.__cause__ is primary_error
+    assert state["takeover_attempted"] is True
+    assert (tmp_path / state["name"]).read_bytes() == foreign_payload
+    assert not (tmp_path / "state.json").exists()
 
 
 def test_concurrent_first_wins_has_one_persisted_winner(tmp_path: Path):
