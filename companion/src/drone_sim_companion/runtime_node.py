@@ -826,7 +826,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from rosgraph_msgs.msg import Clock
     from sensor_msgs.msg import Image, LaserScan
-    from simulation_interfaces.msg import FrameMetadata, MissionEvent, RunState
+    from simulation_interfaces.msg import MissionEvent, RunState
     from simulation_interfaces.srv import PayloadCommand
 
     def qos(depth: int, *, transient: bool = False) -> Any:
@@ -845,9 +845,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     clock_callback_group = MutuallyExclusiveCallbackGroup()
     range_callback_group = MutuallyExclusiveCallbackGroup()
     image_callback_group = MutuallyExclusiveCallbackGroup()
-    metadata_callback_group = MutuallyExclusiveCallbackGroup()
     service_callback_group = MutuallyExclusiveCallbackGroup()
-    executor = MultiThreadedExecutor(num_threads=5)
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     executor_thread = threading.Thread(
         target=executor.spin,
@@ -855,7 +854,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         daemon=True,
     )
     clock = SimulationClock()
-    frame_source = RosFrameSource(width_px=640, height_px=480, run_id=config.run_id)
+    frame_source = RosFrameSource(width_px=640, height_px=480)
     lidar = RosLidar(clock)
     gate = Comp2026StartGate()
     mission_publisher = node.create_publisher(
@@ -909,13 +908,6 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             return
         attempt_failure.guard_input(
             "image", lambda: frame_source.accept_image(message)
-        )
-
-    def metadata_callback(message: Any) -> None:
-        if not mission_running:
-            return
-        attempt_failure.guard_input(
-            "metadata", lambda: frame_source.accept_metadata(message)
         )
 
     def range_callback(message: Any) -> None:
@@ -1061,13 +1053,6 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         qos(100),
         callback_group=image_callback_group,
     )
-    metadata_subscription = node.create_subscription(
-        FrameMetadata,
-        "/camera/onboard/frame_metadata",
-        metadata_callback,
-        qos(100),
-        callback_group=metadata_callback_group,
-    )
     range_subscription = node.create_subscription(
         LaserScan,
         "/competition/range/downward",
@@ -1080,7 +1065,6 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     executor_thread.start()
     sensor_subscriptions = (
         image_subscription,
-        metadata_subscription,
         range_subscription,
     )
     sensor_subscriptions_active = True

@@ -26,7 +26,7 @@ executor and one blocking original-attempt worker. `Comp2026StartGate`
 separates durable process readiness from permission to enter
 `run_auto_attempt`. Process, RUNNING, and clock-observed facts are durable. Each
 candidate release replaces one locked snapshot of the dynamic predicates using
-an undelivered frame pair, `RosLidar.get_distance()`, current service presence,
+an undelivered onboard image, `RosLidar.get_distance()`, current service presence,
 current DroneKit heartbeat health, and current armability. None of these five
 dynamic values latch. The frame/service/vehicle values are read first, then the
 gate lock is acquired and `RosLidar.get_distance()` is evaluated last. Updating
@@ -41,9 +41,10 @@ phase machine or arm the vehicle.
 
 - `SimulationClock` exposes the existing monotonically accepted `/clock` value
   and elapsed-simulation sleeps.
-- `RosFrameSource` joins exact current-run image/metadata timestamps, retains a
-  bounded pairing window rather than a recording queue, converts RGB bytes to
-  BGR NumPy data, and advances `last_timestamp_ns` only on real delivery.
+- `RosFrameSource` retains a bounded window of onboard ROS image messages,
+  converts RGB bytes to BGR NumPy data only when autonomy requests a capture,
+  and advances `last_timestamp_ns` only on real delivery. The separate metadata
+  stream remains artifact evidence and is not an autonomy input.
 - `RosLidar` retains one genuine timestamped range and rejects age greater than
   500,000,000 simulation nanoseconds.
 - `PayloadDropper` maps the original attach/drop shape to one blocking typed

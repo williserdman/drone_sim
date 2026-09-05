@@ -122,36 +122,21 @@ class SimulationClock:
             raise RuntimeError(f"simulation clock stopped: {self._stop_reason}")
 
 
-@dataclass(frozen=True)
-class _FrameMetadata:
-    frame_id: int
-    timestamp_ns: int
-
-
 class RosFrameSource:
-    """Join exact current-run image/metadata pairs for blocking BGR capture."""
+    """Retain recent onboard images for blocking BGR capture."""
 
-    def __init__(self, *, width_px: int, height_px: int, run_id: str | None = None) -> None:
+    def __init__(self, *, width_px: int, height_px: int) -> None:
         self._width_px = width_px
         self._height_px = height_px
-        self._run_id = run_id
         self._condition = threading.Condition()
         self._images: dict[int, object] = {}
-        self._metadata: dict[int, _FrameMetadata] = {}
-        self._latest_metadata_id: int | None = None
-        self._latest_metadata_timestamp_ns: int | None = None
-        self._last_frame_id: int | None = None
         self.last_timestamp_ns: int | None = None
         self._stop_reason: str | None = None
 
     @property
     def ready(self) -> bool:
         with self._condition:
-            return bool(self._available_pairs())
-
-    def accept(self, metadata: object, image: object) -> None:
-        self.accept_metadata(metadata)
-        self.accept_image(image)
+            return bool(self._available_images())
 
     def accept_image(self, message: object) -> None:
         timestamp_ns = _stamp_ns(message.header.stamp)  # type: ignore[attr-defined]
@@ -165,48 +150,9 @@ class RosFrameSource:
             or getattr(message, "step", None) != self._width_px * 3
         ):
             raise ValueError("image does not match the resolved 640x480 RGB8 contract")
-        try:
-            data = bytes(message.data)  # type: ignore[attr-defined]
-        except (AttributeError, TypeError, ValueError) as error:
-            raise ValueError("image data is malformed") from error
-        if len(data) != self._width_px * self._height_px * 3:
-            raise ValueError("image data length does not match its geometry")
         with self._condition:
             if self.last_timestamp_ns is None or timestamp_ns > self.last_timestamp_ns:
-                self._images.setdefault(timestamp_ns, (message, data))
-                self._prune_buffers()
-            self._condition.notify_all()
-
-    def accept_metadata(self, message: object) -> None:
-        if self._run_id is not None and getattr(message, "run_id", None) != self._run_id:
-            return
-        if getattr(message, "stream", None) != "onboard":
-            return
-        timestamp_ns = _stamp_ns(message.sim_timestamp)  # type: ignore[attr-defined]
-        frame_id = getattr(message, "frame_id", None)
-        if isinstance(frame_id, bool) or not isinstance(frame_id, int) or frame_id < 0:
-            raise ValueError("frame metadata ID must be a nonnegative integer")
-        with self._condition:
-            if self._latest_metadata_id is not None:
-                if frame_id < self._latest_metadata_id:
-                    raise ValueError("frame metadata ID regressed")
-                if (
-                    frame_id == self._latest_metadata_id
-                    and timestamp_ns != self._latest_metadata_timestamp_ns
-                ):
-                    raise ValueError("frame ID was reused with a different timestamp")
-                if (
-                    frame_id > self._latest_metadata_id
-                    and self._latest_metadata_timestamp_ns is not None
-                    and timestamp_ns <= self._latest_metadata_timestamp_ns
-                ):
-                    raise ValueError("frame metadata timestamp did not advance")
-            self._latest_metadata_id = frame_id
-            self._latest_metadata_timestamp_ns = timestamp_ns
-            if self.last_timestamp_ns is None or timestamp_ns > self.last_timestamp_ns:
-                self._metadata.setdefault(
-                    timestamp_ns, _FrameMetadata(frame_id, timestamp_ns)
-                )
+                self._images.setdefault(timestamp_ns, message)
                 self._prune_buffers()
             self._condition.notify_all()
 
@@ -216,14 +162,20 @@ class RosFrameSource:
         del quality  # The original API's quality hint must not rescale public evidence.
         with self._condition:
             while True:
-                pairs = self._available_pairs()
-                if pairs:
-                    timestamp_ns = pairs[0]
-                    image, data = self._images.pop(timestamp_ns)
-                    metadata = self._metadata.pop(timestamp_ns)
+                images = self._available_images()
+                if images:
+                    timestamp_ns = images[0]
+                    image = self._images.pop(timestamp_ns)
                     self._discard_through(timestamp_ns)
                     self.last_timestamp_ns = timestamp_ns
-                    self._last_frame_id = metadata.frame_id
+                    try:
+                        data = bytes(image.data)  # type: ignore[attr-defined]
+                    except (AttributeError, TypeError, ValueError) as error:
+                        raise ValueError("image data is malformed") from error
+                    if len(data) != self._width_px * self._height_px * 3:
+                        raise ValueError(
+                            "image data length does not match its geometry"
+                        )
                     return (
                         np.frombuffer(data, dtype=np.uint8)
                         .reshape(self._height_px, self._width_px, 3)[..., ::-1]
@@ -245,30 +197,23 @@ class RosFrameSource:
             self._stop_reason = reason or "shutdown"
             self._condition.notify_all()
 
-    def _available_pairs(self) -> list[int]:
-        timestamps = self._images.keys() & self._metadata.keys()
+    def _available_images(self) -> list[int]:
         return sorted(
             timestamp
-            for timestamp in timestamps
+            for timestamp in self._images
             if (self.last_timestamp_ns is None or timestamp > self.last_timestamp_ns)
-            and (
-                self._last_frame_id is None
-                or self._metadata[timestamp].frame_id > self._last_frame_id
-            )
         )
 
     def _discard_through(self, timestamp_ns: int) -> None:
-        for values in (self._images, self._metadata):
-            for stale in tuple(key for key in values if key <= timestamp_ns):
-                values.pop(stale, None)
+        for stale in tuple(key for key in self._images if key <= timestamp_ns):
+            self._images.pop(stale, None)
 
     def _prune_buffers(self) -> None:
         """Keep only a small newest pairing window, never a recording queue."""
 
-        timestamps = sorted(self._images.keys() | self._metadata.keys())
+        timestamps = sorted(self._images)
         for stale in timestamps[:-4]:
             self._images.pop(stale, None)
-            self._metadata.pop(stale, None)
 
 
 class RosLidar:

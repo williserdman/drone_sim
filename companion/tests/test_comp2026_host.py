@@ -98,10 +98,10 @@ def test_simulation_clock_sleep_uses_elapsed_accepted_simulation_time() -> None:
     assert clock.now() == pytest.approx(11.0)
 
 
-def test_frame_source_pairs_current_run_rgb_and_never_delivers_one_frame_twice() -> None:
-    source = RosFrameSource(width_px=640, height_px=480, run_id=RUN_ID)
-    source.accept(metadata(0, 50_000_000, run_id="stale-run"), rgb_image(50_000_000))
-    source.accept(metadata(0, 50_000_000), rgb_image(50_000_000))
+def test_frame_source_delivers_rgb_image_once_without_redundant_metadata() -> None:
+    source = RosFrameSource(width_px=640, height_px=480)
+    source.accept_image(rgb_image(50_000_000))
+    assert source.ready is True
 
     frame = source.capture_frame()
 
@@ -113,28 +113,38 @@ def test_frame_source_pairs_current_run_rgb_and_never_delivers_one_frame_twice()
         source.capture_frame(deadline_sim_ns=100_000_000)
 
 
-def test_frame_source_waits_for_an_exact_strictly_newer_pair() -> None:
-    source = RosFrameSource(width_px=640, height_px=480, run_id=RUN_ID)
+def test_frame_source_waits_for_an_exact_strictly_newer_image() -> None:
+    source = RosFrameSource(width_px=640, height_px=480)
     source.accept_image(rgb_image(50_000_000))
-    source.accept_metadata(metadata(0, 50_000_000))
+    assert source.ready is True
     source.capture_frame()
-    delivered = threading.Event()
-    timestamps: list[int | None] = []
-
-    def capture() -> None:
-        source.capture_frame()
-        timestamps.append(source.last_timestamp_ns)
-        delivered.set()
-
-    worker = threading.Thread(target=capture)
-    worker.start()
+    source.accept_image(rgb_image(50_000_000))
+    assert source.ready is False
     source.accept_image(rgb_image(100_000_000))
-    assert not delivered.wait(0.05)
-    source.accept_metadata(metadata(1, 100_000_000))
-    worker.join(timeout=1.0)
 
-    assert delivered.is_set()
-    assert timestamps == [100_000_000]
+    assert source.ready is True
+    source.capture_frame()
+    assert source.last_timestamp_ns == 100_000_000
+
+
+def test_frame_source_copies_pixels_only_when_autonomy_captures() -> None:
+    copies = 0
+
+    class DeferredPixels:
+        def __bytes__(self) -> bytes:
+            nonlocal copies
+            copies += 1
+            return bytes((10, 20, 30)) * (640 * 480)
+
+    image = rgb_image(50_000_000)
+    image.data = DeferredPixels()
+    source = RosFrameSource(width_px=640, height_px=480)
+
+    source.accept_image(image)
+
+    assert copies == 0
+    assert source.capture_frame()[0, 0].tolist() == [30, 20, 10]
+    assert copies == 1
 
 
 def test_lidar_rejects_range_older_than_half_a_simulated_second() -> None:
@@ -498,8 +508,8 @@ def live_start_inputs():
         SimpleNamespace(ranges=[4.572], range_min=0.1, range_max=30.0),
         1_000_000_000,
     )
-    frame_source = RosFrameSource(width_px=640, height_px=480, run_id=RUN_ID)
-    frame_source.accept(metadata(0, 1_000_000_000), rgb_image(1_000_000_000))
+    frame_source = RosFrameSource(width_px=640, height_px=480)
+    frame_source.accept_image(rgb_image(1_000_000_000))
     payload_service = MutablePayloadService()
     vehicle = SimpleNamespace(last_heartbeat=0.25, is_armable=True)
     return gate, clock, lidar, frame_source, payload_service, vehicle

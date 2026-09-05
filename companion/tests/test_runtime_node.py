@@ -467,13 +467,12 @@ def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -
         and node.func.attr == "create_subscription"
     ]
 
-    assert len(subscriptions) == 5
+    assert len(subscriptions) == 4
     expected_groups = {
         "state_callback": "clock_callback_group",
         "clock_callback": "clock_callback_group",
         "range_callback": "range_callback_group",
         "image_callback": "image_callback_group",
-        "metadata_callback": "metadata_callback_group",
     }
     for subscription in subscriptions:
         callback = subscription.args[2]
@@ -507,7 +506,7 @@ def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -
         if keyword.arg == "num_threads"
     )
     assert isinstance(thread_count, ast.Constant)
-    assert thread_count.value == 5
+    assert thread_count.value == 4
 
 
 def test_competition_runtime_emits_start_readiness_changes() -> None:

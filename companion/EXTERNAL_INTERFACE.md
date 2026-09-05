@@ -57,7 +57,7 @@ The `comp2026_auto` branch uses DroneKit 2.9.2 at the same fixed
 GUIDED transport command and records `mission-command-delivered`, allowing the
 existing Gazebo epoch rendezvous to release. The original worker does not emit
 `FM1/STARTED` or arm until the current run is `RUNNING` and one atomic refresh
-finds a public clock, an undelivered exact image/metadata pair, a downward range
+finds a public clock, an undelivered onboard image, a downward range
 that passes `get_distance()`, a currently available payload service, current
 DroneKit heartbeat health, and `is_armable is True`. These dynamic predicates
 do not latch: loss or reversion invalidates readiness before worker release. The
@@ -73,16 +73,21 @@ introduced.
 
 ## Timing and ordering
 
-Mission logic is frame- or event-triggered in simulation time. Duplicate frames are idempotently ignored, missing frames are diagnosed, stale `run_id` data is ignored, and loss of `/clock` prevents new simulated decisions. Wall time measures computation and infrastructure health only.
+Mission logic is frame- or event-triggered in simulation time. Duplicate image
+timestamps are idempotently ignored, missing frames are diagnosed, and loss of
+`/clock` prevents new simulated decisions. Wall time measures computation and
+infrastructure health only. Frame metadata remains part of the public recording
+contract, but the companion does not subscribe to that redundant evidence
+stream.
 
 The original mission's clock seam reads the accepted public `/clock` value.
 Each sleep captures its own start and waits until
-`current_timestamp - saved_start >= duration`; shutdown stops the wait. Frames
-are joined only when current-run metadata and the image header have the exact
-same simulation timestamp. Capture blocks for a strictly newer pair, exposes
-that genuine timestamp as `last_timestamp_ns`, converts RGB to BGR without
-`cv_bridge`, and never duplicates or rescales a delivered frame. A downward
-range older than 0.5 elapsed simulated seconds fails closed.
+`current_timestamp - saved_start >= duration`; shutdown stops the wait. Capture
+blocks for a strictly newer onboard image timestamp, exposes that genuine
+timestamp as `last_timestamp_ns`, and never duplicates or rescales a delivered
+frame. RGB bytes are retained in the ROS message and converted to BGR without
+`cv_bridge` only when autonomy requests a capture. A downward range older than
+0.5 elapsed simulated seconds fails closed.
 
 The MAVLink TCP connection deadline uses the current run's resolved
 `startup_wall_seconds` from `SIM_CONFIG_PATH`. After that transport connects,
