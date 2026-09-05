@@ -49,6 +49,28 @@ def test_read_rejects_noncanonical_json_objects(
         read_json_object_at(directory_fd, "state.json")
 
 
+@pytest.mark.parametrize("literal", ["1e999", "-1e999"])
+def test_read_rejects_nested_exponent_overflow(
+    directory_fd, tmp_path: Path, literal: str
+):
+    (tmp_path / "state.json").write_text(
+        f'{{"nested":{{"value":{literal}}}}}'
+    )
+
+    with pytest.raises(ProtocolIOError, match="state.json"):
+        read_json_object_at(directory_fd, "state.json")
+
+
+def test_read_accepts_finite_exponents(directory_fd, tmp_path: Path):
+    (tmp_path / "state.json").write_text(
+        '{"nested":{"negative":-1.25e-3,"positive":6.02e23}}'
+    )
+
+    assert read_json_object_at(directory_fd, "state.json") == {
+        "nested": {"negative": -0.00125, "positive": 6.02e23}
+    }
+
+
 def test_read_calls_deadline_at_each_required_boundary(
     directory_fd, tmp_path: Path, monkeypatch
 ):
@@ -172,6 +194,36 @@ def test_read_rejects_name_replaced_between_inspection_and_open(
         return metadata
 
     monkeypatch.setattr(protocol_files, "_inspect_existing", inspect_then_replace)
+
+    with pytest.raises(ProtocolIOError, match="changed while opening"):
+        read_json_object_at(directory_fd, "state.json")
+
+
+def test_read_rejects_fifo_swapped_in_before_open_without_blocking(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "state.json"
+    target.write_text('{"version":1}')
+    real_inspect = protocol_files._inspect_existing
+    real_open = os.open
+    replaced = False
+
+    def inspect_then_replace(fd, name):
+        nonlocal replaced
+        metadata = real_inspect(fd, name)
+        if not replaced:
+            target.unlink()
+            os.mkfifo(target)
+            replaced = True
+        return metadata
+
+    def reject_blocking_target_open(path, flags, *args, **kwargs):
+        if path == "state.json" and not flags & os.O_NONBLOCK:
+            pytest.fail("read attempted a blocking open after FIFO swap")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(protocol_files, "_inspect_existing", inspect_then_replace)
+    monkeypatch.setattr(os, "open", reject_blocking_target_open)
 
     with pytest.raises(ProtocolIOError, match="changed while opening"):
         read_json_object_at(directory_fd, "state.json")
@@ -554,6 +606,70 @@ def test_replace_does_not_unlink_recreated_temporary_path(
 
     assert recreated is not None
     assert recreated.read_bytes() == b"belongs to another actor"
+
+
+def test_write_rejects_temporary_takeover_before_publication(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    foreign_payload = b"belongs to another actor"
+    taken_over: Path | None = None
+    real_fsync = os.fsync
+
+    def fsync_then_take_over(descriptor):
+        nonlocal taken_over
+        real_fsync(descriptor)
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode) and taken_over is None:
+            [temporary] = _temporary_siblings(tmp_path)
+            temporary.unlink()
+            temporary.write_bytes(foreign_payload)
+            taken_over = temporary
+
+    monkeypatch.setattr(os, "fsync", fsync_then_take_over)
+
+    with pytest.raises(ProtocolIOError, match="changed before publication"):
+        write_json_object_at(
+            directory_fd,
+            "state.json",
+            {"run_id": "x"},
+            mode=0o600,
+            policy=WritePolicy.REPLACE,
+        )
+
+    assert not (tmp_path / "state.json").exists()
+    assert taken_over is not None
+    assert taken_over.read_bytes() == foreign_payload
+
+
+def test_write_does_not_unlink_temporary_takeover_during_failure_cleanup(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    primary_error = InterruptedError("simulated write interruption")
+    foreign_payload = b"belongs to another actor"
+    taken_over: Path | None = None
+
+    def take_over_then_interrupt(_descriptor, _payload):
+        nonlocal taken_over
+        [temporary] = _temporary_siblings(tmp_path)
+        temporary.unlink()
+        temporary.write_bytes(foreign_payload)
+        taken_over = temporary
+        raise primary_error
+
+    monkeypatch.setattr(os, "write", take_over_then_interrupt)
+
+    with pytest.raises(ProtocolIOError, match="could not persist") as raised:
+        write_json_object_at(
+            directory_fd,
+            "state.json",
+            {"run_id": "x"},
+            mode=0o600,
+            policy=WritePolicy.REPLACE,
+        )
+
+    assert raised.value.__cause__ is primary_error
+    assert any("temporary file ownership" in note for note in raised.value.__notes__)
+    assert taken_over is not None
+    assert taken_over.read_bytes() == foreign_payload
 
 
 def test_concurrent_first_wins_has_one_persisted_winner(tmp_path: Path):

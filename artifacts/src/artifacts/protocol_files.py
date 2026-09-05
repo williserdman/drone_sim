@@ -6,13 +6,14 @@ from collections.abc import Callable, Mapping
 from enum import Enum
 import fcntl
 import json
+import math
 import os
 import stat
 from typing import Any
 from uuid import uuid4
 
 
-_FILE_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+_FILE_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
 _TEMPORARY_FILE_FLAGS = (
     os.O_WRONLY
     | os.O_CREAT
@@ -52,6 +53,13 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _parse_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return parsed
 
 
 def canonical_json(document: Mapping[str, Any]) -> bytes:
@@ -133,6 +141,30 @@ def _report_cleanup_failures(
     raise cleanup_error from failures[0][1]
 
 
+def _temporary_path_matches(
+    directory_fd: int,
+    temporary: str,
+    identity: tuple[int, int],
+) -> bool:
+    try:
+        metadata = os.stat(
+            temporary,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise ProtocolIOError(
+            f"could not inspect temporary protocol file {temporary!r}: {error}"
+        ) from error
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_nlink == 1
+        and (metadata.st_dev, metadata.st_ino) == identity
+    )
+
+
 def read_json_object_at(
     directory_fd: int,
     name: str,
@@ -185,6 +217,7 @@ def read_json_object_at(
                 payload.decode("utf-8"),
                 object_pairs_hook=_reject_duplicate_pairs,
                 parse_constant=_reject_json_constant,
+                parse_float=_parse_finite_float,
             )
             _check_deadline(deadline_check)
         except TimeoutError:
@@ -246,6 +279,7 @@ def write_json_object_at(
     descriptor: int | None = None
     locked = False
     temporary_created = False
+    temporary_identity: tuple[int, int] | None = None
     pending_error: BaseException | None = None
     try:
         fcntl.flock(directory_fd, fcntl.LOCK_EX)
@@ -277,6 +311,11 @@ def write_json_object_at(
             dir_fd=directory_fd,
         )
         temporary_created = True
+        temporary_metadata = os.fstat(descriptor)
+        temporary_identity = (
+            temporary_metadata.st_dev,
+            temporary_metadata.st_ino,
+        )
         os.fchmod(descriptor, mode)
         written = 0
         while written < len(payload):
@@ -288,6 +327,15 @@ def write_json_object_at(
         descriptor_to_close = descriptor
         descriptor = None
         os.close(descriptor_to_close)
+        if not _temporary_path_matches(
+            directory_fd,
+            temporary,
+            temporary_identity,
+        ):
+            temporary_created = False
+            raise ProtocolIOError(
+                f"temporary protocol file {temporary!r} changed before publication"
+            )
         os.replace(
             temporary,
             name,
@@ -317,6 +365,37 @@ def write_json_object_at(
         raise
     finally:
         cleanup_failures: list[tuple[str, Exception]] = []
+        remove_temporary = False
+        if temporary_created:
+            if temporary_identity is None:
+                cleanup_failures.append(
+                    (
+                        "verify temporary file ownership",
+                        ProtocolIOError(
+                            f"temporary protocol file {temporary!r} has no recorded identity"
+                        ),
+                    )
+                )
+            else:
+                try:
+                    remove_temporary = _temporary_path_matches(
+                        directory_fd,
+                        temporary,
+                        temporary_identity,
+                    )
+                except Exception as error:
+                    cleanup_failures.append(
+                        ("verify temporary file ownership", error)
+                    )
+                if not remove_temporary and not cleanup_failures:
+                    cleanup_failures.append(
+                        (
+                            "verify temporary file ownership",
+                            ProtocolIOError(
+                                f"temporary protocol file {temporary!r} changed"
+                            ),
+                        )
+                    )
         if descriptor is not None:
             descriptor_to_close = descriptor
             descriptor = None
@@ -325,12 +404,36 @@ def write_json_object_at(
                 "close write descriptor",
                 lambda: os.close(descriptor_to_close),
             )
-        if temporary_created:
-            _attempt_cleanup(
-                cleanup_failures,
-                "remove temporary file",
-                lambda: os.unlink(temporary, dir_fd=directory_fd),
-            )
+        if remove_temporary:
+            try:
+                remove_temporary = _temporary_path_matches(
+                    directory_fd,
+                    temporary,
+                    temporary_identity,
+                )
+            except Exception as error:
+                cleanup_failures.append(
+                    ("verify temporary file ownership", error)
+                )
+                remove_temporary = False
+            if remove_temporary:
+                _attempt_cleanup(
+                    cleanup_failures,
+                    "remove temporary file",
+                    lambda: os.unlink(temporary, dir_fd=directory_fd),
+                )
+            elif not any(
+                action == "verify temporary file ownership"
+                for action, _error in cleanup_failures
+            ):
+                cleanup_failures.append(
+                    (
+                        "verify temporary file ownership",
+                        ProtocolIOError(
+                            f"temporary protocol file {temporary!r} changed"
+                        ),
+                    )
+                )
         if locked:
             _attempt_cleanup(
                 cleanup_failures,
