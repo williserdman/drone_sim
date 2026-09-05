@@ -8,6 +8,7 @@ import stat
 
 import pytest
 
+from artifacts.protocol_files import ProtocolIOError
 from orchestration.status_store import (
     OperatorStatus,
     ProtocolFileError,
@@ -94,6 +95,20 @@ def test_operator_state_is_atomic_valid_json_and_leaves_no_temp_sibling(tmp_path
     assert json.loads(path.read_text(encoding="utf-8")) == running.to_dict()
     assert list(path.parent.glob(".operator-state.json.*.tmp")) == []
     assert store.read_operator_status(RUN_ID) == running
+
+
+def test_status_store_translates_shared_io_errors(tmp_path):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    (run_directory / ".status/operator-state.json").write_text(
+        "{", encoding="utf-8"
+    )
+
+    with pytest.raises(ProtocolFileError, match="contains invalid JSON") as raised:
+        store.read_operator_status(RUN_ID)
+
+    assert type(raised.value) is ProtocolFileError
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
 
 
 def test_operator_state_replacement_fsyncs_file_then_status_directory(
