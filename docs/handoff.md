@@ -90,6 +90,9 @@ precedence. New regression tests cover previously unhandled replacement and read
 races, cleanup failures, and preservation of the primary protocol or timeout
 error. Neither caller retains the duplicate low-level helper names.
 
+Task 5's `git diff --check` passed. Its documentation checker validated exactly
+234 local links across 19 files and five resolved templates.
+
 This verification did not build or exercise runtime images and did not launch a
 flight.
 
