@@ -227,6 +227,75 @@ def test_read_descriptor_closes_after_success_and_failure(
         os.fstat(opened_descriptor)
 
 
+def test_read_preserves_timeout_when_descriptor_close_fails(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    (tmp_path / "state.json").write_text('{"run_id":"x"}')
+    timeout = TimeoutError("budget expired")
+    close_error = OSError("simulated close failure")
+    deadline_calls = 0
+    real_close = os.close
+
+    def check():
+        nonlocal deadline_calls
+        deadline_calls += 1
+        if deadline_calls == 2:
+            raise timeout
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        raise close_error
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+
+    with pytest.raises(TimeoutError) as raised:
+        read_json_object_at(directory_fd, "state.json", deadline_check=check)
+
+    assert raised.value is timeout
+    assert any("simulated close failure" in note for note in timeout.__notes__)
+
+
+def test_read_preserves_protocol_error_when_descriptor_close_fails(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    (tmp_path / "state.json").write_text("{")
+    close_error = OSError("simulated close failure")
+    real_close = os.close
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        raise close_error
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+
+    with pytest.raises(ProtocolIOError, match="invalid JSON") as raised:
+        read_json_object_at(directory_fd, "state.json")
+
+    assert raised.value.__cause__ is not close_error
+    assert any(
+        "simulated close failure" in note for note in raised.value.__notes__
+    )
+
+
+def test_read_reports_descriptor_close_failure_after_success(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    (tmp_path / "state.json").write_text('{"run_id":"x"}')
+    close_error = OSError("simulated close failure")
+    real_close = os.close
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        raise close_error
+
+    monkeypatch.setattr(os, "close", close_then_fail)
+
+    with pytest.raises(ProtocolIOError, match="close read descriptor") as raised:
+        read_json_object_at(directory_fd, "state.json")
+
+    assert raised.value.__cause__ is close_error
+
+
 @pytest.mark.parametrize("mode", [0o600, 0o644])
 def test_write_sets_exact_mode_and_fsyncs_file_and_directory(
     directory_fd, tmp_path: Path, mode: int, monkeypatch
@@ -386,6 +455,105 @@ def test_interrupted_write_removes_temporary_file(
     assert raised.value.__cause__ is marker
     assert not (tmp_path / "state.json").exists()
     assert _temporary_siblings(tmp_path) == []
+
+
+def test_write_preserves_primary_error_and_attempts_every_cleanup(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    write_error = OSError("simulated write failure")
+    cleanup_calls: list[str] = []
+    real_close = os.close
+    real_unlink = os.unlink
+    real_flock = protocol_files.fcntl.flock
+
+    def fail_write(_descriptor, _payload):
+        raise write_error
+
+    def close_then_fail(descriptor):
+        cleanup_calls.append("close")
+        real_close(descriptor)
+        raise OSError("simulated close failure")
+
+    def unlink_then_fail(path, **kwargs):
+        cleanup_calls.append("unlink")
+        real_unlink(path, **kwargs)
+        raise OSError("simulated unlink failure")
+
+    def unlock_then_fail(descriptor, operation):
+        real_flock(descriptor, operation)
+        if operation == protocol_files.fcntl.LOCK_UN:
+            cleanup_calls.append("unlock")
+            raise OSError("simulated unlock failure")
+
+    monkeypatch.setattr(os, "write", fail_write)
+    monkeypatch.setattr(os, "close", close_then_fail)
+    monkeypatch.setattr(os, "unlink", unlink_then_fail)
+    monkeypatch.setattr(protocol_files.fcntl, "flock", unlock_then_fail)
+
+    with pytest.raises(ProtocolIOError, match="could not persist") as raised:
+        write_json_object_at(
+            directory_fd,
+            "state.json",
+            {"run_id": "x"},
+            mode=0o600,
+            policy=WritePolicy.REPLACE,
+        )
+
+    assert raised.value.__cause__ is write_error
+    assert cleanup_calls == ["close", "unlink", "unlock"]
+    assert len(raised.value.__notes__) == 3
+    assert _temporary_siblings(tmp_path) == []
+
+
+def test_write_reports_unlock_failure_after_success(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    unlock_error = OSError("simulated unlock failure")
+    real_flock = protocol_files.fcntl.flock
+
+    def unlock_then_fail(descriptor, operation):
+        real_flock(descriptor, operation)
+        if operation == protocol_files.fcntl.LOCK_UN:
+            raise unlock_error
+
+    monkeypatch.setattr(protocol_files.fcntl, "flock", unlock_then_fail)
+
+    with pytest.raises(ProtocolIOError, match="release directory lock") as raised:
+        write_json_object_at(
+            directory_fd,
+            "state.json",
+            {"run_id": "x"},
+            mode=0o600,
+            policy=WritePolicy.REPLACE,
+        )
+
+    assert raised.value.__cause__ is unlock_error
+
+
+def test_replace_does_not_unlink_recreated_temporary_path(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    real_replace = os.replace
+    recreated: Path | None = None
+
+    def replace_then_recreate(source, target, **kwargs):
+        nonlocal recreated
+        real_replace(source, target, **kwargs)
+        recreated = tmp_path / source
+        recreated.write_bytes(b"belongs to another actor")
+
+    monkeypatch.setattr(os, "replace", replace_then_recreate)
+
+    assert write_json_object_at(
+        directory_fd,
+        "state.json",
+        {"run_id": "x"},
+        mode=0o600,
+        policy=WritePolicy.REPLACE,
+    ) == ({"run_id": "x"}, True)
+
+    assert recreated is not None
+    assert recreated.read_bytes() == b"belongs to another actor"
 
 
 def test_concurrent_first_wins_has_one_persisted_winner(tmp_path: Path):
