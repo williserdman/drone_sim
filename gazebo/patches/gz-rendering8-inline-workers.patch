@@ -1,0 +1,37 @@
+diff --git a/ogre2/src/Ogre2Scene.cc b/ogre2/src/Ogre2Scene.cc
+index 17b870cc..36d9a63f 100644
+--- a/ogre2/src/Ogre2Scene.cc
++++ b/ogre2/src/Ogre2Scene.cc
+@@ -17,5 +17,8 @@
+ 
++#include <cstdlib>
++
+ #include <gz/common/Console.hh>
++#include <gz/common/Util.hh>
+ 
+ #include "gz/rendering/base/SceneExt.hh"
+ #include "gz/rendering/GraphicsAPI.hh"
+@@ -1420,9 +1423,20 @@ void Ogre2Scene::CreateContext()
+ {
+   Ogre::Root *root = Ogre2RenderEngine::Instance()->OgreRoot();
+ 
+-  // getNumLogicalCores() may return 0 if couldn't detect
+-  const size_t numThreads = std::max<size_t>(
+-      1, Ogre::PlatformInformation::getNumLogicalCores());
++  // Avoid per-frame worker barriers for ordinary Gazebo scenes. This is a
++  // narrow backport of https://github.com/gazebosim/gz-rendering/pull/1302.
++  // Zero runs the passes inline; large scenes can opt back into workers.
++  size_t numThreads = 0u;
++  std::string configuredThreads;
++  if (gz::common::env(
++      "GZ_RENDERING_OGRE2_WORKER_THREADS", configuredThreads))
++  {
++    const int requestedThreads = std::atoi(configuredThreads.c_str());
++    if (requestedThreads > 0)
++    {
++      numThreads = static_cast<size_t>(requestedThreads);
++    }
++  }
+ 
+   // See ogre doxygen documentation regarding culling methods.
+   // In some cases you may still want to use single thread.

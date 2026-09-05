@@ -12,6 +12,7 @@ DOCKERFILE = ROOT / "gazebo/Dockerfile"
 PACKAGE_LOCK = ROOT / "gazebo/harmonic-packages.lock"
 PROJECT = ROOT / "gazebo/pyproject.toml"
 IMAGE_TEST = ROOT / "gazebo/tests/test_gazebo_image"
+OGRE_WORKER_PATCH = ROOT / "gazebo/patches/gz-rendering8-inline-workers.patch"
 
 BASE = (
     "ros:jazzy-ros-base@"
@@ -95,20 +96,32 @@ def test_upgraded_base_packages_are_part_of_the_exact_runtime_lock():
     } <= locked
 
 
-def test_runtime_copies_local_resources_and_only_fetches_the_pinned_plugin_source():
-    """Runtime resources stay local while the build fetch has one immutable origin."""
+def test_runtime_copies_local_resources_and_only_fetches_pinned_sources():
+    """Runtime resources stay local while both build fetches are immutable."""
     dockerfile = _dockerfile().lower()
 
     assert "copy artifacts orchestration gazebo ros_ws/src/simulation_interfaces /opt/drone_sim/source/" in dockerfile
     assert "cp -a /opt/drone_sim/source/resources /opt/drone_sim/gazebo/resources" in dockerfile
     assert "gz_sim_resource_path=/opt/drone_sim/gazebo/resources" in dockerfile
     assert "http://" not in dockerfile
-    assert dockerfile.count("https://") == 1
+    assert dockerfile.count("https://") == 2
     assert "https://github.com/ardupilot/ardupilot_gazebo.git" in dockerfile
     assert "fetch --depth=1 origin \"${ardupilot_gazebo_commit}\"" in dockerfile
+    assert "fetch --depth=1 origin \"${gz_rendering_commit}\"" in dockerfile
     assert "git -c /tmp/ardupilot_gazebo apply" in dockerfile
     assert "0001-paused-initial-json.patch" in dockerfile
     assert "display=" not in dockerfile
+
+
+def test_gpu_image_backports_the_pinned_ogre_worker_fix() -> None:
+    dockerfile = _dockerfile()
+    assert OGRE_WORKER_PATCH.is_file()
+    assert "ARG GZ_RENDERING_COMMIT=f1249da6e07f0d6b7adaba28109fa7af727fd322" in dockerfile
+    assert "https://github.com/gazebosim/gz-rendering.git" in dockerfile
+    assert "git -C /tmp/gz-rendering apply" in dockerfile
+    assert "gz-rendering8-inline-workers.patch" in dockerfile
+    assert "cmake --build /tmp/gz-rendering/build --target gz-rendering8-ogre2" in dockerfile
+    assert "GZ_RENDERING_OGRE2_WORKER_THREADS" in IMAGE_TEST.read_text()
 
 
 def test_runtime_installs_the_competition_bridge_configuration():

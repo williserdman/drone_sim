@@ -9,6 +9,7 @@ ARG GZ_SIM_VENDOR_PACKAGE=ros-jazzy-gz-sim-vendor=0.0.10-1noble.20260604.111001
 ARG SDFORMAT_VENDOR_PACKAGE=ros-jazzy-sdformat-vendor=0.0.11-1noble.20260604.104102
 ARG ZSTD_PACKAGE=zstd=1.5.5+dfsg2-2build1.1
 ARG ARDUPILOT_GAZEBO_COMMIT=082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5
+ARG GZ_RENDERING_COMMIT=f1249da6e07f0d6b7adaba28109fa7af727fd322
 
 COPY gazebo/harmonic-packages.lock /etc/drone_sim/harmonic-packages.lock
 RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
@@ -44,6 +45,34 @@ RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
         /tmp/harmonic-installed-delta \
         /tmp/harmonic-expected-delta \
     && rm -rf /var/lib/apt/lists/*
+
+COPY gazebo/patches/gz-rendering8-inline-workers.patch /tmp/gz-rendering8-inline-workers.patch
+RUN git init /tmp/gz-rendering \
+    && git -C /tmp/gz-rendering remote add origin \
+        https://github.com/gazebosim/gz-rendering.git \
+    && git -C /tmp/gz-rendering -c http.version=HTTP/1.1 \
+        fetch --depth=1 origin "${GZ_RENDERING_COMMIT}" \
+    && git -C /tmp/gz-rendering checkout --detach FETCH_HEAD \
+    && test "$(git -C /tmp/gz-rendering rev-parse HEAD)" = \
+        "${GZ_RENDERING_COMMIT}" \
+    && git -C /tmp/gz-rendering apply \
+        /tmp/gz-rendering8-inline-workers.patch \
+    && bash -lc 'source /opt/ros/jazzy/setup.bash \
+        && export PKG_CONFIG_PATH=/opt/ros/jazzy/opt/gz_ogre_next_vendor/lib/pkgconfig:${PKG_CONFIG_PATH} \
+        && cmake -S /tmp/gz-rendering -B /tmp/gz-rendering/build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_TESTING=OFF \
+            -DSKIP_optix=true \
+        && cmake --build /tmp/gz-rendering/build --target gz-rendering8-ogre2 \
+            --parallel 4' \
+    && test -s \
+        /tmp/gz-rendering/build/lib/libgz-rendering8-ogre2.so.8.2.3 \
+    && cp /tmp/gz-rendering/build/lib/libgz-rendering8-ogre2.so.8.2.3 \
+        /opt/ros/jazzy/opt/gz_rendering_vendor/lib/libgz-rendering8-ogre2.so.8.2.3 \
+    && mkdir -p /opt/drone_sim \
+    && printf '%s\n' "${GZ_RENDERING_COMMIT}" \
+        > /opt/drone_sim/gz-rendering-revision.txt \
+    && rm -rf /tmp/gz-rendering /tmp/gz-rendering8-inline-workers.patch
 
 COPY gazebo/plugin /tmp/ardupilot_gazebo-build
 RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5" \
