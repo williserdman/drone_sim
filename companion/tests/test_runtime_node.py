@@ -106,7 +106,7 @@ def test_comp2026_stops_sensor_inputs_after_attempt_finishes() -> None:
         mission_running=True,
         mission_worker_alive=False,
     )
-    assert not runtime_node.comp2026_sensor_inputs_required(
+    assert runtime_node.comp2026_sensor_inputs_required(
         mission_running=False,
         mission_worker_alive=True,
     )

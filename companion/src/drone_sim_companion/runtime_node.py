@@ -231,8 +231,8 @@ def comp2026_sensor_inputs_required(
     mission_running: bool,
     mission_worker_alive: bool,
 ) -> bool:
-    """Keep autonomy-only sensor subscriptions only while autonomy can use them."""
-    return mission_running and mission_worker_alive
+    """Keep sensors through startup and while the running attempt can use them."""
+    return not mission_running or mission_worker_alive
 
 
 def connect_autotune_vehicle(
