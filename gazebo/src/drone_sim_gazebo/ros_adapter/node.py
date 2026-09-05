@@ -210,7 +210,9 @@ class GazeboAdapterNode(_node_base()):
                     lambda message, aruco_id=aruco_id: self._accept_payload_attachment(
                         aruco_id, message
                     ),
-                    _qos(10, reliable=True),
+                    # Preserve exact 50 ms ticks through delayed image callbacks.
+                    # These small messages need history, not just the latest state.
+                    _qos(1000, reliable=True),
                 )
         self._clock_publisher = self.create_publisher(
             Clock, "/clock", _qos(1000, reliable=True)

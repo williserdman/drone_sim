@@ -59,8 +59,8 @@
   ros_type_name: "std_msgs/msg/String"
   gz_type_name: "gz.msgs.StringMsg"
   direction: "GZ_TO_ROS"
-  publisher_queue: 10
-  subscriber_queue: 10
+  publisher_queue: 1000
+  subscriber_queue: 1000
   lazy: false
 - ros_topic_name: "/gazebo/private/payload_2/result"
   gz_topic_name: "/gazebo/private/payload/2/result"
@@ -99,8 +99,8 @@
   ros_type_name: "std_msgs/msg/String"
   gz_type_name: "gz.msgs.StringMsg"
   direction: "GZ_TO_ROS"
-  publisher_queue: 10
-  subscriber_queue: 10
+  publisher_queue: 1000
+  subscriber_queue: 1000
   lazy: false
 - ros_topic_name: "/gazebo/private/payload_3/result"
   gz_topic_name: "/gazebo/private/payload/3/result"
@@ -139,8 +139,8 @@
   ros_type_name: "std_msgs/msg/String"
   gz_type_name: "gz.msgs.StringMsg"
   direction: "GZ_TO_ROS"
-  publisher_queue: 10
-  subscriber_queue: 10
+  publisher_queue: 1000
+  subscriber_queue: 1000
   lazy: false
 - ros_topic_name: "/gazebo/private/payload_4/result"
   gz_topic_name: "/gazebo/private/payload/4/result"

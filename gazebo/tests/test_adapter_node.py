@@ -80,6 +80,59 @@ def test_joint_truth_wire_preserves_authoritative_native_timestamp():
         parse_joint_state("attached")
 
 
+def test_joint_truth_survives_a_brief_adapter_callback_backlog():
+    """A delayed consumer must retain each physical tick, not fault on eviction."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from rclpy.duration import Duration
+    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from rosgraph_msgs.msg import Clock
+    from std_msgs.msg import String
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    faults = []
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID, expected_frames=100,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        world_name="competition_mission", on_fault=faults.append,
+    )
+    source = rclpy.create_node("joint_backlog_source")
+    publisher = source.create_publisher(
+        String, "/gazebo/private/payload_2/joint_state",
+        QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
+    )
+    try:
+        adapter.activate_output()
+        clock = Clock()
+        _set_stamp(clock.clock, PUBLIC_EPOCH_NATIVE_NS)
+        adapter._accept_clock(clock)
+        _spin_until(source, lambda: publisher.get_subscription_count() == 1)
+        tracker = adapter._payload_trackers[2]
+
+        def publish(tick):
+            stamp = PUBLIC_EPOCH_NATIVE_NS + tick * 50_000_000
+            publisher.publish(String(data=f"payload-joint-state-v1|{stamp}|detached"))
+            assert publisher.wait_for_all_acked(Duration(seconds=2))
+
+        publish(1)
+        _spin_until(adapter, lambda: tracker._last_attachment_timestamp_ns == 50_000_000)
+        # DDS receives a 1-second burst while the executor is busy elsewhere.
+        # The real subscription's history policy decides which ticks survive.
+        for tick in range(2, 22):
+            publish(tick)
+        _spin_until(
+            adapter,
+            lambda: bool(faults) or tracker._last_attachment_timestamp_ns == 1_050_000_000,
+        )
+        assert faults == []
+        assert sorted(tracker._attachments) == [tick * 50_000_000 for tick in range(1, 22)]
+    finally:
+        source.destroy_node()
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_range_sequence_rejects_a_missing_first_public_tick():
     """Range cannot shift its count window after losing public 50 ms."""
     from drone_sim_gazebo.ros_adapter.model import RangeSequence
