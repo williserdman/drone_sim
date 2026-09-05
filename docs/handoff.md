@@ -93,7 +93,7 @@ cleanup failures, and primary error preservation. Neither caller retains the
 duplicate low-level helper names.
 
 Against `5900d0d`, the final tracked slice covers nine files: three production
-modules, three test files, and three guides. It reports **1,417 insertions and
+modules, three test files, and three guides. It reports **1,418 insertions and
 354 deletions** with no files outside that scope.
 
 The final `git diff --check` passed. The documentation checker validated exactly
