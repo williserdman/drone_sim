@@ -97,6 +97,21 @@ def test_comp2026_polls_start_inputs_until_complete_gate_is_ready() -> None:
     )
 
 
+def test_comp2026_stops_sensor_inputs_after_attempt_finishes() -> None:
+    assert runtime_node.comp2026_sensor_inputs_required(
+        mission_running=True,
+        mission_worker_alive=True,
+    )
+    assert not runtime_node.comp2026_sensor_inputs_required(
+        mission_running=True,
+        mission_worker_alive=False,
+    )
+    assert not runtime_node.comp2026_sensor_inputs_required(
+        mission_running=False,
+        mission_worker_alive=True,
+    )
+
+
 def write_resolved_config(
     run_directory: Path,
     *,

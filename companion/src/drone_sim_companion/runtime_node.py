@@ -226,6 +226,15 @@ def comp2026_start_gate_poll_required(
     return mission_running and not mission_start_ready and not failed
 
 
+def comp2026_sensor_inputs_required(
+    *,
+    mission_running: bool,
+    mission_worker_alive: bool,
+) -> bool:
+    """Keep autonomy-only sensor subscriptions only while autonomy can use them."""
+    return mission_running and mission_worker_alive
+
+
 def connect_autotune_vehicle(
     factory: Callable[..., Any],
     endpoint: str,
@@ -1045,21 +1054,21 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         qos(1),
         callback_group=clock_callback_group,
     )
-    node.create_subscription(
+    image_subscription = node.create_subscription(
         Image,
         "/camera/onboard/image_raw",
         image_callback,
         qos(100),
         callback_group=image_callback_group,
     )
-    node.create_subscription(
+    metadata_subscription = node.create_subscription(
         FrameMetadata,
         "/camera/onboard/frame_metadata",
         metadata_callback,
         qos(100),
         callback_group=metadata_callback_group,
     )
-    node.create_subscription(
+    range_subscription = node.create_subscription(
         LaserScan,
         "/competition/range/downward",
         range_callback,
@@ -1069,6 +1078,12 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     executor_thread.start()
+    sensor_subscriptions = (
+        image_subscription,
+        metadata_subscription,
+        range_subscription,
+    )
+    sensor_subscriptions_active = True
     overall_wall_deadline = time.monotonic() + config.max_wall_seconds
     try:
         try:
@@ -1135,6 +1150,17 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         CommandKind.SET_GUIDED, initial_command_timestamp_ns
                     )
                     initial_command_delivered = True
+            if (
+                sensor_subscriptions_active
+                and mission_worker is not None
+                and not comp2026_sensor_inputs_required(
+                    mission_running=mission_running,
+                    mission_worker_alive=mission_worker.is_alive(),
+                )
+            ):
+                for subscription in sensor_subscriptions:
+                    node.destroy_subscription(subscription)
+                sensor_subscriptions_active = False
             if attempt_failure.failed and (
                 mission_worker is None or not mission_worker.is_alive()
             ):
