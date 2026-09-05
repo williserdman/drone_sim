@@ -64,6 +64,35 @@ The earlier broader host suite recorded the roll-gain mismatch below.
 No image builds, host provisioning, or flight were performed. Skipped ROS cases
 and source-only tests do not establish runtime correctness.
 
+### Protocol-file consolidation verification, 2026-09-06
+
+The protocol-file cleanup moved shared strict JSON and descriptor-safe
+persistence mechanics into
+[`protocol_files.py`](../artifacts/src/artifacts/protocol_files.py).
+[`RuntimeProtocol`](../artifacts/src/artifacts/runtime_protocol.py) retains the
+runtime schemas and lifecycle protocol. [`StatusStore`](../orchestration/src/orchestration/status_store.py)
+retains host allocation and document policy.
+
+The combined focused protocol tests passed: **120 passed, 0 failed, 0 skipped**.
+The affected suites and shared contracts reported **787 passed, 45 failed, 12
+skipped**. The 45 remaining failures are an isolated-worktree environment limit,
+not protocol regressions: one artifacts tool test and 44 orchestration controller
+tests encounter the absent protected `companion/comp2026` checkout while checking
+source provenance. The checkout was not copied or linked into this worktree, and
+the provenance checks remain strict.
+
+Base Compose, the Phase 2 profile, and the Phase 3 GPU overlay each resolved with
+exit status zero. Across the three production files, the slice added 447 lines
+and removed 352, a net production increase of **95 lines**. The shared module now
+owns canonical strict JSON, stable descriptor-relative reads, durable atomic
+writes, concurrent-writer serialization, deadline boundaries, and cleanup-error
+precedence. New regression tests cover previously unhandled replacement and read
+races, cleanup failures, and preservation of the primary protocol or timeout
+error. Neither caller retains the duplicate low-level helper names.
+
+This verification did not build or exercise runtime images and did not launch a
+flight.
+
 ## Open items, in recommended order
 
 ### 1. Make a fresh clone reproducible

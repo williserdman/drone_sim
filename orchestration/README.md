@@ -27,8 +27,10 @@ validates; it does not infer physical success from a command or log message.
 - [`RunLifecycle`](src/orchestration/lifecycle.py) defines valid state transitions.
   [`runtime_node.py`](src/orchestration/runtime_node.py) publishes runtime lifecycle
   state and aggregates the quiescence barrier.
-- [`StatusStore`](src/orchestration/status_store.py) implements the durable
-  `.control/` and `.status/` protocol used by the host and containers.
+- [`StatusStore`](src/orchestration/status_store.py) owns host allocation and
+  document policy for the durable `.control/` and `.status/` protocol used by
+  the host and containers. It delegates low-level safe persistence to
+  [`artifacts.protocol_files`](../artifacts/src/artifacts/protocol_files.py).
 
 ## Consumer and producer seams
 

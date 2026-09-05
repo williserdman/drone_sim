@@ -26,6 +26,9 @@ required evidence is missing or invalid.
   owns the required inventory, manifest model, validation, and atomic publication.
 - [`runtime_configuration.py`](src/artifacts/runtime_configuration.py) derives the
   recorder contract from the resolved run configuration.
+- [`protocol_files.py`](src/artifacts/protocol_files.py) owns the shared strict
+  JSON and descriptor-safe persistence mechanics. [`RuntimeProtocol`](src/artifacts/runtime_protocol.py)
+  retains the runtime schemas and lifecycle-facing protocol.
 - [`acceptance.py`](src/artifacts/acceptance.py) and
   [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
   implement independent semantic acceptance for completed physical runs.
