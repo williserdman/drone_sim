@@ -1813,6 +1813,20 @@ def test_validation_exception_still_runs_bounded_teardown_without_false_manifest
     ).exists()
 
 
+def test_compose_up_failure_preserves_docker_error(tmp_path, monkeypatch):
+    stream = io.StringIO()
+    controller, trace, _clock, _holder = _controller(tmp_path, event_stream=stream)
+    monkeypatch.setattr(
+        FakeCompose, "up", lambda self, timeout: ComposeCommandResult(
+            1, b"conflicting options: port exposing and the container type network mode"
+        )
+    )
+    result = controller.start(_template(tmp_path))
+    assert result.reason == "compose_up_failed"
+    assert trace[-1] == "compose down"
+    assert "conflicting options: port exposing" in stream.getvalue()
+
+
 def test_compose_up_exception_still_attempts_finalization_and_bounded_down(tmp_path):
     controller, trace, _clock, holder = _controller(
         tmp_path, up_error=RuntimeError("docker unavailable")

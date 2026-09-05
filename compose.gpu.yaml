@@ -1,18 +1,27 @@
 services:
   # One isolated network stack for the single-job Vast VM experiment.
   # Service names resolve to this namespace's own IP and use a local route.
+  # Fast DDS detects one host here, so its shared-memory IPC must also be shared.
   companion-runtime:
     network_mode: service:gazebo-runtime
+    ipc: service:gazebo-runtime
   ardupilot-sitl:
     network_mode: service:gazebo-runtime
+    ipc: service:gazebo-runtime
+    # Docker forbids expose declarations when joining a container namespace.
+    expose: !reset []
   electromagnet-runtime:
     network_mode: service:gazebo-runtime
+    ipc: service:gazebo-runtime
   orchestration-runtime:
     network_mode: service:gazebo-runtime
+    ipc: service:gazebo-runtime
   scorekeeper-runtime:
     network_mode: service:gazebo-runtime
+    ipc: service:gazebo-runtime
   artifacts-runtime:
     network_mode: service:gazebo-runtime
+    ipc: service:gazebo-runtime
     devices:
       - /dev/nvidia-caps/nvidia-cap2:/dev/nvidia-caps/nvidia-cap2
     environment:
@@ -26,6 +35,7 @@ services:
               count: 1
               capabilities: [gpu]
   gazebo-runtime:
+    ipc: shareable
     networks:
       default:
         aliases:

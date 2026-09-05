@@ -995,6 +995,11 @@ class RunController:
                         self._remaining(startup_deadline, self.monotonic)
                     )
                     if up_result.returncode != 0:
+                        emit_event(
+                            "compose_up_failed",
+                            exit_code=up_result.returncode,
+                            output=up_result.output.decode("utf-8", errors="replace"),
+                        )
                         primary = TerminalCause("compose_start", "compose_up_failed")
                     else:
                         compose_started = True

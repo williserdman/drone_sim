@@ -134,6 +134,17 @@ def test_gpu_override_nvidia_egl_descriptor_selects_the_driver_library() -> None
     }
 
 
+def test_gpu_shared_namespace_has_no_conflicting_port_declarations() -> None:
+    services = _phase3_document("compose.yaml", "compose.gpu.yaml")["services"]
+    for name in PHASE3_SERVICES - {"gazebo-runtime"}:
+        assert services[name]["network_mode"] == "service:gazebo-runtime"
+        assert services[name]["ipc"] == "service:gazebo-runtime"
+        assert not services[name].get("expose"), name
+        assert not services[name].get("ports"), name
+    assert "ardupilot-sitl" in services["gazebo-runtime"]["networks"]["default"]["aliases"]
+    assert services["gazebo-runtime"]["ipc"] == "shareable"
+
+
 def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_roles() -> None:
     document = _phase3_document()
     assert set(document["services"]) == PHASE3_SERVICES
