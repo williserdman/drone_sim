@@ -49,18 +49,58 @@ def test_read_rejects_noncanonical_json_objects(
         read_json_object_at(directory_fd, "state.json")
 
 
-def test_read_calls_deadline_before_during_and_after_io(directory_fd, tmp_path: Path):
+def test_read_calls_deadline_at_each_required_boundary(
+    directory_fd, tmp_path: Path, monkeypatch
+):
     (tmp_path / "state.json").write_text('{"run_id":"x"}')
-    calls = 0
+    events: list[str] = []
+    real_inspect = protocol_files._inspect_existing
+    real_open = os.open
+    real_read = os.read
+    real_loads = protocol_files.json.loads
 
     def check():
-        nonlocal calls
-        calls += 1
+        events.append("deadline")
+
+    def recording_inspect(fd, name):
+        events.append("inspect")
+        return real_inspect(fd, name)
+
+    def recording_open(path, *args, **kwargs):
+        if path == "state.json":
+            events.append("open")
+        return real_open(path, *args, **kwargs)
+
+    def recording_read(descriptor, size):
+        events.append("read")
+        return real_read(descriptor, size)
+
+    def recording_loads(payload, *args, **kwargs):
+        events.append("decode")
+        return real_loads(payload, *args, **kwargs)
+
+    monkeypatch.setattr(protocol_files, "_inspect_existing", recording_inspect)
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "read", recording_read)
+    monkeypatch.setattr(protocol_files.json, "loads", recording_loads)
 
     assert read_json_object_at(
         directory_fd, "state.json", deadline_check=check
     ) == {"run_id": "x"}
-    assert calls >= 4
+    assert events == [
+        "deadline",
+        "inspect",
+        "open",
+        "deadline",
+        "read",
+        "deadline",
+        "deadline",
+        "read",
+        "deadline",
+        "deadline",
+        "decode",
+        "deadline",
+    ]
 
 
 def test_deadline_error_propagates_unchanged(directory_fd, tmp_path: Path):
@@ -195,29 +235,41 @@ def test_write_sets_exact_mode_and_fsyncs_file_and_directory(
 ):
     events: list[str] = []
     real_fsync = os.fsync
+    real_replace = os.replace
 
     def recording_fsync(descriptor):
         events.append(
-            "directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file"
+            "directory-fsync"
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode)
+            else "file-fsync"
         )
         real_fsync(descriptor)
 
+    def recording_replace(source, target, **kwargs):
+        events.append("replace")
+        return real_replace(source, target, **kwargs)
+
     monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
     document = {"run_id": "x", "sequence": 1}
 
-    persisted, created = write_json_object_at(
-        directory_fd,
-        "state.json",
-        document,
-        mode=mode,
-        policy=WritePolicy.REPLACE,
-    )
+    previous_umask = os.umask(0o077)
+    try:
+        persisted, created = write_json_object_at(
+            directory_fd,
+            "state.json",
+            document,
+            mode=mode,
+            policy=WritePolicy.REPLACE,
+        )
+    finally:
+        os.umask(previous_umask)
 
     target = tmp_path / "state.json"
     assert (persisted, created) == (document, True)
     assert target.read_bytes() == b'{"run_id":"x","sequence":1}\n'
     assert stat.S_IMODE(target.stat().st_mode) == mode
-    assert events == ["file", "directory"]
+    assert events == ["file-fsync", "replace", "directory-fsync"]
     assert _temporary_siblings(tmp_path) == []
 
 
