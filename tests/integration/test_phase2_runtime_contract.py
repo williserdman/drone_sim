@@ -353,19 +353,33 @@ def test_camera_pair_ack_is_internal_backpressure_not_bag_inventory() -> None:
 
 
 def test_phase2_archival_camera_transport_is_reliable_without_changing_inventory() -> None:
+    import yaml
+
     from artifacts._adapters.rosbag import FIXED_TOPICS
 
-    qos = (ROOT / "config/recording-qos.yaml").read_text(encoding="utf-8")
+    qos = yaml.safe_load(
+        (ROOT / "artifacts/recording-qos.yaml").read_text(encoding="utf-8")
+    )
     artifact_runtime = (ROOT / "artifacts/src/artifacts/runtime_node.py").read_text()
     gazebo = (ROOT / "tests/phase2/synthetic_gazebo.py").read_text()
-    camera_section = qos.split("/camera/onboard/image_raw:", 1)[1]
 
-    assert "reliability: reliable" in camera_section
-    assert "reliability: best_effort" not in camera_section
+    for stream in ("onboard", "observer"):
+        assert qos[f"/camera/{stream}/frame_metadata"]["reliability"] == "reliable"
+        assert f"/camera/{stream}/image_raw" not in FIXED_TOPICS
+    assert set(FIXED_TOPICS) == {
+        "/clock", "/simulation/run_state", "/simulation/artifact_status",
+        "/simulation/ground_truth", "/simulation/scenario_events",
+        "/simulation/score_events", "/camera/onboard/frame_metadata",
+        "/camera/observer/frame_metadata",
+    }
     assert "def camera_recorder_qos" in artifact_runtime
     assert "qos_factory=camera_recorder_qos" in artifact_runtime
+    recorder_qos = artifact_runtime.split("def camera_recorder_qos", 1)[1].split(
+        "def ", 1
+    )[0]
+    assert "reliability=ReliabilityPolicy.RELIABLE" in recorder_qos
     assert "frame_qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE)" in gazebo
-    assert len(FIXED_TOPICS) == 10
+    assert len(FIXED_TOPICS) == 8
     assert "/simulation/camera_pair_ack" not in FIXED_TOPICS
 
 

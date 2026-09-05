@@ -1,5 +1,10 @@
 # Runnable MVP handoff
 
+> Historical baseline report, not a current setup guide. For the present source
+> checkout, image build, and known limitations, use the [runbook](../runbook.md)
+> and [human handoff](../handoff.md). The evidence below describes specific older
+> revisions, not an acceptance result for today's tree.
+
 ## What this delivers
 
 The production profile integrates the original nested
@@ -21,15 +26,17 @@ Mission waits, timeouts, stability windows, freshness, and the deadline use
 elapsed simulation time through the existing clock adapter. QGC command
 handling and broader determinism/clock cleanup remain deferred.
 
-## Run from a clean checkout
+## Reproduce with the required mission checkout
 
-Requirements are Docker with Compose v2 and `uv`; no credentials are needed.
-The nested `companion/comp2026` checkout must be present at that exact path.
+Requirements include Docker with Compose v2 and `uv`. The separately versioned
+`companion/comp2026` checkout must be supplied at that exact path; it is not in
+a fresh parent clone, and access to its intended revision must be arranged.
 
 ```bash
-uv sync
-docker compose --profile phase3 build
-uv run drone-sim start --config config/default-run.json
+uv sync --locked
+SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD) \
+  docker compose --profile phase3 build
+uv run --locked drone-sim start --config config/default-run.json
 ```
 
 The explicit pacing experiment uses the same mission and artifact contract but

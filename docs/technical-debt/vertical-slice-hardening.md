@@ -1,5 +1,9 @@
 # Vertical Slice Deferred Hardening
 
+> Historical vertical-slice ledger. Some entries (including competition payload
+> integration) have since been implemented. Do not treat the entire list as
+> outstanding work; start with the prioritized [current handoff](../handoff.md).
+
 This ledger records work intentionally excluded from the critical path to a verified `descent_v1` maximum-score run. Promote an item only when concrete runtime evidence shows it blocks launch, correctness, deterministic timing, artifact integrity, or truthful scoring.
 
 - Enumerate and reject unexpected extra native camera sensors beyond the fixed onboard/observer public pair.

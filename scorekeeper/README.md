@@ -1,0 +1,80 @@
+# Scorekeeper module
+
+[Project README](../README.md) · [Architecture](../docs/architecture.md) · [Runbook](../docs/runbook.md)
+
+This module owns deterministic, run-scoped evaluation of authoritative physical
+evidence for the frozen `descent_v1` and three-payload `competition_v1` policies,
+then persists and publishes their score results.
+
+It is read-only with respect to the simulated system: it does **not** command the
+aircraft, electromagnet, Gazebo, mission phases, or retry behavior. A mission
+reporting success is not physical proof, and a complete or maximum score is not
+the terminal run result; orchestration and the validated `manifest.json` decide
+whether the evidence bundle is complete and valid.
+
+## Code map
+
+- [runtime_node.py](src/drone_sim_scorekeeper/runtime_node.py) is the process
+  entry point, resolved-scenario selector, ROS translation layer, and lifecycle
+  driver.
+- [competition.py](src/drone_sim_scorekeeper/competition.py) is the pure competition
+  evidence model and scorer.
+- [descent.py](src/drone_sim_scorekeeper/descent.py) is the pure descent scorer.
+- [competition_runtime.py](src/drone_sim_scorekeeper/competition_runtime.py) and
+  [runtime.py](src/drone_sim_scorekeeper/runtime.py) bind scorers to persistence,
+  publication, failure, and quiescence.
+- [models.py](src/drone_sim_scorekeeper/models.py) defines result contracts;
+  [output.py](src/drone_sim_scorekeeper/output.py) creates no-clobber evidence.
+- The installed command is defined in [pyproject.toml](pyproject.toml); Compose
+  starts it in the [`scorekeeper-runtime` service](../compose.yaml).
+
+## Interfaces and rules
+
+The runtime consumes `/clock`, [GroundTruth](../ros_ws/src/simulation_interfaces/msg/GroundTruth.msg),
+[RunState](../ros_ws/src/simulation_interfaces/msg/RunState.msg), and scenario-specific
+[ScenarioEvent](../ros_ws/src/simulation_interfaces/msg/ScenarioEvent.msg),
+[PayloadState](../ros_ws/src/simulation_interfaces/msg/PayloadState.msg),
+[PayloadEvent](../ros_ws/src/simulation_interfaces/msg/PayloadEvent.msg), and
+[MissionEvent](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg). It only
+publishes [ScoreEvent](../ros_ws/src/simulation_interfaces/msg/ScoreEvent.msg).
+Topic selection and QoS live in
+[runtime_node.py](src/drone_sim_scorekeeper/runtime_node.py), not this guide.
+
+The exact scoring data authorities are
+[competition_v1.json](rules/competition_v1.json) and
+[descent_v1.json](rules/descent_v1.json), enforced by their loaders and scorers.
+Do not duplicate point allocations, timing windows, or physical thresholds in
+documentation. The persisted schema is defined by
+[ScoreResult](src/drone_sim_scorekeeper/models.py), while creation of
+`scoring/events.jsonl`, `scoring/result.json`, and `score-finished` is implemented
+in [output.py](src/drone_sim_scorekeeper/output.py) and
+[status.py](src/drone_sim_scorekeeper/status.py).
+
+## Constraints worth preserving
+
+- Score derives from ordered Gazebo truth plus confirmed payload and mission
+  events, never from the flight controller's estimate or success text.
+- Competition vehicle and payload streams must remain contiguous on the ruleset's
+  simulation-time grid after mission start. A gap, duplicate, regression,
+  conflicting physical order, or missing terminal evidence makes scoring
+  incomplete; a later suffix cannot repair it.
+- Payload release is evidence, not points by itself. Delivery requires physical
+  detachment and settled geometry; Home completion requires physical landing
+  truth through distinct ordered `HOME/DISARMED` and `HOME/COMPLETE` events.
+- Missing point components may yield an honest finalized partial score when the
+  evidence grammar and terminal conditions remain valid.
+- Evidence is persisted before reliable score-event publication is flushed and
+  before `score-finished` is created. Existing score evidence is never replaced.
+  Finalization then writes quiescence and produces no further output.
+
+## Focused checks
+
+Run from the repository root; these do not launch a mission:
+
+```bash
+uv run pytest scorekeeper/tests -v
+uv run pytest tests/contracts -v
+```
+
+For interpreting a completed run, use the independent acceptance command and
+prerequisites in the [runbook](../docs/runbook.md#independent-competition-acceptance).

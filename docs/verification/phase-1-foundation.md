@@ -1,5 +1,10 @@
 # Phase 1 Foundation Verification
 
+Historical evidence for the revisions below, not today's runtime contract.
+The referenced plans and interface documents are retained in Git history;
+inspect them with `git show 7064e86:<repository-relative-path>`.
+Current ownership and contracts start at [architecture](../architecture.md).
+
 ## Current post-fix verification (authoritative)
 
 - Tested implementation commit: `7064e860b395a1cb21c3d8c40064b0bbc07e912f`

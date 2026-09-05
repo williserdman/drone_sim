@@ -1,0 +1,76 @@
+# ArduPilot SITL
+
+[Project overview](../README.md) · [Architecture](../docs/architecture.md) ·
+[Runbook](../docs/runbook.md)
+
+This module runs the simulated flight controller: estimation, navigation, and
+vehicle-control loops backed by ArduPilot Copter SITL. It connects companion
+mission commands to the Gazebo sensor/actuator lockstep exchange.
+
+It does **not** own mission or vision decisions, authoritative physics or
+ground truth, scenario behavior, scoring, or aggregate lifecycle state. It is
+an ArduPilot SITL wrapper, not a Pixhawk simulator.
+
+## Entry points and owned files
+
+- [pyproject.toml](pyproject.toml) exposes `drone-sim-ardupilot-runtime`.
+- [runtime_node.py](src/drone_sim_ardupilot/runtime_node.py) is the production
+  process wrapper and durable readiness/failure/quiescence boundary.
+- [config.py](src/drone_sim_ardupilot/config.py) validates run inputs, resolves
+  the Gazebo service once, and constructs the shell-free ArduCopter command.
+- [runtime.py](src/drone_sim_ardupilot/runtime.py) supervises SITL, interprets
+  readiness output, writes events, and inventories diagnostics.
+- [state.py](src/drone_sim_ardupilot/state.py) contains the pure lifecycle model.
+- [json_peer.py](src/drone_sim_ardupilot/json_peer.py) is a bounded test peer for
+  the upstream UDP protocol; production does not use it.
+- [descent.parm](params/descent.parm) is the image-baked parameter overlay, and
+  [Dockerfile](Dockerfile) pins the upstream build and runtime layout.
+
+## Interfaces
+
+The companion connects over Compose-only MAVLink TCP at
+`tcp://ardupilot-sitl:5760`. ArduPilot consumes flight commands and provides
+telemetry, modes, state, acknowledgements, and `STATUSTEXT` diagnostics.
+
+The upstream JSON backend exchanges servo outputs and simulated sensor/dynamics
+data with `gazebo-runtime:9002` over UDP. Sensor replies retain
+`no_time_sync=true` and `no_lockstep=false`; loss of the Gazebo exchange must
+prevent free-running simulation progress. Broader ownership and ordering are in the
+[architecture guide](../docs/architecture.md).
+
+The module provides its own structured child output, readiness fact, DataFlash
+logs, SITL storage, failure evidence, and quiescence marker. A bound MAVLink
+listener is not mission readiness: orchestration also waits for the companion
+to observe a real heartbeat and healthy prearm status.
+
+## Constraints worth knowing
+
+- The image freezes ArduPilot `Copter-4.7.0` at commit
+  `1511f27194f1dcc3728270883047bdf022b3fd53` and builds only `waf copter`.
+  Supply-chain details live in
+  [ardupilot.json](provenance/ardupilot.json) and
+  [LICENSE.ArduPilot.txt](provenance/LICENSE.ArduPilot.txt).
+- The pinned JSON backend accepts numeric IPv4 addresses, so startup resolves
+  the Compose service name once. Name resolution does not advance simulation.
+- Keep `no_time_sync=true`, `no_lockstep=false`, and `--speedup 1`; wall
+  deadlines bound unavailable infrastructure, never mission time.
+- The parameter overlay deliberately preserves normal prearm checks. Its small
+  accelerometer calibration offsets come from upstream SITL defaults; do not
+  replace them with force-arm behavior.
+- Copter 4.7 uses `LAND_SPD_MS`, not legacy `LAND_SPEED`. Parameter edits require
+  rebuilding the image because the overlay is copied at build time.
+- ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
+  not by itself peer-loss evidence.
+
+## Focused tests
+
+Run from the project root:
+
+```bash
+uv run --locked pytest ardupilot_sitl/tests -q
+```
+
+The suite exercises configuration, lifecycle, process supervision, output
+recognition, and the bounded JSON test peer. It does not build ArduPilot or
+prove a live Gazebo flight; follow the [runbook](../docs/runbook.md) for those
+checks.
