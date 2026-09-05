@@ -79,7 +79,7 @@ def test_gpu_override_is_opt_in_for_rendering_and_video_encoding() -> None:
     )
     assert gpu_services["gazebo-runtime"]["environment"][
         "GZ_RENDERING_OGRE2_WORKER_THREADS"
-    ] == "0"
+    ] == "4"
     assert gpu_services["gazebo-runtime"]["environment"][
         "__EGL_VENDOR_LIBRARY_FILENAMES"
     ] == "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
