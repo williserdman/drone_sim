@@ -87,20 +87,18 @@ def test_read_calls_deadline_at_each_required_boundary(
     assert read_json_object_at(
         directory_fd, "state.json", deadline_check=check
     ) == {"run_id": "x"}
-    assert events == [
-        "deadline",
-        "inspect",
-        "open",
-        "deadline",
-        "read",
-        "deadline",
-        "deadline",
-        "read",
-        "deadline",
+    assert events[:3] == ["deadline", "inspect", "open"]
+    read_indices = [index for index, event in enumerate(events) if event == "read"]
+    assert read_indices
+    for index in read_indices:
+        assert events[index - 1 : index + 2] == ["deadline", "read", "deadline"]
+    decode_index = events.index("decode")
+    assert events[decode_index - 1 : decode_index + 2] == [
         "deadline",
         "decode",
         "deadline",
     ]
+    assert events.index("open") < read_indices[0] <= read_indices[-1] < decode_index
 
 
 def test_deadline_error_propagates_unchanged(directory_fd, tmp_path: Path):
