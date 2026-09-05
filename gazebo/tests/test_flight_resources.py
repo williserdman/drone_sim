@@ -213,6 +213,17 @@ def test_flight_clock_bridge_has_a_bounded_reliable_delivery_queue():
     assert "subscriber_queue: 1000" in clock
 
 
+def test_competition_clock_crosses_python_only_at_the_evidence_cadence():
+    """Reconnecting the adapter to native /clock would restore 1 kHz Python work."""
+    bridge = (ROOT / "gazebo/config/bridge-competition.yaml").read_text(
+        encoding="utf-8"
+    )
+    clock = bridge.split('gz_topic_name: "/clock"', 1)[0]
+
+    assert 'ros_topic_name: "/gazebo/native/clock"' in clock
+    assert 'ros_topic_name: "/gazebo/private/clock"' not in clock
+
+
 def test_official_plugin_supply_is_pinned_to_the_reviewed_harmonic_revision():
     """A floating plugin source could silently change the JSON and lockstep seam."""
     provenance = json.loads(PLUGIN_PROVENANCE.read_text(encoding="utf-8"))

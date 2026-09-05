@@ -37,6 +37,17 @@ def gazebo_child_specs(
     environment: Mapping[str, str],
     world_name: str,
 ) -> tuple[ChildSpec, ...]:
+    clock_decimator = (
+        (
+            ChildSpec(
+                "clock_decimator",
+                ("/opt/drone_sim/gazebo/bin/clock-decimator",),
+                environment,
+            ),
+        )
+        if world_name == "competition_mission"
+        else ()
+    )
     bridge = ChildSpec(
         "bridge",
         (
@@ -68,7 +79,7 @@ def gazebo_child_specs(
             strict=True,
         )
     )
-    return (bridge, *image_bridges)
+    return (*clock_decimator, bridge, *image_bridges)
 
 
 class ChildSupervisor:

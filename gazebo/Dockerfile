@@ -65,7 +65,9 @@ RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f
         && cmake --build /tmp/ardupilot_gazebo/build --parallel 2 \
         && ctest --test-dir /tmp/ardupilot_gazebo/build \
             --output-on-failure' \
-    && mkdir -p /opt/drone_sim/gazebo/plugins \
+    && mkdir -p /opt/drone_sim/gazebo/bin /opt/drone_sim/gazebo/plugins \
+    && cp /tmp/ardupilot_gazebo/build/clock-decimator \
+        /opt/drone_sim/gazebo/bin/clock-decimator \
     && cp /tmp/ardupilot_gazebo/build/libArduPilotPlugin.so \
         /opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so \
     && cp /tmp/ardupilot_gazebo/build/libcwru_payload_command_coordinator.so \

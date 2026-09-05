@@ -47,19 +47,23 @@ def test_child_specs_are_one_way_private_bridges_and_no_ack_consumer(tmp_path):
     )
 
     assert tuple(spec.name for spec in specs) == (
+        "clock_decimator",
         "bridge",
         "image_bridge_onboard",
         "image_bridge_observer",
     )
     assert specs[0].argv == (
+        "/opt/drone_sim/gazebo/bin/clock-decimator",
+    )
+    assert specs[1].argv == (
         "ros2", "run", "ros_gz_bridge", "parameter_bridge",
         "--ros-args", "-p", f"config_file:={tmp_path / 'bridge.yaml'}",
     )
-    assert tuple(spec.argv[-1] for spec in specs[1:]) == (
+    assert tuple(spec.argv[-1] for spec in specs[2:]) == (
         "/gazebo/private/camera/competition_onboard/image",
         "/gazebo/private/camera/observer/image",
     )
-    assert all(spec.argv[-2] == "image_bridge" for spec in specs[1:])
+    assert all(spec.argv[-2] == "image_bridge" for spec in specs[2:])
     flattened = " ".join(part for spec in specs for part in spec.argv)
     assert "camera_pair_ack" not in flattened
     assert isinstance(specs[0].environment, MappingProxyType)

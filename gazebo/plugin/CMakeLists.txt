@@ -12,6 +12,9 @@ find_package(gz-plugin2 REQUIRED COMPONENTS register)
 find_package(gz-transport13 REQUIRED)
 find_package(gz-msgs10 REQUIRED)
 find_package(RapidJSON REQUIRED)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rosgraph_msgs REQUIRED)
 
 if(BUILD_ARDUPILOT_PLUGIN)
   if(NOT DEFINED ARDUPILOT_GAZEBO_SOURCE)
@@ -48,8 +51,21 @@ target_link_libraries(drone_sim_detachable_joint_system PRIVATE
   gz-msgs10::gz-msgs10
 )
 
+add_executable(clock_decimator
+  ClockDecimator.cc
+  ClockDecimatorNode.cc
+)
+set_target_properties(clock_decimator PROPERTIES OUTPUT_NAME "clock-decimator")
+ament_target_dependencies(clock_decimator rclcpp rosgraph_msgs)
+
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(clock_decimator_test
+    ClockDecimator.cc
+    test/ClockDecimatorTest.cc
+  )
+  add_test(NAME clock_decimator_test COMMAND clock_decimator_test)
+
   add_executable(payload_command_coordinator_integration_test
     test/PayloadCommandCoordinatorIntegrationTest.cc
   )

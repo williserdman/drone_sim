@@ -41,6 +41,7 @@ ros2 pkg prefix ros_gz_bridge
 ros2 pkg prefix simulation_interfaces
 python3 -c 'import drone_sim_gazebo.runtime.runtime_node; from simulation_interfaces.msg import FrameMetadata, GroundTruth, RunState'
 test -x /opt/drone_sim/venv/bin/drone-sim-gazebo-runtime
+test -x /opt/drone_sim/gazebo/bin/clock-decimator
 test -s /etc/drone_sim/gazebo-bridge.yaml
 test -s /etc/drone_sim/gazebo-bridge-flight.yaml
 test -s /opt/drone_sim/gazebo/plugins/libArduPilotPlugin.so

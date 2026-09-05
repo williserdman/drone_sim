@@ -26,7 +26,7 @@ def test_competition_bridge_is_minimal_and_directional():
     )
     by_ros_topic = {item["ros_topic_name"]: item for item in bridge}
     expected = {
-        "/gazebo/private/clock",
+        "/gazebo/native/clock",
         "/gazebo/private/iris/odometry",
         "/gazebo/private/iris/contact",
         "/gazebo/private/range/downward",
