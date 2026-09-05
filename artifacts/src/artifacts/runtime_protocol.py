@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-import fcntl
-import json
+from collections.abc import Callable, Mapping
 import os
 from pathlib import Path, PurePosixPath
 import stat
-from typing import Any
-from uuid import UUID, uuid4
+from typing import Any, TypeVar
+from uuid import UUID
+
+from artifacts.protocol_files import (
+    ProtocolIOError,
+    WritePolicy,
+    canonical_json,
+    read_json_object_at,
+    write_json_object_at,
+)
 
 
 _DIRECTORY_FLAGS = (
@@ -18,8 +24,6 @@ _DIRECTORY_FLAGS = (
     | getattr(os, "O_DIRECTORY", 0)
     | getattr(os, "O_NOFOLLOW", 0)
 )
-_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-_MAX_BYTES = 4 * 1024 * 1024
 _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
 _QUIESCENCE_MODULES = frozenset(
     {"orchestration", "companion", "ardupilot_sitl", "gazebo", "electromagnet", "scorekeeper"}
@@ -62,6 +66,16 @@ class ProtocolError(RuntimeError):
     """A runtime protocol path or document violates the frozen contract."""
 
 
+_T = TypeVar("_T")
+
+
+def _translate_io(call: Callable[[], _T]) -> _T:
+    try:
+        return call()
+    except ProtocolIOError as error:
+        raise ProtocolError(str(error)) from error
+
+
 def canonical_run_id(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError("run_id must be a canonical UUID")
@@ -72,50 +86,6 @@ def canonical_run_id(value: str) -> str:
     if str(parsed) != value:
         raise ValueError("run_id must be a canonical UUID")
     return value
-
-
-def _duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def _invalid_constant(value: str) -> None:
-    raise ValueError(f"non-standard JSON constant: {value}")
-
-
-def _canonical_json(document: Mapping[str, Any]) -> bytes:
-    try:
-        return (
-            json.dumps(
-                dict(document),
-                allow_nan=False,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        ).encode("utf-8")
-    except (TypeError, ValueError, OverflowError, RecursionError) as error:
-        raise ProtocolError(f"protocol document is not valid JSON: {error}") from error
-
-
-def _same_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
-    return all(
-        getattr(first, field) == getattr(second, field)
-        for field in (
-            "st_dev",
-            "st_ino",
-            "st_mode",
-            "st_nlink",
-            "st_size",
-            "st_mtime_ns",
-            "st_ctime_ns",
-        )
-    )
 
 
 def _safe_relative_path(value: Any) -> bool:
@@ -366,126 +336,19 @@ class RuntimeProtocol:
             raise ProtocolError(f"protocol directory {name!r} is unsafe")
         return descriptor
 
-    @staticmethod
-    def _inspect(directory_fd: int, name: str) -> os.stat_result | None:
-        try:
-            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return None
-        except OSError as error:
-            raise ProtocolError(f"could not inspect protocol file {name!r}: {error}") from error
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise ProtocolError(f"protocol file {name!r} must be regular with one link")
-        return metadata
-
-    @classmethod
-    def _read_at(cls, directory_fd: int, name: str) -> dict[str, Any] | None:
-        before = cls._inspect(directory_fd, name)
-        if before is None:
-            return None
-        descriptor: int | None = None
-        try:
-            descriptor = os.open(name, _FILE_FLAGS, dir_fd=directory_fd)
-            opened = os.fstat(descriptor)
-            if not _same_snapshot(before, opened):
-                raise ProtocolError(f"protocol file {name!r} changed while opening")
-            if opened.st_size > _MAX_BYTES:
-                raise ProtocolError(f"protocol file {name!r} is too large")
-            chunks: list[bytes] = []
-            remaining = _MAX_BYTES + 1
-            while remaining:
-                chunk = os.read(descriptor, min(65536, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            if sum(map(len, chunks)) > _MAX_BYTES:
-                raise ProtocolError(f"protocol file {name!r} is too large")
-            after = os.fstat(descriptor)
-            named_after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            if not _same_snapshot(opened, after) or not _same_snapshot(after, named_after):
-                raise ProtocolError(f"protocol file {name!r} changed while reading")
-            try:
-                document = json.loads(
-                    b"".join(chunks).decode("utf-8"),
-                    object_pairs_hook=_duplicate_pairs,
-                    parse_constant=_invalid_constant,
-                )
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
-                raise ProtocolError(f"protocol file {name!r} contains invalid JSON: {error}") from error
-            if not isinstance(document, dict):
-                raise ProtocolError(f"protocol file {name!r} must contain an object")
-            return document
-        except ProtocolError:
-            raise
-        except OSError as error:
-            raise ProtocolError(f"could not read protocol file {name!r}: {error}") from error
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-
-    @classmethod
-    def _write_at(
-        cls, directory_fd: int, name: str, document: Mapping[str, Any]
-    ) -> bool:
-        payload = _canonical_json(document)
-        temporary = f".{name}.{uuid4().hex}.tmp"
-        descriptor: int | None = None
-        fcntl.flock(directory_fd, fcntl.LOCK_EX)
-        try:
-            existing = cls._read_at(directory_fd, name)
-            if existing is not None:
-                if existing == dict(document):
-                    return False
-                raise ProtocolError(f"protocol file {name!r} conflicts with existing value")
-            descriptor = os.open(
-                temporary,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-                # Runtime containers normally run as root while the host
-                # controller does not.  Status documents contain no secrets
-                # and must cross that ownership boundary through the bind
-                # mount; controls remain host-owned and are only read here.
-                0o644,
-                dir_fd=directory_fd,
-            )
-            os.fchmod(descriptor, 0o644)
-            written = 0
-            while written < len(payload):
-                count = os.write(descriptor, payload[written:])
-                if count <= 0:
-                    raise OSError("protocol write made no progress")
-                written += count
-            os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = None
-            os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-            os.fsync(directory_fd)
-            return True
-        except ProtocolError:
-            raise
-        except OSError as error:
-            raise ProtocolError(f"could not persist protocol file {name!r}: {error}") from error
-        finally:
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            try:
-                os.unlink(temporary, dir_fd=directory_fd)
-            except OSError:
-                pass
-            fcntl.flock(directory_fd, fcntl.LOCK_UN)
-
     def write_status(self, name: str, document: Mapping[str, Any]) -> Path:
         _validate_status(name, document, self.run_id)
         status_fd = self._open_directory(".status")
         try:
-            self._write_at(status_fd, f"{name}.json", document)
+            _translate_io(
+                lambda: write_json_object_at(
+                    status_fd,
+                    f"{name}.json",
+                    document,
+                    mode=0o644,
+                    policy=WritePolicy.IDENTICAL,
+                )
+            )
         finally:
             os.close(status_fd)
         return self.run_directory / ".status" / f"{name}.json"
@@ -495,7 +358,9 @@ class RuntimeProtocol:
             raise ValueError("runtime status name is not part of the frozen protocol")
         status_fd = self._open_directory(".status")
         try:
-            document = self._read_at(status_fd, f"{name}.json")
+            document = _translate_io(
+                lambda: read_json_object_at(status_fd, f"{name}.json")
+            )
         finally:
             os.close(status_fd)
         if document is not None:
@@ -514,7 +379,15 @@ class RuntimeProtocol:
         try:
             quiescence_fd = self._open_directory_at(status_fd, "quiescence")
             try:
-                self._write_at(quiescence_fd, f"{module}.json", document)
+                _translate_io(
+                    lambda: write_json_object_at(
+                        quiescence_fd,
+                        f"{module}.json",
+                        document,
+                        mode=0o644,
+                        policy=WritePolicy.IDENTICAL,
+                    )
+                )
             finally:
                 os.close(quiescence_fd)
         finally:
@@ -527,7 +400,9 @@ class RuntimeProtocol:
         try:
             quiescence_fd = self._open_directory_at(status_fd, "quiescence")
             try:
-                document = self._read_at(quiescence_fd, f"{module}.json")
+                document = _translate_io(
+                    lambda: read_json_object_at(quiescence_fd, f"{module}.json")
+                )
             finally:
                 os.close(quiescence_fd)
         finally:
@@ -543,13 +418,15 @@ class RuntimeProtocol:
     def _read_control(self, name: str) -> dict[str, Any] | None:
         control_fd = self._open_directory(".control")
         try:
-            document = self._read_at(control_fd, f"{name}.json")
+            document = _translate_io(
+                lambda: read_json_object_at(control_fd, f"{name}.json")
+            )
         finally:
             os.close(control_fd)
         if document is None:
             return None
         _validate_control(name, document, self.run_id)
-        encoded = _canonical_json(document)
+        encoded = _translate_io(lambda: canonical_json(document))
         previous = self._observed_controls.setdefault(name, encoded)
         if previous != encoded:
             raise ProtocolError(f"host control {name!r} changed after first observation")
@@ -563,7 +440,9 @@ class RuntimeProtocol:
 
     def read_manifest_status(self) -> dict[str, Any]:
         """Read only the final live-status facts from immutable manifest authority."""
-        document = self._read_at(self._run_fd, "manifest.json")
+        document = _translate_io(
+            lambda: read_json_object_at(self._run_fd, "manifest.json")
+        )
         if document is None:
             raise ProtocolError("manifest.json is missing after terminal commit")
         required = {

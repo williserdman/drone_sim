@@ -5,6 +5,7 @@ import stat
 
 import pytest
 
+from artifacts.protocol_files import ProtocolIOError
 from artifacts.runtime_protocol import ProtocolError, RuntimeProtocol
 
 
@@ -286,6 +287,16 @@ def test_protocol_rejects_malformed_or_resource_host_json(run_directory, payload
     (run_directory / ".control/finalize-request.json").write_bytes(payload)
     with pytest.raises(ProtocolError):
         RuntimeProtocol(run_directory, RUN_ID).read_finalize_request()
+
+
+def test_runtime_protocol_translates_shared_io_errors(run_directory):
+    (run_directory / ".control/finalize-request.json").write_bytes(b"{")
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+
+    with pytest.raises(ProtocolError, match="contains invalid JSON") as raised:
+        protocol.read_finalize_request()
+    assert type(raised.value) is ProtocolError
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
 
 
 def test_protocol_rejects_oversized_host_file(run_directory):
