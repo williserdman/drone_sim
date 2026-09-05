@@ -96,7 +96,7 @@ Against `5900d0d`, the final tracked slice covers nine files: three production
 modules, three test files, and three guides. It reports **1,417 insertions and
 354 deletions** with no files outside that scope.
 
-Task 5's `git diff --check` passed. Its documentation checker validated exactly
+The final `git diff --check` passed. The documentation checker validated exactly
 234 local links across 19 files and five resolved templates.
 
 This verification did not build or exercise runtime images and did not launch a
