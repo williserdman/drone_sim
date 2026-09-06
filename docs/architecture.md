@@ -82,13 +82,10 @@ persistence implementation in
 schemas, while [`StatusStore`](../orchestration/src/orchestration/status_store.py)
 owns host policy. Path changes, conflicting immutable values, and wrong file modes
 on non-replacing retries make protocol writers fail closed; callers do not repair
-or reinterpret them. Calls through this helper share its advisory lock, and its
-UUID-named temporary entries are private implementation details that other
-components must not replace. The helper does not claim protection from a hostile
-same-permission process, and legacy producers outside it are not serialized by
-that lock. Atomic non-replacing publication uses Linux
-`renameat2(RENAME_NOREPLACE)` and fails closed when the filesystem does not
-support it.
+or reinterpret them. Cooperating helper callers serialize through an advisory
+directory lock and publish durable atomic replacements. This is not a security
+boundary against a hostile process with the same filesystem permissions, and
+legacy producers outside the helper are not serialized by that lock.
 
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and

@@ -2,13 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-import ctypes
-import errno
 import os
 from pathlib import Path
 import stat
 from threading import Barrier, Event, Lock
-from types import SimpleNamespace
 
 import pytest
 
@@ -33,54 +30,6 @@ def directory_fd(tmp_path: Path):
 
 def _temporary_siblings(tmp_path: Path, name: str = "state.json") -> list[Path]:
     return list(tmp_path.glob(f".{name}.*.tmp"))
-
-
-def _simulate_temp_inode_reuse_on_close(monkeypatch, tmp_path: Path):
-    foreign_payload = b"belongs to another actor"
-    state = {
-        "descriptor": None,
-        "identity": None,
-        "name": None,
-        "takeover_attempted": False,
-    }
-    real_open = os.open
-    real_close = os.close
-    real_stat = os.stat
-
-    def record_temporary_open(path, flags, *args, **kwargs):
-        descriptor = real_open(path, flags, *args, **kwargs)
-        if isinstance(path, str) and path.startswith(".state.json."):
-            metadata = os.fstat(descriptor)
-            state["descriptor"] = descriptor
-            state["identity"] = (metadata.st_dev, metadata.st_ino)
-            state["name"] = path
-        return descriptor
-
-    def take_over_at_close(descriptor):
-        real_close(descriptor)
-        if descriptor != state["descriptor"] or state["takeover_attempted"]:
-            return
-        temporary = tmp_path / state["name"]
-        temporary.unlink(missing_ok=True)
-        temporary.write_bytes(foreign_payload)
-        state["takeover_attempted"] = True
-
-    def report_reused_identity(path, *args, **kwargs):
-        metadata = real_stat(path, *args, **kwargs)
-        if state["takeover_attempted"] and path == state["name"]:
-            device, inode = state["identity"]
-            return SimpleNamespace(
-                st_mode=metadata.st_mode,
-                st_nlink=metadata.st_nlink,
-                st_dev=device,
-                st_ino=inode,
-            )
-        return metadata
-
-    monkeypatch.setattr(os, "open", record_temporary_open)
-    monkeypatch.setattr(os, "close", take_over_at_close)
-    monkeypatch.setattr(os, "stat", report_reused_identity)
-    return state, foreign_payload
 
 
 def test_canonical_json_is_strict_sorted_and_newline_terminated():
@@ -237,77 +186,38 @@ def test_deadline_error_propagates_unchanged(directory_fd, tmp_path: Path):
     assert raised.value is marker
 
 
+def test_read_checks_deadline_after_final_named_path_validation(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    (tmp_path / "state.json").write_text('{"run_id":"x"}')
+    marker = TimeoutError("budget expired during final validation")
+    real_inspect = protocol_files._inspect_existing
+    inspection_count = 0
+    expired = False
+
+    def inspect_and_expire(fd, name):
+        nonlocal inspection_count, expired
+        metadata = real_inspect(fd, name)
+        inspection_count += 1
+        if inspection_count == 3:
+            expired = True
+        return metadata
+
+    def check():
+        if expired:
+            raise marker
+
+    monkeypatch.setattr(protocol_files, "_inspect_existing", inspect_and_expire)
+
+    with pytest.raises(TimeoutError) as raised:
+        read_json_object_at(directory_fd, "state.json", deadline_check=check)
+
+    assert inspection_count == 3
+    assert raised.value is marker
+
+
 def test_missing_file_returns_none(directory_fd):
     assert read_json_object_at(directory_fd, "missing.json") is None
-
-
-def test_rename_noreplace_reports_unavailable_libc_symbol(
-    directory_fd,
-    monkeypatch,
-):
-    monkeypatch.setattr(protocol_files, "_RENAMEAT2", None)
-
-    with pytest.raises(OSError) as raised:
-        protocol_files._rename_noreplace_at(
-            directory_fd,
-            "source.json",
-            "target.json",
-        )
-
-    assert raised.value.errno == errno.ENOSYS
-
-
-def test_rename_noreplace_maps_missing_errno_to_io_error(
-    directory_fd,
-    monkeypatch,
-):
-    def fail_without_errno(*_args):
-        return -1
-
-    monkeypatch.setattr(protocol_files, "_RENAMEAT2", fail_without_errno)
-    ctypes.set_errno(0)
-
-    with pytest.raises(OSError) as raised:
-        protocol_files._rename_noreplace_at(
-            directory_fd,
-            "source.json",
-            "target.json",
-        )
-
-    assert raised.value.errno == errno.EIO
-
-
-@pytest.mark.parametrize("error_number", [errno.EINVAL, errno.EOPNOTSUPP])
-def test_nonreplacing_publication_fails_closed_when_unsupported(
-    directory_fd,
-    tmp_path: Path,
-    monkeypatch,
-    error_number: int,
-):
-    def unsupported(*_args):
-        ctypes.set_errno(error_number)
-        return -1
-
-    def reject_fallback(*_args, **_kwargs):
-        pytest.fail("non-replacing publication used a clobbering fallback")
-
-    monkeypatch.setattr(protocol_files, "_RENAMEAT2", unsupported)
-    monkeypatch.setattr(os, "link", reject_fallback)
-    monkeypatch.setattr(os, "replace", reject_fallback)
-
-    with pytest.raises(ProtocolIOError) as raised:
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            {"run_id": "x"},
-            mode=0o600,
-            policy=WritePolicy.FIRST_WINS,
-        )
-
-    assert isinstance(raised.value.__cause__, OSError)
-    assert raised.value.__cause__.errno == error_number
-    assert not (tmp_path / "state.json").exists()
-    assert _temporary_siblings(tmp_path) == []
 
 
 def test_read_rejects_file_larger_than_default_limit(directory_fd, tmp_path: Path):
@@ -838,60 +748,9 @@ def test_nonreplacing_policy_revalidates_after_candidate_conversion(
     assert _temporary_siblings(tmp_path) == []
 
 
-@pytest.mark.parametrize("policy", [WritePolicy.IDENTICAL, WritePolicy.FIRST_WINS])
-def test_nonreplacing_policy_revalidates_after_existing_read(
-    directory_fd,
-    tmp_path: Path,
-    monkeypatch,
-    policy: WritePolicy,
-):
-    original = {"value": 1}
-    write_json_object_at(
-        directory_fd,
-        "state.json",
-        original,
-        mode=0o600,
-        policy=policy,
-    )
-    target = tmp_path / "state.json"
-    replacement = tmp_path / "replacement.json"
-    replacement.write_bytes(b'{"value":2}\n')
-    replacement.chmod(0o600)
-    real_read = protocol_files._read_json_object_and_metadata_at
-    replaced = False
-
-    def read_then_replace(*args, **kwargs):
-        nonlocal replaced
-        result = real_read(*args, **kwargs)
-        if result is not None and not replaced:
-            os.replace(replacement, target)
-            replaced = True
-        return result
-
-    monkeypatch.setattr(
-        protocol_files,
-        "_read_json_object_and_metadata_at",
-        read_then_replace,
-    )
-
-    with pytest.raises(ProtocolIOError, match="applying write policy"):
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            original,
-            mode=0o600,
-            policy=policy,
-        )
-
-    assert target.read_bytes() == b'{"value":2}\n'
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
-    assert _temporary_siblings(tmp_path) == []
-
-
 def test_replace_policy_atomically_replaces_document(
     directory_fd, tmp_path: Path, monkeypatch
 ):
-    monkeypatch.setattr(protocol_files, "_RENAMEAT2", None)
     original = {"run_id": "x", "sequence": 1}
     replacement = {"run_id": "x", "sequence": 2}
     write_json_object_at(
@@ -951,7 +810,7 @@ def test_interrupted_write_removes_temporary_file(
     assert _temporary_siblings(tmp_path) == []
 
 
-def test_failed_nonreplacing_publication_cleanup_is_directory_synced(
+def test_failed_publication_cleanup_is_directory_synced(
     directory_fd,
     tmp_path: Path,
     monkeypatch,
@@ -961,7 +820,7 @@ def test_failed_nonreplacing_publication_cleanup_is_directory_synced(
     real_unlink = os.unlink
     real_fsync = os.fsync
 
-    def fail_publication(_directory_fd, _source, _target):
+    def fail_publication(*_args, **_kwargs):
         raise OSError("simulated publication interruption")
 
     def recording_unlink(path, **kwargs):
@@ -976,7 +835,7 @@ def test_failed_nonreplacing_publication_cleanup_is_directory_synced(
             directory_fsyncs += 1
         return real_fsync(descriptor)
 
-    monkeypatch.setattr(protocol_files, "_rename_noreplace_at", fail_publication)
+    monkeypatch.setattr(os, "replace", fail_publication)
     monkeypatch.setattr(os, "unlink", recording_unlink)
     monkeypatch.setattr(os, "fsync", recording_fsync)
 
@@ -987,7 +846,7 @@ def test_failed_nonreplacing_publication_cleanup_is_directory_synced(
             "state.json",
             document,
             mode=0o600,
-            policy=WritePolicy.FIRST_WINS,
+            policy=WritePolicy.REPLACE,
         )
 
     assert unlink_attempts == 1
@@ -1076,342 +935,6 @@ def test_write_reports_unlock_failure_after_success(
         )
 
     assert raised.value.__cause__ is unlock_error
-
-
-def test_replace_does_not_unlink_recreated_temporary_path(
-    directory_fd, tmp_path: Path, monkeypatch
-):
-    real_replace = os.replace
-    recreated: Path | None = None
-
-    def replace_then_recreate(source, target, **kwargs):
-        nonlocal recreated
-        real_replace(source, target, **kwargs)
-        recreated = tmp_path / source
-        recreated.write_bytes(b"belongs to another actor")
-
-    monkeypatch.setattr(os, "replace", replace_then_recreate)
-
-    assert write_json_object_at(
-        directory_fd,
-        "state.json",
-        {"run_id": "x"},
-        mode=0o600,
-        policy=WritePolicy.REPLACE,
-    ) == ({"run_id": "x"}, True)
-
-    assert recreated is not None
-    assert recreated.read_bytes() == b"belongs to another actor"
-
-
-@pytest.mark.parametrize("mutation", ["content", "mode"])
-def test_write_rejects_same_inode_mutation_during_publication(
-    directory_fd, tmp_path: Path, monkeypatch, mutation: str
-):
-    candidate = {"trusted": True}
-    foreign_payload = b'{"forged":false}\n'
-    intended_identity: tuple[int, int] | None = None
-    mutated_identity: tuple[int, int] | None = None
-    real_replace = os.replace
-
-    def mutate_then_replace(source, target, **kwargs):
-        nonlocal intended_identity, mutated_identity
-        temporary = tmp_path / source
-        before = temporary.stat()
-        intended_identity = (before.st_dev, before.st_ino)
-        if mutation == "content":
-            temporary.write_bytes(foreign_payload)
-            os.utime(
-                temporary,
-                ns=(before.st_atime_ns, before.st_mtime_ns),
-            )
-        else:
-            temporary.chmod(0o666)
-        after = temporary.stat()
-        mutated_identity = (after.st_dev, after.st_ino)
-        return real_replace(source, target, **kwargs)
-
-    monkeypatch.setattr(os, "replace", mutate_then_replace)
-
-    with pytest.raises(ProtocolIOError, match="changed during publication"):
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            candidate,
-            mode=0o600,
-            policy=WritePolicy.REPLACE,
-        )
-
-    target = tmp_path / "state.json"
-    assert intended_identity == mutated_identity
-    if mutation == "content":
-        assert target.read_bytes() == foreign_payload
-        assert stat.S_IMODE(target.stat().st_mode) == 0o600
-    else:
-        assert target.read_bytes() == canonical_json(candidate)
-        assert stat.S_IMODE(target.stat().st_mode) == 0o666
-    assert _temporary_siblings(tmp_path) == []
-
-
-def test_write_rejects_temporary_substitution_during_publication(
-    directory_fd, tmp_path: Path, monkeypatch
-):
-    foreign_payload = b'{"forged":true}\n'
-    real_replace = os.replace
-
-    def substitute_then_replace(source, target, **kwargs):
-        temporary = tmp_path / source
-        temporary.unlink()
-        temporary.write_bytes(foreign_payload)
-        return real_replace(source, target, **kwargs)
-
-    monkeypatch.setattr(os, "replace", substitute_then_replace)
-
-    with pytest.raises(ProtocolIOError, match="changed during publication"):
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            {"trusted": True},
-            mode=0o600,
-            policy=WritePolicy.REPLACE,
-        )
-
-    assert (tmp_path / "state.json").read_bytes() == foreign_payload
-    assert _temporary_siblings(tmp_path) == []
-
-
-@pytest.mark.parametrize("policy", [WritePolicy.IDENTICAL, WritePolicy.FIRST_WINS])
-def test_nonreplacing_policy_does_not_clobber_target_created_during_publication(
-    directory_fd,
-    tmp_path: Path,
-    monkeypatch,
-    policy: WritePolicy,
-):
-    candidate = {"winner": "candidate"}
-    foreign = {"winner": "foreign"}
-    target = tmp_path / "state.json"
-    real_matches = protocol_files._named_path_matches_snapshot
-    inserted = False
-
-    def match_then_insert(fd, name, snapshot):
-        nonlocal inserted
-        matches = real_matches(fd, name, snapshot)
-        if name.startswith(".state.json.") and not inserted:
-            target.write_bytes(canonical_json(foreign))
-            target.chmod(0o600)
-            inserted = True
-        return matches
-
-    monkeypatch.setattr(
-        protocol_files,
-        "_named_path_matches_snapshot",
-        match_then_insert,
-    )
-
-    if policy is WritePolicy.IDENTICAL:
-        with pytest.raises(ProtocolIOError, match="conflicts"):
-            write_json_object_at(
-                directory_fd,
-                "state.json",
-                candidate,
-                mode=0o600,
-                policy=policy,
-            )
-    else:
-        assert write_json_object_at(
-            directory_fd,
-            "state.json",
-            candidate,
-            mode=0o600,
-            policy=policy,
-        ) == (foreign, False)
-
-    assert inserted is True
-    assert target.read_bytes() == canonical_json(foreign)
-    assert _temporary_siblings(tmp_path) == []
-
-
-@pytest.mark.parametrize("policy", [WritePolicy.IDENTICAL, WritePolicy.FIRST_WINS])
-def test_nonreplacing_publication_is_immediately_readable(
-    directory_fd,
-    tmp_path: Path,
-    monkeypatch,
-    policy: WritePolicy,
-):
-    candidate = {"winner": "candidate"}
-    observed: list[dict[str, object] | None] = []
-    real_publish = protocol_files._rename_noreplace_at
-
-    def publish_then_read(fd, source, target):
-        real_publish(fd, source, target)
-        observed.append(read_json_object_at(fd, target))
-
-    monkeypatch.setattr(
-        protocol_files,
-        "_rename_noreplace_at",
-        publish_then_read,
-    )
-
-    assert write_json_object_at(
-        directory_fd,
-        "state.json",
-        candidate,
-        mode=0o600,
-        policy=policy,
-    ) == (candidate, True)
-    assert observed == [candidate]
-    assert (tmp_path / "state.json").stat().st_nlink == 1
-    assert _temporary_siblings(tmp_path) == []
-
-
-def test_write_rejects_temporary_takeover_before_publication(
-    directory_fd, tmp_path: Path, monkeypatch
-):
-    foreign_payload = b"belongs to another actor"
-    taken_over: Path | None = None
-    real_fsync = os.fsync
-
-    def fsync_then_take_over(descriptor):
-        nonlocal taken_over
-        real_fsync(descriptor)
-        if not stat.S_ISDIR(os.fstat(descriptor).st_mode) and taken_over is None:
-            [temporary] = _temporary_siblings(tmp_path)
-            temporary.unlink()
-            temporary.write_bytes(foreign_payload)
-            taken_over = temporary
-
-    monkeypatch.setattr(os, "fsync", fsync_then_take_over)
-
-    with pytest.raises(ProtocolIOError, match="changed before publication"):
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            {"run_id": "x"},
-            mode=0o600,
-            policy=WritePolicy.REPLACE,
-        )
-
-    assert not (tmp_path / "state.json").exists()
-    assert taken_over is not None
-    assert taken_over.read_bytes() == foreign_payload
-
-
-def test_write_cleans_up_owned_temporary_changed_before_publication(
-    directory_fd,
-    tmp_path: Path,
-    monkeypatch,
-):
-    real_matches = protocol_files._named_path_matches_snapshot
-    mutated = False
-
-    def mutate_then_match(fd, name, snapshot):
-        nonlocal mutated
-        if name.startswith(".state.json.") and not mutated:
-            (tmp_path / name).chmod(0o666)
-            mutated = True
-        return real_matches(fd, name, snapshot)
-
-    monkeypatch.setattr(
-        protocol_files,
-        "_named_path_matches_snapshot",
-        mutate_then_match,
-    )
-
-    with pytest.raises(ProtocolIOError, match="changed before publication"):
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            {"run_id": "x"},
-            mode=0o600,
-            policy=WritePolicy.REPLACE,
-        )
-
-    assert mutated is True
-    assert not (tmp_path / "state.json").exists()
-    assert _temporary_siblings(tmp_path) == []
-
-
-def test_write_does_not_unlink_temporary_takeover_during_failure_cleanup(
-    directory_fd, tmp_path: Path, monkeypatch
-):
-    primary_error = InterruptedError("simulated write interruption")
-    foreign_payload = b"belongs to another actor"
-    taken_over: Path | None = None
-
-    def take_over_then_interrupt(_descriptor, _payload):
-        nonlocal taken_over
-        [temporary] = _temporary_siblings(tmp_path)
-        temporary.unlink()
-        temporary.write_bytes(foreign_payload)
-        taken_over = temporary
-        raise primary_error
-
-    monkeypatch.setattr(os, "write", take_over_then_interrupt)
-
-    with pytest.raises(ProtocolIOError, match="could not persist") as raised:
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            {"run_id": "x"},
-            mode=0o600,
-            policy=WritePolicy.REPLACE,
-        )
-
-    assert raised.value.__cause__ is primary_error
-    assert any("temporary file ownership" in note for note in raised.value.__notes__)
-    assert taken_over is not None
-    assert taken_over.read_bytes() == foreign_payload
-
-
-def test_write_pins_temporary_inode_through_publication(
-    directory_fd, tmp_path: Path, monkeypatch
-):
-    state, foreign_payload = _simulate_temp_inode_reuse_on_close(
-        monkeypatch,
-        tmp_path,
-    )
-    document = {"run_id": "x"}
-
-    assert write_json_object_at(
-        directory_fd,
-        "state.json",
-        document,
-        mode=0o600,
-        policy=WritePolicy.REPLACE,
-    ) == (document, True)
-
-    assert state["takeover_attempted"] is True
-    assert (tmp_path / "state.json").read_bytes() == canonical_json(document)
-    assert (tmp_path / state["name"]).read_bytes() == foreign_payload
-
-
-def test_write_pins_temporary_inode_through_failure_cleanup(
-    directory_fd, tmp_path: Path, monkeypatch
-):
-    state, foreign_payload = _simulate_temp_inode_reuse_on_close(
-        monkeypatch,
-        tmp_path,
-    )
-    primary_error = InterruptedError("simulated write interruption")
-
-    def interrupt_write(_descriptor, _payload):
-        raise primary_error
-
-    monkeypatch.setattr(os, "write", interrupt_write)
-
-    with pytest.raises(ProtocolIOError, match="could not persist") as raised:
-        write_json_object_at(
-            directory_fd,
-            "state.json",
-            {"run_id": "x"},
-            mode=0o600,
-            policy=WritePolicy.REPLACE,
-        )
-
-    assert raised.value.__cause__ is primary_error
-    assert state["takeover_attempted"] is True
-    assert (tmp_path / state["name"]).read_bytes() == foreign_payload
-    assert not (tmp_path / "state.json").exists()
 
 
 def test_concurrent_first_wins_has_one_persisted_winner(tmp_path: Path):

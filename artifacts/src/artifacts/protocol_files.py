@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-import ctypes
 from enum import Enum
-import errno
 import fcntl
 import json
 import math
@@ -20,7 +18,7 @@ _DIRECTORY_FLAGS = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 )
 _TEMPORARY_FILE_FLAGS = (
-    os.O_RDWR
+    os.O_WRONLY
     | os.O_CREAT
     | os.O_EXCL
     | os.O_CLOEXEC
@@ -35,24 +33,6 @@ _SNAPSHOT_FIELDS = (
     "st_mtime_ns",
     "st_ctime_ns",
 )
-_PUBLICATION_FIELDS = tuple(
-    field for field in _SNAPSHOT_FIELDS if field != "st_ctime_ns"
-)
-_RENAME_NOREPLACE = 1
-try:
-    _LIBC = ctypes.CDLL(None, use_errno=True)
-    _RENAMEAT2 = _LIBC.renameat2
-except (AttributeError, OSError):
-    _RENAMEAT2 = None
-else:
-    _RENAMEAT2.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    _RENAMEAT2.restype = ctypes.c_int
 
 
 class ProtocolIOError(RuntimeError):
@@ -135,17 +115,6 @@ def _same_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
     )
 
 
-def _same_publication_state(
-    before_rename: os.stat_result,
-    after_rename: os.stat_result,
-) -> bool:
-    # Renaming an inode updates its ctime; its identity, bytes, and mode must persist.
-    return all(
-        getattr(before_rename, field) == getattr(after_rename, field)
-        for field in _PUBLICATION_FIELDS
-    )
-
-
 def _inspect_existing(directory_fd: int, name: str) -> os.stat_result | None:
     try:
         metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -199,81 +168,6 @@ def _report_cleanup_failures(
     for note in notes[1:]:
         cleanup_error.add_note(note)
     raise cleanup_error from failures[0][1]
-
-
-def _temporary_path_matches(
-    directory_fd: int,
-    temporary: str,
-    identity: tuple[int, int],
-) -> bool:
-    try:
-        metadata = os.stat(
-            temporary,
-            dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise ProtocolIOError(
-            f"could not inspect temporary protocol file {temporary!r}: {error}"
-        ) from error
-    return (
-        stat.S_ISREG(metadata.st_mode)
-        and metadata.st_nlink == 1
-        and (metadata.st_dev, metadata.st_ino) == identity
-    )
-
-
-def _rename_noreplace_at(
-    directory_fd: int,
-    source: str,
-    target: str,
-) -> None:
-    """Atomically rename source to target without replacing an existing path."""
-    if _RENAMEAT2 is None:
-        raise OSError(errno.ENOSYS, "renameat2 is unavailable")
-    ctypes.set_errno(0)
-    result = _RENAMEAT2(
-        directory_fd,
-        os.fsencode(source),
-        directory_fd,
-        os.fsencode(target),
-        _RENAME_NOREPLACE,
-    )
-    if result != 0:
-        error_number = ctypes.get_errno() or errno.EIO
-        if error_number == errno.EEXIST:
-            raise FileExistsError(
-                error_number,
-                os.strerror(error_number),
-                target,
-            )
-        raise OSError(error_number, os.strerror(error_number), target)
-
-
-def _named_path_matches_snapshot(
-    directory_fd: int,
-    name: str,
-    snapshot: os.stat_result,
-) -> bool:
-    try:
-        metadata = os.stat(
-            name,
-            dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise ProtocolIOError(
-            f"could not inspect protocol file {name!r}: {error}"
-        ) from error
-    return (
-        stat.S_ISREG(metadata.st_mode)
-        and metadata.st_nlink == 1
-        and _same_snapshot(snapshot, metadata)
-    )
 
 
 def _read_json_object_and_metadata_at(
@@ -338,6 +232,7 @@ def _read_json_object_and_metadata_at(
             or not _same_snapshot(verified, named_decoded)
         ):
             raise ProtocolIOError(f"protocol file {name!r} changed while reading")
+        _check_deadline(deadline_check)
         return document, verified
     except ProtocolIOError as error:
         pending_error = error
@@ -385,7 +280,6 @@ def read_json_object_at(
 
 
 def _apply_nonreplacing_policy(
-    directory_fd: int,
     name: str,
     existing_record: tuple[dict[str, Any], os.stat_result],
     payload: bytes,
@@ -406,10 +300,6 @@ def _apply_nonreplacing_policy(
         raise ProtocolIOError(
             f"protocol file {name!r} conflicts with existing value"
         )
-    if not _named_path_matches_snapshot(directory_fd, name, metadata):
-        raise ProtocolIOError(
-            f"protocol file {name!r} changed while applying write policy"
-        )
     return existing, False
 
 
@@ -427,7 +317,6 @@ def write_json_object_at(
     lock_descriptor: int | None = None
     locked = False
     temporary_created = False
-    temporary_identity: tuple[int, int] | None = None
     pending_error: BaseException | None = None
     try:
         if not isinstance(policy, WritePolicy):
@@ -453,7 +342,6 @@ def write_json_object_at(
         nonreplacing = policy in (WritePolicy.IDENTICAL, WritePolicy.FIRST_WINS)
         if existing_record is not None and nonreplacing:
             return _apply_nonreplacing_policy(
-                directory_fd,
                 name,
                 existing_record,
                 payload,
@@ -468,11 +356,6 @@ def write_json_object_at(
             dir_fd=directory_fd,
         )
         temporary_created = True
-        temporary_metadata = os.fstat(descriptor)
-        temporary_identity = (
-            temporary_metadata.st_dev,
-            temporary_metadata.st_ino,
-        )
         os.fchmod(descriptor, mode)
         written = 0
         while written < len(payload):
@@ -481,70 +364,17 @@ def write_json_object_at(
                 raise OSError("protocol write made no progress")
             written += count
         os.fsync(descriptor)
-        sealed = os.fstat(descriptor)
-        if stat.S_IMODE(sealed.st_mode) != mode or sealed.st_size != len(payload):
-            raise ProtocolIOError(
-                f"temporary protocol file {temporary!r} changed before publication"
-            )
-        if not _named_path_matches_snapshot(
-            directory_fd,
+        descriptor_to_close = descriptor
+        descriptor = None
+        os.close(descriptor_to_close)
+        os.replace(
             temporary,
-            sealed,
-        ):
-            raise ProtocolIOError(
-                f"temporary protocol file {temporary!r} changed before publication"
-            )
-        if nonreplacing:
-            try:
-                _rename_noreplace_at(directory_fd, temporary, name)
-            except FileExistsError:
-                if not _temporary_path_matches(
-                    directory_fd,
-                    temporary,
-                    temporary_identity,
-                ):
-                    raise ProtocolIOError(
-                        f"temporary protocol file {temporary!r} changed "
-                        "during publication"
-                    )
-                os.unlink(temporary, dir_fd=directory_fd)
-                temporary_created = False
-                os.fsync(directory_fd)
-                winner = _read_json_object_and_metadata_at(directory_fd, name)
-                if winner is None:
-                    raise ProtocolIOError(
-                        f"protocol file {name!r} changed while applying write policy"
-                    )
-                return _apply_nonreplacing_policy(
-                    directory_fd,
-                    name,
-                    winner,
-                    payload,
-                    mode,
-                    policy,
-                )
-            temporary_created = False
-        else:
-            os.replace(
-                temporary,
-                name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
-            temporary_created = False
+            name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        temporary_created = False
         os.fsync(directory_fd)
-        published = os.fstat(descriptor)
-        published_payload = os.pread(descriptor, len(payload) + 1, 0)
-        verified = os.fstat(descriptor)
-        if (
-            not _same_publication_state(sealed, published)
-            or published_payload != payload
-            or not _same_snapshot(published, verified)
-            or not _named_path_matches_snapshot(directory_fd, name, verified)
-        ):
-            raise ProtocolIOError(
-                f"protocol file {name!r} changed during publication"
-            )
         return candidate, True
     except ProtocolIOError as error:
         pending_error = error
@@ -567,49 +397,16 @@ def write_json_object_at(
     finally:
         cleanup_failures: list[tuple[str, Exception]] = []
         if temporary_created:
-            if temporary_identity is None:
-                cleanup_failures.append(
-                    (
-                        "verify temporary file ownership",
-                        ProtocolIOError(
-                            f"temporary protocol file {temporary!r} has no recorded identity"
-                        ),
-                    )
-                )
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except Exception as error:
+                cleanup_failures.append(("remove temporary file", error))
             else:
-                try:
-                    remove_temporary = _temporary_path_matches(
-                        directory_fd,
-                        temporary,
-                        temporary_identity,
-                    )
-                except Exception as error:
-                    cleanup_failures.append(
-                        ("verify temporary file ownership", error)
-                    )
-                else:
-                    if remove_temporary:
-                        try:
-                            os.unlink(temporary, dir_fd=directory_fd)
-                        except Exception as error:
-                            cleanup_failures.append(
-                                ("remove temporary file", error)
-                            )
-                        else:
-                            _attempt_cleanup(
-                                cleanup_failures,
-                                "sync directory after temporary cleanup",
-                                lambda: os.fsync(directory_fd),
-                            )
-                    else:
-                        cleanup_failures.append(
-                            (
-                                "verify temporary file ownership",
-                                ProtocolIOError(
-                                    f"temporary protocol file {temporary!r} changed"
-                                ),
-                            )
-                        )
+                _attempt_cleanup(
+                    cleanup_failures,
+                    "sync directory after temporary cleanup",
+                    lambda: os.fsync(directory_fd),
+                )
         if descriptor is not None:
             descriptor_to_close = descriptor
             descriptor = None

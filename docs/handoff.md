@@ -66,57 +66,14 @@ and source-only tests do not establish runtime correctness.
 
 ### Protocol-file consolidation verification, 2026-09-06
 
-The protocol-file cleanup moved shared strict JSON and descriptor-safe
-persistence mechanics into
-[`protocol_files.py`](../artifacts/src/artifacts/protocol_files.py).
-[`RuntimeProtocol`](../artifacts/src/artifacts/runtime_protocol.py) retains the
-runtime schemas and lifecycle protocol. [`StatusStore`](../orchestration/src/orchestration/status_store.py)
-retains host allocation and document policy.
+The corrected protocol helper suite passed **46 tests**. Runtime protocol and
+host status-store tests passed **92 tests**, and shared contracts plus the Phase
+3 runtime contract passed **21 tests**. `git diff --check` passed, and the
+required removed-publication-symbol search returned no matches.
 
-The combined focused protocol tests passed: **156 passed, 0 failed, 0 skipped**.
-The affected suites and shared contracts reported **823 passed, 45 failed, 12
-skipped**. The 45 remaining failures are an isolated-worktree environment limit,
-not protocol regressions: one artifacts tool test and 44 orchestration controller
-tests encounter the absent protected `companion/comp2026` checkout while checking
-source provenance. The checkout was not copied or linked into this worktree, and
-the provenance checks remain strict.
-
-Base Compose, the Phase 2 profile, and the Phase 3 GPU overlay each resolved with
-exit status zero. From original slice base `5900d0d`, the three production files
-added 742 lines and removed 352, a net production increase of **390 lines**. The
-shared module now owns strict canonical JSON, stable descriptor-relative reads,
-durable atomic writes, independent concurrent-writer locks, deadline boundaries,
-and cleanup-error precedence. Non-replacing writes use no-clobber publication,
-validate exact modes and JSON types, and revalidate the winning path before
-returning. They require Linux `renameat2(RENAME_NOREPLACE)` support and reject
-clobbering fallbacks. Protocol directories are explicitly a cooperative trust
-boundary for helper callers, and UUID-named temporary entries are private.
-Regression tests cover FIFO swaps without blocking, duplicate keys,
-nested exponent overflow, byte-preserving and inode-substitution races,
-descriptor-pinned temporary-file ownership, late competing writers, directory-
-synced failure cleanup, and primary error preservation. Neither caller retains
-the duplicate low-level helper names.
-
-Scope limit: this slice migrated `RuntimeProtocol` and `StatusStore`, not every
-specialized producer already writing into `.status`. ArduPilot
-[`atomic_document`](../ardupilot_sitl/src/drone_sim_ardupilot/runtime.py), Gazebo
-[`GazeboReadyStatus`](../gazebo/src/drone_sim_gazebo/runtime/entrypoint.py), and
-scorekeeper [`write_score_finished`](../scorekeeper/src/drone_sim_scorekeeper/status.py)
-still have local publication code. They do not own or replace this helper's
-temporary names, but their final-name concurrency is outside the guarantee above;
-migrate them as a separate cross-image protocol slice.
-
-Against `5900d0d`, the final tracked slice covers ten files: three production
-modules, three test files, and four guides. It reports **2,380 insertions and
-356 deletions** with no files outside that scope.
-
-The final `git diff --check` passed. The documentation checker validated exactly
-243 repository-backed local links across 19 files and five resolved templates.
-Three machine-local run-evidence links remain unavailable in this isolated
-worktree, as documented above.
-
-This verification did not build or exercise runtime images and did not launch a
-flight.
+From original slice base `5900d0d`, the three production files add 539 lines and
+remove 352, a net production increase of **187 lines**. This source-only
+verification did not build runtime images or launch a flight.
 
 ## Open items, in recommended order
 
