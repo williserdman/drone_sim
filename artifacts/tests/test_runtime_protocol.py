@@ -97,6 +97,22 @@ def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(r
         protocol.write_status("runtime-running", changed)
 
 
+def test_runtime_status_does_not_accept_malformed_json_equal_value(run_directory):
+    path = run_directory / ".status/artifacts-ready.json"
+    path.write_text(json.dumps({"run_id": RUN_ID, "ready": 1}))
+    path.chmod(0o644)
+
+    with pytest.raises(ProtocolError, match="conflict"):
+        RuntimeProtocol(run_directory, RUN_ID).write_status(
+            "artifacts-ready",
+            {"run_id": RUN_ID, "ready": True},
+        )
+
+    persisted = json.loads(path.read_text())
+    assert persisted["ready"] == 1
+    assert type(persisted["ready"]) is int
+
+
 def test_mission_command_delivery_accepts_the_paused_startup_window(run_directory):
     document = {
         "run_id": RUN_ID,

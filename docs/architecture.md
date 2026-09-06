@@ -75,6 +75,21 @@ time or hide gaps by restamping queued samples. Run IDs isolate streams; invalid
 ordering or missing required samples fail validation rather than proving success.
 Reliable transport with bounded history is not a guarantee of lossless recording.
 
+`RuntimeProtocol` and `StatusStore` share the strict, descriptor-relative
+persistence implementation in
+[`protocol_files.py`](../artifacts/src/artifacts/protocol_files.py).
+[`RuntimeProtocol`](../artifacts/src/artifacts/runtime_protocol.py) owns runtime
+schemas, while [`StatusStore`](../orchestration/src/orchestration/status_store.py)
+owns host policy. Path changes, conflicting immutable values, and wrong file modes
+on non-replacing retries make protocol writers fail closed; callers do not repair
+or reinterpret them. Calls through this helper share its advisory lock, and its
+UUID-named temporary entries are private implementation details that other
+components must not replace. The helper does not claim protection from a hostile
+same-permission process, and legacy producers outside it are not serialized by
+that lock. Atomic non-replacing publication uses Linux
+`renameat2(RENAME_NOREPLACE)` and fails closed when the filesystem does not
+support it.
+
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and
 conflicting reuse of an ID is rejected. Recurring physical payload state, not a

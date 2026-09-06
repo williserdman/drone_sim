@@ -75,6 +75,11 @@ records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
 - Completed runs require every required artifact; failed and aborted runs retain
   explicit missing/invalid records. Finalization is no-clobber and scoped to the
   current run directory.
+- Callers of the shared protocol helper cooperate through its advisory lock;
+  UUID-named temporary entries are private and must not be replaced by other
+  components. This is not a security boundary against a hostile process with the
+  same filesystem permissions. Immutable and first-wins publication requires Linux
+  `renameat2(RENAME_NOREPLACE)` filesystem support and fails closed without it.
 - CPU and optional GPU encoding must satisfy the same video contract. Deployment
   and GPU setup belong in the [runbook](../docs/runbook.md#optional-nvidia-path).
 
@@ -83,8 +88,9 @@ records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
 Run from the project root:
 
 ```bash
-uv run pytest artifacts/tests/test_runtime_configuration.py \
-  artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
+uv run pytest artifacts/tests/test_protocol_files.py \
+  artifacts/tests/test_runtime_protocol.py artifacts/tests/test_runtime_configuration.py -q
+uv run pytest artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
 uv run pytest artifacts/tests/test_manifest.py artifacts/tests/test_session.py \
   artifacts/tests/test_acceptance.py -q
 ```
