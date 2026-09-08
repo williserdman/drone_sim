@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from artifacts.runtime_status import FlightExchange
 from drone_sim_gazebo.ros_adapter import AdapterSummary
 from drone_sim_gazebo.runtime import (
     ActivateOutput,
@@ -36,6 +37,11 @@ from drone_sim_gazebo.server import NativeArtifactSummary
 RUN_ID = "00000000-0000-4000-8000-000000000505"
 STALE_RUN_ID = "00000000-0000-4000-8000-000000000999"
 INTERVAL_NS = 50_000_000
+FLIGHT_EXCHANGE = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
+
+
+class FlightExchangeSubclass(FlightExchange):
+    pass
 
 
 def _summary(frames: int = 2, **changes: object) -> AdapterSummary:
@@ -70,21 +76,45 @@ def _native_summary(
 def _running_model(*, expected_frames: int = 2) -> RuntimeModel:
     model = RuntimeModel(run_id=RUN_ID, expected_frames=expected_frames)
     assert model.accept(ArtifactsReady(RUN_ID)) == ()
-    assert model.accept(GazeboReady(RUN_ID)) == (PublishGazeboReady(),)
+    assert model.accept(GazeboReady(RUN_ID, FLIGHT_EXCHANGE)) == (
+        PublishGazeboReady(FLIGHT_EXCHANGE),
+    )
     assert model.accept(RunStateEvent(RUN_ID, "READY")) == (SetPaused(False),)
     assert model.accept(RunStateEvent(RUN_ID, "RUNNING")) == (ActivateOutput(),)
     return model
 
 
-@pytest.mark.parametrize("first", [ArtifactsReady, GazeboReady])
+def test_gazebo_readiness_carries_typed_exchange_into_publish_action():
+    model = RuntimeModel(run_id=RUN_ID, expected_frames=2)
+
+    assert model.accept(ArtifactsReady(RUN_ID)) == ()
+    assert model.accept(GazeboReady(RUN_ID, FLIGHT_EXCHANGE)) == (
+        PublishGazeboReady(FLIGHT_EXCHANGE),
+    )
+
+    subclass = FlightExchangeSubclass(True, 1, 1, 0, 0, 1, 0, 0, 0)
+    for invalid in (FLIGHT_EXCHANGE.__dict__, subclass):
+        with pytest.raises(TypeError, match="flight_exchange must be a FlightExchange"):
+            GazeboReady(RUN_ID, invalid)
+        with pytest.raises(TypeError, match="flight_exchange must be a FlightExchange"):
+            PublishGazeboReady(invalid)
+
+
+@pytest.mark.parametrize(
+    "first", [ArtifactsReady(RUN_ID), GazeboReady(RUN_ID, FLIGHT_EXCHANGE)]
+)
 def test_ready_unpauses_private_warmup_and_running_only_activates_public_output(first):
     model = RuntimeModel(run_id=RUN_ID, expected_frames=40)
-    second = GazeboReady if first is ArtifactsReady else ArtifactsReady
+    second = (
+        GazeboReady(RUN_ID, FLIGHT_EXCHANGE)
+        if isinstance(first, ArtifactsReady)
+        else ArtifactsReady(RUN_ID)
+    )
 
-    assert model.accept(first(RUN_ID)) == ()
-    assert model.accept(first(RUN_ID)) == ()
-    assert model.accept(second(RUN_ID)) == (PublishGazeboReady(),)
-    assert model.accept(second(RUN_ID)) == ()
+    assert model.accept(first) == ()
+    assert model.accept(first) == ()
+    assert model.accept(second) == (PublishGazeboReady(FLIGHT_EXCHANGE),)
+    assert model.accept(second) == ()
     assert model.accept(RunStateEvent(RUN_ID, "READY")) == (SetPaused(False),)
     assert model.accept(RunStateEvent(RUN_ID, "READY")) == ()
     running_actions = model.accept(RunStateEvent(RUN_ID, "RUNNING"))
@@ -98,12 +128,14 @@ def test_stale_run_facts_cannot_advance_readiness_completion_or_quiescence(tmp_p
     stale_native = _native_summary(tmp_path)
 
     assert model.accept(ArtifactsReady(STALE_RUN_ID)) == ()
-    assert model.accept(GazeboReady(STALE_RUN_ID)) == ()
+    assert model.accept(GazeboReady(STALE_RUN_ID, FLIGHT_EXCHANGE)) == ()
     assert model.accept(RunStateEvent(STALE_RUN_ID, "READY")) == ()
     assert model.accept(AdapterCompleted(STALE_RUN_ID, _summary())) == ()
     assert model.accept(ServerStopped(STALE_RUN_ID, stale_native)) == ()
     assert model.accept(ArtifactsReady(RUN_ID)) == ()
-    assert model.accept(GazeboReady(RUN_ID)) == (PublishGazeboReady(),)
+    assert model.accept(GazeboReady(RUN_ID, FLIGHT_EXCHANGE)) == (
+        PublishGazeboReady(FLIGHT_EXCHANGE),
+    )
 
 
 def test_premature_running_fails_once_and_never_releases_progress_later():
@@ -122,7 +154,7 @@ def test_premature_running_fails_once_and_never_releases_progress_later():
         ),
     )
     assert model.accept(ArtifactsReady(RUN_ID)) == ()
-    assert model.accept(GazeboReady(RUN_ID)) == ()
+    assert model.accept(GazeboReady(RUN_ID, FLIGHT_EXCHANGE)) == ()
     assert model.accept(AdapterCompleted(RUN_ID, _summary())) == ()
     assert model.accept(FinalizationRequested(RUN_ID, "COMPLETED", "late success", 30.0)) == (
         StopServer(30.0),
@@ -470,7 +502,7 @@ def test_runtime_values_reject_noncanonical_numbers_terminal_data_and_paths(fact
 def test_runtime_actions_events_and_native_summary_are_frozen(tmp_path: Path):
     values = [
         ActivateOutput(),
-        PublishGazeboReady(),
+        PublishGazeboReady(FLIGHT_EXCHANGE),
         RequestSteps(1),
         SetPaused(True),
         WriteSourceFinished(100_000_000),

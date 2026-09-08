@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 
+from artifacts.runtime_status import FlightExchange
 from drone_sim_gazebo.runtime.entrypoint import (
     FinalizationDeadlineLatch,
     GazeboTransport,
@@ -169,18 +170,9 @@ def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
         environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
     )
 
-    assert transport.flight_exchange_status() == {
-        "online": True,
-        "servo_packets_received": 3,
-        "motor_updates": 2,
-        "duplicate_servo_packets": 1,
-        "servo_frame_gaps": 0,
-        "json_states_sent": 3,
-        "json_send_errors": 0,
-        "last_servo_frame": 2,
-        "last_json_sim_time_ns": 0,
-    }
-    assert transport.ready_flight_exchange() == transport.flight_exchange_status()
+    assert transport.ready_flight_exchange() == FlightExchange(
+        True, 3, 2, 1, 0, 3, 0, 2, 0
+    )
 
 
 @pytest.mark.parametrize(
@@ -245,8 +237,9 @@ def test_flight_exchange_readiness_accepts_stable_bounded_bootstrap_snapshot():
         environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
     )
 
-    assert transport.ready_flight_exchange() == sample
-    assert transport.ready_flight_exchange() == sample
+    expected = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
+    assert transport.ready_flight_exchange() == expected
+    assert transport.ready_flight_exchange() == expected
 
 
 def test_flight_exchange_readiness_rejects_json_sends_without_servo_exchange():
@@ -315,8 +308,8 @@ def test_flight_exchange_readiness_fails_closed_on_incomplete_or_gapped_exchange
         environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
     )
 
-    assert transport.flight_exchange_ready() is False
-    assert transport.flight_exchange_ready() is False
+    assert transport.ready_flight_exchange() is None
+    assert transport.ready_flight_exchange() is None
 
 
 def test_transport_names_missing_actual_endpoint():

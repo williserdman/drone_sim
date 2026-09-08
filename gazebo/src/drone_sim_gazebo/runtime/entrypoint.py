@@ -13,6 +13,7 @@ from artifacts.runtime_status import (
     FlightExchange,
     GazeboReadyStatus,
     RuntimeFailureStatus,
+    RuntimeStatusError,
     SourceFinishedStatus,
 )
 from .model import (
@@ -62,42 +63,6 @@ def _validate_flight_status(value: object) -> dict[str, bool | int]:
         if type(value[key]) is not int or value[key] < 0:
             raise TransportError(f"ArduPilot status field {key} must be nonnegative")
     return dict(value)
-
-
-def _flight_status_ready(status: Mapping[str, bool | int]) -> bool:
-    return bool(
-        status["online"]
-        and status["servo_packets_received"] >= 1
-        and status["motor_updates"] >= 1
-        and status["json_states_sent"] >= 1
-        and status["servo_frame_gaps"] == 0
-        and status["json_send_errors"] == 0
-    )
-
-
-class FlightExchangeLatch:
-    """Freeze the live exchange that proves Gazebo flight readiness."""
-
-    def __init__(self) -> None:
-        self._flight_exchange: FlightExchange | None = None
-
-    def record_flight_exchange(self, status: Mapping[str, bool | int]) -> None:
-        validated = _validate_flight_status(dict(status))
-        if not _flight_status_ready(validated):
-            raise RuntimeError("cannot record an unready ArduPilot exchange")
-        flight_exchange = FlightExchange(**validated)
-        if (
-            self._flight_exchange is not None
-            and self._flight_exchange != flight_exchange
-        ):
-            raise RuntimeError("flight exchange readiness was already latched")
-        self._flight_exchange = flight_exchange
-
-    @property
-    def flight_exchange(self) -> FlightExchange:
-        if self._flight_exchange is None:
-            raise RuntimeError("flight exchange readiness has not been latched")
-        return self._flight_exchange
 
 
 class GazeboTransport:
@@ -162,26 +127,29 @@ class GazeboTransport:
                 f"required Gazebo service is missing: {_FLIGHT_STATUS_SERVICE}"
             )
 
-    def flight_exchange_status(self, *, timeout: float = 2.0) -> dict[str, bool | int]:
-        if not self._flight:
-            raise TransportError("the passive world has no ArduPilot exchange")
-        result = self._command(
-            (
-                "gz",
-                "service",
-                "-s",
-                _FLIGHT_STATUS_SERVICE,
-                "--reqtype",
-                "gz.msgs.Empty",
-                "--reptype",
-                "gz.msgs.StringMsg",
-                "--timeout",
-                "1000",
-                "--req",
-                "",
-            ),
-            timeout=timeout,
-        )
+    def ready_flight_exchange(
+        self, *, timeout: float = 2.0
+    ) -> FlightExchange | None:
+        try:
+            result = self._command(
+                (
+                    "gz",
+                    "service",
+                    "-s",
+                    _FLIGHT_STATUS_SERVICE,
+                    "--reqtype",
+                    "gz.msgs.Empty",
+                    "--reptype",
+                    "gz.msgs.StringMsg",
+                    "--timeout",
+                    "1000",
+                    "--req",
+                    "",
+                ),
+                timeout=timeout,
+            )
+        except TransportUnavailable:
+            return None
         output = result.stdout.strip()
         if not output.startswith('data: "'):
             raise TransportError("ArduPilot status service returned malformed data")
@@ -190,19 +158,10 @@ class GazeboTransport:
             document = json.loads(encoded)
         except (TypeError, json.JSONDecodeError) as error:
             raise TransportError("ArduPilot status service returned malformed JSON") from error
-        return _validate_flight_status(document)
-
-    def flight_exchange_ready(self, *, timeout: float = 2.0) -> bool:
-        return self.ready_flight_exchange(timeout=timeout) is not None
-
-    def ready_flight_exchange(
-        self, *, timeout: float = 2.0
-    ) -> dict[str, bool | int] | None:
         try:
-            status = self.flight_exchange_status(timeout=timeout)
-        except TransportUnavailable:
+            return FlightExchange(**_validate_flight_status(document))
+        except RuntimeStatusError:
             return None
-        return status if _flight_status_ready(status) else None
 
     def _control(self, request: str) -> None:
         result = self._command(
@@ -308,7 +267,6 @@ class ActionExecutor:
         *,
         run_id: str,
         protocol,
-        readiness: FlightExchangeLatch,
         transport: GazeboTransport,
         children,
         server,
@@ -318,7 +276,6 @@ class ActionExecutor:
     ) -> None:
         self._run_id = run_id
         self._protocol = protocol
-        self._readiness = readiness
         self._transport = transport
         self._children = children
         self._server = server
@@ -332,7 +289,7 @@ class ActionExecutor:
             self._observe(action)
             if isinstance(action, PublishGazeboReady):
                 self._protocol.write_status(
-                    GazeboReadyStatus(self._run_id, self._readiness.flight_exchange)
+                    GazeboReadyStatus(self._run_id, action.flight_exchange)
                 )
             elif isinstance(action, RequestSteps):
                 self._transport.request_steps(action.count)

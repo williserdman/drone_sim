@@ -4,7 +4,7 @@ from pathlib import Path
 from threading import Event, Thread
 import time
 
-from artifacts.runtime_status import MissionCommandDeliveredStatus
+from artifacts.runtime_status import FlightExchange, MissionCommandDeliveredStatus
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
 from drone_sim_gazebo.runtime.runtime_node import (
@@ -119,11 +119,12 @@ class FlightTransport:
 
 
 def test_flight_exchange_probe_uses_only_remaining_startup_budget():
-    transport = FlightTransport(result={"online": True})
+    flight_exchange = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
+    transport = FlightTransport(result=flight_exchange)
 
     assert _probe_flight_exchange(
         transport, deadline=10.25, monotonic=lambda: 10.0
-    ) == {"online": True}
+    ) == flight_exchange
     assert transport.timeouts == [pytest.approx(0.25)]
 
 
