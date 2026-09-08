@@ -1,132 +1,485 @@
-"""
-run mission to pickup and drop arucos at specified waypoints
-- mission begins
-- for id in range: land and pickup payload
-- fly to drop waypoint, wait 2 seconds (to settle), drop
-- repeat for all ids in list
-"""
+"""Active FM3 mission flow with fail-closed precision evidence."""
 
 from __future__ import annotations
 
-from .common_types import *
-from .control.mission_info import MissonTracker
-from .control.drone_control import DroneControl
-from . import timebase as time
-from .sensors.camera.camera import Camera
-from .utils.position_smoother import RelPosSmoother
+from dataclasses import dataclass
 import math
-from typing import Optional, Tuple, TYPE_CHECKING
+from numbers import Real
+from typing import Callable, TYPE_CHECKING
+
+from . import timebase as time
+from .common_types import GPSCoord, RelPosComplete
+from .control.drone_control import DroneControl
+from .control.mission_info import MissonTracker
+from .sensors.camera.camera import Camera
+from .sensors.lidar.clearance import (
+    AttitudeSample,
+    ClearanceCalibration,
+    ClearanceUnavailableError,
+    ProjectedVerticalClearance,
+    project_vertical_clearance,
+)
+from .sensors.lidar.lidar import StaleSensorError
 
 if TYPE_CHECKING:
     from .sensors.lidar.lidar import Lidar
     from .sensors.servo.servo import Dropper
 
-ARUCO_PICKUP = GPSCoord(39.9337075, -75.7802787, 10)
-DROP_POINT = GPSCoord(39.9338306, -75.7801814, 10)
-ALT_TOL = 0.03
-HOVER_ALT_TOL = 1
-TARGET_HOVER_HEIGHT = 4.572
-WINDOW = 5
-MULT = 0.3
+
+PRECISION_LAND_DEADLINE_S = 60.0
+REQUIRED_CENTERED_OBSERVATIONS = 5
+MAX_OBSERVATIONS_PER_GRID_CELL = REQUIRED_CENTERED_OBSERVATIONS * 2
+GRID_POSITION_TOLERANCE_M = 0.15
 
 
-def _marker_offset_ne(update: RelPosComplete, attitude) -> Tuple[float, float]:
-    """Project one body-FRD marker vector into earth North/East."""
-    roll = attitude.roll
-    pitch = attitude.pitch
-    yaw = attitude.yaw
+class PrecisionEvidenceUnavailable(RuntimeError):
+    """Current observations cannot support a precision decision."""
 
-    cos_roll, sin_roll = math.cos(roll), math.sin(roll)
-    cos_pitch, sin_pitch = math.cos(pitch), math.sin(pitch)
-    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
 
-    rolled_right = cos_roll * update.y - sin_roll * update.z
-    rolled_down = sin_roll * update.y + cos_roll * update.z
-    pitched_forward = cos_pitch * update.x + sin_pitch * rolled_down
-    pitched_right = rolled_right
+class _CameraAcquisitionTimeout(TimeoutError):
+    """A bounded camera read produced no fresh frame."""
 
-    north = cos_yaw * pitched_forward - sin_yaw * pitched_right
-    east = sin_yaw * pitched_forward + cos_yaw * pitched_right
+
+def _positive_number(name: str, value: object) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+    ):
+        raise ValueError(f"{name} must be finite and positive")
+    return float(value)
+
+
+@dataclass(frozen=True)
+class PrecisionMissionPolicy:
+    """Explicit measured and operational limits for active precision FM3."""
+
+    clearance_calibration: ClearanceCalibration
+    clock: Callable[[], float]
+    max_exposure_age_s: float
+    max_image_attitude_skew_s: float
+    max_image_location_skew_s: float
+    max_attitude_transport_latency_s: float
+    max_location_transport_latency_s: float
+    acquisition_timeout_s: float
+    frame_timeout_s: float
+    observation_period_s: float
+    target_hover_height_m: float
+    hover_tolerance_m: float
+    centered_tolerance_m: float
+    correction_gain: float
+    cruise_altitude_m: float
+    desired_drop_height_m: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.clearance_calibration, ClearanceCalibration):
+            raise ValueError("clearance_calibration must be explicit")
+        if not callable(self.clock):
+            raise ValueError("clock must be callable")
+        if self.clock is not time.monotonic:
+            raise ValueError("clock must be the shared timebase.monotonic callable")
+        for name in (
+            "max_exposure_age_s",
+            "max_image_attitude_skew_s",
+            "max_image_location_skew_s",
+            "max_attitude_transport_latency_s",
+            "max_location_transport_latency_s",
+            "acquisition_timeout_s",
+            "frame_timeout_s",
+            "observation_period_s",
+            "target_hover_height_m",
+            "hover_tolerance_m",
+            "centered_tolerance_m",
+            "cruise_altitude_m",
+            "desired_drop_height_m",
+        ):
+            object.__setattr__(self, name, _positive_number(name, getattr(self, name)))
+        gain = _positive_number("correction_gain", self.correction_gain)
+        if gain > 1:
+            raise ValueError("correction_gain must not exceed one")
+        object.__setattr__(self, "correction_gain", gain)
+        if self.frame_timeout_s > self.acquisition_timeout_s:
+            raise ValueError("frame_timeout_s must not exceed acquisition_timeout_s")
+
+
+@dataclass(frozen=True)
+class _PrecisionEvidence:
+    vector: RelPosComplete | None
+    frame_sequence: int
+    location: GPSCoord
+    attitude: AttitudeSample
+    clearance: ProjectedVerticalClearance
+    location_invalidation_generation: int
+    attitude_invalidation_generation: int
+
+
+def _require_policy(policy: PrecisionMissionPolicy | None) -> PrecisionMissionPolicy:
+    if not isinstance(policy, PrecisionMissionPolicy):
+        raise ValueError("an explicit validated precision policy is required")
+    return policy
+
+
+def _require_zero(operation: str, result: object) -> None:
+    if isinstance(result, bool) or not isinstance(result, int) or result != 0:
+        raise RuntimeError(f"{operation} was not confirmed")
+
+
+def _require_none(operation: str, result: object) -> None:
+    if result is not None:
+        raise RuntimeError(f"{operation} was not confirmed")
+
+
+def _now(policy: PrecisionMissionPolicy) -> float:
+    value = policy.clock()
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+    ):
+        raise RuntimeError("precision clock is unavailable")
+    return float(value)
+
+
+def _camera_ready(camera: Camera) -> None:
+    readiness = camera.precision_readiness()
+    if readiness.ready is not True:
+        reasons = "; ".join(readiness.reasons)
+        raise RuntimeError(f"camera is not precision-ready: {reasons}")
+
+
+def _field_observation(snapshot, name: str):
+    field = getattr(snapshot, name, None)
+    if field is None or field.fresh is not True:
+        raise PrecisionEvidenceUnavailable(
+            f"fresh {name} observation is unavailable"
+        )
+    return field.observation
+
+
+def _attitude_sample(snapshot) -> AttitudeSample:
+    observation = _field_observation(snapshot, "attitude")
+    value = observation.value
+    if not isinstance(value, tuple) or len(value) < 3:
+        raise PrecisionEvidenceUnavailable("attitude observation is malformed")
+    return AttitudeSample(
+        roll_rad=value[0],
+        pitch_rad=value[1],
+        yaw_rad=value[2],
+        sampled_at=observation.received_at,
+        sequence=observation.sequence,
+    )
+
+
+def _location(snapshot, controller: DroneControl) -> tuple[GPSCoord, object]:
+    observation = _field_observation(snapshot, "location")
+    value = observation.value
+    if not isinstance(value, tuple) or len(value) != 4:
+        raise PrecisionEvidenceUnavailable("location observation is malformed")
+    lat, lon, amsl_mm, _relative_mm = value
+    if any(
+        isinstance(item, bool)
+        or not isinstance(item, Real)
+        or not math.isfinite(float(item))
+        for item in (lat, lon, amsl_mm)
+    ):
+        raise PrecisionEvidenceUnavailable("location observation is malformed")
+    home = controller.mission_home
+    if home is None:
+        raise PrecisionEvidenceUnavailable(
+            "precision mission requires pinned mission home"
+        )
+    return (
+        GPSCoord(
+            float(lat) / 1e7,
+            float(lon) / 1e7,
+            float(amsl_mm) / 1000.0 - home.amsl_m,
+        ),
+        observation,
+    )
+
+
+def _read_clearance(
+    controller: DroneControl,
+    lidar: Lidar,
+    policy: PrecisionMissionPolicy,
+) -> ProjectedVerticalClearance:
+    controller.check_permission()
+    snapshot = controller.flight_snapshot()
+    attitude = _attitude_sample(snapshot)
+    range_sample = lidar.get_sample()
+    now = _now(policy)
+    return project_vertical_clearance(
+        range_sample,
+        attitude,
+        policy.clearance_calibration,
+        now=float(now),
+    )
+
+
+def _read_precision_evidence(
+    controller: DroneControl,
+    camera: Camera,
+    lidar: Lidar,
+    target_id: int,
+    policy: PrecisionMissionPolicy,
+    *,
+    after_sequence: int,
+    timeout_s: float,
+) -> _PrecisionEvidence:
+    controller.check_permission()
+    _camera_ready(camera)
+    try:
+        vector, metadata = camera.vec_to_marker_3d_bounded(
+            target_id,
+            timeout_s=timeout_s,
+            after_sequence=after_sequence,
+            quality=4,
+        )
+    except TimeoutError as error:
+        raise _CameraAcquisitionTimeout(str(error)) from error
+    if (
+        isinstance(metadata.sequence, bool)
+        or not isinstance(metadata.sequence, int)
+        or metadata.sequence <= 0
+        or metadata.exposure_age_bounded is not True
+        or isinstance(metadata.exposure_timestamp_ns, bool)
+        or not isinstance(metadata.exposure_timestamp_ns, int)
+    ):
+        raise PrecisionEvidenceUnavailable(
+            "camera metadata cannot support precision flight"
+        )
+    try:
+        exposure_s = metadata.exposure_timestamp_ns / 1_000_000_000
+    except OverflowError:
+        raise PrecisionEvidenceUnavailable(
+            "camera exposure timestamp is invalid"
+        ) from None
+    if not math.isfinite(exposure_s):
+        raise PrecisionEvidenceUnavailable("camera exposure timestamp is invalid")
+    snapshot = controller.flight_snapshot()
+    attitude = _attitude_sample(snapshot)
+    location, location_observation = _location(snapshot, controller)
+    if not _source_interval_within_skew(
+        received_at=attitude.sampled_at,
+        exposure_at=exposure_s,
+        max_transport_latency_s=policy.max_attitude_transport_latency_s,
+        max_skew_s=policy.max_image_attitude_skew_s,
+    ):
+        raise PrecisionEvidenceUnavailable(
+            "camera and attitude observations exceed approved skew"
+        )
+    if not _source_interval_within_skew(
+        received_at=location_observation.received_at,
+        exposure_at=exposure_s,
+        max_transport_latency_s=policy.max_location_transport_latency_s,
+        max_skew_s=policy.max_image_location_skew_s,
+    ):
+        raise PrecisionEvidenceUnavailable(
+            "camera and location observations exceed approved skew"
+        )
+    range_sample = lidar.get_sample()
+    now = _now(policy)
+    exposure_age = float(now) - exposure_s
+    if not 0 <= exposure_age <= policy.max_exposure_age_s:
+        raise PrecisionEvidenceUnavailable(
+            "camera exposure is outside the approved age"
+        )
+    clearance = project_vertical_clearance(
+        range_sample,
+        attitude,
+        policy.clearance_calibration,
+        now=float(now),
+    )
+    if vector is not None and (
+        not isinstance(vector, RelPosComplete)
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            for value in (vector.x, vector.y, vector.z)
+        )
+    ):
+        raise PrecisionEvidenceUnavailable("camera marker vector is malformed")
+    return _PrecisionEvidence(
+        vector=vector,
+        frame_sequence=metadata.sequence,
+        location=location,
+        attitude=attitude,
+        clearance=clearance,
+        location_invalidation_generation=getattr(
+            snapshot.location, "invalidation_generation", 0
+        ),
+        attitude_invalidation_generation=getattr(
+            snapshot.attitude, "invalidation_generation", 0
+        ),
+    )
+
+
+def _source_interval_within_skew(
+    *,
+    received_at: float,
+    exposure_at: float,
+    max_transport_latency_s: float,
+    max_skew_s: float,
+) -> bool:
+    earliest_source_time = received_at - max_transport_latency_s
+    return max(
+        abs(received_at - exposure_at),
+        abs(earliest_source_time - exposure_at),
+    ) <= max_skew_s
+
+
+def _marker_offset_ne(update: RelPosComplete, attitude) -> tuple[float, float]:
+    """Project one body-FRD marker vector into local north/east."""
+    roll = attitude.roll_rad if isinstance(attitude, AttitudeSample) else attitude.roll
+    pitch = attitude.pitch_rad if isinstance(attitude, AttitudeSample) else attitude.pitch
+    yaw = attitude.yaw_rad if isinstance(attitude, AttitudeSample) else attitude.yaw
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    north = (
+        cy * cp * update.x
+        + (cy * sp * sr - sy * cr) * update.y
+        + (cy * sp * cr + sy * sr) * update.z
+    )
+    east = (
+        sy * cp * update.x
+        + (sy * sp * sr + cy * cr) * update.y
+        + (sy * sp * cr - cy * sr) * update.z
+    )
     return north, east
 
 
-def _read_lidar_or_fallback(
-    lidar: Lidar, controller: DroneControl
-) -> Tuple[Optional[float], bool]:
-    """Return (altitude, has_lidar) with GPS fallback when LiDAR is unavailable."""
-    try:
-        return lidar.get_distance(), True
-    except Exception as lidar_error:
-        print(f"[WARN] LiDAR read failed: {lidar_error}. Falling back to GPS altitude.")
-        try:
-            return controller.get_current_gps().alt, False
-        except Exception as gps_error:
-            print(f"[ERR] GPS fallback after LiDAR failure also failed: {gps_error}")
-            return None, False
+def _touchdown_candidate(controller: DroneControl) -> bool:
+    snapshot = controller.flight_snapshot()
+    landed = getattr(snapshot, "landed_state", None)
+    armed = getattr(snapshot, "armed", None)
+    explicit_ground = (
+        landed is not None
+        and landed.fresh is True
+        and isinstance(landed.observation.value, int)
+        and not isinstance(landed.observation.value, bool)
+        and landed.observation.value == 1
+    )
+    fresh_auto_disarm = (
+        armed is not None
+        and armed.fresh is True
+        and armed.observation.value is False
+    )
+    return explicit_ground or fresh_auto_disarm
+
+
+def _confirm_current_land(
+    controller: DroneControl,
+    *,
+    deadline: float,
+    policy: PrecisionMissionPolicy,
+) -> bool:
+    controller.check_permission()
+    remaining = deadline - _now(policy)
+    if remaining <= 0:
+        raise TimeoutError("precision landing touchdown deadline expired")
+    _require_zero(
+        "landing confirmation",
+        controller.confirm_landing(timeout=remaining),
+    )
+    return True
+
+
+def _sleep_bounded(deadline: float, policy: PrecisionMissionPolicy) -> bool:
+    remaining = deadline - _now(policy)
+    if remaining <= 0:
+        return False
+    time.sleep(min(policy.observation_period_s, remaining))
+    return _now(policy) < deadline
+
+
+def _finalize_failed_precision_land(
+    controller: DroneControl,
+    *,
+    deadline: float,
+    policy: PrecisionMissionPolicy,
+) -> bool:
+    _confirm_current_land(controller, deadline=deadline, policy=policy)
+    return False
 
 
 def aruco_land_precision(
-    controller: DroneControl, camera: Camera, lidar: Lidar, target_id: int
+    controller: DroneControl,
+    camera: Camera,
+    lidar: Lidar,
+    target_id: int,
+    *,
+    policy: PrecisionMissionPolicy | None = None,
 ) -> bool:
-    # controller.set_precision_land_mode()
-    controller.set_land_mode()
+    policy = _require_policy(policy)
+    _camera_ready(camera)
+    started_at = _now(policy)
+    controller.check_permission()
+    _require_zero("LAND mode", controller.set_land_mode())
+    deadline = started_at + PRECISION_LAND_DEADLINE_S
+    last_sequence = 0
 
-    alt, has_lidar = _read_lidar_or_fallback(lidar, controller)
-    if alt is None:
-        raise RuntimeError("Unable to determine altitude from LiDAR or GPS.")
-
-    quality = 4
-    t0 = time.time()
-    timeout = 60.0
-
-    # Loop until ArduPilot explicitly confirms touchdown
-    touchdown_confirmed = False
-    i = 0
     while True:
-        if alt > ALT_TOL and controller.vehicle.armed:
-            if time.time() - t0 > timeout:
-                break
-                # raise TimeoutError("Precision-landing timeout waiting for landed state")
-            # while alt > ALT_TOL:
-
-            # Get raw 3D update
-            if has_lidar:
-                raw_update = camera.vec_to_marker_3d(
-                    target_id, lidar_alt=alt, quality=quality
-                )
-            else:
-                raw_update = camera.vec_to_marker_3d(target_id, quality=quality)
-
-            if raw_update:
-                controller.land_send_landing_target(raw_update)
-
-            # Update LiDAR distance periodically
-            if i % 5 == 0:
-                if has_lidar:
-                    alt, has_lidar = _read_lidar_or_fallback(lidar, controller)
-                    if alt is None:
-                        raise RuntimeError(
-                            "Lost both LiDAR and GPS altitude sources during landing."
-                        )
-
-            # Add a tiny sleep to prevent maxing out the CPU loop
-            time.sleep(0.05)
-            i += 1
-        else:
-            touchdown_confirmed = (
-                not controller.vehicle.armed
-                or alt <= ALT_TOL
-                or controller.is_landed()
+        controller.check_permission()
+        remaining = deadline - _now(policy)
+        if remaining <= 0:
+            raise TimeoutError("precision landing touchdown deadline expired")
+        if _touchdown_candidate(controller):
+            return _confirm_current_land(controller, deadline=deadline, policy=policy)
+        if remaining <= policy.observation_period_s:
+            return _confirm_current_land(controller, deadline=deadline, policy=policy)
+        try:
+            evidence = _read_precision_evidence(
+                controller,
+                camera,
+                lidar,
+                target_id,
+                policy,
+                after_sequence=last_sequence,
+                timeout_s=min(policy.frame_timeout_s, remaining),
             )
-            break
-
-    if touchdown_confirmed:
-        print("[*] Touchdown confirmed!")
-    else:
-        print("[!] Precision landing ended without touchdown confirmation.")
-    # time.sleep(3)
-    # controller.set_guided_mode()
-    return touchdown_confirmed
+        except _CameraAcquisitionTimeout:
+            controller.check_permission()
+            if _now(policy) >= deadline:
+                raise TimeoutError("precision landing touchdown deadline expired")
+            return _finalize_failed_precision_land(
+                controller,
+                deadline=deadline,
+                policy=policy,
+            )
+        except (
+            ClearanceUnavailableError,
+            PrecisionEvidenceUnavailable,
+            StaleSensorError,
+        ):
+            controller.check_permission()
+            if _now(policy) >= deadline:
+                raise TimeoutError("precision landing touchdown deadline expired")
+            return _finalize_failed_precision_land(
+                controller,
+                deadline=deadline,
+                policy=policy,
+            )
+        controller.check_permission()
+        if _now(policy) >= deadline:
+            raise TimeoutError("precision landing touchdown deadline expired")
+        if evidence.frame_sequence <= last_sequence or evidence.vector is None:
+            return _finalize_failed_precision_land(
+                controller,
+                deadline=deadline,
+                policy=policy,
+            )
+        last_sequence = evidence.frame_sequence
+        controller.check_permission()
+        if _now(policy) >= deadline:
+            raise TimeoutError("precision landing touchdown deadline expired")
+        _require_zero(
+            "landing target",
+            controller.land_send_landing_target(evidence.vector),
+        )
+        _sleep_bounded(deadline, policy)
 
 
 def pickup_sequence(
@@ -135,192 +488,235 @@ def pickup_sequence(
     lidar: Lidar,
     target_id: int,
     dropper: Dropper,
+    *,
+    policy: PrecisionMissionPolicy | None = None,
 ) -> bool:
-    controller.set_guided_mode()
-    timeout = 60
-    t0 = time.time()
+    policy = _require_policy(policy)
+    if getattr(dropper, "supports_attachment", None) is not True:
+        raise RuntimeError("FM3 requires explicit attachment capability")
+    _camera_ready(camera)
+    started_at = _now(policy)
+    controller.check_permission()
+    _require_zero("GUIDED mode", controller.set_guided_mode())
+    acquisition_deadline = started_at + policy.acquisition_timeout_s
 
-    # 1. Drop down to search altitude
-    try:
-        alt = lidar.get_distance()
-    except Exception as error:
-        print(f"[ERR] Cannot read acquisition AGL: {error}")
-        print("[ERR] Cannot start pickup sequence without altitude data.")
+    clearance = _read_clearance(controller, lidar, policy)
+    down = clearance.projected_clearance_m - policy.target_hover_height_m
+    controller.check_permission()
+    remaining = acquisition_deadline - _now(policy)
+    if remaining <= 0:
         return False
-    how_much_down = alt - TARGET_HOVER_HEIGHT
-    print(f"moving down {how_much_down}m")
-
-    controller.guide_move_relative_frame(
-        RelPosComplete(0, 0, how_much_down)
+    _require_zero(
+        "acquisition altitude correction",
+        controller.guide_move_relative_frame(
+            RelPosComplete(0.0, 0.0, down),
+            timeout=remaining,
+        ),
     )
-
-    hover_start = time.time()
-    while time.time() - hover_start < timeout:
-        try:
-            hover_alt = lidar.get_distance()
-        except Exception as error:
-            print(f"[ERR] Cannot verify acquisition AGL: {error}")
-            time.sleep(0.1)
-            continue
-        if abs(hover_alt - TARGET_HOVER_HEIGHT) <= HOVER_ALT_TOL:
-            break
-        time.sleep(0.1)
-    else:
-        print("[!] Acquisition AGL was not reached.")
+    if _now(policy) >= acquisition_deadline:
         return False
 
-    print("[*] Searching for ArUco to initiate Precision Landing...")
+    while _now(policy) < acquisition_deadline:
+        try:
+            clearance = _read_clearance(controller, lidar, policy)
+        except (
+            ClearanceUnavailableError,
+            PrecisionEvidenceUnavailable,
+            StaleSensorError,
+        ):
+            if not _sleep_bounded(acquisition_deadline, policy):
+                return False
+            continue
+        if (
+            abs(clearance.projected_clearance_m - policy.target_hover_height_m)
+            <= policy.hover_tolerance_m
+        ):
+            break
+        if not _sleep_bounded(acquisition_deadline, policy):
+            return False
+    else:
+        return False
+
+    center_snapshot = controller.flight_snapshot()
+    center, _ = _location(center_snapshot, controller)
+    grid_size = 1.5
+    grid_offsets_ne = (
+        (0.0, 0.0),
+        (0.0, grid_size),
+        (grid_size, grid_size),
+        (grid_size, 0.0),
+        (grid_size, -grid_size),
+        (0.0, -grid_size),
+        (-grid_size, -grid_size),
+        (-grid_size, 0.0),
+        (-grid_size, grid_size),
+    )
+    last_sequence = 0
+    last_invalidation_generations = (
+        clearance.range_sample.invalidation_generation,
+        getattr(center_snapshot.location, "invalidation_generation", 0),
+        getattr(center_snapshot.attitude, "invalidation_generation", 0),
+    )
+    centered_count = 0
     target_found = False
 
-    # 2. CAPTURE THE ANCHOR POINT
-    # We grab the absolute GPS location right now. This is the center of our grid.
-    center_anchor = controller.get_current_gps()
-
-    # 3. Define the grid as absolute North/East offsets in meters
-    grid_size = 1.5
-    grid_offsets_ne = [
-        (0, 0),  # center
-        (0, grid_size),  # right (East)
-        (grid_size, grid_size),  # right-up (North-East)
-        (grid_size, 0),  # up (North)
-        (grid_size, -grid_size),  # left-up (North-West)
-        (0, -grid_size),  # left (West)
-        (-grid_size, -grid_size),  # left-down (South-West)
-        (-grid_size, 0),  # down (South)
-        (-grid_size, grid_size),  # right-down (South-East)
-    ]
-
-    for dNorth, dEast in grid_offsets_ne:
-        if target_found or time.time() - t0 >= timeout:
+    for north, east in grid_offsets_ne:
+        if _now(policy) >= acquisition_deadline:
+            break
+        controller.check_permission()
+        waypoint = controller.get_location_metres(center, north, east)
+        remaining = acquisition_deadline - _now(policy)
+        if remaining <= 0:
+            break
+        _require_zero(
+            "grid waypoint",
+            controller.goto_waypoint(
+                waypoint,
+                position_tol=GRID_POSITION_TOLERANCE_M,
+                timeout=remaining,
+            ),
+        )
+        if _now(policy) >= acquisition_deadline:
+            return False
+        centered_count = 0
+        observations_at_cell = 0
+        while (
+            _now(policy) < acquisition_deadline
+            and observations_at_cell < MAX_OBSERVATIONS_PER_GRID_CELL
+        ):
+            observations_at_cell += 1
+            remaining = acquisition_deadline - _now(policy)
+            try:
+                evidence = _read_precision_evidence(
+                    controller,
+                    camera,
+                    lidar,
+                    target_id,
+                    policy,
+                    after_sequence=last_sequence,
+                    timeout_s=min(policy.frame_timeout_s, remaining),
+                )
+            except _CameraAcquisitionTimeout:
+                controller.check_permission()
+                if _now(policy) >= acquisition_deadline:
+                    return False
+                centered_count = 0
+                if not _sleep_bounded(acquisition_deadline, policy):
+                    return False
+                continue
+            except (
+                ClearanceUnavailableError,
+                PrecisionEvidenceUnavailable,
+                StaleSensorError,
+            ):
+                centered_count = 0
+                if not _sleep_bounded(acquisition_deadline, policy):
+                    return False
+                continue
+            controller.check_permission()
+            if _now(policy) >= acquisition_deadline:
+                return False
+            if evidence.frame_sequence <= last_sequence:
+                centered_count = 0
+                if not _sleep_bounded(acquisition_deadline, policy):
+                    return False
+                continue
+            last_sequence = evidence.frame_sequence
+            invalidation_generations = (
+                evidence.clearance.range_sample.invalidation_generation,
+                evidence.location_invalidation_generation,
+                evidence.attitude_invalidation_generation,
+            )
+            if invalidation_generations != last_invalidation_generations:
+                last_invalidation_generations = invalidation_generations
+                centered_count = 0
+                if not _sleep_bounded(acquisition_deadline, policy):
+                    return False
+                continue
+            if evidence.vector is None:
+                centered_count = 0
+                if not _sleep_bounded(acquisition_deadline, policy):
+                    return False
+                continue
+            clearance_error = (
+                evidence.clearance.projected_clearance_m
+                - policy.target_hover_height_m
+            )
+            if abs(clearance_error) > policy.hover_tolerance_m:
+                controller.check_permission()
+                remaining = acquisition_deadline - _now(policy)
+                if remaining <= 0:
+                    return False
+                _require_zero(
+                    "acquisition altitude correction",
+                    controller.guide_move_relative_frame(
+                        RelPosComplete(0.0, 0.0, clearance_error),
+                        timeout=remaining,
+                    ),
+                )
+                if _now(policy) >= acquisition_deadline:
+                    return False
+                centered_count = 0
+                if not _sleep_bounded(acquisition_deadline, policy):
+                    return False
+                continue
+            marker_north, marker_east = _marker_offset_ne(
+                evidence.vector,
+                evidence.attitude,
+            )
+            horizontal_error = math.hypot(marker_north, marker_east)
+            if horizontal_error > policy.centered_tolerance_m:
+                corrected = controller.get_location_metres(
+                    evidence.location,
+                    marker_north * policy.correction_gain,
+                    marker_east * policy.correction_gain,
+                )
+                controller.check_permission()
+                remaining = acquisition_deadline - _now(policy)
+                if remaining <= 0:
+                    return False
+                _require_zero(
+                    "marker recenter waypoint",
+                    controller.goto_waypoint(
+                        corrected,
+                        position_tol=GRID_POSITION_TOLERANCE_M,
+                        timeout=remaining,
+                    ),
+                )
+                if _now(policy) >= acquisition_deadline:
+                    return False
+                centered_count = 0
+                if not _sleep_bounded(acquisition_deadline, policy):
+                    return False
+                continue
+            centered_count += 1
+            if centered_count == REQUIRED_CENTERED_OBSERVATIONS:
+                target_found = True
+                break
+            if not _sleep_bounded(acquisition_deadline, policy):
+                return False
+        if target_found:
             break
 
-        # Calculate the exact GPS coordinate for this grid point
-        target_wp = controller.get_location_metres(center_anchor, dNorth, dEast)
-
-        # Use your robust spin-wait goto!
-        # The drone will fight the wind until it reaches this exact earth coordinate.
-        val = controller.goto_waypoint(target_wp, position_tol=0.15)
-        print(f"return of goto func: {val}")
-        # Wait a moment for the drone to stabilize its tilt/roll after stopping
-        # controller.wait_until_stable()
-        # controller.hold_waypoint_until_stable(target_wp)
-        quality = 4
-
-        # Search for target at this position
-        for _ in range(5):
-            update = camera.vec_to_marker_3d(target_id, quality=quality)
-            if update:
-                correction_frame_timestamp = camera.last_frame_timestamp
-                if correction_frame_timestamp is None:
-                    time.sleep(0.1)
-                    continue
-                print("[*] Target Acquired! Switching to LAND mode.")
-                controller.vehicle.flush()
-
-                # Convert vision-relative correction into an absolute GPS target,
-                # similar to the grid-search GPS waypoint approach.
-                current_gps = controller.get_current_gps()
-                dNorth, dEast = _marker_offset_ne(
-                    update, controller.vehicle.attitude
-                )
-                corrected_wp = controller.get_location_metres(
-                    current_gps, dNorth, dEast
-                )
-                val = controller.goto_waypoint(corrected_wp, position_tol=0.15)
-                print(f"return of goto func: {val}")
-
-                time.sleep(1)  # Let it center before triggering land
-                acquisition_start = time.time()
-                seen_frame_timestamps = {correction_frame_timestamp}
-                centered_fresh_results = 0
-                recenter_considered = False
-                agl_recenter_considered = False
-                while time.time() - acquisition_start < timeout:
-                    centered_update = camera.vec_to_marker_3d(
-                        target_id, quality=quality
-                    )
-                    if centered_update is not None:
-                        frame_timestamp = camera.last_frame_timestamp
-                        if (
-                            frame_timestamp is not None
-                            and frame_timestamp not in seen_frame_timestamps
-                        ):
-                            seen_frame_timestamps.add(frame_timestamp)
-                            try:
-                                acquisition_agl = lidar.get_distance()
-                            except Exception as error:
-                                print(f"[ERR] Cannot verify acquisition AGL: {error}")
-                                centered_fresh_results = 0
-                                time.sleep(0.1)
-                                continue
-                            if (
-                                abs(acquisition_agl - TARGET_HOVER_HEIGHT)
-                                > HOVER_ALT_TOL
-                            ):
-                                centered_fresh_results = 0
-                                if not agl_recenter_considered:
-                                    agl_recenter_considered = True
-                                    if (
-                                        controller.guide_move_relative_frame(
-                                            RelPosComplete(
-                                                0,
-                                                0,
-                                                acquisition_agl
-                                                - TARGET_HOVER_HEIGHT,
-                                            )
-                                        )
-                                        != 0
-                                    ):
-                                        return False
-                                time.sleep(0.1)
-                                continue
-                            centered_north, centered_east = _marker_offset_ne(
-                                centered_update, controller.vehicle.attitude
-                            )
-                            horizontal_error = math.hypot(
-                                centered_north, centered_east
-                            )
-                            first_valid_result = not recenter_considered
-                            recenter_considered = True
-                            if first_valid_result and horizontal_error > 0.50:
-                                current_gps = controller.get_current_gps()
-                                recentered_wp = controller.get_location_metres(
-                                    current_gps,
-                                    centered_north * MULT,
-                                    centered_east * MULT,
-                                )
-                                if (
-                                    controller.goto_waypoint(
-                                        recentered_wp, position_tol=0.15
-                                    )
-                                    != 0
-                                ):
-                                    return False
-                                centered_fresh_results = 0
-                            elif horizontal_error <= 0.50:
-                                centered_fresh_results += 1
-                                if centered_fresh_results == 5:
-                                    target_found = True
-                                    break
-                            else:
-                                centered_fresh_results = 0
-                    time.sleep(0.1)
-                break
-            time.sleep(0.1)
-
-    # Trigger landing sequence outside the loop
-    if target_found:
-        if not aruco_land_precision(controller, camera, lidar, target_id):
-            return False
-        if controller.disarm() != 0:
-            return False
-        if dropper.attach(target_id) is not True:
-            print(f"[!] Attachment rejected for ID {target_id}.")
-            return False
-        return True
-    else:
-        print("[!] Grid search exhausted, target not found.")
+    if not target_found:
         return False
+    controller.check_permission()
+    if _now(policy) >= acquisition_deadline:
+        return False
+    if aruco_land_precision(
+        controller,
+        camera,
+        lidar,
+        target_id,
+        policy=policy,
+    ) is not True:
+        return False
+    controller.check_permission()
+    _require_zero("disarm", controller.disarm())
+    controller.check_permission()
+    if dropper.attach(target_id) is not True:
+        raise RuntimeError("attachment was not independently confirmed")
+    return True
 
 
 def fm3(
@@ -332,103 +728,80 @@ def fm3(
     possible_ids: set,
     pickup_point: GPSCoord,
     target_point: GPSCoord,
-):
-    IDs = list(possible_ids)
-    desired_drop_height_m = 10
-    try:
-        for id in IDs:
+    *,
+    precision_policy: PrecisionMissionPolicy | None = None,
+) -> bool:
+    policy = _require_policy(precision_policy)
+    if getattr(dropper, "supports_attachment", None) is not True:
+        raise RuntimeError("FM3 requires explicit attachment capability")
+    _camera_ready(camera)
+    _now(policy)
+    pickup_transit = GPSCoord(
+        pickup_point.lat,
+        pickup_point.long,
+        policy.cruise_altitude_m,
+    )
+    delivery_transit = GPSCoord(
+        target_point.lat,
+        target_point.long,
+        policy.cruise_altitude_m,
+    )
 
-            if mt.time_left() < 60:
-                return False
+    for target_id in sorted(possible_ids):
+        controller.check_permission()
+        if mt.time_left() < PRECISION_LAND_DEADLINE_S:
+            return False
+        _require_zero("pickup waypoint", controller.goto_waypoint(pickup_transit))
+        if pickup_sequence(
+            controller,
+            camera,
+            lidar,
+            target_id,
+            dropper,
+            policy=policy,
+        ) is not True:
+            return False
 
-            print("going to pickup waypoint")
-            val = controller.goto_waypoint(pickup_point)
-            print(f"return of goto func: {val}")
-            if val != 0:
-                return False
+        controller.check_permission()
+        _require_none(
+            "post-attachment takeoff",
+            controller.force_arm_takeoff(policy.cruise_altitude_m),
+        )
+        controller.check_permission()
+        _require_zero("drop waypoint", controller.goto_waypoint(delivery_transit))
 
-            print("init pickup sequence")
-            success = pickup_sequence(controller, camera, lidar, id, dropper)
-
-            if success:
-                if controller.set_guided_mode() != 0:
-                    return False
-                print("climb")
-                if controller.vehicle.armed and controller.is_landed():
-                    print("vehicle armed")
-                    controller.simple_takeoff(10)
-                elif controller.vehicle.armed:
-                    controller.set_guided_mode()
-                    controller.climb(10)
-                else:
-                    time.sleep(8)
-                    controller.force_arm_takeoff(10)
-
-                print("going to drop point")
-                val = controller.goto_waypoint(target_point)
-                print(f"return of goto func: {val}")
-                if val != 0:
-                    return False
-
-                camera.save_frame_buffer_async()
-
-                print("dropping")
-                drop_target = GPSCoord(
-                    target_point.lat, target_point.long, desired_drop_height_m
-                )
-                lidar_alt, _ = _read_lidar_or_fallback(lidar, controller)
-                if lidar_alt is not None and lidar_alt < desired_drop_height_m:
-                    drop_target.alt += desired_drop_height_m - lidar_alt
-                    if controller.goto_waypoint(drop_target) != 0:
-                        return False
-                if not controller.hold_waypoint_until_stable(
-                    drop_target, lidar, required_agl_m=10.0
-                ):
-                    print(f"Skipping drop for ID {id}: stability gate timed out.")
-                    return False
-                dropper.drop()
-            else:
-                print(f"Skipping drop for ID {id} because pickup failed.")
-                return False
-
-        return True
-
-    except Exception as e:
-        print("[ERR]", e)
-        controller.rtl()
-        camera.save_frame_buffer_async()
-        return False
-    except KeyboardInterrupt as e:
-        print("[ERR]", e)
-        controller.rtl()
-        camera.save_frame_buffer_async()
-        return False
+        controller.check_permission()
+        drop_target = controller.release_waypoint_for_clearance(
+            delivery_transit,
+            lidar,
+            desired_agl_m=policy.desired_drop_height_m,
+        )
+        controller.check_permission()
+        _require_zero(
+            "drop-height waypoint",
+            controller.goto_waypoint(drop_target),
+        )
+        controller.check_permission()
+        if controller.hold_waypoint_until_stable(
+            drop_target,
+            lidar,
+            required_agl_m=policy.desired_drop_height_m,
+        ) is not True:
+            return False
+        controller.check_permission()
+        _require_none(
+            "payload release",
+            controller.release_payload_if_stable(
+                dropper,
+                drop_target,
+                lidar,
+                required_agl_m=policy.desired_drop_height_m,
+            ),
+        )
+    return True
 
 
 if __name__ == "__main__":
-    from .sensors.lidar.lidar import Lidar
-    from .sensors.servo.servo import Dropper
-
-    mt = MissonTracker(600)
-    mt.begin_mission()
-    controller = DroneControl("/dev/ttyACM0")
-    camera = Camera(50)
-    try:
-        lidar = Lidar()
-    except Exception as e:
-        print(f"[ERR] LiDAR initialization failed: {e}")
-        raise SystemExit(1)
-    dropper = Dropper()
-
-    # controller.takeoff(10)
-    original_gps = controller.get_current_gps()
-    original_gps.alt = 10
-    controller.force_arm_takeoff(10)
-
-    fm3(mt, controller, camera, lidar, dropper, {6, 7}, ARUCO_PICKUP, DROP_POINT)
-
-    val = controller.goto_waypoint(original_gps)
-
-    print(f"return of goto func: {val}")
-    controller.simple_land()
-    controller.disarm()
+    raise SystemExit(
+        "Direct mock_mission flight is disabled. Start the guarded mission listener."
+    )

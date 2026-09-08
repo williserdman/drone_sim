@@ -2,17 +2,20 @@ import pytest
 
 from drone import timebase
 from drone.auto_attempt import run_auto_attempt
-from drone.common_types import GPSCoord
+from drone.common_types import GPSCoord, MissionHome
 
 
 class FakeClock:
-    def __init__(self, now_value: float = 0.0):
+    def __init__(self, now_value: float = 0.0, calls=None):
         self.now_value = now_value
+        self.calls = calls
 
     def now(self) -> float:
         return self.now_value
 
     def sleep(self, seconds: float) -> None:
+        if self.calls is not None:
+            self.calls.append(("sleep", seconds))
         self.now_value += seconds
 
 
@@ -31,27 +34,24 @@ class FakePayload:
 
 
 class FakeController:
-    def __init__(self, calls):
+    def __init__(
+        self,
+        calls,
+        *,
+        goto_result=0,
+        land_result=0,
+        disarm_result=0,
+        mission_home=MissionHome(41.0, -81.0, 250.0),
+    ):
         self.calls = calls
-
-    def goto_waypoint(self, waypoint):
-        self.calls.append(("goto", waypoint))
-        return 0
-
-    def simple_land(self):
-        self.calls.append(("land", "H"))
-        return 0
-
-    def disarm(self):
-        self.calls.append(("disarm", "H"))
-        return 0
-
-
-class FailingHomeController(FakeController):
-    def __init__(self, calls, *, goto_result=0, land_result=0):
-        super().__init__(calls)
         self.goto_result = goto_result
         self.land_result = land_result
+        self.disarm_result = disarm_result
+        self.mission_home = mission_home
+
+    def check_permission(self):
+        self.calls.append(("permission",))
+        return None
 
     def goto_waypoint(self, waypoint):
         self.calls.append(("goto", waypoint))
@@ -60,6 +60,10 @@ class FailingHomeController(FakeController):
     def simple_land(self):
         self.calls.append(("land", "H"))
         return self.land_result
+
+    def disarm(self):
+        self.calls.append(("disarm", "H"))
+        return self.disarm_result
 
 
 class FakeMissionFunctions:
@@ -71,6 +75,7 @@ class FakeMissionFunctions:
         self.calls.append(("mission", "FM1", cruise_alt, waypoint_l))
         if self.clock is not None:
             timebase.sleep(601.0)
+        return True
 
     def fm2(
         self,
@@ -85,6 +90,7 @@ class FakeMissionFunctions:
         self.calls.append(
             ("mission", "FM2", payload.marker_id, desired_drop_height_m)
         )
+        return True
 
     def fm3(
         self,
@@ -158,6 +164,10 @@ class UnconfirmedLDisarmController:
         mav = type("Mav", (), {"statustext_send": lambda *_args: None})()
         master = type("Master", (), {"mav": mav})()
         self.vehicle = type("Vehicle", (), {"armed": True, "_master": master})()
+        self.mission_home = MissionHome(41.0, -81.0, 250.0)
+
+    def check_permission(self):
+        return None
 
     def force_arm_takeoff(self, altitude):
         self.calls.append(("takeoff", altitude))
@@ -191,6 +201,62 @@ class NoneFm3MissionFunctions(FakeMissionFunctions):
         return None
 
 
+class PhaseResultMissionFunctions(FakeMissionFunctions):
+    def __init__(self, calls, phase, result):
+        super().__init__(calls)
+        self.phase = phase
+        self.result = result
+
+    def fm1(self, *args):
+        result = super().fm1(*args)
+        return self.result if self.phase == "FM1" else result
+
+    def fm2(self, *args, **kwargs):
+        result = super().fm2(*args, **kwargs)
+        return self.result if self.phase == "FM2" else result
+
+    def fm3(self, *args):
+        result = super().fm3(*args)
+        marker_id = next(iter(args[5]))
+        return self.result if self.phase == f"FM3_{marker_id}" else result
+
+
+class PermissionController(FakeController):
+    def __init__(self, calls, *, fail_at=None, permission_result=None, **kwargs):
+        super().__init__(calls, **kwargs)
+        self.fail_at = fail_at
+        self.permission_result = permission_result
+        self.permission_calls = 0
+
+    def check_permission(self):
+        self.permission_calls += 1
+        self.calls.append(("permission", self.permission_calls))
+        if self.permission_calls == self.fail_at:
+            raise KeyboardInterrupt("operator abort")
+        return self.permission_result
+
+
+class DisarmRevokesPermissionController(PermissionController):
+    def disarm(self):
+        self.calls.append(("disarm", "H"))
+        self.fail_at = self.permission_calls + 1
+        return 0
+
+
+def run_basic_attempt(calls, controller=None, functions=None, waypoints=None):
+    controller = controller or FakeController(calls)
+    run_auto_attempt(
+        tracker=FakeTracker(calls),
+        controller=controller,
+        camera=object(),
+        lidar=object(),
+        payloads={marker: FakePayload(marker, calls) for marker in (2, 3, 4)},
+        waypoints=waypoints or fake_waypoints(),
+        emit=lambda phase, state: calls.append(("event", phase, state)),
+        mission_functions=functions or FakeMissionFunctions(calls),
+    )
+
+
 def fake_waypoints():
     return {
         "H": GPSCoord(41.0, -81.0, 0.0),
@@ -203,9 +269,9 @@ def fake_waypoints():
 
 def event_phases(calls):
     return [
-        phase
-        for kind, phase, *rest in calls
-        if kind == "event" and (not rest or rest[0] == "STARTED")
+        call[1]
+        for call in calls
+        if len(call) >= 3 and call[0] == "event" and call[2] == "STARTED"
     ]
 
 
@@ -466,7 +532,7 @@ def test_home_failure_prevents_disarm_and_terminal_events(
 ):
     """Regression: failed Home movement must not produce completion evidence."""
     calls = []
-    controller = FailingHomeController(
+    controller = FakeController(
         calls, goto_result=goto_result, land_result=land_result
     )
 
@@ -490,3 +556,240 @@ def test_home_failure_prevents_disarm_and_terminal_events(
     )
     assert ("event", "HOME", "DISARMED") not in calls
     assert ("event", "HOME", "COMPLETE") not in calls
+
+
+@pytest.mark.parametrize("phase", ["FM1", "FM2", "FM3_3", "FM3_4"])
+@pytest.mark.parametrize(
+    "result",
+    [None, False, 0, 1, object()],
+    ids=["none", "false", "zero", "one", "object"],
+)
+def test_every_phase_requires_exact_true_and_stops_later_work(phase, result):
+    """A false-success phase result must not reach completion or the next phase."""
+    calls = []
+
+    with timebase.configured(FakeClock(calls=calls)):
+        with pytest.raises(RuntimeError, match=rf"{phase} failed"):
+            run_basic_attempt(
+                calls,
+                functions=PhaseResultMissionFunctions(calls, phase, result),
+            )
+
+    started = event_phases(calls)
+    assert started[-1] == phase
+    assert ("event", phase, "COMPLETE") not in calls
+    assert not any(call[0] in {"goto", "land", "disarm"} for call in calls)
+    expected_prior_waits = {"FM1": 0, "FM2": 0, "FM3_3": 1, "FM3_4": 2}
+    assert sum(call[0] == "sleep" for call in calls) == expected_prior_waits[phase]
+
+
+@pytest.mark.parametrize(
+    ("operation", "result", "expected_operations"),
+    [
+        ("goto", None, ["goto"]),
+        ("goto", False, ["goto"]),
+        ("goto", True, ["goto"]),
+        ("goto", 1, ["goto"]),
+        ("goto", 0.0, ["goto"]),
+        ("land", None, ["goto", "land"]),
+        ("land", False, ["goto", "land"]),
+        ("land", True, ["goto", "land"]),
+        ("land", 1, ["goto", "land"]),
+        ("land", 0.0, ["goto", "land"]),
+        ("disarm", None, ["goto", "land", "disarm"]),
+        ("disarm", False, ["goto", "land", "disarm"]),
+        ("disarm", True, ["goto", "land", "disarm"]),
+        ("disarm", 1, ["goto", "land", "disarm"]),
+        ("disarm", 0.0, ["goto", "land", "disarm"]),
+    ],
+)
+def test_home_operations_require_exact_nonbool_integer_zero(
+    operation, result, expected_operations
+):
+    """HOME must reject values that compare equal to zero but are not exact int zero."""
+    calls = []
+    results = {"goto_result": 0, "land_result": 0, "disarm_result": 0}
+    results[f"{operation}_result"] = result
+    controller = FakeController(calls, **results)
+
+    with timebase.configured(FakeClock(calls=calls)):
+        with pytest.raises(RuntimeError, match="Home"):
+            run_basic_attempt(calls, controller=controller)
+
+    assert [
+        call[0] for call in calls if call[0] in {"goto", "land", "disarm"}
+    ] == expected_operations
+    assert ("event", "HOME", "DISARMED") not in calls
+    assert ("event", "HOME", "COMPLETE") not in calls
+
+
+@pytest.mark.parametrize(
+    "mission_home",
+    [
+        None,
+        GPSCoord(41.0, -81.0, 250.0),
+        MissionHome(float("nan"), -81.0, 250.0),
+        MissionHome(91.0, -81.0, 250.0),
+        MissionHome(41.0, -181.0, 250.0),
+        MissionHome(True, -81.0, 250.0),
+    ],
+    ids=["missing", "wrong-type", "nonfinite", "latitude", "longitude", "bool"],
+)
+def test_invalid_pinned_home_fails_before_attempt_work(mission_home):
+    """An invalid external pin must stop before mission state or phase work starts."""
+    calls = []
+    controller = FakeController(calls, mission_home=mission_home)
+
+    with timebase.configured(FakeClock(calls=calls)):
+        with pytest.raises(RuntimeError, match="mission home"):
+            run_basic_attempt(calls, controller=controller)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("permission_result", [False, True, 0, object()])
+def test_permission_check_must_return_exact_none_before_attempt(permission_result):
+    """A guard's false-success value must not authorize mission state changes."""
+    calls = []
+    controller = PermissionController(calls, permission_result=permission_result)
+
+    with timebase.configured(FakeClock(calls=calls)):
+        with pytest.raises(RuntimeError, match="permission"):
+            run_basic_attempt(calls, controller=controller)
+
+    assert calls == [("permission", 1)]
+
+
+@pytest.mark.parametrize("permission", [None, 1])
+def test_permission_check_must_be_callable_before_attempt(permission):
+    calls = []
+    controller = FakeController(calls)
+    controller.check_permission = permission
+
+    with timebase.configured(FakeClock(calls=calls)):
+        with pytest.raises(RuntimeError, match="permission"):
+            run_basic_attempt(calls, controller=controller)
+
+    assert calls == []
+
+
+def test_permission_is_checked_at_all_phase_and_home_boundaries_in_order():
+    """Removing any boundary guard would permit a later event or physical operation."""
+    calls = []
+    controller = PermissionController(calls)
+
+    with timebase.configured(FakeClock(calls=calls)):
+        run_basic_attempt(calls, controller=controller)
+
+    assert calls == [
+        ("permission", 1),
+        ("tracker", "begin"),
+        ("permission", 2),
+        ("event", "FM1", "STARTED"),
+        ("mission", "FM1", 10.0, fake_waypoints()["L"]),
+        ("permission", 3),
+        ("event", "FM1", "COMPLETE"),
+        ("permission", 4),
+        ("event", "FM2", "STARTED"),
+        ("mission", "FM2", 2, 10),
+        ("permission", 5),
+        ("sleep", 0.05),
+        ("permission", 6),
+        ("event", "FM2", "COMPLETE"),
+        ("permission", 7),
+        ("event", "FM3_3", "STARTED"),
+        (
+            "mission",
+            "FM3_3",
+            3,
+            fake_waypoints()["WA"],
+            fake_waypoints()["F2"],
+        ),
+        ("permission", 8),
+        ("sleep", 0.05),
+        ("permission", 9),
+        ("event", "FM3_3", "COMPLETE"),
+        ("permission", 10),
+        ("event", "FM3_4", "STARTED"),
+        (
+            "mission",
+            "FM3_4",
+            4,
+            fake_waypoints()["WM"],
+            fake_waypoints()["F2"],
+        ),
+        ("permission", 11),
+        ("sleep", 0.05),
+        ("permission", 12),
+        ("event", "FM3_4", "COMPLETE"),
+        ("permission", 13),
+        ("event", "HOME", "STARTED"),
+        ("permission", 14),
+        ("goto", GPSCoord(41.0, -81.0, 10.0)),
+        ("permission", 15),
+        ("land", "H"),
+        ("permission", 16),
+        ("disarm", "H"),
+        ("permission", 17),
+        ("event", "HOME", "DISARMED"),
+        ("permission", 18),
+        ("sleep", 0.05),
+        ("permission", 19),
+        ("event", "HOME", "COMPLETE"),
+    ]
+
+
+@pytest.mark.parametrize("fail_at", range(1, 20))
+def test_ctrl_c_at_any_permission_boundary_propagates_without_local_recovery(fail_at):
+    """Permission cancellation must stop on the exact boundary that observes it."""
+    calls = []
+    controller = PermissionController(calls, fail_at=fail_at)
+
+    with timebase.configured(FakeClock(calls=calls)):
+        with pytest.raises(KeyboardInterrupt, match="operator abort"):
+            run_basic_attempt(calls, controller=controller)
+
+    assert calls[-1] == ("permission", fail_at)
+    assert not any(call[0] in {"rtl", "reconnect", "rearm"} for call in calls)
+
+
+def test_disarm_permission_revocation_prevents_normal_disarmed_event():
+    """A successful disarm result cannot authorize an event after permission loss."""
+    calls = []
+    controller = DisarmRevokesPermissionController(calls)
+
+    with timebase.configured(FakeClock(calls=calls)):
+        with pytest.raises(KeyboardInterrupt, match="operator abort"):
+            run_basic_attempt(calls, controller=controller)
+
+    assert calls[-2:] == [("disarm", "H"), ("permission", 17)]
+    assert ("event", "HOME", "DISARMED") not in calls
+    assert ("event", "HOME", "COMPLETE") not in calls
+    assert not any(call[0] in {"rtl", "reconnect", "rearm"} for call in calls)
+
+
+def test_home_uses_once_captured_controller_pin_not_mutable_saved_h():
+    """Changing stored H after takeoff must not change the return authority."""
+    calls = []
+    waypoints = fake_waypoints()
+    controller = FakeController(
+        calls, mission_home=MissionHome(40.5, -80.5, 300.0)
+    )
+
+    class MutatingFunctions(FakeMissionFunctions):
+        def fm3(self, *args):
+            result = super().fm3(*args)
+            waypoints["H"] = GPSCoord(1.0, 2.0, 3.0)
+            return result
+
+    with timebase.configured(FakeClock(calls=calls)):
+        run_basic_attempt(
+            calls,
+            controller=controller,
+            functions=MutatingFunctions(calls),
+            waypoints=waypoints,
+        )
+
+    assert [call for call in calls if call[0] == "goto"] == [
+        ("goto", GPSCoord(40.5, -80.5, 10.0))
+    ]

@@ -25,5 +25,8 @@
             6.619952184061435
         ]
     ],
-    "reprojection_error": 0.26911187554225025
+    "reprojection_error": 0.26911187554225025,
+    "image_width_px": null,
+    "image_height_px": null,
+    "dimensions_verified": false
 }

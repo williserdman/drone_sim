@@ -5,18 +5,60 @@ import math
 
 # from picamera2 import Picamera2  # type: ignore
 import time
-from datetime import datetime
+from dataclasses import dataclass
+from contextlib import contextmanager
 import json
 from pathlib import Path
+import threading
 
 one_over_root_2 = 1 / np.sqrt(2)
 
 
+@dataclass(frozen=True)
+class FrameMetadata:
+    sequence: int
+    exposure_timestamp_ns: int | None
+    receipt_timestamp_ns: int
+    exposure_age_ns: int | None
+    exposure_age_bounded: bool
+    raw_image_size_px: tuple[int, int]
+    image_size_px: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class FrameObservation:
+    frame: np.ndarray
+    metadata: FrameMetadata
+    camera_matrix: np.ndarray | None
+    distortion: np.ndarray
+
+
 class CameraManager:
-    def __init__(self, frame_source=None, calibration_path=None) -> None:
+    def __init__(
+        self,
+        frame_source=None,
+        calibration_path=None,
+        *,
+        clock=time.monotonic_ns,
+        max_exposure_age_ns=None,
+    ) -> None:
         self.marker_size = 100  # millimeters (adjust as needed)
         self.frame_source = frame_source
+        self._clock = clock
+        if max_exposure_age_ns is not None:
+            if not isinstance(max_exposure_age_ns, int) or max_exposure_age_ns <= 0:
+                raise ValueError("max_exposure_age_ns must be a positive integer")
+        self.max_exposure_age_ns = max_exposure_age_ns
         self.last_frame_timestamp = None
+        self.last_frame_metadata: FrameMetadata | None = None
+        self._frame_sequence = 0
+        self._capture_lock = threading.Lock()
+        self._state_condition = threading.Condition()
+        self._latest_observation: FrameObservation | None = None
+        self._acquisition_thread: threading.Thread | None = None
+        self._acquisition_stop = threading.Event()
+        self._acquisition_error: Exception | None = None
+        self._acquisition_quality = 4
 
         # --- Default Camera Calibration for Raspberry Pi Camera v2 (480p) ---
         # Source: typical calibration for 640x480 with 62.2° x 48.8° FOV
@@ -39,8 +81,41 @@ class CameraManager:
         with open(json_file_path, "r") as file:
             json_data = json.load(file)
 
-        self.cam_mat = np.array(json_data["camera_matrix"])  # Intrinsic matrix
-        self.cam_dist = np.array(json_data["dist_coeff"])  # Distortion coefficients
+        try:
+            self.cam_mat = np.asarray(json_data["camera_matrix"], dtype=float)
+            self.cam_dist = np.asarray(json_data["dist_coeff"], dtype=float)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("camera calibration values must be numeric") from error
+        if self.cam_mat.shape != (3, 3) or not np.all(np.isfinite(self.cam_mat)):
+            raise ValueError("camera_matrix must be a finite 3x3 matrix")
+        if not np.allclose(self.cam_mat[2], [0.0, 0.0, 1.0], atol=1e-12):
+            raise ValueError("camera_matrix must have OpenCV homogeneous bottom row")
+        if not math.isclose(float(self.cam_mat[0, 1]), 0.0, abs_tol=1e-12) or not math.isclose(
+            float(self.cam_mat[1, 0]), 0.0, abs_tol=1e-12
+        ):
+            raise ValueError("camera_matrix skew terms are unsupported")
+        if self.cam_dist.size == 0 or not np.all(np.isfinite(self.cam_dist)):
+            raise ValueError("dist_coeff must contain finite values")
+        if self.cam_dist.ndim != 2 or 1 not in self.cam_dist.shape:
+            raise ValueError("dist_coeff must be a row or column vector")
+        if self.cam_dist.size not in (4, 5, 8, 12, 14):
+            raise ValueError("dist_coeff has an unsupported OpenCV coefficient count")
+        if self.cam_mat[0, 0] <= 0 or self.cam_mat[1, 1] <= 0:
+            raise ValueError("camera_matrix focal lengths must be positive")
+
+        self._calibration_dimensions_verified = (
+            json_data.get("dimensions_verified") is True
+        )
+        width = json_data.get("image_width_px")
+        height = json_data.get("image_height_px")
+        if self._calibration_dimensions_verified:
+            if not isinstance(width, int) or width <= 0:
+                raise ValueError("verified image_width_px must be a positive integer")
+            if not isinstance(height, int) or height <= 0:
+                raise ValueError("verified image_height_px must be a positive integer")
+            self.calibrated_image_size_px = (width, height)
+        else:
+            self.calibrated_image_size_px = None
 
         # self.picam2 = Picamera2()
         # this only gives partial sensor area
@@ -103,24 +178,7 @@ class CameraManager:
         # 3. FIX OPTICAL CENTER:
         self.CAMERA_CENTER = [self.frame_width / 2.0, self.frame_height / 2.0]
 
-        # 4. FIX CAMERA MATRIX:
-        # Scale the 640x480 calibration matrix to match your new downsampled resolution
-        scale_x = self.frame_width / 640.0
-        scale_y = self.frame_height / 480.0
-
-        # self.camera_matrix[0, 0] *= scale_x  # Scale Focal Length X (fx)
-        # self.camera_matrix[1, 1] *= scale_y  # Scale Focal Length Y (fy)
-        # self.camera_matrix[0, 2] = self.CAMERA_CENTER[0]  # Set Optical Center X (cx)
-        # self.camera_matrix[1, 2] = self.CAMERA_CENTER[1]  # Set Optical Center Y (cy)
-
         self.one_over_root_2 = 1 / np.sqrt(2)
-
-        output_filename = f'output_{datetime.now().strftime("%Y%m%d_%H%M%S")}.mp4'
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Codec for MP4
-        fps = 40  # Frames per second
-
-        # self.out = cv2.VideoWriter(output_filename, fourcc, fps, self.frame_size)
-        # cap = cv2.VideoCapture("aruco/flight_videos/short_good_arucos.mp4")
 
         self.target_id = None
 
@@ -240,48 +298,292 @@ class CameraManager:
             z = 0
         return np.array([x, y, z])
 
-    def capture_frame(self, quality=4) -> np.ndarray:
-        """Capture a BGR frame from the camera and downsample by sample_ratio."""
-
-        scale = 1
-        if quality == 3:
-            scale = 0.75
-        elif quality == 2:
-            scale = 0.25
-        elif quality == 1:
-            scale = 0.10
+    def _capture_candidate(self, quality):
+        if quality not in (1, 2, 3, 4):
+            raise ValueError("quality must be one of 1, 2, 3, or 4")
+        scale = {1: 0.10, 2: 0.25, 3: 0.75, 4: 1.0}[quality]
 
         if self.frame_source is None:
-            ok, frame = self.webcam.read()
+            ok, raw_frame = self.webcam.read()
             if not ok:
                 raise RuntimeError("Failed to capture frame from webcam index 0")
-            self.last_frame_timestamp = time.monotonic_ns()
+            exposure_timestamp_ns = None
         else:
-            frame = self.frame_source.capture_frame(quality=quality)
-            self.last_frame_timestamp = getattr(
-                self.frame_source,
-                "last_timestamp_ns",
-                None,
+            raw_frame = self.frame_source.capture_frame(quality=quality)
+            exposure_timestamp_ns = getattr(
+                self.frame_source, "last_timestamp_ns", None
             )
-            if self.last_frame_timestamp is None:
-                raise RuntimeError(
-                    "Injected frame source must expose last_timestamp_ns"
-                )
+            if exposure_timestamp_ns is None:
+                raise RuntimeError("Injected frame source must expose last_timestamp_ns")
 
-        width = frame.shape[1]
-        height = frame.shape[0]
-
+        receipt_timestamp_ns = self._clock()
+        raw_size = (raw_frame.shape[1], raw_frame.shape[0])
+        output_frame = raw_frame.copy()
         if scale != 1:
-            # Downsample using cv2.resize for better quality (less aliasing) than slicing
-            width = frame.shape[1] // self.sample_ratio
-            height = frame.shape[0] // self.sample_ratio
+            base_width = raw_frame.shape[1] // self.sample_ratio
+            base_height = raw_frame.shape[0] // self.sample_ratio
+            output_size = (int(base_width * scale), int(base_height * scale))
+            if output_size[0] <= 0 or output_size[1] <= 0:
+                raise RuntimeError("Requested resize produces an empty image")
+            output_frame = cv2.resize(
+                raw_frame, output_size, interpolation=cv2.INTER_AREA
+            )
 
-            small_w, small_h = int(width * scale), int(height * scale)
-            frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
+        output_size = (output_frame.shape[1], output_frame.shape[0])
+        scaled_matrix = None
+        if self.calibrated_image_size_px == raw_size:
+            scaled_matrix = self.cam_mat.copy()
+            scaled_matrix[0, :] *= output_size[0] / raw_size[0]
+            scaled_matrix[1, :] *= output_size[1] / raw_size[1]
+            scaled_matrix[2, :] = self.cam_mat[2, :]
+            scaled_matrix.setflags(write=False)
+        distortion = self.cam_dist.copy()
+        distortion.setflags(write=False)
+        return (
+            output_frame,
+            exposure_timestamp_ns,
+            receipt_timestamp_ns,
+            raw_size,
+            output_size,
+            scaled_matrix,
+            distortion,
+        )
 
-            self.CAMERA_CENTER = [small_w / 2, small_h / 2]
+    @contextmanager
+    def _state_lock_after_clock_sample(self):
+        while True:
+            handover_timestamp_ns = self._clock()
+            if self._state_condition.acquire(blocking=False):
+                break
+            with self._state_condition:
+                pass
+        try:
+            yield handover_timestamp_ns
+        finally:
+            self._state_condition.release()
 
-        return frame
+    def _accept_candidate(self, candidate, *, cancel_if_stopped=False):
+        (
+            frame,
+            exposure_timestamp_ns,
+            receipt_timestamp_ns,
+            raw_size,
+            output_size,
+            camera_matrix,
+            distortion,
+        ) = candidate
+        exposure_age_ns = None
+        exposure_age_bounded = False
+        with self._state_lock_after_clock_sample() as handover_timestamp_ns:
+            if cancel_if_stopped and self._acquisition_stop.is_set():
+                return None
+            if exposure_timestamp_ns is not None:
+                if not isinstance(exposure_timestamp_ns, int):
+                    raise RuntimeError("Frame exposure timestamp must be an integer")
+                if (
+                    self.last_frame_metadata is not None
+                    and self.last_frame_metadata.exposure_timestamp_ns is not None
+                    and exposure_timestamp_ns
+                    <= self.last_frame_metadata.exposure_timestamp_ns
+                ):
+                    raise RuntimeError(
+                        "Frame exposure timestamp must be newer than the last frame"
+                    )
+                exposure_age_ns = receipt_timestamp_ns - exposure_timestamp_ns
+                if exposure_age_ns < 0:
+                    raise RuntimeError("Frame exposure timestamp is in the future")
+                if self.max_exposure_age_ns is not None:
+                    if exposure_age_ns > self.max_exposure_age_ns:
+                        raise RuntimeError(
+                            "Frame exposure is older than the configured acquisition limit"
+                        )
+                    handover_age_ns = handover_timestamp_ns - exposure_timestamp_ns
+                    if handover_age_ns < 0:
+                        raise RuntimeError("Frame exposure timestamp is in the future")
+                    if handover_age_ns > self.max_exposure_age_ns:
+                        raise RuntimeError(
+                            "Frame exposure is older than the configured acquisition limit"
+                        )
+                    exposure_age_bounded = True
+
+            sequence = self._frame_sequence + 1
+            metadata = FrameMetadata(
+                sequence=sequence,
+                exposure_timestamp_ns=exposure_timestamp_ns,
+                receipt_timestamp_ns=receipt_timestamp_ns,
+                exposure_age_ns=exposure_age_ns,
+                exposure_age_bounded=exposure_age_bounded,
+                raw_image_size_px=raw_size,
+                image_size_px=output_size,
+            )
+            observation = FrameObservation(
+                frame=frame,
+                metadata=metadata,
+                camera_matrix=camera_matrix,
+                distortion=distortion,
+            )
+            self._frame_sequence = sequence
+            self.last_frame_timestamp = exposure_timestamp_ns
+            self.last_frame_metadata = metadata
+            self._latest_observation = observation
+            self.CAMERA_CENTER = [output_size[0] / 2, output_size[1] / 2]
+            self._state_condition.notify_all()
+            return observation
+
+    def capture_observation(self, quality=4) -> FrameObservation:
+        with self._capture_lock:
+            return self._accept_candidate(self._capture_candidate(quality))
+
+    def capture_frame(self, quality=4) -> np.ndarray:
+        """Capture a frame and retain source exposure and local receipt metadata."""
+        return self.capture_observation(quality).frame
+
+    def _acquisition_loop(self) -> None:
+        try:
+            while not self._acquisition_stop.is_set():
+                with self._capture_lock:
+                    candidate = self._capture_candidate(self._acquisition_quality)
+                    if self._acquisition_stop.is_set():
+                        break
+                    self._accept_candidate(candidate, cancel_if_stopped=True)
+        except Exception as error:
+            with self._state_condition:
+                self._acquisition_error = error
+                self._state_condition.notify_all()
+        finally:
+            with self._state_condition:
+                self._state_condition.notify_all()
+
+    def start_acquisition(self, *, quality=4) -> None:
+        if quality not in (1, 2, 3, 4):
+            raise ValueError("quality must be one of 1, 2, 3, or 4")
+        with self._state_condition:
+            if self._acquisition_thread is not None and self._acquisition_thread.is_alive():
+                if quality != self._acquisition_quality:
+                    raise RuntimeError("Acquisition worker is already using another quality")
+                return
+            self._acquisition_quality = quality
+            self._acquisition_error = None
+            self._acquisition_stop.clear()
+            self._acquisition_thread = threading.Thread(
+                target=self._acquisition_loop,
+                name="camera-latest-frame",
+                daemon=True,
+            )
+            self._acquisition_thread.start()
+
+    def _ensure_handover_fresh(self, observation: FrameObservation) -> None:
+        timestamp = observation.metadata.exposure_timestamp_ns
+        if timestamp is None or self.max_exposure_age_ns is None:
+            raise RuntimeError("Frame exposure age is not bounded")
+        age = self._clock() - timestamp
+        if age < 0:
+            raise RuntimeError("Frame exposure timestamp is in the future")
+        if age > self.max_exposure_age_ns:
+            raise RuntimeError("Frame exposure is older than the acquisition limit")
+
+    def ensure_observation_fresh(self, observation: FrameObservation) -> None:
+        self._ensure_handover_fresh(observation)
+
+    def latest_observation(
+        self, *, after_sequence: int, timeout_s: float
+    ) -> FrameObservation:
+        if not isinstance(after_sequence, int) or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("timeout_s must be finite and positive")
+        deadline = time.monotonic() + timeout_s
+        while True:
+            with self._state_condition:
+                observation = self._latest_observation
+                if (
+                    observation is not None
+                    and observation.metadata.sequence > after_sequence
+                ):
+                    pass
+                elif self._acquisition_error is not None:
+                    raise RuntimeError("Camera acquisition worker failed") from self._acquisition_error
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Camera frame acquisition timed out")
+                    self._state_condition.wait(remaining)
+                    continue
+            self._ensure_handover_fresh(observation)
+            return observation
+
+    def capture_observation_bounded(
+        self, *, timeout_s: float, quality=4, after_sequence=None
+    ) -> FrameObservation:
+        if after_sequence is None:
+            with self._state_condition:
+                after_sequence = self._frame_sequence
+        self.start_acquisition(quality=quality)
+        try:
+            return self.latest_observation(
+                after_sequence=after_sequence, timeout_s=timeout_s
+            )
+        except TimeoutError:
+            self._cancel_acquisition()
+            raise
+
+    def capture_frame_bounded(self, *, timeout_s: float, quality=4) -> np.ndarray:
+        return self.capture_observation_bounded(
+            timeout_s=timeout_s, quality=quality
+        ).frame
+
+    def stop_acquisition(self, *, timeout_s: float) -> bool:
+        if not math.isfinite(timeout_s) or timeout_s < 0:
+            raise ValueError("timeout_s must be finite and non-negative")
+        self._cancel_acquisition()
+        with self._state_condition:
+            thread = self._acquisition_thread
+        if thread is None:
+            return True
+        thread.join(timeout_s)
+        return not thread.is_alive()
+
+    def _cancel_acquisition(self) -> None:
+        with self._state_condition:
+            self._acquisition_stop.set()
+            self._state_condition.notify_all()
+
+    def observation_readiness_reasons(
+        self, observation: FrameObservation
+    ) -> tuple[str, ...]:
+        reasons = []
+        if not self._calibration_dimensions_verified:
+            reasons.append("calibrated image dimensions are unknown or unverified")
+        if (
+            self.calibrated_image_size_px is not None
+            and observation.metadata.raw_image_size_px
+            != self.calibrated_image_size_px
+        ):
+            reasons.append("captured image dimensions do not match calibration")
+        if not observation.metadata.exposure_age_bounded:
+            reasons.append("frame exposure age is not bounded")
+        else:
+            try:
+                self._ensure_handover_fresh(observation)
+            except RuntimeError as error:
+                if "older than" in str(error):
+                    reasons.append(
+                        "latest frame exposure is older than the acquisition limit"
+                    )
+                else:
+                    reasons.append(str(error))
+        return tuple(reasons)
+
+    def precision_readiness_reasons(self) -> tuple[str, ...]:
+        with self._state_condition:
+            observation = self._latest_observation
+        if observation is None:
+            reasons = []
+            if not self._calibration_dimensions_verified:
+                reasons.append("calibrated image dimensions are unknown or unverified")
+            reasons.append("frame exposure age is not bounded")
+            return tuple(reasons)
+        return self.observation_readiness_reasons(observation)
 
     def find_centers(self, frame) -> tuple[list | None, any, any] | tuple[list, list]:  # type: ignore
         corners, ids, rejected = self.get_coords(frame)
@@ -360,7 +662,14 @@ class CameraManager:
     # https://ardupilot.org/dev/docs/copter-commands-in-guided-mode.html
 
     def estimate_pose_3d(
-        self, target_id: int, corners: list, ids: list, marker_size_mm: int
+        self,
+        target_id: int,
+        corners: list,
+        ids: list,
+        marker_size_mm: int,
+        *,
+        camera_matrix=None,
+        distortion=None,
     ) -> list[float] | None:
         """
         Uses OpenCV's pose estimation to calculate the 3D translation vector (tvec)
@@ -377,8 +686,8 @@ class CameraManager:
         rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
             target_corners,
             marker_size_mm,
-            self.cam_mat,
-            self.cam_dist,
+            self.cam_mat if camera_matrix is None else camera_matrix,
+            self.cam_dist if distortion is None else distortion,
         )
 
         # tvecs is returned as an array of shape (1, 1, 3) for a single marker
