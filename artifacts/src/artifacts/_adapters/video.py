@@ -24,8 +24,6 @@ WIDTH_PX = 320
 HEIGHT_PX = 240
 FPS = 20
 ENCODING = "rgb8"
-STEP_BYTES = WIDTH_PX * 3
-PAYLOAD_BYTES = WIDTH_PX * HEIGHT_PX * 3
 SUPPORTED_RECORDING_GEOMETRIES = frozenset(
     {
         (320, 240, 20, "rgb8"),
@@ -1759,7 +1757,7 @@ class VideoStreamRecorder:
 
 
 __all__ = [
-    "ENCODING", "FPS", "FRAME_INTERVAL_NS", "HEIGHT_PX", "PAYLOAD_BYTES", "STEP_BYTES",
+    "ENCODING", "FPS", "FRAME_INTERVAL_NS", "HEIGHT_PX",
     "STREAMS", "VideoDiagnostic", "VideoFinalization", "VideoStreamRecorder",
     "VideoValidationResult", "VideoValidator", "WIDTH_PX",
 ]
