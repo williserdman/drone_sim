@@ -543,6 +543,102 @@ def test_malformed_same_run_callback_latches_original_input_failure(
     assert runtime.failure_reason == "ros_evidence_invalid"
 
 
+@pytest.mark.parametrize(
+    ("scenario", "topic", "accept_method", "message"),
+    [
+        (
+            "descent_v1",
+            "/simulation/scenario_events",
+            "accept_scenario",
+            SimpleNamespace(
+                run_id=RUN_ID,
+                sim_timestamp=_stamp(50_000_000),
+                event_id=0,
+                magnet_id="landing_pad",
+                state="INACTIVE",
+            ),
+        ),
+        (
+            "competition_v1",
+            "/simulation/payload_events",
+            "accept_payload_event",
+            SimpleNamespace(
+                run_id=RUN_ID,
+                sim_timestamp=_stamp(100_000_000),
+                event_id=0,
+                aruco_id=2,
+                command_id="run:2:release:0",
+                action="release",
+                state="detached",
+                code="OK",
+            ),
+        ),
+        (
+            "competition_v1",
+            "/simulation/mission_events",
+            "accept_mission_event",
+            SimpleNamespace(
+                run_id=RUN_ID,
+                sim_timestamp=_stamp(150_000_000),
+                event_id=0,
+                phase="FM1",
+                state="STARTED",
+                detail="automatic attempt",
+            ),
+        ),
+    ],
+)
+def test_logging_callback_error_does_not_latch_input_failure(
+    monkeypatch, scenario, topic, accept_method, message
+):
+    """Logging failure after accepted evidence must not change scoring state."""
+    Node = _install_fake_ros(monkeypatch)
+    original_error = RuntimeError("original logging error")
+
+    class Runtime:
+        failure_reason = None
+
+        def __init__(self):
+            self.accepted = []
+
+        def fail(self, reason):
+            if self.failure_reason is None:
+                self.failure_reason = reason
+
+        def accept_scenario(self, sample):
+            self.accepted.append(("accept_scenario", sample))
+
+        def accept_payload_event(self, sample):
+            self.accepted.append(("accept_payload_event", sample))
+
+        def accept_mission_event(self, sample):
+            self.accepted.append(("accept_mission_event", sample))
+
+    class Logger:
+        def emit(self, *_args, **_kwargs):
+            raise original_error
+
+    runtime = Runtime()
+    boundary = runtime_node._create_ros_boundary(
+        RUN_ID,
+        [runtime],
+        Logger(),
+        scenario=scenario,
+    )
+    callback = {
+        subscription_topic: callback
+        for _type, subscription_topic, callback, _qos in Node.last.subscriptions
+    }[topic]
+
+    callback(message)
+
+    assert boundary.errors == [original_error]
+    assert runtime.failure_reason is None
+    assert len(runtime.accepted) == 1
+    assert runtime.accepted[0][0] == accept_method
+    assert runtime.accepted[0][1].run_id == RUN_ID
+
+
 @pytest.mark.parametrize("scenario", ["descent_v1", "competition_v1"])
 def test_main_malformed_same_run_evidence_never_writes_score_finished(
     tmp_path, monkeypatch, scenario
