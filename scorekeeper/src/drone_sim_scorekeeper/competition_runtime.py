@@ -156,6 +156,13 @@ class CompetitionScorekeeperRuntime:
                 elif sample.state == "COMPLETE":
                     self._home_complete_timestamp_ns = sample.sim_timestamp_ns
 
+    def fail(self, reason: str) -> None:
+        if type(reason) is not str or not reason:
+            raise ValueError("failure reason must be nonempty")
+        if self.quiescent or self._result is not None:
+            return
+        self.scorer.fail(reason)
+
     def _write_failure(self, reason: str) -> None:
         if self._failure_written:
             return

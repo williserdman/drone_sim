@@ -69,6 +69,9 @@ documentation. The persisted schema is defined by
 - Evidence is persisted before reliable score-event publication is flushed and
   before `score-finished` is created. Existing score evidence is never replaced.
   Finalization then writes quiescence and produces no further output.
+- Rejected same-run ROS evidence latches incomplete scoring before shutdown.
+  Emergency finalization writes runtime failure and quiescence, never
+  `score-finished`.
 
 ## Focused checks
 

@@ -132,6 +132,13 @@ class ScorekeeperRuntime:
             self._last_observed_ground_truth_timestamp_ns = sample.sim_timestamp_ns
         self.scorer.accept(sample)
 
+    def fail(self, reason: str) -> None:
+        if type(reason) is not str or not reason:
+            raise ValueError("failure reason must be nonempty")
+        if self.quiescent or self._result is not None:
+            return
+        self.scorer.fail(reason)
+
     def _write_failure(self, reason: str) -> None:
         if self._failure_written:
             return

@@ -224,6 +224,7 @@ class ScoreRuntimeProtocol(Protocol):
 
     def source_inputs_observed_through(self, timestamp_ns: int) -> bool: ...
     def accept_source_finished(self, sim_timestamp_ns: int) -> ScoreResult: ...
+    def fail(self, reason: str) -> None: ...
     def begin_finalization(self) -> None: ...
 
 
@@ -363,12 +364,17 @@ def _create_ros_boundary(
 
     def accept_ground_truth(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             runtime_ref[0].accept_ground_truth(ground_truth_from_message(message))
         except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
 
     def accept_scenario(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             sample = scenario_from_message(message)
             runtime_ref[0].accept_scenario(sample)
             if sample.run_id == run_id:
@@ -380,16 +386,22 @@ def _create_ros_boundary(
                     state=sample.state,
                 )
         except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
 
     def accept_payload_state(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             runtime_ref[0].accept_payload_state(payload_state_from_message(message))
         except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
 
     def accept_payload_event(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             sample = payload_event_from_message(message)
             runtime_ref[0].accept_payload_event(sample)
             if sample.run_id == run_id:
@@ -402,10 +414,13 @@ def _create_ros_boundary(
                     state=sample.state,
                 )
         except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
 
     def accept_mission_event(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             sample = mission_event_from_message(message)
             runtime_ref[0].accept_mission_event(sample)
             if sample.run_id == run_id:
@@ -417,6 +432,7 @@ def _create_ros_boundary(
                     state=sample.state,
                 )
         except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
 
     def accept_clock(_message: Any) -> None:

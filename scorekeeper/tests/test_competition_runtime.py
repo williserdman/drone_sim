@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from artifacts.runtime_status import RuntimeFailureStatus, ScoreFinishedStatus
 from drone_sim_scorekeeper.competition import CompetitionScorer, load_competition_rules
 from drone_sim_scorekeeper.competition_runtime import CompetitionScorekeeperRuntime
@@ -33,6 +35,8 @@ class ProtocolRecorder:
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
+        if self.operations is not None:
+            self.operations.append(("quiescence", module))
 
 
 def runtime_for(tmp_path: Path, scorer: CompetitionScorer):
@@ -218,6 +222,53 @@ def test_begin_finalization_persists_failure_then_becomes_quiescent(tmp_path):
     assert runtime.quiescent is True
     assert protocol.quiescence == ["scorekeeper"]
     assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
+
+
+def test_input_failure_is_first_wins_and_precedes_quiescence(tmp_path):
+    """Rejected input must prevent an otherwise complete score from finishing."""
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+    trace.drop(3, phase="FM3_3")
+    trace.drop(4, phase="FM3_4")
+    trace.home()
+    runtime, protocol, operations = runtime_for(
+        tmp_path,
+        CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
+    )
+    replay(trace, runtime)
+
+    runtime.fail("ros_evidence_invalid")
+    runtime.fail("later_failure")
+    runtime.begin_finalization()
+
+    persisted = json.loads((tmp_path / "scoring/result.json").read_text())
+    assert persisted["complete"] is False
+    assert persisted["diagnostic"] == "ros_evidence_invalid"
+    assert protocol.statuses == [
+        RuntimeFailureStatus(
+            RUN_ID,
+            "scorekeeper",
+            "ros_evidence_invalid",
+            ("scoring/events.jsonl", "scoring/result.json"),
+        )
+    ]
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
+    assert operations[-2:] == [
+        ("status", protocol.statuses[0]),
+        ("quiescence", "scorekeeper"),
+    ]
+
+
+@pytest.mark.parametrize("reason", [None, "", True])
+def test_input_failure_requires_a_nonempty_string(tmp_path, reason):
+    runtime, _protocol, _operations = runtime_for(
+        tmp_path,
+        CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
+    )
+
+    with pytest.raises(ValueError, match="failure reason must be nonempty"):
+        runtime.fail(reason)
 
 
 def stamp(timestamp_ns: int):
