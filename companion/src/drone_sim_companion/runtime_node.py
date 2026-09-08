@@ -233,27 +233,6 @@ def autotune_control_timestamp_ns(
     return 0 if first_command_pending else None
 
 
-def comp2026_initial_command_timestamp_ns(
-    *,
-    mission_running: bool,
-    latest_clock_ns: int | None,
-    mission_ready: bool,
-    command_delivered: bool,
-    failed: bool,
-) -> int | None:
-    """Latch the first available public instant for the startup handshake."""
-    if (
-        not mission_running
-        or latest_clock_ns is None
-        or latest_clock_ns > INITIAL_COMMAND_WINDOW_NS
-        or not mission_ready
-        or command_delivered
-        or failed
-    ):
-        return None
-    return latest_clock_ns
-
-
 class _Comp2026ShutdownAdmission:
     def __init__(self) -> None:
         self._lock = threading.Lock()

@@ -21,7 +21,6 @@ import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.runtime_node import (
     RuntimeConfig,
     autotune_control_timestamp_ns,
-    comp2026_initial_command_timestamp_ns,
     connect_autotune_vehicle,
     connect_mavlink,
     quiesce_comp2026_runtime,
@@ -47,47 +46,6 @@ def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() 
     assert autotune_control_timestamp_ns(
         mission_running=False, latest_clock_ns=12, first_command_pending=True
     ) is None
-
-
-def test_comp2026_initial_command_delivery_uses_inclusive_50_ms_window() -> None:
-    assert comp2026_initial_command_timestamp_ns(
-        mission_running=True,
-        latest_clock_ns=2_000_000,
-        mission_ready=True,
-        command_delivered=False,
-        failed=False,
-    ) == 2_000_000
-    assert comp2026_initial_command_timestamp_ns(
-        mission_running=True,
-        latest_clock_ns=50_000_000,
-        mission_ready=True,
-        command_delivered=False,
-        failed=False,
-    ) == 50_000_000
-    assert comp2026_initial_command_timestamp_ns(
-        mission_running=True,
-        latest_clock_ns=50_000_001,
-        mission_ready=True,
-        command_delivered=False,
-        failed=False,
-    ) is None
-
-    for overrides in (
-        {"mission_running": False},
-        {"latest_clock_ns": None},
-        {"mission_ready": False},
-        {"command_delivered": True},
-        {"failed": True},
-    ):
-        inputs = {
-            "mission_running": True,
-            "latest_clock_ns": 2_000_000,
-            "mission_ready": True,
-            "command_delivered": False,
-            "failed": False,
-            **overrides,
-        }
-        assert comp2026_initial_command_timestamp_ns(**inputs) is None
 
 
 class InitialCommandVehicle:
