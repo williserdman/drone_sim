@@ -25,6 +25,7 @@ from artifacts.manifest import (
 from artifacts.protocol_files import (
     ProtocolIOError,
     WritePolicy,
+    open_directory,
     read_json_object_at,
     write_json_object_at,
 )
@@ -36,12 +37,6 @@ from artifacts.runtime_status import (
 )
 
 
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-)
 _LIFECYCLE_STATES = frozenset(
     {"CREATED", "STARTING", "READY", "RUNNING", "FINALIZING", "COMPLETED", "FAILED", "ABORTED"}
 )
@@ -194,7 +189,7 @@ class StatusStore:
     def _open_output_root(self, *, create: bool) -> int:
         current_fd: int | None = None
         try:
-            current_fd = os.open(self.output_root.anchor, _DIRECTORY_FLAGS)
+            current_fd = open_directory(self.output_root.anchor)
             for part in self.output_root.parts[1:]:
                 try:
                     metadata = os.stat(
@@ -216,14 +211,7 @@ class StatusStore:
                     raise ProtocolFileError(
                         "output root must be a non-symlink directory"
                     )
-                next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=current_fd)
-                opened = os.fstat(next_fd)
-                if (metadata.st_dev, metadata.st_ino) != (
-                    opened.st_dev,
-                    opened.st_ino,
-                ):
-                    os.close(next_fd)
-                    raise ProtocolFileError("output root changed while opening")
+                next_fd = open_directory(part, dir_fd=current_fd)
                 os.close(current_fd)
                 current_fd = next_fd
             descriptor = current_fd
@@ -231,6 +219,8 @@ class StatusStore:
             return descriptor
         except ProtocolFileError:
             raise
+        except ProtocolIOError as error:
+            raise ProtocolFileError(f"output root is unsafe: {error}") from error
         except OSError as exc:
             raise ProtocolFileError(f"output root is unsafe: {exc}") from exc
         finally:
@@ -252,11 +242,16 @@ class StatusStore:
             os.mkdir(canonical, 0o755, dir_fd=root_fd)
             os.chmod(canonical, 0o755, dir_fd=root_fd, follow_symlinks=False)
             os.fsync(root_fd)
-            run_fd = os.open(canonical, _DIRECTORY_FLAGS, dir_fd=root_fd)
+            try:
+                run_fd = open_directory(canonical, dir_fd=root_fd)
+            except ProtocolIOError as error:
+                raise ProtocolFileError(
+                    f"run directory is unsafe: {error}"
+                ) from error
             for name in (".control", ".status", "configuration"):
                 os.mkdir(name, 0o755, dir_fd=run_fd)
                 os.chmod(name, 0o755, dir_fd=run_fd, follow_symlinks=False)
-            status_fd = os.open(".status", _DIRECTORY_FLAGS, dir_fd=run_fd)
+            status_fd = self._open_child_directory(run_fd, ".status")
             try:
                 os.mkdir("quiescence", 0o755, dir_fd=status_fd)
                 os.chmod(
@@ -276,45 +271,24 @@ class StatusStore:
         canonical = _canonical_run_id(run_id)
         root_fd = self._open_output_root(create=False)
         try:
-            descriptor = os.open(canonical, _DIRECTORY_FLAGS, dir_fd=root_fd)
-            metadata = os.stat(canonical, dir_fd=root_fd, follow_symlinks=False)
-            opened = os.fstat(descriptor)
-            if not stat.S_ISDIR(metadata.st_mode) or (
-                metadata.st_dev,
-                metadata.st_ino,
-            ) != (opened.st_dev, opened.st_ino):
-                os.close(descriptor)
-                raise ProtocolFileError("run directory is unsafe")
-            return descriptor
-        except FileNotFoundError:
-            raise ProtocolFileError(f"run does not exist: {canonical}") from None
-        except ProtocolFileError:
-            raise
-        except OSError as exc:
-            raise ProtocolFileError(f"run directory is unsafe: {exc}") from exc
+            return open_directory(canonical, dir_fd=root_fd)
+        except ProtocolIOError as error:
+            if isinstance(error.__cause__, FileNotFoundError):
+                raise ProtocolFileError(
+                    f"run does not exist: {canonical}"
+                ) from None
+            raise ProtocolFileError(f"run directory is unsafe: {error}") from error
         finally:
             os.close(root_fd)
 
     @staticmethod
     def _open_child_directory(parent_fd: int, name: str) -> int:
         try:
-            descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
-            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            opened = os.fstat(descriptor)
-            if not stat.S_ISDIR(metadata.st_mode) or (
-                metadata.st_dev,
-                metadata.st_ino,
-            ) != (opened.st_dev, opened.st_ino):
-                raise ProtocolFileError(f"protocol directory {name!r} is unsafe")
-            return descriptor
-        except ProtocolFileError:
-            try:
-                os.close(descriptor)
-            except (OSError, UnboundLocalError):
-                pass
-            raise
-        except OSError as exc:
-            raise ProtocolFileError(f"protocol directory {name!r} is unsafe: {exc}") from exc
+            return open_directory(name, dir_fd=parent_fd)
+        except ProtocolIOError as error:
+            raise ProtocolFileError(
+                f"protocol directory {name!r} is unsafe: {error}"
+            ) from error
 
     def _with_protocol_directory(self, run_id: str, directory_name: str) -> tuple[int, int]:
         run_fd = self._open_run(run_id)

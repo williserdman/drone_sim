@@ -64,6 +64,58 @@ def run_directory(tmp_path: Path) -> Path:
     return run
 
 
+def _fail_directory_fstat(monkeypatch, target: Path) -> list[int]:
+    expected = target.resolve()
+    real_fstat = os.fstat
+    failed: list[int] = []
+
+    def fail_target(descriptor):
+        try:
+            opened_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            return real_fstat(descriptor)
+        if opened_path == expected:
+            failed.append(descriptor)
+            raise OSError("simulated directory fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "fstat", fail_target)
+    return failed
+
+
+def _assert_failed_open_closed(failed: list[int]) -> None:
+    assert len(failed) == 1
+    assert not Path(f"/proc/self/fd/{failed[0]}").exists()
+
+
+def test_constructor_translates_directory_fstat_failure_without_leak(
+    run_directory, monkeypatch
+):
+    failed = _fail_directory_fstat(monkeypatch, run_directory)
+
+    with pytest.raises(ProtocolError, match="run directory is unsafe") as raised:
+        RuntimeProtocol(run_directory, RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
+
+
+def test_child_open_translates_directory_fstat_failure_without_leak(
+    run_directory, monkeypatch
+):
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+    failed = _fail_directory_fstat(monkeypatch, run_directory / ".status")
+    try:
+        with pytest.raises(
+            ProtocolError, match="protocol directory '.status'"
+        ) as raised:
+            protocol.read_status(ArtifactsReadyStatus)
+        assert isinstance(raised.value.__cause__, ProtocolIOError)
+        _assert_failed_open_closed(failed)
+    finally:
+        protocol.close()
+
+
 @pytest.mark.parametrize("status", STATUSES, ids=lambda status: status.name)
 def test_runtime_status_round_trips_as_typed_canonical_file(run_directory, status):
     protocol = RuntimeProtocol(run_directory, RUN_ID)

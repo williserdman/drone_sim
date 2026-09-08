@@ -102,6 +102,73 @@ def _store(tmp_path: Path) -> StatusStore:
     return StatusStore(tmp_path.resolve())
 
 
+def _fail_directory_fstat(monkeypatch, target: Path) -> list[int]:
+    expected = target.resolve()
+    real_fstat = os.fstat
+    failed: list[int] = []
+
+    def fail_target(descriptor):
+        try:
+            opened_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            return real_fstat(descriptor)
+        if opened_path == expected:
+            failed.append(descriptor)
+            raise OSError("simulated directory fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "fstat", fail_target)
+    return failed
+
+
+def _assert_failed_open_closed(failed: list[int]) -> None:
+    assert len(failed) == 1
+    assert not Path(f"/proc/self/fd/{failed[0]}").exists()
+
+
+def test_output_root_open_translates_fstat_failure_without_leak(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "runs"
+    output_root.mkdir()
+    store = StatusStore(output_root.resolve())
+    failed = _fail_directory_fstat(monkeypatch, output_root)
+
+    with pytest.raises(ProtocolFileError, match="output root") as raised:
+        store.cleanup(RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
+
+
+def test_run_open_translates_fstat_failure_without_leak(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    failed = _fail_directory_fstat(monkeypatch, run_directory)
+
+    with pytest.raises(
+        ProtocolFileError, match="run directory is unsafe"
+    ) as raised:
+        store.cleanup(RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
+
+
+def test_child_open_translates_fstat_failure_without_leak(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    failed = _fail_directory_fstat(monkeypatch, run_directory / ".status")
+
+    with pytest.raises(
+        ProtocolFileError, match="protocol directory '.status'"
+    ) as raised:
+        store.read_operator_status(RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
+
+
 def test_allocate_exclusively_creates_only_owned_protocol_directories(tmp_path):
     store = _store(tmp_path)
 

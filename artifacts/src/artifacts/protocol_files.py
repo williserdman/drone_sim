@@ -45,6 +45,59 @@ class WritePolicy(Enum):
     REPLACE = "replace"
 
 
+def open_directory(
+    path: str | os.PathLike[str],
+    *,
+    dir_fd: int | None = None,
+) -> int:
+    """Open one stable existing directory and transfer its fd to the caller."""
+    display = os.fspath(path)
+    descriptor: int | None = None
+    pending_error: BaseException | None = None
+    try:
+        before = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode):
+            raise ProtocolIOError(
+                f"protocol directory {display!r} must be an existing directory"
+            )
+        descriptor = os.open(path, _DIRECTORY_FLAGS, dir_fd=dir_fd)
+        opened = os.fstat(descriptor)
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ProtocolIOError(
+                f"protocol directory {display!r} changed while opening"
+            )
+        transferred = descriptor
+        descriptor = None
+        return transferred
+    except ProtocolIOError as error:
+        pending_error = error
+        raise
+    except OSError as error:
+        wrapped = ProtocolIOError(
+            f"could not open protocol directory {display!r}: {error}"
+        )
+        pending_error = wrapped
+        raise wrapped from error
+    except BaseException as error:
+        pending_error = error
+        raise
+    finally:
+        cleanup_failures: list[tuple[str, Exception]] = []
+        if descriptor is not None:
+            descriptor_to_close = descriptor
+            descriptor = None
+            _attempt_cleanup(
+                cleanup_failures,
+                "close directory descriptor",
+                lambda: os.close(descriptor_to_close),
+            )
+        _report_cleanup_failures(
+            f"protocol directory {display!r}",
+            pending_error,
+            cleanup_failures,
+        )
+
+
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     document: dict[str, Any] = {}
     for key, value in pairs:
@@ -148,7 +201,7 @@ def _attempt_cleanup(
 
 
 def _report_cleanup_failures(
-    name: str,
+    subject: str,
     pending_error: BaseException | None,
     failures: list[tuple[str, Exception]],
 ) -> None:
@@ -156,7 +209,7 @@ def _report_cleanup_failures(
         return
 
     notes = [
-        f"protocol file {name!r} cleanup failed during {action}: {error}"
+        f"{subject} cleanup failed during {action}: {error}"
         for action, error in failures
     ]
     if pending_error is not None:
@@ -259,7 +312,9 @@ def _read_json_object_and_metadata_at(
                 "close read descriptor",
                 lambda: os.close(descriptor_to_close),
             )
-        _report_cleanup_failures(name, pending_error, cleanup_failures)
+        _report_cleanup_failures(
+            f"protocol file {name!r}", pending_error, cleanup_failures
+        )
 
 
 def read_json_object_at(
@@ -429,4 +484,6 @@ def write_json_object_at(
                 "close directory lock descriptor",
                 lambda: os.close(lock_descriptor_to_close),
             )
-        _report_cleanup_failures(name, pending_error, cleanup_failures)
+        _report_cleanup_failures(
+            f"protocol file {name!r}", pending_error, cleanup_failures
+        )

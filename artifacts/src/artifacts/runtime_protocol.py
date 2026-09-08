@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import os
 from pathlib import Path, PurePosixPath
-import stat
 from typing import Any, TypeVar
 
 from artifacts.protocol_files import (
     ProtocolIOError,
     WritePolicy,
     canonical_json,
+    open_directory,
     read_json_object_at,
     write_json_object_at,
 )
@@ -27,12 +27,6 @@ from artifacts.runtime_status import (
 )
 
 
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-)
 _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
 _QUIESCENCE_MODULES = frozenset(
     {"orchestration", "companion", "ardupilot_sitl", "gazebo", "electromagnet", "scorekeeper"}
@@ -88,18 +82,9 @@ class RuntimeProtocol:
         self.run_id = canonical_run_id(run_id)
         self.run_directory = Path(run_directory)
         try:
-            before = self.run_directory.lstat()
-            descriptor = os.open(self.run_directory, _DIRECTORY_FLAGS)
-            opened = os.fstat(descriptor)
-        except OSError as error:
+            self._run_fd = open_directory(self.run_directory)
+        except ProtocolIOError as error:
             raise ProtocolError(f"run directory is unsafe: {error}") from error
-        if not stat.S_ISDIR(before.st_mode) or (before.st_dev, before.st_ino) != (
-            opened.st_dev,
-            opened.st_ino,
-        ):
-            os.close(descriptor)
-            raise ProtocolError("run directory is unsafe")
-        self._run_fd = descriptor
         self._observed_controls: dict[str, bytes] = {}
 
     def close(self) -> None:
@@ -120,18 +105,11 @@ class RuntimeProtocol:
     @staticmethod
     def _open_directory_at(parent_fd: int, name: str) -> int:
         try:
-            before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
-            opened = os.fstat(descriptor)
-        except OSError as error:
-            raise ProtocolError(f"protocol directory {name!r} is unsafe: {error}") from error
-        if not stat.S_ISDIR(before.st_mode) or (before.st_dev, before.st_ino) != (
-            opened.st_dev,
-            opened.st_ino,
-        ):
-            os.close(descriptor)
-            raise ProtocolError(f"protocol directory {name!r} is unsafe")
-        return descriptor
+            return open_directory(name, dir_fd=parent_fd)
+        except ProtocolIOError as error:
+            raise ProtocolError(
+                f"protocol directory {name!r} is unsafe: {error}"
+            ) from error
 
     def write_status(self, status: RuntimeStatus) -> Path:
         name = _translate_io(lambda: status_name(type(status)))

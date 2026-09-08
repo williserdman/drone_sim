@@ -14,6 +14,7 @@ from artifacts.protocol_files import (
     ProtocolIOError,
     WritePolicy,
     canonical_json,
+    open_directory,
     read_json_object_at,
     write_json_object_at,
 )
@@ -30,6 +31,156 @@ def directory_fd(tmp_path: Path):
 
 def _temporary_siblings(tmp_path: Path, name: str = "state.json") -> list[Path]:
     return list(tmp_path.glob(f".{name}.*.tmp"))
+
+
+def _record_directory_open(monkeypatch, expected_path):
+    real_open = os.open
+    acquired: list[int] = []
+
+    def recording_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if path == expected_path:
+            acquired.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", recording_open)
+    return acquired
+
+
+def _assert_descriptor_closed(descriptor: int) -> None:
+    assert not Path(f"/proc/self/fd/{descriptor}").exists()
+
+
+def test_open_directory_returns_caller_owned_absolute_and_relative_descriptors(
+    tmp_path: Path,
+):
+    child = tmp_path / "child"
+    child.mkdir()
+
+    absolute_fd = open_directory(child)
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    relative_fd = open_directory("child", dir_fd=parent_fd)
+    try:
+        expected = child.stat()
+        for descriptor in (absolute_fd, relative_fd):
+            opened = os.fstat(descriptor)
+            assert stat.S_ISDIR(opened.st_mode)
+            assert (opened.st_dev, opened.st_ino) == (
+                expected.st_dev,
+                expected.st_ino,
+            )
+    finally:
+        os.close(relative_fd)
+        os.close(parent_fd)
+        os.close(absolute_fd)
+
+
+@pytest.mark.parametrize("kind", ["regular", "symlink"])
+def test_open_directory_rejects_unsafe_type_before_open(
+    tmp_path: Path, monkeypatch, kind: str
+):
+    target = tmp_path / "target"
+    if kind == "regular":
+        target.write_text("not a directory")
+    else:
+        real = tmp_path / "real"
+        real.mkdir()
+        target.symlink_to(real, target_is_directory=True)
+    real_open = os.open
+
+    def reject_target_open(path, *args, **kwargs):
+        if path == target:
+            pytest.fail("unsafe directory path was opened")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", reject_target_open)
+    with pytest.raises(ProtocolIOError, match="directory"):
+        open_directory(target)
+
+
+def test_open_directory_closes_descriptor_when_fstat_fails(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    acquired = _record_directory_open(monkeypatch, target)
+    real_fstat = os.fstat
+
+    def fail_target_fstat(descriptor):
+        if descriptor in acquired:
+            raise OSError("simulated directory fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "fstat", fail_target_fstat)
+    with pytest.raises(ProtocolIOError, match="fstat failure") as raised:
+        open_directory(target)
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert len(acquired) == 1
+    _assert_descriptor_closed(acquired[0])
+
+
+def test_open_directory_closes_descriptor_when_identity_changes(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    before = target.stat()
+    acquired = _record_directory_open(monkeypatch, target)
+    real_fstat = os.fstat
+
+    def mismatch_target_identity(descriptor):
+        if descriptor in acquired:
+            return type(
+                "Opened",
+                (),
+                {
+                    "st_dev": before.st_dev,
+                    "st_ino": before.st_ino + 1,
+                },
+            )()
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "fstat", mismatch_target_identity)
+    with pytest.raises(ProtocolIOError, match="changed while opening"):
+        open_directory(target)
+
+    assert len(acquired) == 1
+    _assert_descriptor_closed(acquired[0])
+
+
+def test_open_directory_preserves_base_exception_and_notes_close_failure(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    acquired = _record_directory_open(monkeypatch, target)
+    interruption = KeyboardInterrupt("simulated interruption")
+    real_fstat = os.fstat
+    real_close = os.close
+
+    def interrupt_target_fstat(descriptor):
+        if descriptor in acquired:
+            raise interruption
+        return real_fstat(descriptor)
+
+    def close_target_then_fail(descriptor):
+        real_close(descriptor)
+        if descriptor in acquired:
+            raise OSError("simulated directory close failure")
+
+    monkeypatch.setattr(os, "fstat", interrupt_target_fstat)
+    monkeypatch.setattr(os, "close", close_target_then_fail)
+    with pytest.raises(KeyboardInterrupt) as raised:
+        open_directory(target)
+
+    assert raised.value is interruption
+    assert any(
+        "simulated directory close failure" in note
+        for note in interruption.__notes__
+    )
+    assert len(acquired) == 1
+    _assert_descriptor_closed(acquired[0])
 
 
 def test_canonical_json_is_strict_sorted_and_newline_terminated():
