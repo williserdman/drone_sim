@@ -4,11 +4,17 @@ import ast
 import json
 from io import StringIO
 from pathlib import Path
+import sys
 import threading
+from types import ModuleType
 
 import pytest
 
-from artifacts.runtime_status import MissionCommandDeliveredStatus, MissionReadyStatus
+from artifacts.runtime_status import (
+    MissionCommandDeliveredStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+)
 import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.runtime_node import (
     RuntimeConfig,
@@ -587,6 +593,67 @@ def test_runtime_wires_passive_facts_to_durable_mission_readiness() -> None:
 
     assert protocol.statuses == [MissionReadyStatus(RUN_ID)]
     assert vehicle.sent == []
+
+
+def test_controlled_descent_startup_failure_reaches_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    statuses = []
+    quiescence: list[str] = []
+    mavutil = ModuleType("mavutil")
+    mavutil.mavlink_connection = object()  # type: ignore[attr-defined]
+
+    class Protocol:
+        def __init__(self, _config: RuntimeConfig) -> None:
+            pass
+
+        def write_status(self, status) -> None:
+            statuses.append(status)
+
+        def write_quiescence(self, module: str) -> None:
+            quiescence.append(module)
+
+        def close(self) -> None:
+            pass
+
+    dependency_members = {
+        "pymavlink": {"mavutil": mavutil},
+        "rclpy.node": {"Node": object},
+        "rclpy.qos": {
+            "DurabilityPolicy": object,
+            "QoSProfile": object,
+            "ReliabilityPolicy": object,
+        },
+        "rosgraph_msgs.msg": {"Clock": object},
+        "simulation_interfaces.msg": {"RunState": object},
+    }
+    for name in ("rclpy", "rosgraph_msgs", "simulation_interfaces"):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    for name, members in dependency_members.items():
+        module = ModuleType(name)
+        for member_name, member in members.items():
+            setattr(module, member_name, member)
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", Protocol)
+    monkeypatch.setattr(
+        runtime_node,
+        "connect_mavlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TimeoutError("MAVLink connection deadline expired")
+        ),
+    )
+    config = RuntimeConfig(run_id=RUN_ID, run_directory=tmp_path / RUN_ID)
+
+    assert runtime_node._run_controlled_descent(config) == 1
+    assert statuses == [
+        RuntimeFailureStatus(
+            RUN_ID,
+            "companion",
+            "MAVLink connection deadline expired",
+            ("logs/docker/companion.log.partial",),
+        )
+    ]
+    assert quiescence == ["companion"]
 
 
 def test_initial_command_delivery_is_durable_and_exactly_at_public_zero() -> None:

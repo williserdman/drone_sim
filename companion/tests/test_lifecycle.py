@@ -7,6 +7,7 @@ from artifacts.runtime_status import (
     MissionCommandDeliveredStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
+    RuntimeFailureStatus,
 )
 from drone_sim_companion.lifecycle import CompanionLifecycle
 from drone_sim_companion.mission import CommandKind, MissionPhase, MissionState
@@ -81,8 +82,21 @@ def test_lifecycle_persists_transport_readiness_landed_completion_and_silence_bo
 
 
 def test_failure_is_terminal_and_logged_once_without_false_finished_status() -> None:
-    protocol = Protocol()
-    stream = StringIO()
+    operations: list[object] = []
+
+    class RecordingProtocol(Protocol):
+        def write_status(self, status) -> None:
+            super().write_status(status)
+            operations.append(status)
+
+    class RecordingStream(StringIO):
+        def write(self, value: str) -> int:
+            if '"event":"mission_failed"' in value:
+                operations.append("mission_failed")
+            return super().write(value)
+
+    protocol = RecordingProtocol()
+    stream = RecordingStream()
     lifecycle = CompanionLifecycle(
         run_id="00000000-0000-4000-8000-000000000001",
         protocol=protocol,
@@ -95,7 +109,18 @@ def test_failure_is_terminal_and_logged_once_without_false_finished_status() -> 
     )
     lifecycle.observe_terminal(failed)
     lifecycle.observe_terminal(failed)
-    assert protocol.statuses == []
+
+    failure_status = RuntimeFailureStatus(
+        "00000000-0000-4000-8000-000000000001",
+        "companion",
+        "negative acknowledgement",
+        ("logs/docker/companion.log.partial",),
+    )
+    assert protocol.statuses == [failure_status]
+    assert not any(
+        isinstance(status, MissionFinishedStatus) for status in protocol.statuses
+    )
+    assert operations == [failure_status, "mission_failed"]
     assert stream.getvalue().count('"event":"mission_failed"') == 1
 
 

@@ -12,6 +12,7 @@ from artifacts.runtime_status import (
     MissionCommandDeliveredStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
+    RuntimeFailureStatus,
     RuntimeStatus,
 )
 
@@ -99,6 +100,14 @@ class CompanionLifecycle:
             self._protocol.write_status(MissionFinishedStatus(self._run_id, timestamp_ns))
             self.emit("mission_finished", timestamp_ns, {"outcome": "LANDED"})
         else:
+            self._protocol.write_status(
+                RuntimeFailureStatus(
+                    self._run_id,
+                    "companion",
+                    state.failure_reason,
+                    ("logs/docker/companion.log.partial",),
+                )
+            )
             self.emit(
                 "mission_failed",
                 timestamp_ns,
