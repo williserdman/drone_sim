@@ -33,6 +33,9 @@ validates; it does not infer physical success from a command or log message.
   contract owns runtime status types, JSON conversion, and write policy;
   [`artifacts.protocol_files`](../artifacts/src/artifacts/protocol_files.py) owns
   low-level safe persistence.
+  `StatusStore.validated_manifest_result` accepts paths defined by
+  [`artifacts.manifest.is_manifest_relative_path`](../artifacts/src/artifacts/manifest.py);
+  the [`manifest.json` schema](../artifacts/schemas/manifest.schema.json) is the wire authority.
 
 ## Consumer and producer seams
 
