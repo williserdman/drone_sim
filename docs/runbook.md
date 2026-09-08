@@ -61,10 +61,12 @@ SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD) \
   docker compose --profile phase3 build
 ```
 
-The explicit build argument matters: Compose's fallback revision is not a
-reliable match for your checkout. At launch the CLI checks the companion image's
-`org.opencontainers.image.comp2026.revision` label against nested Git HEAD and
-fails closed on a mismatch. Check it without launching:
+`docker compose --profile phase3 build` requires this explicit nested HEAD build
+argument. Compose leaves it empty when omitted so inactive profiles and
+noncompanion configuration still resolve, but the companion build then fails
+before package installation or source copies. At launch the CLI checks the
+companion image's `org.opencontainers.image.comp2026.revision` label against
+nested Git HEAD and fails closed on a mismatch. Check it without launching:
 
 ```bash
 docker image inspect drone-sim-companion-runtime:phase3 \

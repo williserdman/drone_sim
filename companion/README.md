@@ -60,6 +60,11 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - `companion/comp2026` is a separate, untracked checkout required for the
   `comp2026_auto` image. Keep changes there minimal and never push it as part of
   this repository. The Docker context admits only its explicit import closure.
+- Building the Phase 3 companion image requires
+  `SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD)`. Compose
+  leaves the build argument empty when it is not supplied so inactive profiles
+  and noncompanion configuration still resolve; the companion Dockerfile rejects
+  an empty value before package installation or source copies.
 - The hosted `drone.auto_attempt` currently imports FM1 and FM2 from `missions/`
   but imports FM3 from `drone/mock_mission.py`; do not assume
   `missions/fm3.py` is the deployed implementation.

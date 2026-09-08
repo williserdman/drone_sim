@@ -2,9 +2,9 @@
 
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md)
 
-Reviewed 2026-09-08 against code revision `650e181` plus this documentation
-correction. This is a dated handoff, not a claim that mutable checkouts or local
-image tags will remain unchanged.
+Reviewed 2026-09-08 against the dated evidence below and code through `dcd43cc`,
+plus the explicit companion revision guard described here. This is not a claim
+that mutable checkouts or local image tags will remain unchanged.
 
 ## What a new maintainer should do first
 
@@ -63,6 +63,23 @@ The earlier broader host suite recorded the roll-gain mismatch below.
 
 No image builds, host provisioning, or flight were performed for that cleanup.
 Skipped ROS cases and source-only tests do not establish runtime correctness.
+
+### Explicit companion revision guard, 2026-09-08
+
+Task 8 removed the historical Comp2026 revision fallback. With
+`SIM_COMP2026_REVISION` absent, base, Phase 2, Phase 3, and GPU Phase 3 Compose
+configuration all resolved. Phase 3 exposed an empty companion build argument;
+a 40-character explicit value passed through unchanged. The companion
+Dockerfile's first build step rejected an empty value with exit 2 and accepted a
+nonempty value. That step precedes package installation and every source copy.
+
+The focused RED run failed the two new behaviors and passed the two existing
+profile checks. After the change, all four selected tests passed. The requested
+three-file integration run reported **26 passed, 4 failed** because this
+worktree still lacks `companion/comp2026`: Phase 2 launch failed with the known
+`source_revision_unavailable` result and three later bundle checks depended on
+that launch. No checkout was inserted to hide the limitation. No image was
+built or retagged, and no flight, score, or artifact-validity claim was made.
 
 ### Typed runtime status verification, 2026-09-08
 
@@ -176,7 +193,10 @@ another explicit acquisition mechanism is still needed. The README's existing
 packaging TODO is preserved. Do not invent a remote or bypass the label check.
 
 Before that packaging work, the runbook's explicit revision build argument is
-the supported manual path; plain Compose build uses a stale fallback label.
+the supported manual path. Plain Phase 3 Compose build no longer substitutes a
+stale revision; the companion Dockerfile rejects the empty build argument before
+package installation or source copies. Compose configuration and selective
+noncompanion workflows can still resolve without the variable.
 Relevant files: [Dockerfile](../companion/Dockerfile), [.dockerignore](../.dockerignore),
 [Compose binding](../orchestration/src/orchestration/_adapters/compose.py).
 
