@@ -10,6 +10,7 @@ import stat
 import pytest
 
 from artifacts.protocol_files import ProtocolIOError
+from artifacts.runtime_protocol import RuntimeProtocol
 from artifacts.runtime_status import (
     ArduPilotReadyStatus,
     ArtifactFinalRecord,
@@ -150,6 +151,7 @@ def test_output_root_parent_close_failure_closes_owned_child(
     output_root = tmp_path / "runs"
     output_root.mkdir()
     child_descriptors: list[int] = []
+    intercepted_parent_descriptors: list[int] = []
     parent_close_pending = False
     real_open_directory = status_store_module.open_directory
     real_close = os.close
@@ -167,6 +169,7 @@ def test_output_root_parent_close_failure_closes_owned_child(
         nonlocal parent_close_pending
         if parent_close_pending:
             parent_close_pending = False
+            intercepted_parent_descriptors.append(descriptor)
             if close_before_raising:
                 real_close(descriptor)
             raise OSError("simulated parent close failure")
@@ -175,11 +178,18 @@ def test_output_root_parent_close_failure_closes_owned_child(
     monkeypatch.setattr(status_store_module, "open_directory", recording_open_directory)
     monkeypatch.setattr(status_store_module.os, "close", failing_parent_close)
 
-    with pytest.raises(ProtocolFileError, match="output root is unsafe"):
-        StatusStore(output_root.resolve()).cleanup(RUN_ID)
+    try:
+        with pytest.raises(ProtocolFileError, match="output root is unsafe"):
+            StatusStore(output_root.resolve()).cleanup(RUN_ID)
+        assert len(child_descriptors) == 1
+        assert len(intercepted_parent_descriptors) == 1
+    finally:
+        for descriptor in intercepted_parent_descriptors:
+            if Path(f"/proc/self/fd/{descriptor}").exists():
+                real_close(descriptor)
 
-    assert len(child_descriptors) == 1
     assert not Path(f"/proc/self/fd/{child_descriptors[0]}").exists()
+    assert not Path(f"/proc/self/fd/{intercepted_parent_descriptors[0]}").exists()
 
 
 def test_run_open_translates_fstat_failure_without_leak(tmp_path, monkeypatch):
@@ -411,18 +421,31 @@ def test_finalize_request_refuses_unsafe_preexisting_target(tmp_path):
 
 
 @pytest.mark.parametrize("status", RUNTIME_STATUSES, ids=lambda value: value.name)
-def test_runtime_status_reads_every_registered_value_as_its_exact_type(tmp_path, status):
+def test_runtime_status_round_trips_canonically_through_both_adapters(tmp_path, status):
     store = _store(tmp_path)
     run_directory = store.allocate(RUN_ID)
-    target = run_directory / f".status/{status.name}.json"
-    target.write_text(json.dumps(status_document(status)), encoding="utf-8")
-    before = target.stat()
+    with RuntimeProtocol(run_directory, RUN_ID) as protocol:
+        target = protocol.write_status(status)
+        runtime_parsed = protocol.read_status(type(status))
 
-    parsed = store.read_runtime_status(RUN_ID, type(status))
+    expected = (
+        json.dumps(
+            status_document(status),
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
+    assert target.read_bytes() == expected
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert type(runtime_parsed) is type(status)
+    assert runtime_parsed == status
 
-    assert type(parsed) is type(status)
-    assert parsed == status
-    assert target.stat() == before
+    host_parsed = store.read_runtime_status(RUN_ID, type(status))
+    assert type(host_parsed) is type(status)
+    assert host_parsed == status
 
 
 def test_runtime_status_read_requires_matching_run_id(tmp_path):

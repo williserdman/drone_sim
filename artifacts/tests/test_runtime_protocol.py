@@ -9,52 +9,15 @@ import pytest
 from artifacts.protocol_files import ProtocolIOError
 from artifacts.runtime_protocol import ProtocolError, RuntimeProtocol
 from artifacts.runtime_status import (
-    ArduPilotReadyStatus,
-    ArtifactFinalRecord,
-    ArtifactsFinalStatus,
     ArtifactsReadyStatus,
-    CompanionReadyStatus,
-    FlightExchange,
-    GazeboReadyStatus,
-    MissionCommandDeliveredStatus,
-    MissionFinishedStatus,
-    MissionReadyStatus,
     RuntimeFailureStatus,
-    RuntimeFrozenStatus,
     RuntimeRunningStatus,
-    ScoreFinishedStatus,
     SourceFinishedStatus,
-    TerminalNotifiedStatus,
-    status_document,
 )
-from artifacts.validation import ValidationStatus
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_RUN_ID = "22222222-2222-4222-8222-222222222222"
-DIGEST = "a" * 64
-FINAL_RECORDS = tuple(
-    ArtifactFinalRecord(path, ValidationStatus.VALID, "valid", 1, DIGEST, {"ok": True})
-    for path in ("video/onboard.mp4", "video/observer.mp4", "rosbag")
-)
-STATUSES = (
-    ArtifactsReadyStatus(RUN_ID),
-    GazeboReadyStatus(RUN_ID, FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)),
-    ArduPilotReadyStatus(RUN_ID),
-    CompanionReadyStatus(RUN_ID),
-    MissionReadyStatus(RUN_ID),
-    MissionCommandDeliveredStatus(RUN_ID, 50_000_000),
-    RuntimeRunningStatus(RUN_ID, 1),
-    SourceFinishedStatus(RUN_ID, 2),
-    MissionFinishedStatus(RUN_ID, 3),
-    ScoreFinishedStatus(RUN_ID, 4),
-    RuntimeFailureStatus(RUN_ID, "gazebo", "exchange stopped", ("logs/gazebo.log",)),
-    RuntimeFrozenStatus(RUN_ID),
-    ArtifactsFinalStatus(RUN_ID, FINAL_RECORDS),
-    TerminalNotifiedStatus(RUN_ID),
-)
-
-
 @pytest.fixture
 def run_directory(tmp_path: Path) -> Path:
     run = tmp_path / RUN_ID
@@ -114,27 +77,6 @@ def test_child_open_translates_directory_fstat_failure_without_leak(
         _assert_failed_open_closed(failed)
     finally:
         protocol.close()
-
-
-@pytest.mark.parametrize("status", STATUSES, ids=lambda status: status.name)
-def test_runtime_status_round_trips_as_typed_canonical_file(run_directory, status):
-    protocol = RuntimeProtocol(run_directory, RUN_ID)
-
-    path = protocol.write_status(status)
-
-    expected = (
-        json.dumps(
-            status_document(status),
-            allow_nan=False,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode()
-    assert path.read_bytes() == expected
-    assert stat.S_IMODE(path.stat().st_mode) == 0o644
-    assert protocol.read_status(type(status)) == status
 
 
 def test_identical_status_equal_retry_succeeds_and_different_retry_conflicts(run_directory):

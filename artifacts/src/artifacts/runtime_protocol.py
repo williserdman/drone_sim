@@ -109,9 +109,8 @@ class RuntimeProtocol:
         name = _translate_io(lambda: status_name(type(status)))
         document = _translate_io(lambda: status_document(status))
         policy = _translate_io(lambda: status_write_policy(type(status)))
-        _translate_io(
-            lambda: parse_status(type(status), document, expected_run_id=self.run_id)
-        )
+        if status.run_id != self.run_id:
+            raise ProtocolError(f"{name} has the wrong run_id")
         status_fd = self._open_directory(".status")
         try:
             persisted, _created = _translate_io(
