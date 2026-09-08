@@ -22,7 +22,7 @@ from .children import ChildSupervisor, gazebo_child_specs
 from .entrypoint import (
     ActionExecutor,
     FinalizationDeadlineLatch,
-    GazeboReadyStatus,
+    FlightExchangeLatch,
     GazeboTransport,
     TransportError,
 )
@@ -294,7 +294,7 @@ def main() -> int:
     inbox: deque = deque()
     model = RuntimeModel(run_id=run_id, expected_frames=config.expected_camera_frames)
     protocol = RuntimeProtocol(run_directory, run_id)
-    status = GazeboReadyStatus(run_directory, run_id)
+    readiness = FlightExchangeLatch()
     deadline_latch = FinalizationDeadlineLatch(config.finalization_wall_seconds)
     children = ChildSupervisor()
     rclpy.init()
@@ -337,7 +337,7 @@ def main() -> int:
     action_executor = ActionExecutor(
         run_id=run_id,
         protocol=protocol,
-        status=status,
+        readiness=readiness,
         transport=transport,
         children=children,
         server=server,
@@ -376,7 +376,7 @@ def main() -> int:
                     )
                     exchange_ready = flight_exchange is not None
                     if flight_exchange is not None:
-                        status.record_flight_exchange(flight_exchange)
+                        readiness.record_flight_exchange(flight_exchange)
                 if exchange_ready:
                     gazebo_ready_seen = True
                     inbox.append(GazeboReady(run_id))

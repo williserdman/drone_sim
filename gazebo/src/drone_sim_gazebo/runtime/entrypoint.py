@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import json
 import math
-import os
-from pathlib import Path
 import re
 import subprocess
 import time
-from uuid import UUID, uuid4
 
-from artifacts.runtime_status import RuntimeFailureStatus, SourceFinishedStatus
+from artifacts.runtime_status import (
+    FlightExchange,
+    GazeboReadyStatus,
+    RuntimeFailureStatus,
+    SourceFinishedStatus,
+)
 from .model import (
     ActivateOutput,
     BeginFinalization,
@@ -73,68 +75,29 @@ def _flight_status_ready(status: Mapping[str, bool | int]) -> bool:
     )
 
 
-class GazeboReadyStatus:
-    """Publish the one module-specific readiness fact without replacing evidence."""
+class FlightExchangeLatch:
+    """Freeze the live exchange that proves Gazebo flight readiness."""
 
-    def __init__(self, run_directory: Path, run_id: str) -> None:
-        if str(UUID(run_id)) != run_id or run_directory.name != run_id:
-            raise ValueError("run directory and canonical run_id must agree")
-        self._directory = Path(run_directory) / ".status"
-        self._target = self._directory / "gazebo-ready.json"
-        self._run_id = run_id
-        self._flight_exchange: dict[str, bool | int] | None = None
-        self._payload: bytes | None = None
+    def __init__(self) -> None:
+        self._flight_exchange: FlightExchange | None = None
 
     def record_flight_exchange(self, status: Mapping[str, bool | int]) -> None:
         validated = _validate_flight_status(dict(status))
         if not _flight_status_ready(validated):
             raise RuntimeError("cannot record an unready ArduPilot exchange")
-        if self._payload is not None:
-            raise RuntimeError("gazebo-ready payload is already frozen")
-        if self._flight_exchange is not None and self._flight_exchange != validated:
+        flight_exchange = FlightExchange(**validated)
+        if (
+            self._flight_exchange is not None
+            and self._flight_exchange != flight_exchange
+        ):
             raise RuntimeError("flight exchange readiness was already latched")
-        self._flight_exchange = validated
+        self._flight_exchange = flight_exchange
 
-    def _frozen_payload(self) -> bytes:
-        if self._payload is None:
-            document: dict[str, object] = {"run_id": self._run_id, "ready": True}
-            if self._flight_exchange is not None:
-                document["flight_exchange"] = self._flight_exchange
-            self._payload = (
-                json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
-            ).encode()
-        return self._payload
-
-    def write_gazebo_ready(self) -> Path:
-        payload = self._frozen_payload()
-        if self._target.exists():
-            if self._target.read_bytes() != payload:
-                raise RuntimeError("gazebo-ready fact conflicts with existing evidence")
-            return self._target
-        temporary = self._directory / f".gazebo-ready.{uuid4().hex}.tmp"
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-            0o644,
-        )
-        try:
-            os.write(descriptor, payload)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        try:
-            os.link(temporary, self._target)
-        except FileExistsError:
-            if self._target.read_bytes() != payload:
-                raise RuntimeError("gazebo-ready fact conflicts with existing evidence")
-        finally:
-            temporary.unlink(missing_ok=True)
-        directory_fd = os.open(self._directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-        return self._target
+    @property
+    def flight_exchange(self) -> FlightExchange:
+        if self._flight_exchange is None:
+            raise RuntimeError("flight exchange readiness has not been latched")
+        return self._flight_exchange
 
 
 class GazeboTransport:
@@ -339,7 +302,7 @@ class ActionExecutor:
         *,
         run_id: str,
         protocol,
-        status,
+        readiness: FlightExchangeLatch,
         transport: GazeboTransport,
         children,
         server,
@@ -349,7 +312,7 @@ class ActionExecutor:
     ) -> None:
         self._run_id = run_id
         self._protocol = protocol
-        self._status = status
+        self._readiness = readiness
         self._transport = transport
         self._children = children
         self._server = server
@@ -362,7 +325,9 @@ class ActionExecutor:
         for action in actions:
             self._observe(action)
             if isinstance(action, PublishGazeboReady):
-                self._status.write_gazebo_ready()
+                self._protocol.write_status(
+                    GazeboReadyStatus(self._run_id, self._readiness.flight_exchange)
+                )
             elif isinstance(action, RequestSteps):
                 self._transport.request_steps(action.count)
             elif isinstance(action, SetPaused):

@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from artifacts.runtime_status import RuntimeFailureStatus, SourceFinishedStatus
+from artifacts.runtime_status import (
+    FlightExchange,
+    GazeboReadyStatus,
+    RuntimeFailureStatus,
+    SourceFinishedStatus,
+)
 from drone_sim_gazebo.runtime import (
     ActivateOutput,
     BeginFinalization,
@@ -12,11 +17,23 @@ from drone_sim_gazebo.runtime import (
     WriteRuntimeFailure,
     WriteSourceFinished,
 )
-from drone_sim_gazebo.runtime.entrypoint import ActionExecutor
+from drone_sim_gazebo.runtime.entrypoint import ActionExecutor, FlightExchangeLatch
 from drone_sim_gazebo.server import NativeArtifactSummary
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+FLIGHT_EXCHANGE = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
+LIVE_FLIGHT_EXCHANGE = {
+    "online": True,
+    "servo_packets_received": 1,
+    "motor_updates": 1,
+    "duplicate_servo_packets": 0,
+    "servo_frame_gaps": 0,
+    "json_states_sent": 1,
+    "json_send_errors": 0,
+    "last_servo_frame": 0,
+    "last_json_sim_time_ns": 0,
+}
 
 
 class Protocol:
@@ -29,14 +46,6 @@ class Protocol:
 
     def write_quiescence(self, module):
         self.quiescence.append(module)
-
-
-class Status:
-    def __init__(self):
-        self.ready = []
-
-    def write_gazebo_ready(self):
-        self.ready.append(True)
 
 
 class Transport:
@@ -78,24 +87,25 @@ def _executor(tmp_path, *, activate_output=lambda: None, start_warmup=None):
         0,
         True,
     )
-    protocol, status, transport, children, server = (
-        Protocol(), Status(), Transport(), Children(), Server(summary)
+    protocol, readiness, transport, children, server = (
+        Protocol(), FlightExchangeLatch(), Transport(), Children(), Server(summary)
     )
+    readiness.record_flight_exchange(LIVE_FLIGHT_EXCHANGE)
     executor = ActionExecutor(
         run_id=RUN_ID,
         protocol=protocol,
-        status=status,
+        readiness=readiness,
         transport=transport,
         children=children,
         server=server,
         activate_output=activate_output,
         start_warmup=start_warmup,
     )
-    return executor, protocol, status, transport, children, server, summary
+    return executor, protocol, readiness, transport, children, server, summary
 
 
 def test_action_executor_maps_readiness_control_and_durable_facts(tmp_path):
-    executor, protocol, status, transport, *_ = _executor(tmp_path)
+    executor, protocol, _readiness, transport, *_ = _executor(tmp_path)
 
     followups = executor.apply(
         (
@@ -109,9 +119,9 @@ def test_action_executor_maps_readiness_control_and_durable_facts(tmp_path):
     )
 
     assert followups == ()
-    assert status.ready == [True]
     assert transport.calls == [("step", 1), ("pause", False)]
     assert protocol.statuses == [
+        GazeboReadyStatus(RUN_ID, FLIGHT_EXCHANGE),
         SourceFinishedStatus(RUN_ID, 2_000_000_000),
         RuntimeFailureStatus(
             RUN_ID, "gazebo", "broken", ("gazebo/server.log.partial",)
