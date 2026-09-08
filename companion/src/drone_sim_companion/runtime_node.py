@@ -261,19 +261,36 @@ def _deliver_comp2026_initial_command(
     lifecycle: CompanionLifecycle,
     gate: Comp2026StartGate,
     attempt_failure: AttemptFailureCoordinator,
-    timestamp_ns: int,
+    clock: SimulationClock,
+    mark_delivered: Callable[[], None],
 ) -> bool:
-    if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
-        attempt_failure.fail("initial GUIDED command missed the 50 ms delivery window")
-        return False
-    try:
+    delivered = False
+
+    def deliver_at(timestamp_ns: int) -> None:
+        nonlocal delivered
+        if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
+            raise _InitialCommandWindowMissed
         vehicle.mode = vehicle_mode_type("GUIDED")  # type: ignore[attr-defined]
         lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, timestamp_ns)
         gate.mark_command_delivered()
+        mark_delivered()
+        delivered = True
+
+    try:
+        claimed = attempt_failure.finish_success(
+            lambda: clock.run_at_current_timestamp(deliver_at)
+        )
+    except _InitialCommandWindowMissed:
+        attempt_failure.fail("initial GUIDED command missed the 50 ms delivery window")
+        return False
     except Exception as error:
         attempt_failure.fail(f"initial GUIDED command failed: {error}")
         return False
-    return True
+    return claimed and delivered
+
+
+class _InitialCommandWindowMissed(Exception):
+    pass
 
 
 def comp2026_start_gate_poll_required(
@@ -1182,18 +1199,21 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     last_start_readiness = readiness
                 if (
                     mission_running
-                    and clock.timestamp_ns is not None
                     and gate.mission_ready
                     and not initial_command_delivered
-                    and not attempt_failure.failed
                 ):
-                    initial_command_delivered = _deliver_comp2026_initial_command(
+                    def mark_initial_command_delivered() -> None:
+                        nonlocal initial_command_delivered
+                        initial_command_delivered = True
+
+                    _deliver_comp2026_initial_command(
                         vehicle=controller.vehicle,
                         vehicle_mode_type=VehicleMode,
                         lifecycle=lifecycle,
                         gate=gate,
                         attempt_failure=attempt_failure,
-                        timestamp_ns=clock.timestamp_ns,
+                        clock=clock,
+                        mark_delivered=mark_initial_command_delivered,
                     )
             if (
                 sensor_subscriptions_active

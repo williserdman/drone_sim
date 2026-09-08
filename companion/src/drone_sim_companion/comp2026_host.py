@@ -93,6 +93,13 @@ class SimulationClock:
         timestamp_ns = self.timestamp_ns
         return 0.0 if timestamp_ns is None else timestamp_ns / 1_000_000_000
 
+    def run_at_current_timestamp(self, operation: Callable[[int], None]) -> bool:
+        with self._condition:
+            if self._timestamp_ns is None:
+                return False
+            operation(self._timestamp_ns)
+            return True
+
     def sleep(self, seconds: float) -> None:
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
             raise TypeError("simulation sleep duration must be numeric")
