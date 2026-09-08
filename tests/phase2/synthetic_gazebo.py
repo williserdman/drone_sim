@@ -13,6 +13,8 @@ import sys
 import time
 from typing import Any, Callable
 
+from artifacts.runtime_status import RuntimeRunningStatus
+
 
 FRAME_INTERVAL_NS = 50_000_000
 FRAME_COUNT = 40
@@ -245,12 +247,12 @@ class SyntheticGazeboModel:
 
 def apply_durable_lifecycle(
     model: SyntheticGazeboModel,
-    running_status: dict[str, Any] | None,
+    running_status: RuntimeRunningStatus | None,
     finalize_request: dict[str, Any] | None,
 ) -> None:
     """Apply current-run durable evidence when a one-shot ROS sample is missed."""
     if running_status is not None:
-        model.accept_run_state(running_status["run_id"], running_status["state"])
+        model.accept_run_state(running_status.run_id, "RUNNING")
     if finalize_request is not None:
         model.accept_run_state(finalize_request["run_id"], "FINALIZING")
 
@@ -299,7 +301,6 @@ def main() -> None:
     from artifacts.runtime_protocol import RuntimeProtocol
     from artifacts.runtime_status import (
         RuntimeFailureStatus,
-        RuntimeRunningStatus,
         SourceFinishedStatus,
     )
     from artifacts.structured_log import StructuredEvent, write_event
