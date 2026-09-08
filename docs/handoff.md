@@ -2,7 +2,7 @@
 
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md)
 
-Reviewed 2026-09-08 against parent revision `26862b6` plus the final roll-test
+Reviewed 2026-09-08 against code revision `650e181` plus this documentation
 correction. This is a dated handoff, not a claim that mutable checkouts or local
 image tags will remain unchanged.
 
@@ -90,15 +90,19 @@ Final provenance review resolved that disagreement as a stale test. Commit
 `881fe09d-08ef-4ca5-8304-fe79c5220e61` but did not update the older expectation.
 The manifest validates `ardupilot_sitl/autotune-roll.parm` at SHA-256
 `9126cb1b656dcc5055e992d32b78d8df23f4cea01a737816ad947546257784a5`,
-and the artifact's five values match the deployed overlay. This validates the
-parameter evidence only: the run ended `FAILED` after an unrelated clock stall,
-its parent source was dirty, and it produced no valid score or current flight
-baseline. The old test reproduced RED with **1 failed**. The corrected five-value
-contract passed **1 test**, all ArduPilot tests passed **34 tests**, and the
-AutoTune promotion check passed **31 tests**. With the independent mission
-checkout exposed through a temporary exact symlink and excluded from collection,
-the full parent suite passed **1,819 tests** with **26 skipped**. No runtime
-parameters, production source, images, or run evidence changed.
+and the artifact's five values match the deployed overlay. Direct decoding of
+the independent DataFlash BIN found the same five values together in the latest
+coherent save epoch at timestamp `103968189`. Applying the artifact writer's
+formatting to those decoded values produces the checked artifact values. The BIN
+itself is not manifest-hashed. This validates the parameter evidence only: the
+run ended `FAILED` after an unrelated clock stall, its parent source was dirty,
+and it produced no valid score or current flight baseline. The old test
+reproduced RED with **1 failed**. The corrected five-value contract passed **1
+test**, all ArduPilot tests passed **34 tests**, and the AutoTune promotion check
+passed **31 tests**. With the independent mission checkout exposed through a
+temporary exact symlink and excluded from collection, the full parent suite
+passed **1,819 tests** with **26 skipped**. No runtime parameters, production
+source, images, or run evidence changed.
 
 Task 7a then changed only `runtime_status.py` at `5a0d820`. Its final-head
 focused status/protocol suite passed **406 tests**, its contract and integration
@@ -202,10 +206,6 @@ configuration tables. Documentation generators and broad refactoring are deferre
 At the start of this cleanup, these were already outside the committed parent
 state:
 
-- `ardupilot_sitl/params/descent.parm`, and
-  `ardupilot_sitl/tests/test_config.py`: final landing speed / precision-landing
-  edits. The working overlay requests `LAND_SPD_MS=0.50`, with `PLND_OPTIONS=4`;
-  do not confuse this with the parent's previously committed 0.10 m/s value.
 - `companion/comp2026/`: independent repository at `54cdeff`, with untracked
   documentation inside it. Parent Git status showing this directory as untracked
   is not permission to add or delete the entire nested repository.
