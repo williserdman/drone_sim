@@ -211,9 +211,9 @@ class StatusStore:
                     raise ProtocolFileError(
                         "output root must be a non-symlink directory"
                     )
-                next_fd = open_directory(part, dir_fd=current_fd)
-                os.close(current_fd)
-                current_fd = next_fd
+                parent_fd = current_fd
+                current_fd = open_directory(part, dir_fd=parent_fd)
+                os.close(parent_fd)
             descriptor = current_fd
             current_fd = None
             return descriptor

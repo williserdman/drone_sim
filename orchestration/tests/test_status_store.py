@@ -30,6 +30,7 @@ from artifacts.runtime_status import (
     status_document,
 )
 from artifacts.validation import ValidationStatus
+import orchestration.status_store as status_store_module
 from orchestration.status_store import (
     OperatorStatus,
     ProtocolFileError,
@@ -139,6 +140,45 @@ def test_output_root_open_translates_fstat_failure_without_leak(
 
     assert isinstance(raised.value.__cause__, ProtocolIOError)
     _assert_failed_open_closed(failed)
+
+
+@pytest.mark.parametrize("close_before_raising", (False, True))
+def test_output_root_parent_close_failure_closes_owned_child(
+    tmp_path, monkeypatch, close_before_raising
+):
+    output_root = tmp_path / "runs"
+    output_root.mkdir()
+    child_descriptors: list[int] = []
+    parent_close_pending = False
+    real_open_directory = status_store_module.open_directory
+    real_close = os.close
+
+    def recording_open_directory(path, *, dir_fd=None):
+        nonlocal parent_close_pending
+        descriptor = real_open_directory(path, dir_fd=dir_fd)
+        opened_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        if opened_path == output_root.resolve():
+            child_descriptors.append(descriptor)
+            parent_close_pending = True
+        return descriptor
+
+    def failing_parent_close(descriptor):
+        nonlocal parent_close_pending
+        if parent_close_pending:
+            parent_close_pending = False
+            if close_before_raising:
+                real_close(descriptor)
+            raise OSError("simulated parent close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(status_store_module, "open_directory", recording_open_directory)
+    monkeypatch.setattr(status_store_module.os, "close", failing_parent_close)
+
+    with pytest.raises(ProtocolFileError, match="output root is unsafe"):
+        StatusStore(output_root.resolve()).cleanup(RUN_ID)
+
+    assert len(child_descriptors) == 1
+    assert not Path(f"/proc/self/fd/{child_descriptors[0]}").exists()
 
 
 def test_run_open_translates_fstat_failure_without_leak(tmp_path, monkeypatch):
