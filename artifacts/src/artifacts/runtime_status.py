@@ -7,7 +7,7 @@ from dataclasses import dataclass, fields
 import math
 import re
 from types import MappingProxyType
-from typing import Any, ClassVar, TypeVar
+from typing import Any, Callable, ClassVar, TypeVar
 from uuid import UUID
 
 from .protocol_files import WritePolicy
@@ -167,35 +167,26 @@ _ARTIFACT_FINAL_PATHS = (
 )
 
 
+_StatusField = tuple[str, Callable[[Any], Any], Callable[[Any], Any]]
+
+
 @dataclass(frozen=True)
 class _StatusDefinition:
     name: str
-    write_policy: WritePolicy
+    write_policy: WritePolicy = WritePolicy.IDENTICAL
+    fixed_fields: tuple[tuple[str, Any], ...] = ()
+    constructor_fields: tuple[_StatusField, ...] = ()
+    derived_fields: tuple[tuple[str, Callable[[RuntimeStatus], Any]], ...] = ()
 
 
-_STATUS_REGISTRY_BUILD: dict[type[RuntimeStatus], _StatusDefinition] = {}
 StatusT = TypeVar("StatusT", bound=RuntimeStatus)
 
 
-def _register_status(
-    name: str,
-    write_policy: WritePolicy = WritePolicy.IDENTICAL,
-):
-    def register(status_type: type[StatusT]) -> type[StatusT]:
-        status_type.name = name
-        _STATUS_REGISTRY_BUILD[status_type] = _StatusDefinition(name, write_policy)
-        return status_type
-
-    return register
-
-
-@_register_status("artifacts-ready")
 @dataclass(frozen=True)
 class ArtifactsReadyStatus(RuntimeStatus):
     pass
 
 
-@_register_status("gazebo-ready")
 @dataclass(frozen=True)
 class GazeboReadyStatus(RuntimeStatus):
     flight_exchange: FlightExchange
@@ -206,25 +197,21 @@ class GazeboReadyStatus(RuntimeStatus):
             raise RuntimeStatusError("flight_exchange must be a FlightExchange")
 
 
-@_register_status("ardupilot-ready")
 @dataclass(frozen=True)
 class ArduPilotReadyStatus(RuntimeStatus):
     pass
 
 
-@_register_status("companion-ready")
 @dataclass(frozen=True)
 class CompanionReadyStatus(RuntimeStatus):
     pass
 
 
-@_register_status("mission-ready")
 @dataclass(frozen=True)
 class MissionReadyStatus(RuntimeStatus):
     pass
 
 
-@_register_status("mission-command-delivered")
 @dataclass(frozen=True)
 class MissionCommandDeliveredStatus(RuntimeStatus):
     sim_timestamp_ns: int
@@ -236,7 +223,6 @@ class MissionCommandDeliveredStatus(RuntimeStatus):
             raise RuntimeStatusError("mission command timestamp exceeds startup window")
 
 
-@_register_status("runtime-running")
 @dataclass(frozen=True)
 class RuntimeRunningStatus(RuntimeStatus):
     sim_timestamp_ns: int
@@ -246,7 +232,6 @@ class RuntimeRunningStatus(RuntimeStatus):
         _require_timestamp(self.sim_timestamp_ns)
 
 
-@_register_status("source-finished")
 @dataclass(frozen=True)
 class SourceFinishedStatus(RuntimeStatus):
     sim_timestamp_ns: int
@@ -256,7 +241,6 @@ class SourceFinishedStatus(RuntimeStatus):
         _require_timestamp(self.sim_timestamp_ns)
 
 
-@_register_status("mission-finished")
 @dataclass(frozen=True)
 class MissionFinishedStatus(RuntimeStatus):
     sim_timestamp_ns: int
@@ -266,7 +250,6 @@ class MissionFinishedStatus(RuntimeStatus):
         _require_timestamp(self.sim_timestamp_ns)
 
 
-@_register_status("score-finished")
 @dataclass(frozen=True)
 class ScoreFinishedStatus(RuntimeStatus):
     sim_timestamp_ns: int
@@ -276,7 +259,6 @@ class ScoreFinishedStatus(RuntimeStatus):
         _require_timestamp(self.sim_timestamp_ns)
 
 
-@_register_status("runtime-failure", WritePolicy.FIRST_WINS)
 @dataclass(frozen=True)
 class RuntimeFailureStatus(RuntimeStatus):
     module: str
@@ -297,7 +279,6 @@ class RuntimeFailureStatus(RuntimeStatus):
             raise RuntimeStatusError("diagnostic paths must be unique")
 
 
-@_register_status("runtime-frozen")
 @dataclass(frozen=True)
 class RuntimeFrozenStatus(RuntimeStatus):
     pass
@@ -339,7 +320,6 @@ class ArtifactFinalRecord:
         _copy_semantic_mapping(self.semantic)
 
 
-@_register_status("artifacts-final")
 @dataclass(frozen=True)
 class ArtifactsFinalStatus(RuntimeStatus):
     records: tuple[ArtifactFinalRecord, ...]
@@ -358,21 +338,178 @@ class ArtifactsFinalStatus(RuntimeStatus):
         return all(record.status is ValidationStatus.VALID for record in self.records)
 
 
-@_register_status("terminal-notified")
 @dataclass(frozen=True)
 class TerminalNotifiedStatus(RuntimeStatus):
     pass
 
 
-_STATUS_REGISTRY: Mapping[type[RuntimeStatus], _StatusDefinition] = MappingProxyType(
-    _STATUS_REGISTRY_BUILD
-)
-del _STATUS_REGISTRY_BUILD
-del _register_status
+def _flight_document(value: FlightExchange) -> dict[str, Any]:
+    value.__post_init__()
+    return {field.name: getattr(value, field.name) for field in fields(FlightExchange)}
 
-_FLIGHT_EXCHANGE_KEYS = frozenset(
-    field.name for field in fields(FlightExchange)
+
+_FLIGHT_EXCHANGE_KEYS = frozenset(field.name for field in fields(FlightExchange))
+
+
+def _parse_flight_exchange(value: object) -> FlightExchange:
+    if type(value) is not dict or set(value) != _FLIGHT_EXCHANGE_KEYS:
+        raise RuntimeStatusError("runtime status has an invalid schema")
+    return FlightExchange(**value)
+
+
+def _record_document(record: ArtifactFinalRecord) -> dict[str, Any]:
+    record.__post_init__()
+    document = {
+        field.name: getattr(record, field.name)
+        for field in fields(ArtifactFinalRecord)
+    }
+    document["status"] = record.status.value
+    document["semantic"] = _copy_semantic_mapping(record.semantic)
+    return document
+
+
+_ARTIFACT_RECORD_KEYS = frozenset(field.name for field in fields(ArtifactFinalRecord))
+
+
+def _parse_records(value: object) -> tuple[ArtifactFinalRecord, ...]:
+    if type(value) is not list or len(value) != 3:
+        raise RuntimeStatusError("artifacts-final records must be a three-item list")
+    if any(
+        type(record) is not dict
+        or set(record) != _ARTIFACT_RECORD_KEYS
+        or type(record["status"]) is not str
+        or type(record["semantic"]) is not dict
+        or not record["semantic"]
+        for record in value
+    ):
+        raise RuntimeStatusError("artifact record has an invalid schema")
+    try:
+        return tuple(
+            ArtifactFinalRecord(
+                record["relative_path"],
+                ValidationStatus(record["status"]),
+                record["detail"],
+                record["size_bytes"],
+                record["sha256"],
+                record["semantic"],
+            )
+            for record in value
+        )
+    except ValueError as error:
+        if isinstance(error, RuntimeStatusError):
+            raise
+        raise RuntimeStatusError("artifact record status is invalid") from error
+
+
+def _identity(value: Any) -> Any:
+    return value
+
+
+def _diagnostic_paths_document(value: tuple[str, ...]) -> list[str]:
+    return list(value)
+
+
+def _parse_diagnostic_paths(value: object) -> tuple[str, ...]:
+    if type(value) is not list:
+        raise RuntimeStatusError("diagnostic_paths must be a JSON list")
+    return tuple(value)
+
+
+def _records_document(value: tuple[ArtifactFinalRecord, ...]) -> list[dict[str, Any]]:
+    return [_record_document(record) for record in value]
+
+
+_VALUE_FIELD = lambda name: (name, _identity, _identity)
+_TIMESTAMP_FIELD = _VALUE_FIELD("sim_timestamp_ns")
+_READY_FIELDS = (("ready", True),)
+_STATUS_REGISTRY: Mapping[type[RuntimeStatus], _StatusDefinition] = MappingProxyType(
+    {
+        ArtifactsReadyStatus: _StatusDefinition(
+            "artifacts-ready", fixed_fields=_READY_FIELDS
+        ),
+        GazeboReadyStatus: _StatusDefinition(
+            "gazebo-ready",
+            fixed_fields=_READY_FIELDS,
+            constructor_fields=((
+                "flight_exchange", _flight_document, _parse_flight_exchange
+            ),),
+        ),
+        ArduPilotReadyStatus: _StatusDefinition(
+            "ardupilot-ready",
+            fixed_fields=(
+                ("ready", True),
+                ("json_exchange", True),
+                ("mavlink_endpoint", "tcp://ardupilot-sitl:5760"),
+            ),
+        ),
+        CompanionReadyStatus: _StatusDefinition(
+            "companion-ready",
+            fixed_fields=(
+                ("ready", True),
+                ("mavlink_endpoint", "tcp://ardupilot-sitl:5760"),
+                ("mavlink_transport_connected", True),
+            ),
+        ),
+        MissionReadyStatus: _StatusDefinition(
+            "mission-ready",
+            fixed_fields=(
+                ("ready", True),
+                ("heartbeat_observed", True),
+                ("prearm_checks_healthy", True),
+            ),
+        ),
+        MissionCommandDeliveredStatus: _StatusDefinition(
+            "mission-command-delivered",
+            fixed_fields=(("command", "SET_GUIDED"), ("delivered", True)),
+            constructor_fields=(_TIMESTAMP_FIELD,),
+        ),
+        RuntimeRunningStatus: _StatusDefinition(
+            "runtime-running", fixed_fields=(("state", "RUNNING"),),
+            constructor_fields=(_TIMESTAMP_FIELD,)
+        ),
+        SourceFinishedStatus: _StatusDefinition(
+            "source-finished", fixed_fields=(("finished", True),),
+            constructor_fields=(_TIMESTAMP_FIELD,)
+        ),
+        MissionFinishedStatus: _StatusDefinition(
+            "mission-finished",
+            fixed_fields=(("finished", True), ("outcome", "LANDED")),
+            constructor_fields=(_TIMESTAMP_FIELD,),
+        ),
+        ScoreFinishedStatus: _StatusDefinition(
+            "score-finished", fixed_fields=(("finished", True),),
+            constructor_fields=(_TIMESTAMP_FIELD,)
+        ),
+        RuntimeFailureStatus: _StatusDefinition(
+            "runtime-failure",
+            WritePolicy.FIRST_WINS,
+            constructor_fields=(
+                _VALUE_FIELD("module"),
+                _VALUE_FIELD("reason"),
+                (
+                    "diagnostic_paths",
+                    _diagnostic_paths_document,
+                    _parse_diagnostic_paths,
+                ),
+            ),
+        ),
+        RuntimeFrozenStatus: _StatusDefinition(
+            "runtime-frozen", fixed_fields=(("frozen", True),)
+        ),
+        ArtifactsFinalStatus: _StatusDefinition(
+            "artifacts-final",
+            constructor_fields=(("records", _records_document, _parse_records),),
+            derived_fields=(("complete", lambda status: status.complete),),
+        ),
+        TerminalNotifiedStatus: _StatusDefinition(
+            "terminal-notified", fixed_fields=(("notified", True),)
+        ),
+    }
 )
+del _READY_FIELDS, _VALUE_FIELD
+for _status_type, _status_definition in _STATUS_REGISTRY.items():
+    _status_type.name = _status_definition.name
+del _status_type, _status_definition
 
 
 def _definition(status_type: type[RuntimeStatus]) -> _StatusDefinition:
@@ -390,96 +527,21 @@ def status_write_policy(status_type: type[RuntimeStatus]) -> WritePolicy:
     return _definition(status_type).write_policy
 
 
-def _flight_document(value: FlightExchange) -> dict[str, Any]:
-    value.__post_init__()
-    return {
-        field.name: getattr(value, field.name)
-        for field in fields(FlightExchange)
-    }
-
-
-def _record_document(record: ArtifactFinalRecord) -> dict[str, Any]:
-    record.__post_init__()
-    document = {
-        field.name: getattr(record, field.name)
-        for field in fields(ArtifactFinalRecord)
-    }
-    document["status"] = record.status.value
-    document["semantic"] = _copy_semantic_mapping(record.semantic)
+def status_document(status: RuntimeStatus) -> dict[str, Any]:
+    definition = _definition(type(status))
+    status.__post_init__()
+    document = {"run_id": canonical_run_id(status.run_id)}
+    document.update(definition.fixed_fields)
+    document.update(
+        (name, encode(getattr(status, name)))
+        for name, encode, _decode in definition.constructor_fields
+    )
+    document.update((name, derive(status)) for name, derive in definition.derived_fields)
     return document
 
 
-def status_document(status: RuntimeStatus) -> dict[str, Any]:
-    _definition(type(status))
-    status.__post_init__()
-    run_id = canonical_run_id(status.run_id)
-    if type(status) is ArtifactsReadyStatus:
-        return {"run_id": run_id, "ready": True}
-    if type(status) is GazeboReadyStatus:
-        return {
-            "run_id": run_id,
-            "ready": True,
-            "flight_exchange": _flight_document(status.flight_exchange),
-        }
-    if type(status) is ArduPilotReadyStatus:
-        return {
-            "run_id": run_id,
-            "ready": True,
-            "json_exchange": True,
-            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-        }
-    if type(status) is CompanionReadyStatus:
-        return {
-            "run_id": run_id,
-            "ready": True,
-            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-            "mavlink_transport_connected": True,
-        }
-    if type(status) is MissionReadyStatus:
-        return {
-            "run_id": run_id,
-            "ready": True,
-            "heartbeat_observed": True,
-            "prearm_checks_healthy": True,
-        }
-    if type(status) is MissionCommandDeliveredStatus:
-        return {
-            "run_id": run_id,
-            "command": "SET_GUIDED",
-            "sim_timestamp_ns": status.sim_timestamp_ns,
-            "delivered": True,
-        }
-    if type(status) is RuntimeRunningStatus:
-        return {"run_id": run_id, "state": "RUNNING", "sim_timestamp_ns": status.sim_timestamp_ns}
-    if type(status) is SourceFinishedStatus:
-        return {"run_id": run_id, "finished": True, "sim_timestamp_ns": status.sim_timestamp_ns}
-    if type(status) is MissionFinishedStatus:
-        return {
-            "run_id": run_id,
-            "finished": True,
-            "sim_timestamp_ns": status.sim_timestamp_ns,
-            "outcome": "LANDED",
-        }
-    if type(status) is ScoreFinishedStatus:
-        return {"run_id": run_id, "finished": True, "sim_timestamp_ns": status.sim_timestamp_ns}
-    if type(status) is RuntimeFailureStatus:
-        return {
-            "run_id": run_id,
-            "module": status.module,
-            "reason": status.reason,
-            "diagnostic_paths": list(status.diagnostic_paths),
-        }
-    if type(status) is RuntimeFrozenStatus:
-        return {"run_id": run_id, "frozen": True}
-    if type(status) is ArtifactsFinalStatus:
-        return {
-            "run_id": run_id,
-            "complete": status.complete,
-            "records": [_record_document(record) for record in status.records],
-        }
-    if type(status) is TerminalNotifiedStatus:
-        return {"run_id": run_id, "notified": True}
-    raise RuntimeStatusError("runtime status type is not registered")
+def _wire_value_matches(value: object, expected: object) -> bool:
+    return value is expected if type(expected) is bool else value == expected
 
 
 def parse_status(
@@ -488,146 +550,35 @@ def parse_status(
     *,
     expected_run_id: str,
 ) -> StatusT:
-    _definition(status_type)
+    definition = _definition(status_type)
     run_id = canonical_run_id(expected_run_id)
-    if status_type is ArtifactsReadyStatus:
-        expected_keys = {"run_id", "ready"}
-    elif status_type is GazeboReadyStatus:
-        expected_keys = {"run_id", "ready", "flight_exchange"}
-    elif status_type is ArduPilotReadyStatus:
-        expected_keys = {"run_id", "ready", "json_exchange", "mavlink_endpoint"}
-    elif status_type is CompanionReadyStatus:
-        expected_keys = {
-            "run_id",
-            "ready",
-            "mavlink_endpoint",
-            "mavlink_transport_connected",
-        }
-    elif status_type is MissionReadyStatus:
-        expected_keys = {
-            "run_id",
-            "ready",
-            "heartbeat_observed",
-            "prearm_checks_healthy",
-        }
-    elif status_type is MissionCommandDeliveredStatus:
-        expected_keys = {"run_id", "command", "sim_timestamp_ns", "delivered"}
-    elif status_type is RuntimeRunningStatus:
-        expected_keys = {"run_id", "state", "sim_timestamp_ns"}
-    elif status_type in {SourceFinishedStatus, ScoreFinishedStatus}:
-        expected_keys = {"run_id", "finished", "sim_timestamp_ns"}
-    elif status_type is MissionFinishedStatus:
-        expected_keys = {"run_id", "finished", "sim_timestamp_ns", "outcome"}
-    elif status_type is RuntimeFailureStatus:
-        expected_keys = {"run_id", "module", "reason", "diagnostic_paths"}
-    elif status_type is RuntimeFrozenStatus:
-        expected_keys = {"run_id", "frozen"}
-    elif status_type is ArtifactsFinalStatus:
-        expected_keys = {"run_id", "complete", "records"}
-    else:
-        expected_keys = {"run_id", "notified"}
+    expected_keys = {"run_id"}
+    expected_keys.update(name for name, _value in definition.fixed_fields)
+    expected_keys.update(name for name, _encode, _decode in definition.constructor_fields)
+    expected_keys.update(name for name, _derive in definition.derived_fields)
     if type(document) is not dict or set(document) != expected_keys:
         raise RuntimeStatusError("runtime status has an invalid schema")
     document_run_id = canonical_run_id(document["run_id"])
     if document_run_id != run_id:
         raise RuntimeStatusError("runtime status has the wrong run_id")
-    constants: tuple[tuple[str, Any], ...] = ()
-    if status_type in {
-        ArtifactsReadyStatus,
-        GazeboReadyStatus,
-        ArduPilotReadyStatus,
-        CompanionReadyStatus,
-        MissionReadyStatus,
-    }:
-        constants += (("ready", True),)
-    if status_type is ArduPilotReadyStatus:
-        constants += (
-            ("json_exchange", True),
-            ("mavlink_endpoint", "tcp://ardupilot-sitl:5760"),
-        )
-    elif status_type is CompanionReadyStatus:
-        constants += (
-            ("mavlink_endpoint", "tcp://ardupilot-sitl:5760"),
-            ("mavlink_transport_connected", True),
-        )
-    elif status_type is MissionReadyStatus:
-        constants += (("heartbeat_observed", True), ("prearm_checks_healthy", True))
-    elif status_type is MissionCommandDeliveredStatus:
-        constants = (("command", "SET_GUIDED"), ("delivered", True))
-    elif status_type is RuntimeRunningStatus:
-        constants = (("state", "RUNNING"),)
-    elif status_type in {SourceFinishedStatus, ScoreFinishedStatus}:
-        constants = (("finished", True),)
-    elif status_type is MissionFinishedStatus:
-        constants = (("finished", True), ("outcome", "LANDED"))
-    elif status_type is RuntimeFrozenStatus:
-        constants = (("frozen", True),)
-    elif status_type is TerminalNotifiedStatus:
-        constants = (("notified", True),)
     if any(
-        document[key] is not expected
-        if type(expected) is bool
-        else document[key] != expected
-        for key, expected in constants
+        not _wire_value_matches(document[name], expected)
+        for name, expected in definition.fixed_fields
     ):
         raise RuntimeStatusError("runtime status has an invalid schema")
-    if status_type is GazeboReadyStatus:
-        exchange = document["flight_exchange"]
-        if type(exchange) is not dict or set(exchange) != _FLIGHT_EXCHANGE_KEYS:
-            raise RuntimeStatusError("runtime status has an invalid schema")
-        value: RuntimeStatus = GazeboReadyStatus(
-            run_id, FlightExchange(**exchange)
+    try:
+        constructor_values = (
+            decode(document[name])
+            for name, _encode, decode in definition.constructor_fields
         )
-    elif status_type in {
-        MissionCommandDeliveredStatus,
-        RuntimeRunningStatus,
-        SourceFinishedStatus,
-        MissionFinishedStatus,
-        ScoreFinishedStatus,
-    }:
-        value = status_type(run_id, document["sim_timestamp_ns"])
-    elif status_type is RuntimeFailureStatus:
-        if type(document["diagnostic_paths"]) is not list:
-            raise RuntimeStatusError("diagnostic_paths must be a JSON list")
-        value = RuntimeFailureStatus(
-            run_id,
-            document["module"],
-            document["reason"],
-            tuple(document["diagnostic_paths"]),
-        )
-    elif status_type is ArtifactsFinalStatus:
-        raw_records = document["records"]
-        if type(raw_records) is not list or len(raw_records) != 3:
-            raise RuntimeStatusError("artifacts-final records must be a three-item list")
-        record_keys = {field.name for field in fields(ArtifactFinalRecord)}
-        if any(
-            type(record) is not dict
-            or set(record) != record_keys
-            or type(record["status"]) is not str
-            or type(record["semantic"]) is not dict
-            or not record["semantic"]
-            for record in raw_records
-        ):
-            raise RuntimeStatusError("artifact record has an invalid schema")
-        try:
-            records = tuple(
-                ArtifactFinalRecord(
-                    record["relative_path"],
-                    ValidationStatus(record["status"]),
-                    record["detail"],
-                    record["size_bytes"],
-                    record["sha256"],
-                    record["semantic"],
-                )
-                for record in raw_records
-            )
-        except ValueError as error:
-            if isinstance(error, RuntimeStatusError):
-                raise
-            raise RuntimeStatusError("artifact record status is invalid") from error
-        value = ArtifactsFinalStatus(run_id, records)
-        if type(document["complete"]) is not bool or document["complete"] != value.complete:
-            raise RuntimeStatusError("artifacts-final complete disagrees with records")
-    else:
-        value = status_type(run_id)
-    return value  # type: ignore[return-value]
+        value = status_type(run_id, *constructor_values)
+    except RuntimeStatusError:
+        raise
+    except (TypeError, ValueError) as error:
+        raise RuntimeStatusError("runtime status has invalid values") from error
+    if any(
+        not _wire_value_matches(document[name], derive(value))
+        for name, derive in definition.derived_fields
+    ):
+        raise RuntimeStatusError("runtime status has an invalid derived field")
+    return value

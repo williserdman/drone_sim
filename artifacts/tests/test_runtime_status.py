@@ -238,8 +238,13 @@ def test_registered_status_round_trip(status, name, document):
     assert parsed == status
 
 
-def test_registered_status_names_are_unique():
-    assert len({name for _status, name, _document in CASES}) == len(CASES)
+def test_registered_status_inventory_is_consistent():
+    status_types = {type(status) for status, _name, _document in CASES}
+    names = {name for _status, name, _document in CASES}
+    policies = [status_write_policy(type(status)) for status, _name, _document in CASES]
+
+    assert len(CASES) == len(status_types) == len(names) == 14
+    assert policies.count(WritePolicy.FIRST_WINS) == 1
 
 
 @pytest.mark.parametrize(("status", "name", "document"), CASES)
@@ -823,10 +828,10 @@ def test_artifact_document_is_fresh_and_retained_mutation_fails_closed():
 
 @dataclass(frozen=True)
 class UnregisteredStatus(RuntimeStatus):
-    name: ClassVar[str] = "../escape"
+    name: ClassVar[str] = ArtifactsReadyStatus.name
 
 
-def test_unregistered_status_subclass_is_rejected():
+def test_same_named_unregistered_status_subclass_is_rejected():
     value = UnregisteredStatus(RUN_ID)
     with pytest.raises(RuntimeStatusError):
         status_name(UnregisteredStatus)
