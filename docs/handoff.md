@@ -2,9 +2,9 @@
 
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md)
 
-Reviewed 2026-09-05 against parent `f4c86a8` and the working tree, with nested
-mission HEAD `54cdeff`. This is a dated handoff, not a claim that those mutable
-checkouts or local image tags will remain unchanged.
+Reviewed 2026-09-08 against `5a0d820` and the documentation changes in this
+checkout. This is a dated handoff, not a claim that mutable checkouts or local
+image tags will remain unchanged.
 
 ## What a new maintainer should do first
 
@@ -31,9 +31,9 @@ historical plan, explore every worktree, or run an hour-long simulation first.
 
 The successful physical flight used parent `fd1a5d4` plus the queue/landing
 patches, nested mission `7e45d51`, and pinned images listed in the issue note.
-Subsequent source changes include sensor-readiness and native-clock handling;
-they have **not** been flight-validated by this documentation task. No new flight
-was launched and no runtime images were rebuilt for this handoff.
+Subsequent source changes include sensor-readiness, native-clock handling, and
+the typed runtime status consolidation below. They have **not** been
+flight-validated by this documentation task. No new flight was launched.
 
 Recordings under `runs/` and the absolute external paths in old verification
 notes are machine-local, ignored data. A recipient of a Git clone will not have
@@ -61,19 +61,80 @@ tests in the isolated worktree encountered **44 environment failures** due to
 unavailable nested source-revision provenance; this is not a clean full-suite pass.
 The earlier broader host suite recorded the roll-gain mismatch below.
 
-No image builds, host provisioning, or flight were performed. Skipped ROS cases
-and source-only tests do not establish runtime correctness.
+No image builds, host provisioning, or flight were performed for that cleanup.
+Skipped ROS cases and source-only tests do not establish runtime correctness.
 
-### Protocol-file consolidation verification, 2026-09-06
+### Typed runtime status verification, 2026-09-08
 
-The corrected protocol helper suite passed **46 tests**. Runtime protocol and
-host status-store tests passed **92 tests**, and shared contracts plus the Phase
-3 runtime contract passed **21 tests**. `git diff --check` passed, and the
-required removed-publication-symbol search returned no matches.
+Deletion and stale-API audits found no duplicate runtime validators, legacy
+Gazebo/scorekeeper writers, or string-selected status calls. The sole remaining
+ArduPilot `atomic_document` call writes its private `work/failure.json`
+child-process diagnostic. Manual review found typed status use in multiline
+calls. Tests exercise all 14 registered types through both adapters, exact-type
+selection, first-wins failure, false source completion, malformed runtime
+freeze, and all four artifact-final corruptions on production controller paths.
 
-From original slice base `5900d0d`, the three production files add 539 lines and
-remove 352, a net production increase of **187 lines**. This source-only
-verification did not build runtime images or launch a flight.
+At `1fba1c5`, the seven module suites reported: artifacts **896 passed, 12 skipped**;
+orchestration **270 passed**; companion **110 passed**; Gazebo **330 passed, 14
+skipped**; electromagnet **43 passed**; scorekeeper **69 passed**; and ArduPilot
+**33 passed, 1 failed**. That ArduPilot failure is the byte-unchanged pre-existing
+disagreement between `descent.parm`'s `ATC_RAT_RLL_P=0.0503722` and the test's
+`0.0675` expectation. The combined synthetic, contract, and Phase 2/3 runtime
+suite passed **50 tests**. Compilation and the locked dependency check passed.
+Scorekeeper's standalone source self-test, when pointed at the checkout's rules,
+completed its real typed status write and then stopped at the separate ROS check
+because host `rclpy` is unavailable.
+
+Task 7a then changed only `runtime_status.py` at `5a0d820`. Its final-head
+focused status/protocol suite passed **406 tests**, its contract and integration
+suite passed **34 tests**, and `artifacts/src` compiled. These focused checks
+cover the behavior-preserving wire-field refactor; they are not a claim that the
+earlier seven full module suites ran again at `5a0d820`.
+
+This worktree has no `companion/comp2026`. Initial source runs therefore
+reported artifacts **895 passed, 12 skipped, 1 failed**, orchestration **224
+passed, 46 failed**, and companion **109 passed, 1 failed** from unavailable
+mission provenance/imports. Those suites were rerun using an exact temporary
+symlink to external checkout `54cdeff`, which had **33 tracked changes and 35
+untracked entries**. The link was removed afterward. The external dirty checkout
+was neither modified nor staged and cannot prove a current companion image.
+
+Base, Phase 2, and Phase 3 GPU Compose resolution passed. At final source HEAD
+`5a0d820`, the Phase 2 build named all seven images and the selective Phase 3
+build named all six available services. The known-doomed aggregate Phase 3 build
+was not repeated. Its earlier `1fba1c5` attempt failed because the companion
+Dockerfile could not find `companion/comp2026/src`.
+
+| Tag | Before | Final-head ID | Created |
+| --- | --- | --- | --- |
+| `drone-sim-orchestration-runtime:phase2` | `1a6f2b6b` | `a8d21238d8956a160cd241f5133382989f71ba35292e0f6b58728fcb147c72fb` | 2026-09-08 08:26:53 +02:00 |
+| `drone-sim-artifacts-runtime:phase2` | `6f75ac49` | `c00b9574d35109b0efa6fa726ff858bf4407ed6f77db3745f19e57fed1cfff48` | 2026-09-08 08:26:52 +02:00 |
+| `drone-sim-synthetic-companion:phase2` | `45759617` | `ad11de5e5da52d83e35e7196fad3bc24db1d6aedeff582d60142d8e674f5a2d2` | 2026-09-08 08:26:39 +02:00 |
+| `drone-sim-synthetic-ardupilot-sitl:phase2` | `687ff399` | `362a4604af62b54d7dcd212b50d89cd3a28ee2f8833e7ad33c2da6da2e57842d` | 2026-09-08 08:26:39 +02:00 |
+| `drone-sim-synthetic-gazebo:phase2` | `d1ac7040` | `df4e3b6e30d5bc291e13adadd5fb9cf32023dbe99a476f13e3ad32320121d485` | 2026-09-08 08:26:39 +02:00 |
+| `drone-sim-synthetic-electromagnet:phase2` | `c4ebef28` | `8567b2cebdcbb582bf5edfed8481d82d0c32cef8271d22ec6a36e2d513008c83` | 2026-09-08 08:26:39 +02:00 |
+| `drone-sim-synthetic-scorekeeper:phase2` | `69e0bba5` | `ab57293cfc0e409639d7c694cbefbd7ea386f4554cb30f9004d5c0759d38093d` | 2026-09-08 08:26:39 +02:00 |
+| `drone-sim-companion-runtime:phase3` | `dbe2737a` | `dbe2737a708d75809b4bb628317544c22a57d16f6e2eb63bc74ab6961144cc7d` (stale) | 2026-09-03 23:07:23 +02:00 |
+| `drone-sim-ardupilot-runtime:phase3` | `0df18663` | `e7fda4bf156fba551d6134519058ed91f743c216b54eb0b8d3ef9c23c962fe75` | 2026-09-08 08:29:01 +02:00 |
+| `drone-sim-gazebo-runtime:phase3` | `a4d8b04f` | `7db4e3c88c99420460f75158d7cd755cafa7bcf57d3861d4135c88ed624674a3` | 2026-09-08 08:28:34 +02:00 |
+| `drone-sim-electromagnet-runtime:phase3` | `d12cc27f` | `f12180b5f2f569b01815926e1633040956d9e75888ccf72be4061db36e88e556` | 2026-09-08 08:27:38 +02:00 |
+| `drone-sim-scorekeeper-runtime:phase3` | `d35d9743` | `36fd9a5538a0b2ed24432709b791d5a18c92a13f92843b723116c2a3a2a474dd` | 2026-09-08 08:27:23 +02:00 |
+
+Contract imports passed in seven distinct rebuilt image families:
+orchestration, artifacts, synthetic companion, ArduPilot, Gazebo, electromagnet,
+and scorekeeper. The stale Phase 3 companion tag was not smoked or counted as
+rebuilt, so the required image gate remains incomplete.
+
+Typed `GazeboReadyStatus` requires a real `FlightExchange`. The passive
+`phase3_foundation` world has none and is rejected before Gazebo server startup.
+Restoring that operator workflow requires a separate contract decision. The
+runbook was reviewed and remains unchanged because no supported procedure
+changed.
+
+Against baseline `9731801`, final-head production Python is **+1000/-1014, net
+-14**. The approved negative-net gate passes. These checks are source,
+configuration, build, and import evidence only; no live mission, score, or
+artifact result was produced.
 
 ## Open items, in recommended order
 

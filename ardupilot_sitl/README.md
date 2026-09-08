@@ -15,7 +15,10 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
 
 - [pyproject.toml](pyproject.toml) exposes `drone-sim-ardupilot-runtime`.
 - [runtime_node.py](src/drone_sim_ardupilot/runtime_node.py) is the production
-  process wrapper and durable readiness/failure/quiescence boundary.
+  process wrapper and durable readiness/failure/quiescence boundary. It publishes
+  typed values from the shared
+  [runtime status contract](../artifacts/src/artifacts/runtime_status.py) through
+  the [container protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 - [config.py](src/drone_sim_ardupilot/config.py) validates run inputs, resolves
   the Gazebo service once, and constructs the shell-free ArduCopter command.
 - [runtime.py](src/drone_sim_ardupilot/runtime.py) supervises SITL, interprets
@@ -61,6 +64,8 @@ to observe a real heartbeat and healthy prearm status.
   rebuilding the image because the overlay is copied at build time.
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
+- The private `work/failure.json` file remains a child-process diagnostic. It is
+  not a shared runtime status or quiescence record.
 
 ## Focused tests
 

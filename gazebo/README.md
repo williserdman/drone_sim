@@ -55,6 +55,12 @@ server-log, and quiescence evidence. Payload command authorization belongs to
 the electromagnet; the Gazebo-side coordinator only applies a correlated
 private command and reports confirmed joint state.
 
+The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
+defines those durable facts. In particular, typed Gazebo readiness contains a
+real bidirectional ArduPilot [`FlightExchange`](../artifacts/src/artifacts/runtime_status.py).
+The runtime publishes it through the
+[container protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
+
 ## Constraints worth knowing
 
 - Public output is rebased from one configured native epoch. Activation must be
@@ -65,6 +71,11 @@ private command and reports confirmed joint state.
   adapter fault; later input cannot repair it.
 - Flight readiness requires a paused ArduPilot/Gazebo round trip with servo,
   motor-update, and JSON-send progress and no frame gaps or send errors.
+- The passive `phase3_foundation` world has no ArduPilot exchange, so the typed
+  readiness contract no longer supports it. The runtime rejects that world
+  before starting the Gazebo server. Restoring operator support requires a
+  separate contract decision; generic Gazebo endpoint readiness cannot stand in
+  for flight exchange evidence.
 - Finalization uses one absolute wall deadline. Bridge process groups stop
   before the Gazebo server; quiescence is published only after native artifacts
   are stable and validated.

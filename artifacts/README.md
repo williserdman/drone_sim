@@ -26,9 +26,11 @@ required evidence is missing or invalid.
   owns the required inventory, manifest model, validation, and atomic publication.
 - [`runtime_configuration.py`](src/artifacts/runtime_configuration.py) derives the
   recorder contract from the resolved run configuration.
-- [`protocol_files.py`](src/artifacts/protocol_files.py) owns the shared strict
-  JSON and descriptor-safe persistence mechanics. [`RuntimeProtocol`](src/artifacts/runtime_protocol.py)
-  retains the runtime schemas and lifecycle-facing protocol.
+- [`runtime_status.py`](src/artifacts/runtime_status.py) owns the typed runtime
+  status schema, canonical JSON conversion, and write policy.
+  [`RuntimeProtocol`](src/artifacts/runtime_protocol.py) is the container-side
+  adapter over the strict, descriptor-safe persistence mechanics in
+  [`protocol_files.py`](src/artifacts/protocol_files.py).
 - [`acceptance.py`](src/artifacts/acceptance.py) and
   [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
   implement independent semantic acceptance for completed physical runs.
@@ -79,6 +81,9 @@ records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
   defined in the [architecture guide](../docs/architecture.md#shared-communication-guarantees).
   Its advisory lock is not a security boundary against a hostile process with
   the same filesystem permissions.
+- Runtime components publish typed values from the shared
+  [`runtime_status.py`](src/artifacts/runtime_status.py) contract. Do not add a
+  module-local JSON writer or duplicate its field validation here.
 - CPU and optional GPU encoding must satisfy the same video contract. Deployment
   and GPU setup belong in the [runbook](../docs/runbook.md#optional-nvidia-path).
 

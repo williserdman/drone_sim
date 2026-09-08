@@ -75,17 +75,29 @@ time or hide gaps by restamping queued samples. Run IDs isolate streams; invalid
 ordering or missing required samples fail validation rather than proving success.
 Reliable transport with bounded history is not a guarantee of lossless recording.
 
-`RuntimeProtocol` and `StatusStore` share the strict, descriptor-relative
-persistence implementation in
+[`runtime_status.py`](../artifacts/src/artifacts/runtime_status.py) is the single
+owner of typed runtime status schemas, canonical JSON conversion, registered
+names, and write policy. [`RuntimeProtocol`](../artifacts/src/artifacts/runtime_protocol.py)
+adapts that contract for container producers and consumers;
+[`StatusStore`](../orchestration/src/orchestration/status_store.py) adapts it for
+the host controller. Both use the strict, descriptor-relative persistence in
 [`protocol_files.py`](../artifacts/src/artifacts/protocol_files.py).
-[`RuntimeProtocol`](../artifacts/src/artifacts/runtime_protocol.py) owns runtime
-schemas, while [`StatusStore`](../orchestration/src/orchestration/status_store.py)
-owns host policy. Path changes, conflicting immutable values, and wrong file modes
-on non-replacing retries make protocol writers fail closed; callers do not repair
-or reinterpret them. Cooperating helper callers serialize through an advisory
-directory lock and publish durable atomic replacements. This is not a security
-boundary against a hostile process with the same filesystem permissions, and
-legacy producers outside the helper are not serialized by that lock.
+
+Readers request an exact registered status type. Subclasses and a same-named
+unregistered class cannot select a schema. Runtime failures use first-wins
+publication so concurrent producers preserve one valid initial cause; other
+status files accept only byte-equivalent canonical retries. Path changes,
+conflicting immutable values, and wrong file modes make writers fail closed, and
+callers do not repair or reinterpret malformed facts. Cooperating helper callers
+serialize through an advisory directory lock and publish durable atomic files.
+This is not a security boundary against a hostile process with the same
+filesystem permissions.
+
+Typed `GazeboReadyStatus` always includes a real ArduPilot flight exchange. The
+passive `phase3_foundation` world has no such exchange and the Gazebo runtime now
+rejects it before server startup. Operators who still need that passive world
+require a separate readiness-contract decision; endpoint presence is not valid
+flight readiness evidence.
 
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and

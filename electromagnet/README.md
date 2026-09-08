@@ -27,6 +27,9 @@ terminal status to orchestration and the validated manifest.
   inactive descent policy.
 - The installed command is defined in [pyproject.toml](pyproject.toml); Compose
   starts it in the [`electromagnet-runtime` service](../compose.yaml).
+- Runtime readiness, failure, and quiescence use the shared
+  [typed status contract](../artifacts/src/artifacts/runtime_status.py) and
+  [container protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 
 ## Interfaces and configuration
 
@@ -62,6 +65,8 @@ resolved run copies of [course.yaml](../config/course.yaml) and
   monotonic `PayloadState.attached` samples remain the attachment authority.
 - On finalization, the last structured event precedes the module's quiescence
   marker, after which the module must remain silent.
+- Runtime failures use the shared first-wins policy. This module does not replace
+  an earlier durable failure from another producer.
 
 ## Focused checks
 

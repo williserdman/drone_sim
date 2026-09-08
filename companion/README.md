@@ -25,6 +25,10 @@ truth, direct Gazebo mutation, scoring, or aggregate run finalization.
   for the separately supplied Comp2026 mission checkout.
 - [lifecycle.py](src/drone_sim_companion/lifecycle.py) owns companion readiness,
   terminal mission evidence, and quiescence publication.
+- The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
+  defines the companion's durable status values. The runtime publishes them
+  through the container-side
+  [protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 
 ## Interfaces
 
@@ -66,6 +70,8 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - Terminal success and the first fatal callback/mission failure are serialized.
   Quiescence follows worker termination, executor shutdown, and closure of all
   output producers; a teardown timeout records failure instead.
+- The first runtime failure wins across all modules. A later companion failure
+  cannot replace the durable first cause.
 
 ## Focused tests
 

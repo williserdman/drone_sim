@@ -27,10 +27,12 @@ validates; it does not infer physical success from a command or log message.
 - [`RunLifecycle`](src/orchestration/lifecycle.py) defines valid state transitions.
   [`runtime_node.py`](src/orchestration/runtime_node.py) publishes runtime lifecycle
   state and aggregates the quiescence barrier.
-- [`StatusStore`](src/orchestration/status_store.py) owns host allocation and
-  document policy for the durable `.control/` and `.status/` protocol used by
-  the host and containers. It delegates low-level safe persistence to
-  [`artifacts.protocol_files`](../artifacts/src/artifacts/protocol_files.py).
+- [`StatusStore`](src/orchestration/status_store.py) owns host allocation and is
+  the host-side adapter for the durable `.control/` and `.status/` protocol.
+  The shared [`runtime_status.py`](../artifacts/src/artifacts/runtime_status.py)
+  contract owns runtime status types, JSON conversion, and write policy;
+  [`artifacts.protocol_files`](../artifacts/src/artifacts/protocol_files.py) owns
+  low-level safe persistence.
 
 ## Consumer and producer seams
 
@@ -43,8 +45,8 @@ GPU operation is an optional deployment workflow documented in the
 At runtime, orchestration publishes `/simulation/run_state` using the actual
 [`RunState` schema](../ros_ws/src/simulation_interfaces/msg/RunState.msg), consumes
 aggregate [`ArtifactStatus`](../ros_ws/src/simulation_interfaces/msg/ArtifactStatus.msg),
-and exchanges durable facts through the run directory. Publisher/subscriber setup
-and discovery requirements remain authoritative in
+and exchanges typed durable facts through the run directory.
+Publisher/subscriber setup and discovery requirements remain authoritative in
 [`runtime_node.py`](src/orchestration/runtime_node.py); protocol validation remains
 authoritative in [`controller.py`](src/orchestration/controller.py) and
 [`status_store.py`](src/orchestration/status_store.py).
@@ -61,6 +63,9 @@ copy or rebuild the bundle.
   Phase 3 run separately requires a landed `mission-finished` fact and a
   `score-finished` fact at the source-completion timestamp. A good score alone is
   not a successful run.
+- Runtime status reads select an exact registered type. Schema failures remain
+  protocol failures; orchestration does not reinterpret a malformed value as a
+  missing or successful status.
 - Every terminal path enters `FINALIZING`. Publishers must become quiescent before
   orchestration writes aggregate `runtime-frozen`; artifacts then drains and
   closes its recorders before the host validates the bundle.
