@@ -121,6 +121,12 @@ class GazeboTransport:
         self._stats_topic = f"/world/{world_name}/stats"
         self._run = run
 
+    def assert_typed_readiness_supported(self) -> None:
+        if not self._flight:
+            raise TransportError(
+                "typed Gazebo readiness requires an ArduPilot flight exchange"
+            )
+
     def _command(self, argv: tuple[str, ...], *, timeout: float = 5.0):
         try:
             result = self._run(

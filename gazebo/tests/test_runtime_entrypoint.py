@@ -141,6 +141,13 @@ def test_flight_transport_rejects_a_world_without_the_plugin_status_service():
         transport.assert_ready()
 
 
+def test_passive_world_is_rejected_before_typed_readiness_publication():
+    transport = GazeboTransport(environment={"GZ_PARTITION": "p"})
+
+    with pytest.raises(TransportError, match="requires an ArduPilot flight exchange"):
+        transport.assert_typed_readiness_supported()
+
+
 def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
     """Generic Gazebo endpoints cannot substitute for one real JSON exchange."""
     payload = (

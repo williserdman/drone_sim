@@ -283,6 +283,7 @@ def main() -> int:
     transport = GazeboTransport(
         environment=spec.environment, world_name=resolved.world_name
     )
+    transport.assert_typed_readiness_supported()
     startup_deadline = time.monotonic() + config.startup_wall_seconds
     _start_server_ready(
         server,
