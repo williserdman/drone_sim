@@ -2,8 +2,8 @@
 
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md)
 
-Reviewed 2026-09-08 against final code revision `f92bb13` plus this documentation
-cleanup. This is a dated handoff, not a claim that mutable checkouts or local
+Reviewed 2026-09-08 against parent revision `26862b6` plus the final roll-test
+correction. This is a dated handoff, not a claim that mutable checkouts or local
 image tags will remain unchanged.
 
 ## What a new maintainer should do first
@@ -85,6 +85,21 @@ Scorekeeper's standalone source self-test, when pointed at the checkout's rules,
 completed its real typed status write and then stopped at the separate ROS check
 because host `rclpy` is unavailable.
 
+Final provenance review resolved that disagreement as a stale test. Commit
+`fe44a96` promoted the complete five-value roll AutoTune set from run
+`881fe09d-08ef-4ca5-8304-fe79c5220e61` but did not update the older expectation.
+The manifest validates `ardupilot_sitl/autotune-roll.parm` at SHA-256
+`9126cb1b656dcc5055e992d32b78d8df23f4cea01a737816ad947546257784a5`,
+and the artifact's five values match the deployed overlay. This validates the
+parameter evidence only: the run ended `FAILED` after an unrelated clock stall,
+its parent source was dirty, and it produced no valid score or current flight
+baseline. The old test reproduced RED with **1 failed**. The corrected five-value
+contract passed **1 test**, all ArduPilot tests passed **34 tests**, and the
+AutoTune promotion check passed **31 tests**. With the independent mission
+checkout exposed through a temporary exact symlink and excluded from collection,
+the full parent suite passed **1,819 tests** with **26 skipped**. No runtime
+parameters, production source, images, or run evidence changed.
+
 Task 7a then changed only `runtime_status.py` at `5a0d820`. Its final-head
 focused status/protocol suite passed **406 tests**, its contract and integration
 suite passed **34 tests**, and `artifacts/src` compiled. These focused checks
@@ -161,23 +176,7 @@ the supported manual path; plain Compose build uses a stale fallback label.
 Relevant files: [Dockerfile](../companion/Dockerfile), [.dockerignore](../.dockerignore),
 [Compose binding](../orchestration/src/orchestration/_adapters/compose.py).
 
-### 2. Resolve the roll-parameter/test disagreement
-
-The current overlay records promoted roll AutoTune gains from run
-`881fe09d-08ef-4ca5-8304-fe79c5220e61`. It sets `ATC_RAT_RLL_P/I=0.0503722` and
-`ATC_RAT_RLL_D=0.000375`; the test still expects the older `0.0675/0.0675/0.0018`.
-
-Reproduce just that discrepancy:
-
-```bash
-uv run --locked pytest ardupilot_sitl/tests/test_config.py::test_descent_parameters_use_verified_competition_roll_rate_gains -q
-```
-
-Inspect the original tuning evidence and decide which baseline is intended
-before changing either the [overlay](../ardupilot_sitl/params/descent.parm) or
-[test](../ardupilot_sitl/tests/test_config.py). This cleanup changed neither.
-
-### 3. Obtain a clean full-window competition baseline
+### 2. Obtain a clean full-window competition baseline
 
 The payload-joint timestamp queue fault has a deterministic regression test and
 a successful physical mission rerun. The later **range** fault is a different
@@ -191,7 +190,7 @@ Reproduce with diagnostic evidence before changing behavior. Then verify the
 entire public window, normal video finalization, bag validity, and scoring on
 one pinned source/image set. Keep strict timestamp/physical checks intact.
 
-### 4. Keep this documentation useful as code changes
+### 3. Keep this documentation useful as code changes
 
 [Contribution rules](../AGENTS.md) require updating every affected module README
 and shared guide in the same change, with an explicit documentation-impact note.
