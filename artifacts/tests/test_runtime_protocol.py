@@ -247,6 +247,24 @@ def test_manifest_status_is_read_descriptor_safely_after_terminal_commit(run_dir
     }
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    ["", ".", "/absolute", "../escape", "a/../escape", r"logs/docker/bad\name.log"],
+)
+def test_manifest_status_rejects_nonportable_relative_path(run_directory, relative_path):
+    manifest = {
+        "schema_version": 1,
+        "run_id": RUN_ID,
+        "terminal_status": "FAILED",
+        "artifacts": [{"relative_path": relative_path, "validation": "invalid"}],
+        "incomplete_paths": [],
+    }
+    (run_directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ProtocolError, match="artifact record"):
+        RuntimeProtocol(run_directory, RUN_ID).read_manifest_status()
+
+
 @pytest.mark.parametrize("kind", ["symlink", "hardlink"])
 def test_manifest_status_rejects_unsafe_manifest_path(run_directory, kind):
     outside = run_directory.parent / "outside-manifest.json"

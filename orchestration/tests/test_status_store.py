@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -605,6 +606,105 @@ def test_collect_manifest_validation_rejects_missing_required_inventory_record(t
     manifest.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ProtocolFileError, match="required inventory"):
+        store.validated_manifest_path(RUN_ID)
+
+
+def test_manifest_cross_reader_accepts_the_same_portable_paths(tmp_path):
+    from datetime import datetime, timezone
+
+    from artifacts import ArtifactSession, FinalizationInput
+    from artifacts.manifest import ConfigurationRecord, REQUIRED_ARTIFACT_PATHS
+    from artifacts.runtime_protocol import RuntimeProtocol
+
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    for relative_path in REQUIRED_ARTIFACT_PATHS:
+        target = run_directory / relative_path
+        if relative_path in {"configuration", "gazebo/state", "rosbag"}:
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "content").write_bytes(b"artifact")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"artifact")
+    now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    ArtifactSession(run_directory).finalize(
+        FinalizationInput(
+            RUN_ID,
+            "COMPLETED",
+            "mission_complete",
+            None,
+            None,
+            now,
+            now,
+            (),
+            (),
+            (ConfigurationRecord("configuration/run.json", "a" * 64),),
+            None,
+            None,
+            None,
+            ("scoring/events.jsonl#event-12",),
+        )
+    )
+
+    assert store.validated_manifest_path(RUN_ID) == run_directory / "manifest.json"
+    with RuntimeProtocol(run_directory, RUN_ID) as protocol:
+        assert protocol.read_manifest_status()["complete"] is True
+
+
+def test_manifest_host_reader_rejects_backslash_artifact_path(tmp_path):
+    from datetime import datetime, timezone
+
+    from artifacts import ArtifactSession, FinalizationInput
+    from artifacts.manifest import ConfigurationRecord, REQUIRED_ARTIFACT_PATHS
+
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    for relative_path in REQUIRED_ARTIFACT_PATHS:
+        target = run_directory / relative_path
+        if relative_path in {"configuration", "gazebo/state", "rosbag"}:
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "content").write_bytes(b"artifact")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"artifact")
+    now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    ArtifactSession(run_directory).finalize(
+        FinalizationInput(
+            RUN_ID,
+            "COMPLETED",
+            "mission_complete",
+            None,
+            None,
+            now,
+            now,
+            (),
+            (),
+            (ConfigurationRecord("configuration/run.json", "a" * 64),),
+            None,
+            None,
+            None,
+            (),
+        )
+    )
+    bad_path = r"logs/docker/bad\name.log"
+    target = run_directory / bad_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"bad")
+    manifest_path = run_directory / "manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["artifacts"].append(
+        {
+            "relative_path": bad_path,
+            "size_bytes": 3,
+            "sha256": hashlib.sha256(b"bad").hexdigest(),
+            "validation": "valid",
+            "detail": "valid regular file",
+        }
+    )
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProtocolFileError, match="artifact path"):
         store.validated_manifest_path(RUN_ID)
 
 

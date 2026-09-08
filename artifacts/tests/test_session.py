@@ -450,6 +450,16 @@ def test_finalize_rejects_invalid_metadata_before_writing_manifest(tmp_path, cha
     assert not (tmp_path / "manifest.json").exists()
 
 
+def test_finalize_rejects_linux_filename_with_backslash_before_manifest_publication(tmp_path):
+    _complete_run_directory(tmp_path)
+    _write(tmp_path, r"logs/docker/bad\name.log")
+
+    with pytest.raises(ValueError, match="artifact path"):
+        ArtifactSession(tmp_path).finalize(_finalization_input())
+
+    assert not (tmp_path / "manifest.json").exists()
+
+
 def test_finalize_accepts_absent_simulation_interval(tmp_path):
     _complete_run_directory(tmp_path)
 

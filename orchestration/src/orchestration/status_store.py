@@ -20,6 +20,7 @@ from artifacts.manifest import (
     SimulationTiming,
     SourceRevision,
     WallTiming,
+    is_manifest_relative_path,
     validate_manifest,
 )
 from artifacts.protocol_files import (
@@ -528,10 +529,7 @@ class StatusStore:
                 raise ProtocolFileError("manifest artifact record is invalid")
             relative_path = record["relative_path"]
             if (
-                not isinstance(relative_path, str)
-                or not relative_path
-                or Path(relative_path).is_absolute()
-                or ".." in Path(relative_path).parts
+                not is_manifest_relative_path(relative_path)
                 or relative_path in paths
             ):
                 raise ProtocolFileError("manifest artifact path is invalid or duplicated")

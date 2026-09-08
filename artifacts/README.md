@@ -61,6 +61,9 @@ evidence, per-module logs, scoring files, diagnostics, and `manifest.json`. The
 required inventory is defined by
 [`REQUIRED_ARTIFACT_PATHS`](src/artifacts/manifest.py), and recorder-local semantic
 records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
+Manifest paths use portable POSIX-relative syntax. The executable contract is
+[`is_manifest_relative_path`](src/artifacts/manifest.py), with its JSON form in
+the [`manifest.json` schema](schemas/manifest.schema.json).
 
 ## Constraints worth preserving
 

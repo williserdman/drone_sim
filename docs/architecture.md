@@ -82,6 +82,9 @@ adapts that contract for container producers and consumers;
 [`StatusStore`](../orchestration/src/orchestration/status_store.py) adapts it for
 the host controller. Both use the strict, descriptor-relative persistence in
 [`protocol_files.py`](../artifacts/src/artifacts/protocol_files.py).
+Manifest producers and both readers accept only portable POSIX-relative paths,
+as defined by [`is_manifest_relative_path`](../artifacts/src/artifacts/manifest.py)
+and the [`manifest.json` schema](../artifacts/schemas/manifest.schema.json).
 
 Readers request an exact registered status type. Subclasses and a same-named
 unregistered class cannot select a schema. Runtime failures use first-wins

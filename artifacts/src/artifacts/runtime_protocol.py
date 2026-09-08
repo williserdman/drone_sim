@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, TypeVar
 
+from artifacts.manifest import is_manifest_relative_path
 from artifacts.protocol_files import (
     ProtocolIOError,
     WritePolicy,
@@ -43,13 +44,6 @@ def _translate_io(call: Callable[[], _T]) -> _T:
         return call()
     except (ProtocolIOError, RuntimeStatusError) as error:
         raise ProtocolError(str(error)) from error
-
-
-def _valid_manifest_relative_path(value: Any) -> bool:
-    if not isinstance(value, str) or not value or "\\" in value:
-        return False
-    path = PurePosixPath(value)
-    return not path.is_absolute() and path.parts not in ((), (".",)) and ".." not in path.parts
 
 
 def _validate_control(name: str, document: Mapping[str, Any], run_id: str) -> None:
@@ -253,14 +247,14 @@ class RuntimeProtocol:
             relative_path = record.get("relative_path")
             validation = record.get("validation")
             if (
-                not _valid_manifest_relative_path(relative_path)
+                not is_manifest_relative_path(relative_path)
                 or relative_path in validations
                 or validation not in {"valid", "missing", "invalid"}
             ):
                 raise ProtocolError("manifest status artifact record is invalid")
             validations[relative_path] = validation
         if (
-            any(not _valid_manifest_relative_path(path) for path in incomplete)
+            any(not is_manifest_relative_path(path) for path in incomplete)
             or len(incomplete) != len(set(incomplete))
             or any(validations.get(path) not in {"missing", "invalid"} for path in incomplete)
         ):
