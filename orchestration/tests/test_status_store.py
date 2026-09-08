@@ -129,6 +129,21 @@ def _assert_failed_open_closed(failed: list[int]) -> None:
     assert not Path(f"/proc/self/fd/{failed[0]}").exists()
 
 
+def _mutation_relevant_metadata(path: Path) -> tuple[int, ...]:
+    metadata = path.stat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
 def test_output_root_open_translates_fstat_failure_without_leak(
     tmp_path, monkeypatch
 ):
@@ -438,9 +453,9 @@ def test_runtime_status_round_trips_canonically_through_both_adapters(tmp_path, 
         ).encode()
         assert target.read_bytes() == expected
         assert stat.S_IMODE(target.stat().st_mode) == 0o644
-        before_reads = target.stat()
+        before_reads = _mutation_relevant_metadata(target)
         runtime_parsed = protocol.read_status(type(status))
-        assert target.stat() == before_reads
+        assert _mutation_relevant_metadata(target) == before_reads
 
     assert type(runtime_parsed) is type(status)
     assert runtime_parsed == status
@@ -448,7 +463,7 @@ def test_runtime_status_round_trips_canonically_through_both_adapters(tmp_path, 
     host_parsed = store.read_runtime_status(RUN_ID, type(status))
     assert type(host_parsed) is type(status)
     assert host_parsed == status
-    assert target.stat() == before_reads
+    assert _mutation_relevant_metadata(target) == before_reads
 
 
 def test_runtime_status_read_requires_matching_run_id(tmp_path):
