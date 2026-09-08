@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
-from artifacts.runtime_status import RuntimeFailureStatus
+from artifacts.runtime_status import RuntimeFailureStatus, ScoreFinishedStatus
 from drone_sim_scorekeeper.competition import CompetitionScorer, load_competition_rules
 from drone_sim_scorekeeper.competition_runtime import CompetitionScorekeeperRuntime
 from drone_sim_scorekeeper.runtime_node import (
@@ -21,28 +21,38 @@ from .test_competition_score import AttemptTrace, RUN_ID, RULES, new_trace, perf
 
 
 class ProtocolRecorder:
-    def __init__(self) -> None:
+    def __init__(self, operations: list[object] | None = None) -> None:
         self.statuses = []
         self.quiescence: list[str] = []
+        self.operations = operations
 
     def write_status(self, status) -> None:
         self.statuses.append(status)
+        if self.operations is not None:
+            self.operations.append(("status", status))
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
 
 
 def runtime_for(tmp_path: Path, scorer: CompetitionScorer):
-    protocol = ProtocolRecorder()
     operations: list[object] = []
+    protocol = ProtocolRecorder(operations)
+
+    def publish(event) -> None:
+        if not operations:
+            assert (tmp_path / "scoring/events.jsonl").is_file()
+            assert (tmp_path / "scoring/result.json").is_file()
+            operations.append(("persist",))
+        operations.append(("publish", event.event_id))
+
     runtime = CompetitionScorekeeperRuntime(
         RUN_ID,
         scorer,
         run_directory=tmp_path,
         protocol=protocol,
-        publish=lambda event: operations.append(("publish", event.event_id)),
+        publish=publish,
         flush=lambda: operations.append(("flush",)),
-        write_finished=lambda document: operations.append(("finished", document)),
     )
     return runtime, protocol, operations
 
@@ -65,17 +75,18 @@ def test_complete_score_persists_and_flushes_eight_events_before_finished(tmp_pa
 
     assert result.complete is True
     assert result.achieved_score == 150.0
-    assert operations[:8] == [("publish", index) for index in range(8)]
-    assert operations[8] == ("flush",)
-    assert operations[9] == (
-        "finished",
-        {
-            "run_id": RUN_ID,
-            "finished": True,
-            "sim_timestamp_ns": source.scorer.last_sim_timestamp_ns,
-        },
-    )
-    assert protocol.statuses == []
+    assert operations == [
+        ("persist",),
+        *(("publish", index) for index in range(8)),
+        ("flush",),
+        (
+            "status",
+            ScoreFinishedStatus(RUN_ID, source.scorer.last_sim_timestamp_ns),
+        ),
+    ]
+    assert protocol.statuses == [
+        ScoreFinishedStatus(RUN_ID, source.scorer.last_sim_timestamp_ns),
+    ]
     assert len((tmp_path / "scoring/events.jsonl").read_text().splitlines()) == 8
     assert json.loads((tmp_path / "scoring/result.json").read_text())[
         "maximum_available_score"
@@ -100,10 +111,18 @@ def test_valid_home_persists_and_finishes_partial_score(tmp_path):
 
     assert result.complete is True
     assert result.achieved_score == 145.0
-    assert operations[:8] == [("publish", index) for index in range(8)]
-    assert operations[8] == ("flush",)
-    assert operations[9][0] == "finished"
-    assert protocol.statuses == []
+    assert operations == [
+        ("persist",),
+        *(("publish", index) for index in range(8)),
+        ("flush",),
+        (
+            "status",
+            ScoreFinishedStatus(RUN_ID, source.scorer.last_sim_timestamp_ns),
+        ),
+    ]
+    assert protocol.statuses == [
+        ScoreFinishedStatus(RUN_ID, source.scorer.last_sim_timestamp_ns),
+    ]
     persisted = json.loads((tmp_path / "scoring/result.json").read_text())
     assert persisted["complete"] is True
     assert persisted["achieved_score"] == 145.0
@@ -132,7 +151,7 @@ def test_source_finish_without_valid_home_never_writes_score_finished(tmp_path):
     result = runtime.accept_source_finished(trace.scorer.last_sim_timestamp_ns)
 
     assert result.complete is False
-    assert all(operation[0] != "finished" for operation in operations)
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
     assert type(protocol.statuses[0]) is RuntimeFailureStatus
 
 
@@ -198,7 +217,7 @@ def test_begin_finalization_persists_failure_then_becomes_quiescent(tmp_path):
     assert runtime.result.complete is False
     assert runtime.quiescent is True
     assert protocol.quiescence == ["scorekeeper"]
-    assert all(operation[0] != "finished" for operation in operations)
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
 
 
 def stamp(timestamp_ns: int):

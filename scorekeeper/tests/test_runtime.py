@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from artifacts.runtime_status import RuntimeFailureStatus
+from artifacts.runtime_status import RuntimeFailureStatus, ScoreFinishedStatus
 from drone_sim_scorekeeper.descent import (
     DescentScorer,
     GroundTruthSample,
@@ -18,12 +18,15 @@ DT = 50_000_000
 
 
 class ProtocolRecorder:
-    def __init__(self) -> None:
+    def __init__(self, operations: list[object] | None = None) -> None:
         self.statuses = []
         self.quiescence: list[str] = []
+        self.operations = operations
 
     def write_status(self, status) -> None:
         self.statuses.append(status)
+        if self.operations is not None:
+            self.operations.append(("status", status))
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
@@ -53,8 +56,16 @@ def _sample(index: int, *, contact: bool = False) -> GroundTruthSample:
 
 
 def _runtime(tmp_path, *, expected=31):
-    protocol = ProtocolRecorder()
     operations: list[object] = []
+    protocol = ProtocolRecorder(operations)
+
+    def publish(event) -> None:
+        if not operations:
+            assert (tmp_path / "scoring/events.jsonl").is_file()
+            assert (tmp_path / "scoring/result.json").is_file()
+            operations.append(("persist",))
+        operations.append(("publish", event.event_id))
+
     runtime = ScorekeeperRuntime(
         RUN_ID,
         DescentScorer(
@@ -64,9 +75,8 @@ def _runtime(tmp_path, *, expected=31):
         ),
         run_directory=tmp_path,
         protocol=protocol,
-        publish=lambda event: operations.append(("publish", event.event_id)),
+        publish=publish,
         flush=lambda: operations.append(("flush",)),
-        write_finished=lambda document: operations.append(("finished", document)),
     )
     return runtime, protocol, operations
 
@@ -85,13 +95,15 @@ def test_complete_score_persists_and_flushes_five_events_before_finished(tmp_pat
     result = json.loads((tmp_path / "scoring/result.json").read_text())
     assert result["complete"] is True
     assert result["achieved_score"] == 100.0
-    assert operations[:5] == [("publish", index) for index in range(5)]
-    assert operations[5] == ("flush",)
-    assert operations[6] == (
-        "finished",
-        {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 30 * DT},
-    )
-    assert protocol.statuses == []
+    assert operations == [
+        ("persist",),
+        *(("publish", index) for index in range(5)),
+        ("flush",),
+        ("status", ScoreFinishedStatus(RUN_ID, 30 * DT)),
+    ]
+    assert protocol.statuses == [
+        ScoreFinishedStatus(RUN_ID, 30 * DT),
+    ]
 
 
 def test_duplicate_ground_truth_writes_failure_and_never_score_finished(tmp_path):
@@ -108,7 +120,7 @@ def test_duplicate_ground_truth_writes_failure_and_never_score_finished(tmp_path
     result = json.loads((tmp_path / "scoring/result.json").read_text())
     assert result["complete"] is False
     assert result["diagnostic"] == "ground_truth_timestamp_duplicate"
-    assert all(operation[0] != "finished" for operation in operations)
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
     assert protocol.statuses == [
         RuntimeFailureStatus(
             RUN_ID,
@@ -136,7 +148,7 @@ def test_finalization_of_truncated_input_fails_then_becomes_silent(tmp_path):
     assert result["diagnostic"] == "ground_truth_sample_count_mismatch"
     assert protocol.quiescence == ["scorekeeper"]
     assert runtime.quiescent is True
-    assert all(operation[0] != "finished" for operation in operations)
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
 
 
 def test_active_scenario_fails_closed_even_with_perfect_ground_truth(tmp_path):
@@ -153,7 +165,7 @@ def test_active_scenario_fails_closed_even_with_perfect_ground_truth(tmp_path):
     result = json.loads((tmp_path / "scoring/result.json").read_text())
     assert result["complete"] is False
     assert result["diagnostic"] == "scenario_not_inactive"
-    assert all(operation[0] != "finished" for operation in operations)
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
     assert type(protocol.statuses[0]) is RuntimeFailureStatus
 
 
@@ -171,7 +183,6 @@ def test_existing_global_failure_does_not_prevent_scorekeeper_quiescence(tmp_pat
         protocol=protocol,
         publish=lambda _event: None,
         flush=lambda: None,
-        write_finished=lambda _document: None,
     )
 
     runtime.begin_finalization()

@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
-from artifacts.runtime_status import RuntimeFailureStatus, RuntimeStatus
+from artifacts.runtime_status import (
+    RuntimeFailureStatus,
+    RuntimeStatus,
+    ScoreFinishedStatus,
+)
 from .competition import (
     CompetitionScorer,
     MissionEventSample,
@@ -17,7 +21,6 @@ from .competition import (
 from .descent import GroundTruthSample
 from .models import ScoreEvent, ScoreResult
 from .output import persist_score_outputs
-from .status import write_score_finished
 
 
 class RuntimeProtocol(Protocol):
@@ -49,7 +52,6 @@ class CompetitionScorekeeperRuntime:
         protocol: RuntimeProtocol,
         publish: Callable[[ScoreEvent], None],
         flush: Callable[[], None],
-        write_finished: Callable[[dict[str, object]], object] | None = None,
     ) -> None:
         self.run_id = _canonical_run_id(run_id)
         if not isinstance(scorer, CompetitionScorer) or scorer.run_id != self.run_id:
@@ -59,11 +61,6 @@ class CompetitionScorekeeperRuntime:
         self.protocol = protocol
         self._publish = publish
         self._flush = flush
-        self._write_finished = write_finished or (
-            lambda document: write_score_finished(
-                self.run_directory, self.run_id, document
-            )
-        )
         self._result: ScoreResult | None = None
         self._failure_written = False
         self._ground_truth_timestamp_ns: int | None = None
@@ -186,7 +183,10 @@ class CompetitionScorekeeperRuntime:
             self._publish(event)
         self._flush()
         if result.complete:
-            self._write_finished(result.finished_status())
+            sim_timestamp_ns = result.finished_status()["sim_timestamp_ns"]
+            self.protocol.write_status(
+                ScoreFinishedStatus(self.run_id, sim_timestamp_ns)
+            )
         else:
             self._write_failure(result.diagnostic or "score_incomplete")
         self._result = result

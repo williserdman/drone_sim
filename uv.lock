@@ -156,6 +156,12 @@ requires-dist = [
 name = "drone-sim-scorekeeper"
 version = "0.1.0"
 source = { editable = "scorekeeper" }
+dependencies = [
+    { name = "drone-sim-artifacts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "drone-sim-artifacts", editable = "artifacts" }]
 
 [[package]]
 name = "dronekit"

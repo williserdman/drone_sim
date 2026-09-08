@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from artifacts.runtime_status import SourceFinishedStatus
+from artifacts.runtime_status import ScoreFinishedStatus, SourceFinishedStatus
 from drone_sim_scorekeeper.runtime_node import (
     _RosBoundary,
     ScorekeeperDriver,
@@ -160,6 +160,7 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
             self.finalize = None
             self.terminal = None
             self.quiescence = []
+            self.statuses = []
 
         def read_status(self, status_type):
             assert status_type is SourceFinishedStatus
@@ -171,8 +172,8 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
         def read_terminal_committed(self):
             return self.terminal
 
-        def write_status(self, _status):
-            raise AssertionError("complete score must not write runtime failure")
+        def write_status(self, status):
+            self.statuses.append(status)
 
         def write_quiescence(self, module):
             self.quiescence.append(module)
@@ -203,7 +204,6 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
         protocol=protocol,
         publish=published.append,
         flush=lambda: None,
-        write_finished=lambda _document: None,
     )
     runtime.accept_scenario(ScenarioSample(RUN_ID, 0, 0, "landing_pad", "INACTIVE"))
     runtime.accept_ground_truth(ground_truth)
@@ -212,6 +212,7 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
     assert driver.poll() is False
     assert driver.poll() is False
     assert len(published) == 5
+    assert protocol.statuses == [ScoreFinishedStatus(RUN_ID, 0)]
     protocol.finalize = {
         "run_id": RUN_ID,
         "requested_terminal": "COMPLETED",
@@ -231,6 +232,9 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
 def test_driver_drains_ros_ground_truth_through_source_timestamp_before_scoring(tmp_path):
     """The durable source marker can race ahead of still-queued ROS samples."""
     class Protocol:
+        def __init__(self):
+            self.statuses = []
+
         def read_status(self, status_type):
             assert status_type is SourceFinishedStatus
             return SourceFinishedStatus(RUN_ID, 0)
@@ -241,8 +245,8 @@ def test_driver_drains_ros_ground_truth_through_source_timestamp_before_scoring(
         def read_terminal_committed(self):
             return None
 
-        def write_status(self, _status):
-            raise AssertionError("a queued sample is not data loss")
+        def write_status(self, status):
+            self.statuses.append(status)
 
         def write_quiescence(self, _module):
             raise AssertionError("finalization was not requested")
@@ -250,16 +254,16 @@ def test_driver_drains_ros_ground_truth_through_source_timestamp_before_scoring(
     scorer = DescentScorer(
         RUN_ID, load_descent_rules(RULES), expected_ground_truth_samples=1
     )
+    protocol = Protocol()
     runtime = ScorekeeperRuntime(
         RUN_ID,
         scorer,
         run_directory=tmp_path,
-        protocol=Protocol(),
+        protocol=protocol,
         publish=lambda _event: None,
         flush=lambda: None,
-        write_finished=lambda _document: None,
     )
-    driver = ScorekeeperDriver(RUN_ID, runtime, Protocol())
+    driver = ScorekeeperDriver(RUN_ID, runtime, protocol)
 
     assert driver.poll() is False
     assert runtime.result is None
@@ -283,3 +287,4 @@ def test_driver_drains_ros_ground_truth_through_source_timestamp_before_scoring(
     assert driver.poll() is False
     assert runtime.result is not None
     assert runtime.result.complete is True
+    assert protocol.statuses == [ScoreFinishedStatus(RUN_ID, 0)]
