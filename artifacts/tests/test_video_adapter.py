@@ -815,13 +815,18 @@ def test_start_bounds_hanging_preflight_by_caller_deadline(tmp_path):
             super().__init__()
             self.runner_started = threading.Event()
             self.release_runner = threading.Event()
+            self.runner_finished = threading.Event()
             self.runner_thread = None
 
         def __call__(self, command, **kwargs):
             if "-encoders" in command:
                 self.runner_thread = threading.current_thread()
                 self.runner_started.set()
-                assert self.release_runner.wait(5)
+                try:
+                    assert self.release_runner.wait(5)
+                    return super().__call__(command, **kwargs)
+                finally:
+                    self.runner_finished.set()
             return super().__call__(command, **kwargs)
 
     factory = FakeProcessFactory()
@@ -839,12 +844,14 @@ def test_start_bounds_hanging_preflight_by_caller_deadline(tmp_path):
             recorder.start(deadline=time.monotonic() + 0.01)
 
         assert runner.runner_started.wait(5)
+        assert not runner.runner_finished.is_set()
         assert factory.calls == []
         assert not recorder.partial_path.exists()
     finally:
         runner.release_runner.set()
         assert runner.runner_thread is not None
         runner.runner_thread.join(5)
+        assert runner.runner_finished.is_set()
         assert not runner.runner_thread.is_alive()
 
 
