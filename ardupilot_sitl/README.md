@@ -23,7 +23,6 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
   the Gazebo service once, and constructs the shell-free ArduCopter command.
 - [runtime.py](src/drone_sim_ardupilot/runtime.py) supervises SITL, interprets
   readiness output, writes events, and inventories diagnostics.
-- [state.py](src/drone_sim_ardupilot/state.py) contains the pure lifecycle model.
 - [json_peer.py](src/drone_sim_ardupilot/json_peer.py) is a bounded test peer for
   the upstream UDP protocol; production does not use it.
 - [descent.parm](params/descent.parm) is the image-baked parameter overlay, and
