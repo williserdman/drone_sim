@@ -7,6 +7,7 @@ import time
 import numpy as np
 import pytest
 
+from drone.sensors.camera import _camera_manager as camera_manager_module
 from drone.sensors.camera._camera_manager import CameraManager
 from drone.sensors.camera.camera import Camera
 
@@ -559,6 +560,70 @@ def test_latest_observation_rechecks_age_at_handover(tmp_path):
     clock.now_ns = 1_101
 
     with pytest.raises(RuntimeError, match="older than"):
+        manager.latest_observation(after_sequence=0, timeout_s=0.01)
+
+
+def test_latest_observation_rejects_candidate_available_after_deadline(
+    monkeypatch, tmp_path
+):
+    calibration = tmp_path / "calibration.json"
+    write_calibration(calibration, width=640, height=480, verified=True)
+    manager = CameraManager(
+        frame_source=TimestampedSource([1_000]),
+        calibration_path=calibration,
+        clock=FakeClock(1_050),
+        max_exposure_age_ns=100,
+    )
+    observation = manager.capture_observation()
+    manager._latest_observation = None
+    wall_clock = FakeClock(1_000_000_000)
+
+    class PublishAfterDeadline:
+        def __enter__(self):
+            wall_clock.now_ns += 20_000_000
+            manager._latest_observation = observation
+            return self
+
+        def __exit__(self, _type, _value, _traceback):
+            return False
+
+    manager._state_condition = PublishAfterDeadline()
+    monkeypatch.setattr(
+        camera_manager_module.time,
+        "monotonic",
+        lambda: wall_clock() / 1_000_000_000,
+    )
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        manager.latest_observation(after_sequence=0, timeout_s=0.01)
+
+
+def test_latest_observation_rejects_candidate_when_freshness_exceeds_deadline(
+    monkeypatch, tmp_path
+):
+    calibration = tmp_path / "calibration.json"
+    write_calibration(calibration, width=640, height=480, verified=True)
+    manager = CameraManager(
+        frame_source=TimestampedSource([1_000]),
+        calibration_path=calibration,
+        clock=FakeClock(1_050),
+        max_exposure_age_ns=100,
+    )
+    manager.capture_observation()
+    wall_clock = FakeClock(1_000_000_000)
+
+    def freshness_clock():
+        wall_clock.now_ns += 20_000_000
+        return 1_050
+
+    manager._clock = freshness_clock
+    monkeypatch.setattr(
+        camera_manager_module.time,
+        "monotonic",
+        lambda: wall_clock() / 1_000_000_000,
+    )
+
+    with pytest.raises(TimeoutError, match="timed out"):
         manager.latest_observation(after_sequence=0, timeout_s=0.01)
 
 

@@ -464,12 +464,21 @@ def test_live_factory_rejects_unready_real_camera_before_listener_install(
     shape = (calibration["image_height_px"], calibration["image_width_px"], 3)
     events = []
     release = threading.Event()
+    release_timers = []
+    cameras = []
 
     class UnreadySource:
         last_timestamp_ns = None
 
         def capture_frame(self, quality=4):
             if source_kind == "blocked":
+                if not release_timers:
+                    timer = threading.Timer(
+                        config.precision_policy.frame_timeout_s + 1.0,
+                        release.set,
+                    )
+                    release_timers.append(timer)
+                    timer.start()
                 release.wait()
             now = config.vision.receipt_clock_ns()
             self.last_timestamp_ns = (
@@ -495,16 +504,26 @@ def test_live_factory_rejects_unready_real_camera_before_listener_install(
         transport.install_message_callback = install
         return transport
 
+    def camera_factory(**_values):
+        camera = _real_camera_factory(config, UnreadySource())
+        cameras.append(camera)
+        return camera
+
     factories = replace(
         base,
         ack_transport_factory=ack_factory,
-        camera_factory=lambda **_values: _real_camera_factory(config, UnreadySource()),
+        camera_factory=camera_factory,
     )
-    if source_kind == "blocked":
-        threading.Timer(config.precision_policy.frame_timeout_s + 0.02, release.set).start()
 
-    with pytest.raises((RuntimeError, TimeoutError)):
-        build_live_listener(artifacts, config, factories=factories)
+    try:
+        with pytest.raises((RuntimeError, TimeoutError)):
+            build_live_listener(artifacts, config, factories=factories)
+    finally:
+        release.set()
+        for timer in release_timers:
+            timer.cancel()
+        for camera in cameras:
+            camera.cm.stop_acquisition(timeout_s=1.0)
 
     assert "listener-installed" not in events
 

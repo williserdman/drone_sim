@@ -500,6 +500,8 @@ class CameraManager:
                     observation is not None
                     and observation.metadata.sequence > after_sequence
                 ):
+                    if deadline - time.monotonic() <= 0:
+                        raise TimeoutError("Camera frame acquisition timed out")
                     pass
                 elif self._acquisition_error is not None:
                     raise RuntimeError("Camera acquisition worker failed") from self._acquisition_error
@@ -510,6 +512,8 @@ class CameraManager:
                     self._state_condition.wait(remaining)
                     continue
             self._ensure_handover_fresh(observation)
+            if deadline - time.monotonic() <= 0:
+                raise TimeoutError("Camera frame acquisition timed out")
             return observation
 
     def capture_observation_bounded(
