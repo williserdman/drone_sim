@@ -414,6 +414,8 @@ def install_comp2026_runtime_fakes(
     mission_entered: threading.Event,
     input_failure_started: threading.Event | None = None,
     allow_input_failure: threading.Event | None = None,
+    runtime_callbacks: dict[str, object] | None = None,
+    installed_signal_handlers: dict[int, object] | None = None,
 ) -> tuple[list[object], InitialCommandVehicle]:
     statuses: list[object] = []
     terminal = threading.Event()
@@ -465,6 +467,8 @@ def install_comp2026_runtime_fakes(
             self, _type: object, topic: str, callback: object, *_args: object, **_kwargs: object
         ) -> object:
             subscriptions[topic] = callback
+            if runtime_callbacks is not None:
+                runtime_callbacks[topic] = callback
             return object()
 
         def destroy_subscription(self, _subscription: object) -> None:
@@ -614,7 +618,11 @@ def install_comp2026_runtime_fakes(
 
     monkeypatch.setattr(runtime_node, "_ProductionProtocol", Protocol)
     monkeypatch.setattr(runtime_node, "load_course_waypoints", lambda *_args: {})
-    monkeypatch.setattr(runtime_node.signal, "signal", lambda *_args: None)
+    def install_signal_handler(signum: int, handler: object) -> None:
+        if installed_signal_handlers is not None:
+            installed_signal_handlers[signum] = handler
+
+    monkeypatch.setattr(runtime_node.signal, "signal", install_signal_handler)
     return statuses, vehicle
 
 
@@ -736,6 +744,108 @@ def test_run_comp2026_concurrent_input_failure_prevents_guided_and_status(
     assert [status.reason for status in failures] == [
         "competition image input failed: bad image"
     ]
+
+
+@pytest.mark.parametrize("shutdown_source", ["finalizing", "signal"])
+def test_run_comp2026_rechecks_shutdown_after_outer_loop_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shutdown_source: str,
+) -> None:
+    admitted = threading.Event()
+    allow_delivery = threading.Event()
+    callbacks: dict[str, object] = {}
+    handlers: dict[int, object] = {}
+    mission_entered = threading.Event()
+    local_latch_marked = threading.Event()
+    created_gates: list[runtime_node.Comp2026StartGate] = []
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=mission_entered,
+        runtime_callbacks=callbacks,
+        installed_signal_handlers=handlers,
+    )
+    original_poll = runtime_node.comp2026_start_gate_poll_required
+    pause_once = True
+
+    def pause_after_admission(**options: object) -> bool:
+        nonlocal pause_once
+        result = original_poll(**options)  # type: ignore[arg-type]
+        if result and pause_once:
+            pause_once = False
+            admitted.set()
+            assert allow_delivery.wait(1.0)
+        return result
+
+    monkeypatch.setattr(
+        runtime_node,
+        "comp2026_start_gate_poll_required",
+        pause_after_admission,
+    )
+    original_gate_type = runtime_node.Comp2026StartGate
+    original_deliver = runtime_node._deliver_comp2026_initial_command
+
+    def capture_gate() -> runtime_node.Comp2026StartGate:
+        gate = original_gate_type()
+        created_gates.append(gate)
+        return gate
+
+    def capture_local_latch(**options: object) -> bool:
+        mark_delivered = options["mark_delivered"]
+
+        def mark_and_record() -> None:
+            local_latch_marked.set()
+            mark_delivered()  # type: ignore[operator]
+
+        options["mark_delivered"] = mark_and_record
+        return original_deliver(**options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(runtime_node, "Comp2026StartGate", capture_gate)
+    monkeypatch.setattr(
+        runtime_node,
+        "_deliver_comp2026_initial_command",
+        capture_local_latch,
+    )
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+    )
+    result: list[int] = []
+    runtime = threading.Thread(
+        target=lambda: result.append(runtime_node._run_comp2026(config))
+    )
+    runtime.start()
+    try:
+        assert admitted.wait(1.0)
+        if shutdown_source == "finalizing":
+            callbacks["/simulation/run_state"](
+                SimpleNamespace(run_id=RUN_ID, state=2)
+            )
+        else:
+            handlers[runtime_node.signal.SIGTERM](runtime_node.signal.SIGTERM, None)
+        allow_delivery.set()
+        runtime.join(timeout=2.0)
+    finally:
+        allow_delivery.set()
+        runtime.join(timeout=2.0)
+
+    assert result == [0]
+    assert vehicle.assigned_modes == []
+    assert not any(isinstance(status, MissionCommandDeliveredStatus) for status in statuses)
+    assert not any(isinstance(status, RuntimeFailureStatus) for status in statuses)
+    assert not mission_entered.is_set()
+    assert created_gates[0].readiness["command_delivered"] is False
+    assert not local_latch_marked.is_set()
 
 
 def test_comp2026_polls_start_inputs_until_complete_gate_is_ready() -> None:

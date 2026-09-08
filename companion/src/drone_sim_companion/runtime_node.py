@@ -254,6 +254,41 @@ def comp2026_initial_command_timestamp_ns(
     return latest_clock_ns
 
 
+class _Comp2026ShutdownAdmission:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._finalizing = False
+        self._stop_requested = False
+
+    @property
+    def finalizing(self) -> bool:
+        with self._lock:
+            return self._finalizing
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop_requested
+
+    @property
+    def shutdown_requested(self) -> bool:
+        with self._lock:
+            return self._finalizing or self._stop_requested
+
+    def begin_finalizing(self) -> None:
+        with self._lock:
+            self._finalizing = True
+
+    def request_stop_from_signal(self) -> None:
+        self._stop_requested = True
+
+    def run_if_active(self, operation: Callable[[], None]) -> bool:
+        with self._lock:
+            if self._finalizing or self._stop_requested:
+                return False
+            operation()
+            return True
+
+
 def _deliver_comp2026_initial_command(
     *,
     vehicle: object,
@@ -263,8 +298,10 @@ def _deliver_comp2026_initial_command(
     attempt_failure: AttemptFailureCoordinator,
     clock: SimulationClock,
     mark_delivered: Callable[[], None],
+    shutdown_admission: _Comp2026ShutdownAdmission | None = None,
 ) -> bool:
     delivered = False
+    admission = shutdown_admission or _Comp2026ShutdownAdmission()
 
     def deliver_at(timestamp_ns: int) -> None:
         nonlocal delivered
@@ -278,7 +315,9 @@ def _deliver_comp2026_initial_command(
 
     try:
         claimed = attempt_failure.finish_success(
-            lambda: clock.run_at_current_timestamp(deliver_at)
+            lambda: admission.run_if_active(
+                lambda: clock.run_at_current_timestamp(deliver_at)
+            )
         )
     except _InitialCommandWindowMissed:
         attempt_failure.fail("initial GUIDED command missed the 50 ms delivery window")
@@ -945,9 +984,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         callback_group=service_callback_group,
     )
     payload_client = _RosPayloadClient(ros_payload_client, PayloadCommand)
-    finalizing = False
+    shutdown_admission = _Comp2026ShutdownAdmission()
     mission_running = False
-    requested_stop = False
     initial_command_delivered = False
     runtime_failure_written = False
     runtime_failure_lock = threading.Lock()
@@ -957,18 +995,17 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     last_start_readiness: dict[str, bool] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
-        nonlocal requested_stop
-        requested_stop = True
+        shutdown_admission.request_stop_from_signal()
 
     def state_callback(message: Any) -> None:
-        nonlocal finalizing, mission_running
+        nonlocal mission_running
         if message.run_id != config.run_id:
             return
         if message.state == RunState.RUNNING:
             mission_running = True
             gate.accept_running()
         elif message.state == RunState.FINALIZING:
-            finalizing = True
+            shutdown_admission.begin_finalizing()
 
     def clock_callback(message: Any) -> None:
         if not mission_running:
@@ -1104,6 +1141,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 )
             )
         except Exception as error:
+            if shutdown_admission.shutdown_requested:
+                return
             phase = emitter.last_phase or "WAIT_READY"
             reason = f"original comp2026 mission failed in {phase}: {error}"
             attempt_failure.fail(reason)
@@ -1171,7 +1210,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 prearm_checks_healthy=True,
             )
 
-        while rclpy.ok() and not requested_stop and not finalizing:
+        while (
+            rclpy.ok()
+            and not shutdown_admission.stop_requested
+            and not shutdown_admission.finalizing
+        ):
             if controller is not None and comp2026_start_gate_poll_required(
                 mission_running=mission_running,
                 mission_start_ready=gate.mission_start_ready,
@@ -1214,6 +1257,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         attempt_failure=attempt_failure,
                         clock=clock,
                         mark_delivered=mark_initial_command_delivered,
+                        shutdown_admission=shutdown_admission,
                     )
             if (
                 sensor_subscriptions_active
@@ -1231,7 +1275,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             ):
                 attempt_failure.recover_once()
             if protocol.read_finalize_request() is not None:
-                finalizing = True
+                shutdown_admission.begin_finalizing()
             if time.monotonic() >= overall_wall_deadline and not runtime_failure_written:
                 attempt_failure.fail("companion exceeded the overall run wall failsafe")
             time.sleep(0.02)
