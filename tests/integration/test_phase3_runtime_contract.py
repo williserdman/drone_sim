@@ -24,12 +24,24 @@ PHASE3_SERVICES = {
 }
 
 
+def _compose_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in (
+        "COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_PROJECT_DIR",
+        "COMPOSE_PROJECT_DIRECTORY", "COMPOSE_DISABLE_ENV_FILE",
+    ):
+        environment.pop(name, None)
+    environment["COMPOSE_DISABLE_ENV_FILE"] = "1"
+    return environment
+
+
 def _compose_document(
     *compose_files: str,
     profile: str | None = None,
     revision: str | None = None,
 ) -> dict:
-    environment = os.environ.copy()
+    environment = _compose_environment()
     for name in (
         "SIM_RUN_ID",
         "SIM_RUN_DIRECTORY",
@@ -48,6 +60,10 @@ def _compose_document(
         [
             "docker",
             "compose",
+            "--file",
+            "compose.yaml",
+            "--project-directory",
+            str(ROOT),
             *file_arguments,
             *profile_arguments,
             "config",
@@ -88,7 +104,7 @@ def test_compose_profiles_resolve_without_revision_and_preserve_explicit_revisio
     base = _compose_document()
     phase2 = _compose_document(profile="phase2")
     phase3 = _phase3_document()
-    gpu_phase3 = _phase3_document("compose.yaml", "compose.gpu.yaml")
+    gpu_phase3 = _phase3_document("compose.gpu.yaml")
 
     assert base["services"] == {}
     assert "companion-runtime" not in phase2["services"]
@@ -149,7 +165,7 @@ def test_gpu_override_is_opt_in_for_rendering_and_video_encoding() -> None:
         for service in base_services.values()
     )
 
-    gpu_services = _phase3_document("compose.yaml", "compose.gpu.yaml")["services"]
+    gpu_services = _phase3_document("compose.gpu.yaml")["services"]
     gpu_request = gpu_services["gazebo-runtime"]["deploy"]["resources"]["reservations"][
         "devices"
     ]
@@ -224,7 +240,7 @@ def test_gpu_override_nvidia_egl_descriptor_selects_the_driver_library() -> None
 
 
 def test_gpu_shared_namespace_has_no_conflicting_port_declarations() -> None:
-    services = _phase3_document("compose.yaml", "compose.gpu.yaml")["services"]
+    services = _phase3_document("compose.gpu.yaml")["services"]
     for name in PHASE3_SERVICES - {"gazebo-runtime"}:
         assert services[name]["network_mode"] == "service:gazebo-runtime"
         assert services[name]["ipc"] == "service:gazebo-runtime"

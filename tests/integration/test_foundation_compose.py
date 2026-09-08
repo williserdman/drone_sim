@@ -1,9 +1,12 @@
 import json
+import os
+from pathlib import Path
 import subprocess
 
 import pytest
 
 
+ROOT = Path(__file__).resolve().parents[2]
 RUN_ID = "00000000-0000-4000-8000-000000000099"
 FOUNDATION_TIMEOUT_SECONDS = 180
 COMMON_FIELDS = {
@@ -16,10 +19,24 @@ COMMON_FIELDS = {
 }
 
 
+def _compose_environment():
+    environment = os.environ.copy()
+    for name in (
+        "COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_PROJECT_DIR",
+        "COMPOSE_PROJECT_DIRECTORY", "COMPOSE_DISABLE_ENV_FILE",
+    ):
+        environment.pop(name, None)
+    environment["COMPOSE_DISABLE_ENV_FILE"] = "1"
+    return environment
+
+
 def _run_foundation_compose(command):
     try:
         return subprocess.run(
             command,
+            cwd=ROOT,
+            env=_compose_environment(),
             capture_output=True,
             text=True,
             timeout=FOUNDATION_TIMEOUT_SECONDS,
@@ -45,7 +62,22 @@ def _parse_structured_stdout(stdout):
 
 
 def test_foundation_subprocess_timeout_includes_captured_diagnostics(monkeypatch):
+    compose_selectors = {
+        "COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_PROJECT_DIR",
+        "COMPOSE_PROJECT_DIRECTORY", "COMPOSE_DISABLE_ENV_FILE",
+    }
+    for name in compose_selectors:
+        monkeypatch.setenv(name, "hostile")
+    monkeypatch.setenv("DOCKER_HOST", "unix:///tmp/docker.sock")
+    monkeypatch.setenv("SIM_RUN_ID", "explicit-run")
+
     def raise_timeout(*args, **kwargs):
+        assert kwargs["cwd"] == ROOT
+        assert kwargs["env"]["COMPOSE_DISABLE_ENV_FILE"] == "1"
+        assert not (compose_selectors - {"COMPOSE_DISABLE_ENV_FILE"}) & kwargs["env"].keys()
+        assert kwargs["env"]["DOCKER_HOST"] == "unix:///tmp/docker.sock"
+        assert kwargs["env"]["SIM_RUN_ID"] == "explicit-run"
         raise subprocess.TimeoutExpired(
             cmd=args[0],
             timeout=kwargs["timeout"],
@@ -56,7 +88,12 @@ def test_foundation_subprocess_timeout_includes_captured_diagnostics(monkeypatch
     monkeypatch.setattr(subprocess, "run", raise_timeout)
 
     with pytest.raises(RuntimeError) as error:
-        _run_foundation_compose(["docker", "compose", "run"])
+        _run_foundation_compose(
+            [
+                "docker", "compose", "--file", "compose.yaml",
+                "--project-directory", str(ROOT), "run",
+            ]
+        )
 
     message = str(error.value)
     assert "180 seconds" in message
@@ -86,6 +123,10 @@ def test_foundation_compose_emits_an_ordered_structured_lifecycle(tmp_path):
         [
             "docker",
             "compose",
+            "--file",
+            "compose.yaml",
+            "--project-directory",
+            str(ROOT),
             "run",
             "--rm",
             "-e",
