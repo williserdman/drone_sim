@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from io import StringIO
 from pathlib import Path
@@ -129,16 +130,26 @@ def write_resolved_config(
 ) -> Path:
     config_path = run_directory / "configuration/run.json"
     config_path.parent.mkdir(parents=True)
+    document = {
+        "run_id": run_id,
+        "startup_wall_seconds": startup_wall_seconds,
+        "max_wall_seconds": max_wall_seconds,
+        "finalization_wall_seconds": 120,
+        "mission": mission,
+    }
+    if mission == "comp2026_auto":
+        course_payload = b"waypoints: {}\n"
+        scenario_payload = b"payloads: []\n"
+        (config_path.parent / "course.yaml").write_bytes(course_payload)
+        (config_path.parent / "scenario.yaml").write_bytes(scenario_payload)
+        document["competition"] = {
+            "course": "course.yaml",
+            "scenario": "scenario.yaml",
+            "course_sha256": hashlib.sha256(course_payload).hexdigest(),
+            "scenario_sha256": hashlib.sha256(scenario_payload).hexdigest(),
+        }
     config_path.write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "startup_wall_seconds": startup_wall_seconds,
-                "max_wall_seconds": max_wall_seconds,
-                "finalization_wall_seconds": 120,
-                "mission": mission,
-            }
-        ),
+        json.dumps(document),
         encoding="utf-8",
     )
     return config_path
@@ -219,13 +230,7 @@ def test_runtime_selects_original_competition_host_from_resolved_mission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_directory = tmp_path / RUN_ID
-    configuration = run_directory / "configuration"
     config_path = write_resolved_config(run_directory, mission="comp2026_auto")
-    (configuration / "course.yaml").write_text("waypoints: {}\n", encoding="utf-8")
-    (configuration / "scenario.yaml").write_text("payloads: []\n", encoding="utf-8")
-    document = json.loads(config_path.read_text(encoding="utf-8"))
-    document["competition"] = {"course": "course.yaml", "scenario": "scenario.yaml"}
-    config_path.write_text(json.dumps(document), encoding="utf-8")
     selected: list[str] = []
     monkeypatch.setattr(runtime_node, "_run_controlled_descent", lambda _config: selected.append("controlled") or 0)
     monkeypatch.setattr(runtime_node, "_run_comp2026", lambda _config: selected.append("comp2026") or 0)
@@ -241,6 +246,72 @@ def test_runtime_selects_original_competition_host_from_resolved_mission(
 
     assert runtime_node.main() == 0
     assert selected == ["comp2026"]
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("course_sha256", None, id="missing-course-digest"),
+        pytest.param(
+            "scenario_sha256",
+            lambda value: value.upper(),
+            id="uppercase-scenario-digest",
+        ),
+        pytest.param(
+            "course_sha256",
+            lambda value: value[:-1],
+            id="wrong-length-course-digest",
+        ),
+        pytest.param(
+            "scenario_sha256",
+            lambda value: "g" + value[1:],
+            id="nonhex-scenario-digest",
+        ),
+    ],
+)
+def test_runtime_config_rejects_malformed_competition_source_digest(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory, mission="comp2026_auto")
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    if replacement is None:
+        del document["competition"][field]
+    else:
+        document["competition"][field] = replacement(
+            document["competition"][field]
+        )
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=field):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
+
+
+@pytest.mark.parametrize("source", ["course", "scenario"])
+def test_runtime_config_rejects_competition_source_hash_mismatch(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory, mission="comp2026_auto")
+    (config_path.parent / f"{source}.yaml").write_bytes(b"changed after resolution\n")
+
+    with pytest.raises(ValueError, match=source):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
 
 
 def test_runtime_selects_roll_autotune_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

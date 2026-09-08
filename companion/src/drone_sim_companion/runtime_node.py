@@ -5,11 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import collections
 import collections.abc
+import hashlib
+import hmac
 import inspect
 import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import threading
@@ -52,6 +55,26 @@ from .comp2026_host import (
     load_course_waypoints,
     refresh_comp2026_start_gate,
 )
+
+
+def _validate_sha256_digest(value: object, field: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _verify_competition_source(path: Path, expected_digest: str, source: str) -> None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise ValueError(f"resolved {source} competition source is unreadable") from error
+    if not hmac.compare_digest(digest.hexdigest(), expected_digest):
+        raise ValueError(
+            f"resolved {source} competition source hash does not match run.json"
+        )
 
 
 @dataclass(frozen=True)
@@ -133,10 +156,16 @@ class RuntimeConfig:
                 or competition.get("scenario") != "scenario.yaml"
             ):
                 raise ValueError("comp2026_auto requires resolved competition sources")
+            course_digest = _validate_sha256_digest(
+                competition.get("course_sha256"), "course_sha256"
+            )
+            scenario_digest = _validate_sha256_digest(
+                competition.get("scenario_sha256"), "scenario_sha256"
+            )
             course_path = config_path.parent / "course.yaml"
             scenario_path = config_path.parent / "scenario.yaml"
-            if not course_path.is_file() or not scenario_path.is_file():
-                raise ValueError("resolved competition sources are unreadable")
+            _verify_competition_source(course_path, course_digest, "course")
+            _verify_competition_source(scenario_path, scenario_digest, "scenario")
         timeout = override if timeout_override is not None else float(startup_wall_seconds)
         endpoint = environment.get("SIM_MAVLINK_ENDPOINT", "tcp:ardupilot-sitl:5760")
         if endpoint != "tcp:ardupilot-sitl:5760":

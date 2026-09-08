@@ -67,6 +67,9 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   original mission. Sensor, service, heartbeat, and armability predicates are
   refreshed atomically and fail closed; downward range expires after 0.5
   simulated seconds.
+- Before mission code reads competition inputs, startup verifies the resolved
+  `course.yaml` and `scenario.yaml` copies against their SHA-256 digests in
+  `run.json`.
 - Terminal success and the first fatal callback/mission failure are serialized.
   Quiescence follows worker termination, executor shutdown, and closure of all
   output producers; a teardown timeout records failure instead.
