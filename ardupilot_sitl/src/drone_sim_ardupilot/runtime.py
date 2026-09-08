@@ -74,8 +74,15 @@ class SITLProcess:
             start_new_session=True,
         )
         assert self._process.stdout is not None and self._process.stderr is not None
-        self._selector.register(self._process.stdout, selectors.EVENT_READ, "stdout")
-        self._selector.register(self._process.stderr, selectors.EVENT_READ, "stderr")
+        try:
+            self._selector.register(self._process.stdout, selectors.EVENT_READ, "stdout")
+            self._selector.register(self._process.stderr, selectors.EVENT_READ, "stderr")
+        except BaseException as error:
+            try:
+                self.stop(10.0)
+            except BaseException as cleanup_error:
+                error.add_note(f"SITL cleanup after selector failure: {cleanup_error}")
+            raise
 
     @property
     def return_code(self) -> int | None:
@@ -89,9 +96,9 @@ class SITLProcess:
             self._selector.unregister(key.fileobj)
         return None
 
-    def stop(self, timeout_seconds: float) -> int:
+    def stop(self, timeout_seconds: float) -> int | None:
         if self._process is None:
-            raise RuntimeError("SITL process has not started")
+            return None
         if self._process.poll() is None:
             self._process.terminate()
             try:

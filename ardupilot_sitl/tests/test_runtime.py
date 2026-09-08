@@ -3,7 +3,11 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import selectors
+import subprocess
 import sys
+
+import pytest
 
 from drone_sim_ardupilot.runtime import (
     DiagnosticInventory,
@@ -83,3 +87,52 @@ def test_sitl_process_captures_both_streams_and_stops_boundedly(tmp_path: Path) 
         ("stderr", "bind port 5760 for 0"),
     }
     assert return_code < 0
+
+
+def test_sitl_process_stop_without_created_child_returns_none(tmp_path: Path) -> None:
+    process = SITLProcess((sys.executable, "unused.py"), tmp_path)
+
+    assert process.stop(0.1) is None
+
+
+def test_sitl_process_reaps_child_when_selector_registration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Child:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        returncode: int | None = None
+        terminated = False
+        waits = 0
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float) -> int:
+            assert timeout == 10.0
+            self.waits += 1
+            self.returncode = -15
+            return self.returncode
+
+    child = Child()
+
+    class FailedSelector:
+        def register(self, *_args: object) -> None:
+            raise OSError("selector registration failed")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: child)
+    monkeypatch.setattr(selectors, "DefaultSelector", FailedSelector)
+    process = SITLProcess((sys.executable, "unused.py"), tmp_path)
+
+    with pytest.raises(OSError, match="selector registration failed"):
+        process.start()
+
+    assert child.terminated
+    assert child.waits == 1
+    assert process.return_code == -15
+    assert process.stop(0.1) == -15
+    assert child.waits == 1

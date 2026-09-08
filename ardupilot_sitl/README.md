@@ -46,6 +46,14 @@ logs, SITL storage, failure evidence, and quiescence marker. A bound MAVLink
 listener is not mission readiness: orchestration also waits for the companion
 to observe a real heartbeat and healthy prearm status.
 
+The wrapper reads the shared finalize request through `RuntimeProtocol`, which
+rejects malformed, unsafe, or changed control files. Shutdown calls the child
+stop/reap operation once, then attempts private failure evidence, diagnostic
+inventory, terminal logging, and shared failure publication in order even if an
+earlier cleanup step fails. The wrapper preserves the first exception and notes
+later cleanup errors on it. It publishes quiescence only after stop/reap confirms
+that SITL exited, and it always attempts to close the protocol.
+
 ## Constraints worth knowing
 
 - The image freezes ArduPilot `Copter-4.7.0` at commit
