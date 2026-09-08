@@ -10,7 +10,6 @@ from drone_sim_ardupilot.runtime import (
     EventWriter,
     OutputFacts,
     SITLProcess,
-    atomic_document,
 )
 
 
@@ -44,21 +43,6 @@ def test_diagnostic_inventory_preserves_dataflash_storage_and_failure(tmp_path: 
         "failure.json",
         "logs/00000001.BIN",
     )
-
-
-def test_atomic_document_writes_exact_readiness_evidence(tmp_path: Path) -> None:
-    target = tmp_path / ".status/ardupilot-ready.json"
-    document = {
-        "run_id": RUN_ID,
-        "ready": True,
-        "json_exchange": True,
-        "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-    }
-
-    atomic_document(target, document)
-
-    assert json.loads(target.read_text()) == document
-    assert not list(target.parent.glob("*.tmp"))
 
 
 def test_output_facts_require_json_exchange_and_mavlink_listener() -> None:

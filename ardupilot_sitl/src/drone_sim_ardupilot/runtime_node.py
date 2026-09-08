@@ -9,6 +9,9 @@ import signal
 import sys
 from typing import Any
 
+from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.runtime_status import ArduPilotReadyStatus, RuntimeFailureStatus
+
 from .config import RuntimeConfig, resolve_gazebo_address
 from .runtime import (
     DiagnosticInventory,
@@ -47,6 +50,7 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
     writer = EventWriter(run_id, sys.stdout)
     process = SITLProcess(config.argv, work)
+    protocol = RuntimeProtocol(run_directory, run_id)
     facts = OutputFacts()
     requested_stop = False
 
@@ -54,72 +58,68 @@ def main() -> int:
         nonlocal requested_stop
         requested_stop = True
 
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
-    writer.emit(
-        "starting",
-        ardupilot_revision="1511f27194f1dcc3728270883047bdf022b3fd53",
-        gazebo_endpoint=f"udp://{gazebo_service}:{config.gazebo_port}",
-        gazebo_resolved_address=config.gazebo_host,
-        mavlink_endpoint=f"tcp://ardupilot-sitl:{config.mavlink_port}",
-    )
-    process.start()
-    failure_reason: str | None = None
-    ready_written = False
-    finalize_request = run_directory / ".control/finalize-request.json"
-
-    while True:
-        record = process.read_line(0.25)
-        if record is not None:
-            stream_name, line = record
-            writer.emit("sitl_output", stream_name=stream_name, line=line)
-            facts.observe(line)
-            if facts.ready and not ready_written:
-                atomic_document(
-                    run_directory / ".status/ardupilot-ready.json",
-                    {
-                        "run_id": run_id,
-                        "ready": True,
-                        "json_exchange": True,
-                        "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-                    },
-                )
-                writer.emit("ready", json_exchange=True, mavlink_listening=True)
-                ready_written = True
-        return_code = process.return_code
-        if return_code is not None:
-            failure_reason = f"ArduCopter exited unexpectedly with status {return_code}"
-            break
-        if requested_stop or _control_matches(finalize_request, run_id):
-            break
-
-    return_code = process.stop(10.0)
-    if failure_reason is not None:
-        failure = {"run_id": run_id, "reason": failure_reason, "return_code": return_code}
-        atomic_document(work / "failure.json", failure)
-        diagnostics = _diagnostic_paths(run_directory, work)
-        atomic_document(
-            run_directory / ".status/runtime-failure.json",
-            {
-                "run_id": run_id,
-                "module": "ardupilot_sitl",
-                "reason": failure_reason,
-                "diagnostic_paths": diagnostics,
-            },
-        )
-        writer.emit("failed", severity="ERROR", reason=failure_reason, diagnostic_paths=diagnostics)
-    else:
+    try:
+        signal.signal(signal.SIGTERM, request_stop)
+        signal.signal(signal.SIGINT, request_stop)
         writer.emit(
-            "stopped",
-            return_code=return_code,
-            diagnostic_paths=_diagnostic_paths(run_directory, work),
+            "starting",
+            ardupilot_revision="1511f27194f1dcc3728270883047bdf022b3fd53",
+            gazebo_endpoint=f"udp://{gazebo_service}:{config.gazebo_port}",
+            gazebo_resolved_address=config.gazebo_host,
+            mavlink_endpoint=f"tcp://ardupilot-sitl:{config.mavlink_port}",
         )
+        process.start()
+        failure_reason: str | None = None
+        ready_written = False
+        finalize_request = run_directory / ".control/finalize-request.json"
 
-    atomic_document(
-        run_directory / ".status/quiescence/ardupilot_sitl.json",
-        {"run_id": run_id, "module": "ardupilot_sitl", "quiescent": True},
-    )
-    return 1 if failure_reason is not None else 0
+        while True:
+            record = process.read_line(0.25)
+            if record is not None:
+                stream_name, line = record
+                writer.emit("sitl_output", stream_name=stream_name, line=line)
+                facts.observe(line)
+                if facts.ready and not ready_written:
+                    protocol.write_status(ArduPilotReadyStatus(run_id))
+                    writer.emit("ready", json_exchange=True, mavlink_listening=True)
+                    ready_written = True
+            return_code = process.return_code
+            if return_code is not None:
+                failure_reason = f"ArduCopter exited unexpectedly with status {return_code}"
+                break
+            if requested_stop or _control_matches(finalize_request, run_id):
+                break
+
+        return_code = process.stop(10.0)
+        if failure_reason is not None:
+            failure = {"run_id": run_id, "reason": failure_reason, "return_code": return_code}
+            atomic_document(work / "failure.json", failure)
+            diagnostics = _diagnostic_paths(run_directory, work)
+            protocol.write_status(
+                RuntimeFailureStatus(
+                    run_id,
+                    "ardupilot_sitl",
+                    failure_reason,
+                    tuple(diagnostics),
+                )
+            )
+            writer.emit(
+                "failed",
+                severity="ERROR",
+                reason=failure_reason,
+                diagnostic_paths=diagnostics,
+            )
+        else:
+            writer.emit(
+                "stopped",
+                return_code=return_code,
+                diagnostic_paths=_diagnostic_paths(run_directory, work),
+            )
+
+        protocol.write_quiescence("ardupilot_sitl")
+        return 1 if failure_reason is not None else 0
+    finally:
+        protocol.close()
 
 
 if __name__ == "__main__":

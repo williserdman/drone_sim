@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -152,6 +153,22 @@ def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_rol
     document = _phase3_document()
     assert set(document["services"]) == PHASE3_SERVICES
     assert not any(name.startswith("synthetic-") for name in document["services"])
+
+
+def test_ardupilot_image_and_package_include_the_shared_runtime_protocol() -> None:
+    dockerfile = (ROOT / "ardupilot_sitl/Dockerfile").read_text(encoding="utf-8")
+    assert "COPY artifacts/src /opt/drone_sim/artifacts/src" in dockerfile
+    assert (
+        "ENV PYTHONPATH=/opt/drone_sim/ardupilot_sitl/src:/opt/drone_sim/artifacts/src"
+        in dockerfile
+    )
+
+    for project_path in (
+        ROOT / "ardupilot_sitl/pyproject.toml",
+        ROOT / "scorekeeper/pyproject.toml",
+    ):
+        project = tomllib.loads(project_path.read_text(encoding="utf-8"))["project"]
+        assert "drone-sim-artifacts==0.1.0" in project["dependencies"]
 
 
 def test_companion_starts_only_after_ardupilot_container() -> None:
