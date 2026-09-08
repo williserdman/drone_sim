@@ -122,8 +122,9 @@ Dockerfile could not find `companion/comp2026/src`.
 
 Contract imports passed in seven distinct rebuilt image families:
 orchestration, artifacts, synthetic companion, ArduPilot, Gazebo, electromagnet,
-and scorekeeper. The stale Phase 3 companion tag was not smoked or counted as
-rebuilt, so the required image gate remains incomplete.
+and scorekeeper. In total, **11 of 12** required tags were rebuilt. Because this
+worktree lacks `companion/comp2026`, the Phase 3 companion tag is **stale,
+unbuilt, and unrun**. The required image gate remains incomplete.
 
 Typed `GazeboReadyStatus` requires a real `FlightExchange`. The passive
 `phase3_foundation` world has none and is rejected before Gazebo server startup.

@@ -47,9 +47,12 @@ At runtime, orchestration publishes `/simulation/run_state` using the actual
 aggregate [`ArtifactStatus`](../ros_ws/src/simulation_interfaces/msg/ArtifactStatus.msg),
 and exchanges typed durable facts through the run directory.
 Publisher/subscriber setup and discovery requirements remain authoritative in
-[`runtime_node.py`](src/orchestration/runtime_node.py); protocol validation remains
-authoritative in [`controller.py`](src/orchestration/controller.py) and
-[`status_store.py`](src/orchestration/status_store.py).
+[`runtime_node.py`](src/orchestration/runtime_node.py). The shared runtime status
+contract above owns typed wire and schema validation, with
+[`status_store.py`](src/orchestration/status_store.py) as its host-side adapter.
+[`controller.py`](src/orchestration/controller.py) owns orchestration's host
+lifecycle and semantic checks, including deadlines, artifact consistency, and
+run-state/result logic.
 
 The controller produces `configuration/run.json`, operator status, finalization
 requests, captured logs, and `manifest.json`. It consumes module readiness and
