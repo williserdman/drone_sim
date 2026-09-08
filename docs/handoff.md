@@ -12,7 +12,7 @@ Read the architecture map, then use the runbook for current setup, build, launch
 and acceptance commands. A fresh clone lacks the separate `companion/comp2026`
 checkout. Verify its intended revision before a Phase 3 build; a mission log or score alone is not a pass.
 
-## Historical evidence
+## Verified behavior and limits
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
 | --- | --- | --- | --- | --- |
@@ -32,10 +32,10 @@ uv run --locked pytest orchestration/tests artifacts/tests companion/tests \
   tests/integration/test_phase2_runtime_contract.py tests/integration/test_phase3_runtime_contract.py -q
 ```
 
-It reported `1846 passed, 26 skipped, 48 failed in 52.04s`. Every failure was
-the known absent `companion/comp2026` source/provenance dependency or a consequence.
-This is not a full pass. The prior baseline was `1841 passed, 26 skipped, 49 failed`;
-its unrelated parent-directory ABA timing flake did not recur.
+Controller verification reported `1846 passed, 26 skipped, 48 failed in 112.67s`.
+Independent Task 14 review reproduced those counts and classification in `77.41s`;
+wall duration is host-dependent. Every failure came from the absent `companion/comp2026`
+dependency or a consequence, so this is not a full pass. The prior baseline was `1841 passed, 26 skipped, 49 failed`; its unrelated ABA timing flake did not recur.
 
 `uv lock --check`, full-source `compileall`, the corrected deletion audit, and
 `git diff --check` passed. No container, image, or physical integration check ran.
