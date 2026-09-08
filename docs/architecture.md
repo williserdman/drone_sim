@@ -114,8 +114,11 @@ error, or status-write error fails the attempt and leaves the gate closed.
 
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and
-conflicting reuse of an ID is rejected. Recurring physical payload state, not a
-service response, establishes actual attachment and lift.
+conflicting reuse of an ID is rejected. A matching physical success is cached
+before its at-most-once event-publication attempt, so a publisher exception makes
+the first call ambiguous while exact retries replay success without republishing.
+Recurring physical payload state, not a service response, establishes actual
+attachment and lift.
 
 Finalization is a file-backed handshake: a finalize request leads to publisher
 quiescence, a runtime-frozen marker, closed artifacts and an artifacts-final
