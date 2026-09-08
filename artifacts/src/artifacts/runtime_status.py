@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import math
 import re
 from types import MappingProxyType
@@ -371,17 +371,7 @@ del _STATUS_REGISTRY_BUILD
 del _register_status
 
 _FLIGHT_EXCHANGE_KEYS = frozenset(
-    (
-        "online",
-        "servo_packets_received",
-        "motor_updates",
-        "duplicate_servo_packets",
-        "servo_frame_gaps",
-        "json_states_sent",
-        "json_send_errors",
-        "last_servo_frame",
-        "last_json_sim_time_ns",
-    )
+    field.name for field in fields(FlightExchange)
 )
 
 
@@ -403,28 +393,20 @@ def status_write_policy(status_type: type[RuntimeStatus]) -> WritePolicy:
 def _flight_document(value: FlightExchange) -> dict[str, Any]:
     value.__post_init__()
     return {
-        "online": value.online,
-        "servo_packets_received": value.servo_packets_received,
-        "motor_updates": value.motor_updates,
-        "duplicate_servo_packets": value.duplicate_servo_packets,
-        "servo_frame_gaps": value.servo_frame_gaps,
-        "json_states_sent": value.json_states_sent,
-        "json_send_errors": value.json_send_errors,
-        "last_servo_frame": value.last_servo_frame,
-        "last_json_sim_time_ns": value.last_json_sim_time_ns,
+        field.name: getattr(value, field.name)
+        for field in fields(FlightExchange)
     }
 
 
 def _record_document(record: ArtifactFinalRecord) -> dict[str, Any]:
     record.__post_init__()
-    return {
-        "relative_path": record.relative_path,
-        "status": record.status.value,
-        "detail": record.detail,
-        "size_bytes": record.size_bytes,
-        "sha256": record.sha256,
-        "semantic": _copy_semantic_mapping(record.semantic),
+    document = {
+        field.name: getattr(record, field.name)
+        for field in fields(ArtifactFinalRecord)
     }
+    document["status"] = record.status.value
+    document["semantic"] = _copy_semantic_mapping(record.semantic)
+    return document
 
 
 def status_document(status: RuntimeStatus) -> dict[str, Any]:
@@ -593,7 +575,6 @@ def parse_status(
         exchange = document["flight_exchange"]
         if type(exchange) is not dict or set(exchange) != _FLIGHT_EXCHANGE_KEYS:
             raise RuntimeStatusError("runtime status has an invalid schema")
-    if status_type is GazeboReadyStatus:
         value: RuntimeStatus = GazeboReadyStatus(
             run_id, FlightExchange(**exchange)
         )
@@ -618,14 +599,7 @@ def parse_status(
         raw_records = document["records"]
         if type(raw_records) is not list or len(raw_records) != 3:
             raise RuntimeStatusError("artifacts-final records must be a three-item list")
-        record_keys = {
-            "relative_path",
-            "status",
-            "detail",
-            "size_bytes",
-            "sha256",
-            "semantic",
-        }
+        record_keys = {field.name for field in fields(ArtifactFinalRecord)}
         if any(
             type(record) is not dict
             or set(record) != record_keys
