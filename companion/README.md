@@ -66,7 +66,15 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - Comp2026 startup separates process readiness from permission to enter the
   original mission. Sensor, service, heartbeat, and armability predicates are
   refreshed atomically and fail closed; downward range expires after 0.5
-  simulated seconds.
+  simulated seconds. The runtime must assign the initial GUIDED mode and write
+  its durable delivery fact no later than the inclusive 50 ms public-time
+  deadline before the original worker can enter. The executable owners are the
+  [delivery window and lifecycle writer](src/drone_sim_companion/lifecycle.py),
+  [start gate](src/drone_sim_companion/comp2026_host.py), and
+  [runtime composition](src/drone_sim_companion/runtime_node.py); the shared
+  status schema owns the exact
+  [`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
+  fields.
 - Before mission code reads competition inputs, startup verifies the resolved
   `course.yaml` and `scenario.yaml` copies against their SHA-256 digests in
   `run.json`.

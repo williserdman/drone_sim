@@ -38,7 +38,7 @@ from .hover import Observation as HoverObservation
 from .hover import Phase as HoverPhase
 from .hover import RollHoverDriver
 from .controller import MissionController, mission_policy_active, process_telemetry
-from .lifecycle import CompanionLifecycle
+from .lifecycle import CompanionLifecycle, INITIAL_COMMAND_WINDOW_NS
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
 from .comp2026_host import (
@@ -245,12 +245,35 @@ def comp2026_initial_command_timestamp_ns(
     if (
         not mission_running
         or latest_clock_ns is None
+        or latest_clock_ns > INITIAL_COMMAND_WINDOW_NS
         or not mission_ready
         or command_delivered
         or failed
     ):
         return None
     return latest_clock_ns
+
+
+def _deliver_comp2026_initial_command(
+    *,
+    vehicle: object,
+    vehicle_mode_type: Callable[[str], object],
+    lifecycle: CompanionLifecycle,
+    gate: Comp2026StartGate,
+    attempt_failure: AttemptFailureCoordinator,
+    timestamp_ns: int,
+) -> bool:
+    if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
+        attempt_failure.fail("initial GUIDED command missed the 50 ms delivery window")
+        return False
+    try:
+        vehicle.mode = vehicle_mode_type("GUIDED")  # type: ignore[attr-defined]
+        lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, timestamp_ns)
+        gate.mark_command_delivered()
+    except Exception as error:
+        attempt_failure.fail(f"initial GUIDED command failed: {error}")
+        return False
+    return True
 
 
 def comp2026_start_gate_poll_required(
@@ -1157,19 +1180,21 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         readiness,
                     )
                     last_start_readiness = readiness
-                initial_command_timestamp_ns = comp2026_initial_command_timestamp_ns(
-                    mission_running=mission_running,
-                    latest_clock_ns=clock.timestamp_ns,
-                    mission_ready=gate.mission_ready,
-                    command_delivered=initial_command_delivered,
-                    failed=attempt_failure.failed,
-                )
-                if initial_command_timestamp_ns is not None:
-                    controller.vehicle.mode = VehicleMode("GUIDED")
-                    lifecycle.observe_command_delivery(
-                        CommandKind.SET_GUIDED, initial_command_timestamp_ns
+                if (
+                    mission_running
+                    and clock.timestamp_ns is not None
+                    and gate.mission_ready
+                    and not initial_command_delivered
+                    and not attempt_failure.failed
+                ):
+                    initial_command_delivered = _deliver_comp2026_initial_command(
+                        vehicle=controller.vehicle,
+                        vehicle_mode_type=VehicleMode,
+                        lifecycle=lifecycle,
+                        gate=gate,
+                        attempt_failure=attempt_failure,
+                        timestamp_ns=clock.timestamp_ns,
                     )
-                    initial_command_delivered = True
             if (
                 sensor_subscriptions_active
                 and mission_worker is not None

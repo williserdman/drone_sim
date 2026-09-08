@@ -102,6 +102,16 @@ rejects it before server startup. Operators who still need that passive world
 require a separate readiness-contract decision; endpoint presence is not valid
 flight readiness evidence.
 
+Comp2026 process readiness does not release the original mission worker. The
+[runtime composition](../companion/src/drone_sim_companion/runtime_node.py)
+must assign the initial GUIDED mode and complete the durable
+[`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
+write by the inclusive 50 ms public-time limit before the
+[start gate](../companion/src/drone_sim_companion/comp2026_host.py) can release
+that worker. The [companion lifecycle](../companion/src/drone_sim_companion/lifecycle.py)
+owns the executable deadline and status write. A missed deadline, mode-setting
+error, or status-write error fails the attempt and leaves the gate closed.
+
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and
 conflicting reuse of an ID is rejected. Recurring physical payload state, not a

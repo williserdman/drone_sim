@@ -48,7 +48,7 @@ def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() 
     ) is None
 
 
-def test_comp2026_delivers_initial_command_after_public_zero_was_skipped() -> None:
+def test_comp2026_initial_command_delivery_uses_inclusive_50_ms_window() -> None:
     assert comp2026_initial_command_timestamp_ns(
         mission_running=True,
         latest_clock_ns=2_000_000,
@@ -63,6 +63,13 @@ def test_comp2026_delivers_initial_command_after_public_zero_was_skipped() -> No
         command_delivered=False,
         failed=False,
     ) == 50_000_000
+    assert comp2026_initial_command_timestamp_ns(
+        mission_running=True,
+        latest_clock_ns=50_000_001,
+        mission_ready=True,
+        command_delivered=False,
+        failed=False,
+    ) is None
 
     for overrides in (
         {"mission_running": False},
@@ -80,6 +87,176 @@ def test_comp2026_delivers_initial_command_after_public_zero_was_skipped() -> No
             **overrides,
         }
         assert comp2026_initial_command_timestamp_ns(**inputs) is None
+
+
+class InitialCommandVehicle:
+    def __init__(self, *, mode_error: Exception | None = None) -> None:
+        self.assigned_modes: list[object] = []
+        self._mode_error = mode_error
+
+    @property
+    def mode(self) -> object | None:
+        return self.assigned_modes[-1] if self.assigned_modes else None
+
+    @mode.setter
+    def mode(self, value: object) -> None:
+        if self._mode_error is not None:
+            raise self._mode_error
+        self.assigned_modes.append(value)
+
+
+class InitialCommandMode:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def ready_initial_command_gate() -> runtime_node.Comp2026StartGate:
+    gate = runtime_node.Comp2026StartGate()
+    gate.mark_process_ready()
+    gate.accept_running()
+    gate.accept_clock()
+    gate.refresh_live_readiness(
+        frame_ready=True,
+        payload_service_ready=True,
+        heartbeat_live=True,
+        armable=True,
+        range_is_current=lambda: True,
+    )
+    return gate
+
+
+def initial_command_coordinator(failures: list[str]):
+    return runtime_node.AttemptFailureCoordinator(
+        stop_attempt=lambda _reason: None,
+        write_failure=failures.append,
+        recover=lambda: None,
+    )
+
+
+def test_late_comp2026_initial_command_fails_without_assigning_guided() -> None:
+    vehicle = InitialCommandVehicle()
+    failures: list[str] = []
+    gate = ready_initial_command_gate()
+
+    delivered = runtime_node._deliver_comp2026_initial_command(
+        vehicle=vehicle,
+        vehicle_mode_type=InitialCommandMode,
+        lifecycle=object(),
+        gate=gate,
+        attempt_failure=initial_command_coordinator(failures),
+        timestamp_ns=50_000_001,
+    )
+
+    assert delivered is False
+    assert vehicle.assigned_modes == []
+    assert failures == ["initial GUIDED command missed the 50 ms delivery window"]
+    assert gate.readiness["command_delivered"] is False
+
+
+def test_comp2026_guided_mode_failure_keeps_delivery_gate_closed() -> None:
+    vehicle = InitialCommandVehicle(mode_error=RuntimeError("mode rejected"))
+    failures: list[str] = []
+    gate = ready_initial_command_gate()
+
+    delivered = runtime_node._deliver_comp2026_initial_command(
+        vehicle=vehicle,
+        vehicle_mode_type=InitialCommandMode,
+        lifecycle=object(),
+        gate=gate,
+        attempt_failure=initial_command_coordinator(failures),
+        timestamp_ns=50_000_000,
+    )
+
+    assert delivered is False
+    assert failures == ["initial GUIDED command failed: mode rejected"]
+    assert gate.readiness["command_delivered"] is False
+
+
+def test_comp2026_command_delivery_status_failure_keeps_gate_closed() -> None:
+    class FailingProtocol:
+        def write_status(self, _status: object) -> None:
+            raise OSError("status disk full")
+
+        def write_quiescence(self, _module: str) -> None:
+            pass
+
+    vehicle = InitialCommandVehicle()
+    failures: list[str] = []
+    gate = ready_initial_command_gate()
+    lifecycle = CompanionLifecycle(
+        run_id=RUN_ID,
+        protocol=FailingProtocol(),
+        stream=StringIO(),
+    )
+
+    delivered = runtime_node._deliver_comp2026_initial_command(
+        vehicle=vehicle,
+        vehicle_mode_type=InitialCommandMode,
+        lifecycle=lifecycle,
+        gate=gate,
+        attempt_failure=initial_command_coordinator(failures),
+        timestamp_ns=50_000_000,
+    )
+
+    assert delivered is False
+    assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
+    assert failures == ["initial GUIDED command failed: status disk full"]
+    assert gate.readiness["command_delivered"] is False
+
+
+def test_comp2026_worker_waits_for_durable_command_delivery_status() -> None:
+    write_started = threading.Event()
+    allow_write = threading.Event()
+    worker_released = threading.Event()
+
+    class BlockingProtocol:
+        def write_status(self, status: object) -> None:
+            assert status == MissionCommandDeliveredStatus(RUN_ID, 50_000_000)
+            write_started.set()
+            assert allow_write.wait(1.0)
+
+        def write_quiescence(self, _module: str) -> None:
+            pass
+
+    gate = ready_initial_command_gate()
+    lifecycle = CompanionLifecycle(
+        run_id=RUN_ID,
+        protocol=BlockingProtocol(),
+        stream=StringIO(),
+    )
+    failures: list[str] = []
+    vehicle = InitialCommandVehicle()
+    worker = threading.Thread(
+        target=lambda: (gate.wait_until_ready(), worker_released.set())
+    )
+    delivery = threading.Thread(
+        target=lambda: runtime_node._deliver_comp2026_initial_command(
+            vehicle=vehicle,
+            vehicle_mode_type=InitialCommandMode,
+            lifecycle=lifecycle,
+            gate=gate,
+            attempt_failure=initial_command_coordinator(failures),
+            timestamp_ns=50_000_000,
+        )
+    )
+    worker.start()
+    delivery.start()
+    try:
+        assert write_started.wait(1.0)
+        assert gate.readiness["command_delivered"] is False
+        assert not worker_released.wait(0.05)
+        allow_write.set()
+        delivery.join(timeout=1.0)
+        worker.join(timeout=1.0)
+        assert worker_released.is_set()
+    finally:
+        allow_write.set()
+        gate.stop("test cleanup")
+        delivery.join(timeout=1.0)
+        worker.join(timeout=1.0)
+
+    assert failures == []
+    assert gate.readiness["command_delivered"] is True
 
 
 def test_comp2026_polls_start_inputs_until_complete_gate_is_ready() -> None:

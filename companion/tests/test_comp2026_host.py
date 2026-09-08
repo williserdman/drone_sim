@@ -441,7 +441,7 @@ def test_successful_inflight_callback_completes_before_single_terminal_success()
     assert terminal == ["mission-finished"]
 
 
-def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> None:
+def test_start_gate_requires_command_delivery_after_all_other_predicates() -> None:
     gate = Comp2026StartGate()
     gate.mark_process_ready()
 
@@ -451,6 +451,7 @@ def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> Non
         "process_ready": True,
         "running": False,
         "clock": False,
+        "command_delivered": False,
         "frame_ready": False,
         "range_ready": False,
         "payload_service_ready": False,
@@ -485,7 +486,12 @@ def test_process_readiness_can_precede_samples_but_mission_start_cannot() -> Non
         armable=True,
         range_is_current=lambda: True,
     )
+    assert gate.mission_start_ready is False
+
+    gate.mark_command_delivered()
+    gate.mark_command_delivered()
     assert gate.mission_start_ready is True
+    assert gate.readiness["command_delivered"] is True
 
 
 class MutablePayloadService:
@@ -501,6 +507,7 @@ def live_start_inputs():
     gate.mark_process_ready()
     gate.accept_running()
     gate.accept_clock()
+    gate.mark_command_delivered()
     clock = SimulationClock()
     clock.accept(1_000_000_000)
     lidar = RosLidar(clock)
