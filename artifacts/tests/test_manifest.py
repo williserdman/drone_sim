@@ -239,6 +239,10 @@ def test_manifest_schema_accepts_a_completed_manifest(tmp_path):
     [
         ("configuration", "./", "./", False),
         ("configuration", "././", "././", False),
+        ("configuration", ".//.", ".//.", False),
+        ("configuration", "...", "...", True),
+        ("evidence", ".//#selector", ".//.", False),
+        ("evidence", "...#selector", "...", True),
         (
             "evidence",
             r"scoring/events.jsonl#bad\anchor",
