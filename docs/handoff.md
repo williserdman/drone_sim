@@ -2,8 +2,8 @@
 
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md)
 
-Reviewed 2026-09-08 against `5a0d820` and the documentation changes in this
-checkout. This is a dated handoff, not a claim that mutable checkouts or local
+Reviewed 2026-09-08 against final code revision `f92bb13` plus this documentation
+cleanup. This is a dated handoff, not a claim that mutable checkouts or local
 image tags will remain unchanged.
 
 ## What a new maintainer should do first
@@ -91,6 +91,13 @@ suite passed **34 tests**, and `artifacts/src` compiled. These focused checks
 cover the behavior-preserving wire-field refactor; they are not a claim that the
 earlier seven full module suites ran again at `5a0d820`.
 
+Final review found and fixed a missed typed-status conversion in the Phase 2
+synthetic Gazebo durable RUNNING fallback at `f92bb13`. The regression test
+failed RED with **1 failed, 15 passed**, then passed GREEN with **16 passed**.
+The combined Phase 2 and integration check passed **28 tests**. A probe inside
+the rebuilt synthetic Gazebo image used the real status class and printed
+`ready=True running=True`.
+
 This worktree has no `companion/comp2026`. Initial source runs therefore
 reported artifacts **895 passed, 12 skipped, 1 failed**, orchestration **224
 passed, 46 failed**, and companion **109 passed, 1 failed** from unavailable
@@ -99,11 +106,11 @@ symlink to external checkout `54cdeff`, which had **33 tracked changes and 35
 untracked entries**. The link was removed afterward. The external dirty checkout
 was neither modified nor staged and cannot prove a current companion image.
 
-Base, Phase 2, and Phase 3 GPU Compose resolution passed. At final source HEAD
-`5a0d820`, the Phase 2 build named all seven images and the selective Phase 3
-build named all six available services. The known-doomed aggregate Phase 3 build
-was not repeated. Its earlier `1fba1c5` attempt failed because the companion
-Dockerfile could not find `companion/comp2026/src`.
+Base, Phase 2, and Phase 3 GPU Compose resolution passed. At shared-contract
+revision `5a0d820`, the Phase 2 build named all seven images and the selective
+Phase 3 build named all six available services. The known-doomed aggregate
+Phase 3 build was not repeated. Its earlier `1fba1c5` attempt failed because the
+companion Dockerfile could not find `companion/comp2026/src`.
 
 | Tag | Before | Final-head ID | Created |
 | --- | --- | --- | --- |
@@ -111,7 +118,7 @@ Dockerfile could not find `companion/comp2026/src`.
 | `drone-sim-artifacts-runtime:phase2` | `6f75ac49` | `c00b9574d35109b0efa6fa726ff858bf4407ed6f77db3745f19e57fed1cfff48` | 2026-09-08 08:26:52 +02:00 |
 | `drone-sim-synthetic-companion:phase2` | `45759617` | `ad11de5e5da52d83e35e7196fad3bc24db1d6aedeff582d60142d8e674f5a2d2` | 2026-09-08 08:26:39 +02:00 |
 | `drone-sim-synthetic-ardupilot-sitl:phase2` | `687ff399` | `362a4604af62b54d7dcd212b50d89cd3a28ee2f8833e7ad33c2da6da2e57842d` | 2026-09-08 08:26:39 +02:00 |
-| `drone-sim-synthetic-gazebo:phase2` | `d1ac7040` | `df4e3b6e30d5bc291e13adadd5fb9cf32023dbe99a476f13e3ad32320121d485` | 2026-09-08 08:26:39 +02:00 |
+| `drone-sim-synthetic-gazebo:phase2` | `d1ac7040` | `b95035896c525a031573a2b7227fd5087604e49b93ac0c74d498072550db5f4c` | 2026-09-08T08:59:32.589974385+02:00 |
 | `drone-sim-synthetic-electromagnet:phase2` | `c4ebef28` | `8567b2cebdcbb582bf5edfed8481d82d0c32cef8271d22ec6a36e2d513008c83` | 2026-09-08 08:26:39 +02:00 |
 | `drone-sim-synthetic-scorekeeper:phase2` | `69e0bba5` | `ab57293cfc0e409639d7c694cbefbd7ea386f4554cb30f9004d5c0759d38093d` | 2026-09-08 08:26:39 +02:00 |
 | `drone-sim-companion-runtime:phase3` | `dbe2737a` | `dbe2737a708d75809b4bb628317544c22a57d16f6e2eb63bc74ab6961144cc7d` (stale) | 2026-09-03 23:07:23 +02:00 |
@@ -120,11 +127,13 @@ Dockerfile could not find `companion/comp2026/src`.
 | `drone-sim-electromagnet-runtime:phase3` | `d12cc27f` | `f12180b5f2f569b01815926e1633040956d9e75888ccf72be4061db36e88e556` | 2026-09-08 08:27:38 +02:00 |
 | `drone-sim-scorekeeper-runtime:phase3` | `d35d9743` | `36fd9a5538a0b2ed24432709b791d5a18c92a13f92843b723116c2a3a2a474dd` | 2026-09-08 08:27:23 +02:00 |
 
-Contract imports passed in seven distinct rebuilt image families:
-orchestration, artifacts, synthetic companion, ArduPilot, Gazebo, electromagnet,
-and scorekeeper. In total, **11 of 12** required tags were rebuilt. Because this
-worktree lacks `companion/comp2026`, the Phase 3 companion tag is **stale,
-unbuilt, and unrun**. The required image gate remains incomplete.
+The shared-contract rebuild at `5a0d820` rebuilt **11 of 12** required tags and
+passed contract imports in seven image families: orchestration, artifacts,
+synthetic companion, ArduPilot, Gazebo, electromagnet, and scorekeeper. The later
+`f92bb13` rebuild replaced only the Phase 2 synthetic Gazebo image shown above;
+the other table entries remain evidence from the shared-contract rebuild.
+Because this worktree lacks `companion/comp2026`, the Phase 3 companion tag is
+**stale, unbuilt, and unrun**. The required image gate remains incomplete.
 
 Typed `GazeboReadyStatus` requires a real `FlightExchange`. The passive
 `phase3_foundation` world has none and is rejected before Gazebo server startup.
