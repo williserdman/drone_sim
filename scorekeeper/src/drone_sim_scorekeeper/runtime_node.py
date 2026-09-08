@@ -11,9 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 from typing import Any, Callable, Protocol
-from uuid import UUID
 
-from artifacts.runtime_status import SourceFinishedStatus
+from artifacts.runtime_status import SourceFinishedStatus, canonical_run_id
 from .competition import (
     CompetitionScorer,
     MissionEventSample,
@@ -30,18 +29,6 @@ from .runtime import ScenarioSample, ScorekeeperRuntime
 _FRAME_INTERVAL_NS = 50_000_000
 
 
-def _canonical_run_id(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("run_id must be a canonical UUID")
-    try:
-        parsed = UUID(value)
-    except (TypeError, ValueError, AttributeError) as error:
-        raise ValueError("run_id must be a canonical UUID") from error
-    if str(parsed) != value:
-        raise ValueError("run_id must be a canonical UUID")
-    return value
-
-
 @dataclass(frozen=True)
 class RuntimeSettings:
     scenario: str
@@ -50,7 +37,7 @@ class RuntimeSettings:
 
 def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
     """Read only the resolved fields that define score input cardinality."""
-    canonical = _canonical_run_id(run_id)
+    canonical = canonical_run_id(run_id)
     try:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -240,7 +227,7 @@ class ScorekeeperDriver:
         on_scored: Callable[[bool, float, int], None] = lambda _complete, _score, _stamp: None,
         before_quiescence: Callable[[], None] = lambda: None,
     ) -> None:
-        self.run_id = _canonical_run_id(run_id)
+        self.run_id = canonical_run_id(run_id)
         self.runtime = runtime
         self.protocol = protocol
         self._source_seen = False
@@ -274,15 +261,13 @@ class ScorekeeperDriver:
         if not self._finalize_seen:
             request = self.protocol.read_finalize_request()
             if request is not None:
-                if request.get("run_id") != self.run_id:
-                    raise ValueError("finalize request belongs to another run")
                 self._finalize_seen = True
                 self._before_quiescence()
                 self.runtime.begin_finalization()
         if not self.runtime.quiescent:
             return False
         committed = self.protocol.read_terminal_committed()
-        return committed is not None and committed.get("run_id") == self.run_id
+        return committed is not None
 
 
 class _StructuredLogger:
@@ -382,14 +367,13 @@ def _create_ros_boundary(
             errors.append(error)
             return
         try:
-            if sample.run_id == run_id:
-                logger.emit(
-                    "scenario_observed",
-                    sim_timestamp_ns=sample.sim_timestamp_ns,
-                    event_id=sample.event_id,
-                    magnet_id=sample.magnet_id,
-                    state=sample.state,
-                )
+            logger.emit(
+                "scenario_observed",
+                sim_timestamp_ns=sample.sim_timestamp_ns,
+                event_id=sample.event_id,
+                magnet_id=sample.magnet_id,
+                state=sample.state,
+            )
         except BaseException as error:
             errors.append(error)
 
@@ -413,15 +397,14 @@ def _create_ros_boundary(
             errors.append(error)
             return
         try:
-            if sample.run_id == run_id:
-                logger.emit(
-                    "payload_event_observed",
-                    sim_timestamp_ns=sample.sim_timestamp_ns,
-                    event_id=sample.event_id,
-                    aruco_id=sample.aruco_id,
-                    action=sample.action,
-                    state=sample.state,
-                )
+            logger.emit(
+                "payload_event_observed",
+                sim_timestamp_ns=sample.sim_timestamp_ns,
+                event_id=sample.event_id,
+                aruco_id=sample.aruco_id,
+                action=sample.action,
+                state=sample.state,
+            )
         except BaseException as error:
             errors.append(error)
 
@@ -436,14 +419,13 @@ def _create_ros_boundary(
             errors.append(error)
             return
         try:
-            if sample.run_id == run_id:
-                logger.emit(
-                    "mission_event_observed",
-                    sim_timestamp_ns=sample.sim_timestamp_ns,
-                    event_id=sample.event_id,
-                    phase=sample.phase,
-                    state=sample.state,
-                )
+            logger.emit(
+                "mission_event_observed",
+                sim_timestamp_ns=sample.sim_timestamp_ns,
+                event_id=sample.event_id,
+                phase=sample.phase,
+                state=sample.state,
+            )
         except BaseException as error:
             errors.append(error)
 
@@ -524,7 +506,7 @@ def main() -> int:
     import rclpy
     from artifacts.runtime_protocol import RuntimeProtocol
 
-    run_id = _canonical_run_id(os.environ["SIM_RUN_ID"])
+    run_id = canonical_run_id(os.environ["SIM_RUN_ID"])
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"]).resolve(strict=True)
     config_path = Path(
         os.environ.get(

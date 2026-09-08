@@ -8,7 +8,8 @@ import json
 import math
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+
+from artifacts.runtime_status import canonical_run_id
 
 from .descent import GroundTruthSample
 from .models import RuleResult, ScoreEvent, ScoreResult
@@ -57,18 +58,6 @@ _WAYPOINTS = {
 _PAYLOAD_XY_SIZE_M = (0.1524, 0.1524)
 
 
-def _canonical_run_id(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("run_id must be a canonical UUID")
-    try:
-        parsed = UUID(value)
-    except (TypeError, ValueError, AttributeError) as error:
-        raise ValueError("run_id must be a canonical UUID") from error
-    if str(parsed) != value:
-        raise ValueError("run_id must be a canonical UUID")
-    return value
-
-
 def _timestamp(value: object) -> int:
     if type(value) is not int or value < 0:
         raise ValueError("sim_timestamp_ns must be a nonnegative integer")
@@ -108,7 +97,7 @@ class PayloadStateSample:
     attached: bool
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "run_id", _canonical_run_id(self.run_id))
+        object.__setattr__(self, "run_id", canonical_run_id(self.run_id))
         _timestamp(self.sim_timestamp_ns)
         if type(self.aruco_id) is not int or not 0 <= self.aruco_id <= 65_535:
             raise ValueError("aruco_id must be an unsigned 16-bit integer")
@@ -146,7 +135,7 @@ class PayloadEventSample:
     code: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "run_id", _canonical_run_id(self.run_id))
+        object.__setattr__(self, "run_id", canonical_run_id(self.run_id))
         _timestamp(self.sim_timestamp_ns)
         _event_id(self.event_id)
         if type(self.aruco_id) is not int or not 0 <= self.aruco_id <= 65_535:
@@ -168,7 +157,7 @@ class MissionEventSample:
     detail: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "run_id", _canonical_run_id(self.run_id))
+        object.__setattr__(self, "run_id", canonical_run_id(self.run_id))
         _timestamp(self.sim_timestamp_ns)
         _event_id(self.event_id)
         if any(
@@ -298,7 +287,7 @@ class CompetitionScorer:
     """Evaluate immutable physical evidence without commanding any subsystem."""
 
     def __init__(self, run_id: str, rules: CompetitionRules) -> None:
-        self.run_id = _canonical_run_id(run_id)
+        self.run_id = canonical_run_id(run_id)
         if not isinstance(rules, CompetitionRules):
             raise TypeError("rules must be CompetitionRules")
         self.rules = rules

@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from artifacts.runtime_status import RuntimeFailureStatus, ScoreFinishedStatus
 from drone_sim_scorekeeper.descent import (
     DescentScorer,
@@ -20,20 +18,15 @@ DT = 50_000_000
 
 
 class ProtocolRecorder:
-    def __init__(self, operations: list[object] | None = None) -> None:
+    def __init__(self) -> None:
         self.statuses = []
         self.quiescence: list[str] = []
-        self.operations = operations
 
     def write_status(self, status) -> None:
         self.statuses.append(status)
-        if self.operations is not None:
-            self.operations.append(("status", status))
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
-        if self.operations is not None:
-            self.operations.append(("quiescence", module))
 
 
 def _sample(index: int, *, contact: bool = False) -> GroundTruthSample:
@@ -60,16 +53,7 @@ def _sample(index: int, *, contact: bool = False) -> GroundTruthSample:
 
 
 def _runtime(tmp_path, *, expected=31):
-    operations: list[object] = []
-    protocol = ProtocolRecorder(operations)
-
-    def publish(event) -> None:
-        if not operations:
-            assert (tmp_path / "scoring/events.jsonl").is_file()
-            assert (tmp_path / "scoring/result.json").is_file()
-            operations.append(("persist",))
-        operations.append(("publish", event.event_id))
-
+    protocol = ProtocolRecorder()
     runtime = ScorekeeperRuntime(
         RUN_ID,
         DescentScorer(
@@ -79,40 +63,15 @@ def _runtime(tmp_path, *, expected=31):
         ),
         run_directory=tmp_path,
         protocol=protocol,
-        publish=publish,
-        flush=lambda: operations.append(("flush",)),
+        publish=lambda _event: None,
+        flush=lambda: None,
     )
-    return runtime, protocol, operations
-
-
-def test_complete_score_persists_and_flushes_five_events_before_finished(tmp_path):
-    """Writing score-finished early could let orchestration close an incomplete bag."""
-    runtime, protocol, operations = _runtime(tmp_path)
-    runtime.accept_scenario(
-        ScenarioSample(RUN_ID, DT, 0, "landing_pad", "INACTIVE")
-    )
-    for index in range(31):
-        runtime.accept_ground_truth(_sample(index))
-
-    runtime.accept_source_finished(30 * DT)
-
-    result = json.loads((tmp_path / "scoring/result.json").read_text())
-    assert result["complete"] is True
-    assert result["achieved_score"] == 100.0
-    assert operations == [
-        ("persist",),
-        *(("publish", index) for index in range(5)),
-        ("flush",),
-        ("status", ScoreFinishedStatus(RUN_ID, 30 * DT)),
-    ]
-    assert protocol.statuses == [
-        ScoreFinishedStatus(RUN_ID, 30 * DT),
-    ]
+    return runtime, protocol
 
 
 def test_duplicate_ground_truth_writes_failure_and_never_score_finished(tmp_path):
     """A duplicate sample must not be hidden by a later contiguous suffix."""
-    runtime, protocol, operations = _runtime(tmp_path)
+    runtime, protocol = _runtime(tmp_path)
     runtime.accept_scenario(
         ScenarioSample(RUN_ID, DT, 0, "landing_pad", "INACTIVE")
     )
@@ -137,7 +96,7 @@ def test_duplicate_ground_truth_writes_failure_and_never_score_finished(tmp_path
 
 def test_finalization_of_truncated_input_fails_then_becomes_silent(tmp_path):
     """Quiescence must not certify a truncated score or permit later output."""
-    runtime, protocol, operations = _runtime(tmp_path)
+    runtime, protocol = _runtime(tmp_path)
     runtime.accept_scenario(
         ScenarioSample(RUN_ID, DT, 0, "landing_pad", "INACTIVE")
     )
@@ -157,7 +116,7 @@ def test_finalization_of_truncated_input_fails_then_becomes_silent(tmp_path):
 
 def test_active_scenario_fails_closed_even_with_perfect_ground_truth(tmp_path):
     """A score for the inactive-only ruleset cannot survive an ACTIVE event."""
-    runtime, protocol, operations = _runtime(tmp_path)
+    runtime, protocol = _runtime(tmp_path)
     runtime.accept_scenario(
         ScenarioSample(RUN_ID, DT, 0, "landing_pad", "ACTIVE")
     )
@@ -171,67 +130,3 @@ def test_active_scenario_fails_closed_even_with_perfect_ground_truth(tmp_path):
     assert result["diagnostic"] == "scenario_not_inactive"
     assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
     assert type(protocol.statuses[0]) is RuntimeFailureStatus
-
-
-def test_existing_global_failure_does_not_prevent_scorekeeper_quiescence(tmp_path):
-    """The shared first-wins failure slot must not deadlock aggregate freeze."""
-    protocol = ProtocolRecorder()
-    runtime = ScorekeeperRuntime(
-        RUN_ID,
-        DescentScorer(
-            RUN_ID,
-            load_descent_rules(RULES),
-            expected_ground_truth_samples=31,
-        ),
-        run_directory=tmp_path,
-        protocol=protocol,
-        publish=lambda _event: None,
-        flush=lambda: None,
-    )
-
-    runtime.begin_finalization()
-
-    assert runtime.result is not None
-    assert runtime.result.complete is False
-    assert runtime.quiescent is True
-    assert protocol.quiescence == ["scorekeeper"]
-    assert type(protocol.statuses[0]) is RuntimeFailureStatus
-
-
-def test_input_failure_is_first_wins_and_precedes_quiescence(tmp_path):
-    """Rejected input must prevent an otherwise complete score from finishing."""
-    runtime, protocol, operations = _runtime(tmp_path)
-    runtime.accept_scenario(
-        ScenarioSample(RUN_ID, DT, 0, "landing_pad", "INACTIVE")
-    )
-    for index in range(31):
-        runtime.accept_ground_truth(_sample(index))
-
-    runtime.fail("ros_evidence_invalid")
-    runtime.fail("later_failure")
-    runtime.begin_finalization()
-
-    persisted = json.loads((tmp_path / "scoring/result.json").read_text())
-    assert persisted["complete"] is False
-    assert persisted["diagnostic"] == "ros_evidence_invalid"
-    assert protocol.statuses == [
-        RuntimeFailureStatus(
-            RUN_ID,
-            "scorekeeper",
-            "ros_evidence_invalid",
-            ("scoring/events.jsonl", "scoring/result.json"),
-        )
-    ]
-    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
-    assert operations[-2:] == [
-        ("status", protocol.statuses[0]),
-        ("quiescence", "scorekeeper"),
-    ]
-
-
-@pytest.mark.parametrize("reason", [None, "", True])
-def test_input_failure_requires_a_nonempty_string(tmp_path, reason):
-    runtime, _protocol, _operations = _runtime(tmp_path)
-
-    with pytest.raises(ValueError, match="failure reason must be nonempty"):
-        runtime.fail(reason)

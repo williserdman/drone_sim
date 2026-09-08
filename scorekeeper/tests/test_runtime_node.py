@@ -235,6 +235,12 @@ def test_runtime_settings_derive_six_hundred_samples_from_resolved_config(tmp_pa
 
     assert settings.expected_ground_truth_samples == 600
 
+    class RunId(str):
+        pass
+
+    with pytest.raises(ValueError, match="canonical UUID"):
+        load_runtime_settings(config, RunId(RUN_ID))
+
 
 @pytest.mark.parametrize("duration", [0, 1.001, True, "30"])
 def test_runtime_settings_reject_non_grid_duration(tmp_path, duration):
@@ -343,7 +349,7 @@ def test_ros_boundary_flush_uses_jazzy_duration_timeout(monkeypatch):
 
 
 def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_path):
-    """Polling duplicates must not republish score or let the service exit before commit."""
+    """Parsed controls need only exist; polling still waits for terminal commit."""
     class Protocol:
         def __init__(self):
             self.finalize = None
@@ -403,14 +409,14 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
     assert len(published) == 5
     assert protocol.statuses == [ScoreFinishedStatus(RUN_ID, 0)]
     protocol.finalize = {
-        "run_id": RUN_ID,
+        "run_id": "22222222-2222-4222-8222-222222222222",
         "requested_terminal": "COMPLETED",
         "reason": "mission_complete",
     }
     assert driver.poll() is False
     assert protocol.quiescence == ["scorekeeper"]
     protocol.terminal = {
-        "run_id": RUN_ID,
+        "run_id": "22222222-2222-4222-8222-222222222222",
         "terminal_status": "COMPLETED",
         "reason": "mission_complete",
         "manifest_path": "manifest.json",

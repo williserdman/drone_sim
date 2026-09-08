@@ -8,7 +8,8 @@ import json
 import math
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+
+from artifacts.runtime_status import canonical_run_id
 
 from .models import RuleResult, ScoreEvent, ScoreResult
 
@@ -25,18 +26,6 @@ _EVENT_TYPES = (
     "descent.safe_preimpact_speed",
     "descent.stable_contact",
 )
-
-
-def _canonical_run_id(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("run_id must be a canonical UUID")
-    try:
-        parsed = UUID(value)
-    except (TypeError, ValueError, AttributeError) as error:
-        raise ValueError("run_id must be a canonical UUID") from error
-    if str(parsed) != value:
-        raise ValueError("run_id must be a canonical UUID")
-    return value
 
 
 def _finite_tuple(value: object, *, name: str, length: int) -> tuple[float, ...]:
@@ -65,7 +54,7 @@ class GroundTruthSample:
     in_contact: bool
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "run_id", _canonical_run_id(self.run_id))
+        object.__setattr__(self, "run_id", canonical_run_id(self.run_id))
         if (
             not isinstance(self.sim_timestamp_ns, int)
             or isinstance(self.sim_timestamp_ns, bool)
@@ -198,7 +187,7 @@ class DescentScorer:
         *,
         expected_ground_truth_samples: int,
     ) -> None:
-        self.run_id = _canonical_run_id(run_id)
+        self.run_id = canonical_run_id(run_id)
         if not isinstance(rules, DescentRules):
             raise TypeError("rules must be DescentRules")
         if (

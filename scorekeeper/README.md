@@ -22,7 +22,8 @@ whether the evidence bundle is complete and valid.
 - [descent.py](src/drone_sim_scorekeeper/descent.py) is the pure descent scorer.
 - [competition_runtime.py](src/drone_sim_scorekeeper/competition_runtime.py) and
   [runtime.py](src/drone_sim_scorekeeper/runtime.py) bind scorers to persistence,
-  publication, failure, and quiescence.
+  publication, failure, and quiescence through the private shared
+  [_finalization.py](src/drone_sim_scorekeeper/_finalization.py) lifecycle.
 - [models.py](src/drone_sim_scorekeeper/models.py) defines result contracts;
   [output.py](src/drone_sim_scorekeeper/output.py) creates no-clobber evidence.
 - The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
