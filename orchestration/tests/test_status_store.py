@@ -426,26 +426,29 @@ def test_runtime_status_round_trips_canonically_through_both_adapters(tmp_path, 
     run_directory = store.allocate(RUN_ID)
     with RuntimeProtocol(run_directory, RUN_ID) as protocol:
         target = protocol.write_status(status)
+        expected = (
+            json.dumps(
+                status_document(status),
+                allow_nan=False,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode()
+        assert target.read_bytes() == expected
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        before_reads = target.stat()
         runtime_parsed = protocol.read_status(type(status))
+        assert target.stat() == before_reads
 
-    expected = (
-        json.dumps(
-            status_document(status),
-            allow_nan=False,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode()
-    assert target.read_bytes() == expected
-    assert stat.S_IMODE(target.stat().st_mode) == 0o644
     assert type(runtime_parsed) is type(status)
     assert runtime_parsed == status
 
     host_parsed = store.read_runtime_status(RUN_ID, type(status))
     assert type(host_parsed) is type(status)
     assert host_parsed == status
+    assert target.stat() == before_reads
 
 
 def test_runtime_status_read_requires_matching_run_id(tmp_path):
