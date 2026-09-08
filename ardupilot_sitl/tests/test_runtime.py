@@ -95,7 +95,7 @@ def test_sitl_process_stop_without_created_child_returns_none(tmp_path: Path) ->
     assert process.stop(0.1) is None
 
 
-def test_sitl_process_reaps_child_when_selector_registration_fails(
+def test_sitl_process_reaps_child_and_closes_resources_when_second_selector_registration_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -121,11 +121,21 @@ def test_sitl_process_reaps_child_when_selector_registration_fails(
     child = Child()
 
     class FailedSelector:
-        def register(self, *_args: object) -> None:
-            raise OSError("selector registration failed")
+        def __init__(self) -> None:
+            self.registrations = 0
+            self.closed = False
 
+        def register(self, *_args: object) -> None:
+            self.registrations += 1
+            if self.registrations == 2:
+                raise OSError("selector registration failed")
+
+        def close(self) -> None:
+            self.closed = True
+
+    selector = FailedSelector()
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: child)
-    monkeypatch.setattr(selectors, "DefaultSelector", FailedSelector)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: selector)
     process = SITLProcess((sys.executable, "unused.py"), tmp_path)
 
     with pytest.raises(OSError, match="selector registration failed"):
@@ -133,6 +143,10 @@ def test_sitl_process_reaps_child_when_selector_registration_fails(
 
     assert child.terminated
     assert child.waits == 1
+    assert child.stdout.closed
+    assert child.stderr.closed
+    assert selector.registrations == 2
+    assert selector.closed
     assert process.return_code == -15
     assert process.stop(0.1) == -15
     assert child.waits == 1
