@@ -9,6 +9,27 @@ import stat
 import pytest
 
 from artifacts.protocol_files import ProtocolIOError
+from artifacts.runtime_status import (
+    ArduPilotReadyStatus,
+    ArtifactFinalRecord,
+    ArtifactsFinalStatus,
+    ArtifactsReadyStatus,
+    CompanionReadyStatus,
+    FlightExchange,
+    GazeboReadyStatus,
+    MissionCommandDeliveredStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeFrozenStatus,
+    RuntimeRunningStatus,
+    RuntimeStatusError,
+    ScoreFinishedStatus,
+    SourceFinishedStatus,
+    TerminalNotifiedStatus,
+    status_document,
+)
+from artifacts.validation import ValidationStatus
 from orchestration.status_store import (
     OperatorStatus,
     ProtocolFileError,
@@ -17,6 +38,64 @@ from orchestration.status_store import (
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000606"
+DIGEST_A = "a" * 64
+DIGEST_C = "c" * 64
+
+FLIGHT_EXCHANGE = FlightExchange(
+    True,
+    2,
+    2,
+    0,
+    0,
+    2,
+    0,
+    1,
+    40_000_000,
+)
+FINAL_RECORDS = (
+    ArtifactFinalRecord(
+        "video/onboard.mp4",
+        ValidationStatus.VALID,
+        "valid video",
+        10,
+        DIGEST_A,
+        {"codec": "h264"},
+    ),
+    ArtifactFinalRecord(
+        "video/observer.mp4",
+        ValidationStatus.INVALID,
+        "invalid video",
+        None,
+        None,
+        {"codec": "unknown"},
+    ),
+    ArtifactFinalRecord(
+        "rosbag",
+        ValidationStatus.VALID,
+        "valid bag",
+        30,
+        DIGEST_C,
+        {"topics": ["/clock"]},
+    ),
+)
+FINAL_STATUS = ArtifactsFinalStatus(RUN_ID, FINAL_RECORDS)
+FINAL_DOCUMENT = status_document(FINAL_STATUS)
+RUNTIME_STATUSES = (
+    ArtifactsReadyStatus(RUN_ID),
+    GazeboReadyStatus(RUN_ID, FLIGHT_EXCHANGE),
+    ArduPilotReadyStatus(RUN_ID),
+    CompanionReadyStatus(RUN_ID),
+    MissionReadyStatus(RUN_ID),
+    MissionCommandDeliveredStatus(RUN_ID, 50_000_000),
+    RuntimeRunningStatus(RUN_ID, 1),
+    SourceFinishedStatus(RUN_ID, 2),
+    MissionFinishedStatus(RUN_ID, 2),
+    ScoreFinishedStatus(RUN_ID, 2),
+    RuntimeFailureStatus(RUN_ID, "gazebo", "exchange stopped", ("logs/gazebo.log",)),
+    RuntimeFrozenStatus(RUN_ID),
+    FINAL_STATUS,
+    TerminalNotifiedStatus(RUN_ID),
+)
 
 
 def _store(tmp_path: Path) -> StatusStore:
@@ -168,20 +247,24 @@ def test_runtime_status_read_consumes_cooperative_deadline_callback(tmp_path):
     )
     checks = 0
 
+    timeout = TimeoutError("finalization_deadline")
+
     def deadline_check():
         nonlocal checks
         checks += 1
         if checks == 3:
-            raise TimeoutError("finalization_deadline")
+            raise timeout
 
-    with pytest.raises(TimeoutError, match="finalization_deadline"):
+    with pytest.raises(TimeoutError, match="finalization_deadline") as raised:
         store.read_runtime_status(
             RUN_ID,
-            "artifacts-final",
+            ArtifactsFinalStatus,
             deadline_check=deadline_check,
         )
 
     assert checks == 3
+    assert raised.value is timeout
+
 
 def test_abort_request_is_atomic_idempotent_and_first_cause_wins(tmp_path):
     store = _store(tmp_path)
@@ -219,7 +302,22 @@ def test_finalize_request_refuses_unsafe_preexisting_target(tmp_path):
     assert outside.read_text(encoding="utf-8") == "keep"
 
 
-def test_runtime_status_is_read_only_and_requires_matching_run_id(tmp_path):
+@pytest.mark.parametrize("status", RUNTIME_STATUSES, ids=lambda value: value.name)
+def test_runtime_status_reads_every_registered_value_as_its_exact_type(tmp_path, status):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    target = run_directory / f".status/{status.name}.json"
+    target.write_text(json.dumps(status_document(status)), encoding="utf-8")
+    before = target.stat()
+
+    parsed = store.read_runtime_status(RUN_ID, type(status))
+
+    assert type(parsed) is type(status)
+    assert parsed == status
+    assert target.stat() == before
+
+
+def test_runtime_status_read_requires_matching_run_id(tmp_path):
     store = _store(tmp_path)
     run_directory = store.allocate(RUN_ID)
     target = run_directory / ".status/artifacts-ready.json"
@@ -227,19 +325,90 @@ def test_runtime_status_is_read_only_and_requires_matching_run_id(tmp_path):
         json.dumps({"run_id": "00000000-0000-4000-8000-000000000999", "ready": True}),
         encoding="utf-8",
     )
-    before = target.stat()
 
     with pytest.raises(ProtocolFileError, match="run_id"):
-        store.read_runtime_status(RUN_ID, "artifacts-ready")
-    assert target.stat() == before
+        store.read_runtime_status(RUN_ID, ArtifactsReadyStatus)
 
 
-def test_runtime_status_name_is_fixed(tmp_path):
+@pytest.mark.parametrize(
+    ("status_type", "document"),
+    [
+        (
+            SourceFinishedStatus,
+            {"run_id": RUN_ID, "finished": False, "sim_timestamp_ns": 2},
+        ),
+        (RuntimeFrozenStatus, {"run_id": RUN_ID, "frozen": False}),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": [
+                    {
+                        **FINAL_DOCUMENT["records"][0],
+                        "detail": "",
+                    },
+                    *FINAL_DOCUMENT["records"][1:],
+                ],
+            },
+        ),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": [
+                    {
+                        **FINAL_DOCUMENT["records"][0],
+                        "size_bytes": None,
+                        "sha256": None,
+                    },
+                    *FINAL_DOCUMENT["records"][1:],
+                ],
+            },
+        ),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": [
+                    FINAL_DOCUMENT["records"][0],
+                    {
+                        **FINAL_DOCUMENT["records"][1],
+                        "size_bytes": 20,
+                    },
+                    FINAL_DOCUMENT["records"][2],
+                ],
+            },
+        ),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": list(reversed(FINAL_DOCUMENT["records"])),
+            },
+        ),
+    ],
+    ids=(
+        "source-not-finished",
+        "runtime-not-frozen",
+        "empty-artifact-detail",
+        "valid-artifact-without-size-hash",
+        "half-present-size-hash",
+        "reordered-artifacts",
+    ),
+)
+def test_runtime_status_read_rejects_malformed_typed_documents(
+    tmp_path, status_type, document
+):
     store = _store(tmp_path)
-    store.allocate(RUN_ID)
+    run_directory = store.allocate(RUN_ID)
+    (run_directory / f".status/{status_type.name}.json").write_text(
+        json.dumps(document), encoding="utf-8"
+    )
 
-    with pytest.raises(ValueError):
-        store.read_runtime_status(RUN_ID, "../operator-state")
+    with pytest.raises(ProtocolFileError) as raised:
+        store.read_runtime_status(RUN_ID, status_type)
+
+    assert isinstance(raised.value.__cause__, RuntimeStatusError)
 
 
 def test_protocol_json_rejects_nonstandard_nan_numbers(tmp_path):
@@ -252,7 +421,7 @@ def test_protocol_json_rejects_nonstandard_nan_numbers(tmp_path):
     )
 
     with pytest.raises(ProtocolFileError, match="JSON"):
-        store.read_runtime_status(RUN_ID, "artifacts-ready")
+        store.read_runtime_status(RUN_ID, ArtifactsReadyStatus)
 
 
 def test_terminal_commit_is_exclusive_idempotent_and_never_rewrites(tmp_path):

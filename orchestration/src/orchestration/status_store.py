@@ -28,6 +28,12 @@ from artifacts.protocol_files import (
     read_json_object_at,
     write_json_object_at,
 )
+from artifacts.runtime_status import (
+    RuntimeStatusError,
+    StatusT,
+    parse_status,
+    status_name,
+)
 
 
 _DIRECTORY_FLAGS = (
@@ -35,23 +41,6 @@ _DIRECTORY_FLAGS = (
     | getattr(os, "O_CLOEXEC", 0)
     | getattr(os, "O_DIRECTORY", 0)
     | getattr(os, "O_NOFOLLOW", 0)
-)
-_RUNTIME_STATUS_NAMES = frozenset(
-    {
-        "artifacts-ready",
-        "gazebo-ready",
-        "ardupilot-ready",
-        "companion-ready",
-        "mission-ready",
-        "runtime-running",
-        "source-finished",
-        "mission-finished",
-        "score-finished",
-        "runtime-failure",
-        "runtime-frozen",
-        "artifacts-final",
-        "terminal-notified",
-    }
 )
 _LIFECYCLE_STATES = frozenset(
     {"CREATED", "STARTING", "READY", "RUNNING", "FINALIZING", "COMPLETED", "FAILED", "ABORTED"}
@@ -443,24 +432,34 @@ class StatusStore:
     def read_runtime_status(
         self,
         run_id: str,
-        name: str,
+        status_type: type[StatusT],
         deadline_check: Callable[[], None] | None = None,
-    ) -> dict[str, Any] | None:
-        if name not in _RUNTIME_STATUS_NAMES:
-            raise ValueError("runtime status name is not part of the frozen protocol")
+    ) -> StatusT | None:
+        try:
+            name = status_name(status_type)
+        except RuntimeStatusError as error:
+            raise ProtocolFileError(str(error)) from error
         run_fd, status_fd = self._with_protocol_directory(run_id, ".status")
         try:
-            document = _read_protocol_document_at(
-                status_fd,
-                f"{name}.json",
-                deadline_check,
-            )
+            try:
+                document = read_json_object_at(
+                    status_fd,
+                    f"{name}.json",
+                    deadline_check=deadline_check,
+                )
+            except ProtocolIOError as error:
+                raise ProtocolFileError(str(error)) from error
         finally:
             os.close(status_fd)
             os.close(run_fd)
-        if document is not None and document.get("run_id") != run_id:
-            raise ProtocolFileError(f"runtime status {name!r} has the wrong run_id")
-        return document
+        if document is None:
+            return None
+        try:
+            return parse_status(status_type, document, expected_run_id=run_id)
+        except RuntimeStatusError as error:
+            raise ProtocolFileError(
+                f"runtime status {name!r}: {error}"
+            ) from error
 
     def validated_manifest_result(
         self,
