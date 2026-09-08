@@ -58,20 +58,24 @@ def test_open_directory_returns_caller_owned_absolute_and_relative_descriptors(
     child.mkdir()
 
     absolute_fd = open_directory(child)
-    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    relative_fd = open_directory("child", dir_fd=parent_fd)
     try:
-        expected = child.stat()
-        for descriptor in (absolute_fd, relative_fd):
-            opened = os.fstat(descriptor)
-            assert stat.S_ISDIR(opened.st_mode)
-            assert (opened.st_dev, opened.st_ino) == (
-                expected.st_dev,
-                expected.st_ino,
-            )
+        parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            relative_fd = open_directory("child", dir_fd=parent_fd)
+            try:
+                expected = child.stat()
+                for descriptor in (absolute_fd, relative_fd):
+                    opened = os.fstat(descriptor)
+                    assert stat.S_ISDIR(opened.st_mode)
+                    assert (opened.st_dev, opened.st_ino) == (
+                        expected.st_dev,
+                        expected.st_ino,
+                    )
+            finally:
+                os.close(relative_fd)
+        finally:
+            os.close(parent_fd)
     finally:
-        os.close(relative_fd)
-        os.close(parent_fd)
         os.close(absolute_fd)
 
 
