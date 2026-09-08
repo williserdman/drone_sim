@@ -297,6 +297,11 @@ def main() -> None:
     from sensor_msgs.msg import Image
     from simulation_interfaces.msg import FrameMetadata, GroundTruth, RunState
     from artifacts.runtime_protocol import RuntimeProtocol
+    from artifacts.runtime_status import (
+        RuntimeFailureStatus,
+        RuntimeRunningStatus,
+        SourceFinishedStatus,
+    )
     from artifacts.structured_log import StructuredEvent, write_event
     from module_stub import QuiescenceBoundary
 
@@ -405,8 +410,7 @@ def main() -> None:
         wall_delay_ms=delay_ms,
         publish=publish,
         source_finished=lambda stamp: protocol.write_status(
-            "source-finished",
-            {"run_id": run_id, "finished": True, "sim_timestamp_ns": stamp},
+            SourceFinishedStatus(run_id, stamp)
         ),
     )
     transport_barrier = CameraTransportBarrier(
@@ -420,13 +424,12 @@ def main() -> None:
         },
         deadline=time.monotonic() + float(config["startup_wall_seconds"]),
         failure=lambda reason: protocol.write_status(
-            "runtime-failure",
-            {
-                "run_id": run_id,
-                "module": "gazebo",
-                "reason": reason,
-                "diagnostic_paths": ["logs/docker/gazebo.log.partial"],
-            },
+            RuntimeFailureStatus(
+                run_id,
+                "gazebo",
+                reason,
+                ("logs/docker/gazebo.log.partial",),
+            )
         ),
     )
 
@@ -486,7 +489,7 @@ def main() -> None:
                 model,
                 None
                 if model.running
-                else protocol.read_status("runtime-running"),
+                else protocol.read_status(RuntimeRunningStatus),
                 None
                 if model.finalizing
                 else protocol.read_finalize_request(),

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from artifacts.runtime_status import RuntimeFailureStatus, SourceFinishedStatus
 from drone_sim_gazebo.runtime import (
     ActivateOutput,
     BeginFinalization,
@@ -23,8 +24,8 @@ class Protocol:
         self.statuses = []
         self.quiescence = []
 
-    def write_status(self, name, document):
-        self.statuses.append((name, document))
+    def write_status(self, status):
+        self.statuses.append(status)
 
     def write_quiescence(self, module):
         self.quiescence.append(module)
@@ -111,8 +112,10 @@ def test_action_executor_maps_readiness_control_and_durable_facts(tmp_path):
     assert status.ready == [True]
     assert transport.calls == [("step", 1), ("pause", False)]
     assert protocol.statuses == [
-        ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000}),
-        ("runtime-failure", {"run_id": RUN_ID, "module": "gazebo", "reason": "broken", "diagnostic_paths": ["gazebo/server.log.partial"]}),
+        SourceFinishedStatus(RUN_ID, 2_000_000_000),
+        RuntimeFailureStatus(
+            RUN_ID, "gazebo", "broken", ("gazebo/server.log.partial",)
+        ),
     ]
 
 

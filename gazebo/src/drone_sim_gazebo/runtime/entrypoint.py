@@ -12,6 +12,7 @@ import subprocess
 import time
 from uuid import UUID, uuid4
 
+from artifacts.runtime_status import RuntimeFailureStatus, SourceFinishedStatus
 from .model import (
     ActivateOutput,
     BeginFinalization,
@@ -373,22 +374,16 @@ class ActionExecutor:
                 self._activate_output()
             elif isinstance(action, WriteSourceFinished):
                 self._protocol.write_status(
-                    "source-finished",
-                    {
-                        "run_id": self._run_id,
-                        "finished": True,
-                        "sim_timestamp_ns": action.sim_timestamp_ns,
-                    },
+                    SourceFinishedStatus(self._run_id, action.sim_timestamp_ns)
                 )
             elif isinstance(action, WriteRuntimeFailure):
                 self._protocol.write_status(
-                    "runtime-failure",
-                    {
-                        "run_id": self._run_id,
-                        "module": "gazebo",
-                        "reason": action.reason,
-                        "diagnostic_paths": list(action.diagnostic_paths),
-                    },
+                    RuntimeFailureStatus(
+                        self._run_id,
+                        "gazebo",
+                        action.reason,
+                        action.diagnostic_paths,
+                    )
                 )
             elif isinstance(action, BeginFinalization):
                 continue

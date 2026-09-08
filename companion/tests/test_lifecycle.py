@@ -2,17 +2,23 @@ from __future__ import annotations
 
 from io import StringIO
 
+from artifacts.runtime_status import (
+    CompanionReadyStatus,
+    MissionCommandDeliveredStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+)
 from drone_sim_companion.lifecycle import CompanionLifecycle
 from drone_sim_companion.mission import CommandKind, MissionPhase, MissionState
 
 
 class Protocol:
     def __init__(self) -> None:
-        self.statuses: list[tuple[str, dict[str, object]]] = []
+        self.statuses = []
         self.quiescence: list[str] = []
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        self.statuses.append((name, document))
+    def write_status(self, status) -> None:
+        self.statuses.append(status)
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
@@ -29,14 +35,8 @@ def test_command_delivery_persists_a_skipped_zero_timestamp() -> None:
     lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 50_000_000)
 
     assert protocol.statuses == [
-        (
-            "mission-command-delivered",
-            {
-                "run_id": "00000000-0000-4000-8000-000000000001",
-                "command": "SET_GUIDED",
-                "sim_timestamp_ns": 50_000_000,
-                "delivered": True,
-            },
+        MissionCommandDeliveredStatus(
+            "00000000-0000-4000-8000-000000000001", 50_000_000
         )
     ]
 
@@ -70,24 +70,8 @@ def test_lifecycle_persists_transport_readiness_landed_completion_and_silence_bo
     lifecycle.emit("too_late", 600, {})
 
     assert protocol.statuses == [
-        (
-            "companion-ready",
-            {
-                "run_id": "00000000-0000-4000-8000-000000000001",
-                "ready": True,
-                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-                "mavlink_transport_connected": True,
-            },
-        ),
-        (
-            "mission-finished",
-            {
-                "run_id": "00000000-0000-4000-8000-000000000001",
-                "finished": True,
-                "sim_timestamp_ns": 500,
-                "outcome": "LANDED",
-            },
-        ),
+        CompanionReadyStatus("00000000-0000-4000-8000-000000000001"),
+        MissionFinishedStatus("00000000-0000-4000-8000-000000000001", 500),
     ]
     assert protocol.quiescence == ["companion"]
     assert stream.getvalue() == before
@@ -141,14 +125,6 @@ def test_mission_readiness_requires_both_passive_facts_and_is_persisted_once() -
         )
 
     assert protocol.statuses == [
-        (
-            "mission-ready",
-            {
-                "run_id": "00000000-0000-4000-8000-000000000001",
-                "ready": True,
-                "heartbeat_observed": True,
-                "prearm_checks_healthy": True,
-            },
-        )
+        MissionReadyStatus("00000000-0000-4000-8000-000000000001")
     ]
     assert stream.getvalue().count('"event":"mission_ready"') == 1

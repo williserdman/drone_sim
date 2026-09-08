@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
+from artifacts.runtime_status import RuntimeFailureStatus
 from drone_sim_scorekeeper.competition import CompetitionScorer, load_competition_rules
 from drone_sim_scorekeeper.competition_runtime import CompetitionScorekeeperRuntime
 from drone_sim_scorekeeper.runtime_node import (
@@ -21,11 +22,11 @@ from .test_competition_score import AttemptTrace, RUN_ID, RULES, new_trace, perf
 
 class ProtocolRecorder:
     def __init__(self) -> None:
-        self.statuses: list[tuple[str, dict[str, object]]] = []
+        self.statuses = []
         self.quiescence: list[str] = []
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        self.statuses.append((name, document))
+    def write_status(self, status) -> None:
+        self.statuses.append(status)
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
@@ -132,7 +133,7 @@ def test_source_finish_without_valid_home_never_writes_score_finished(tmp_path):
 
     assert result.complete is False
     assert all(operation[0] != "finished" for operation in operations)
-    assert protocol.statuses[0][0] == "runtime-failure"
+    assert type(protocol.statuses[0]) is RuntimeFailureStatus
 
 
 def test_source_readiness_waits_for_payload_and_home_event_tail(tmp_path):

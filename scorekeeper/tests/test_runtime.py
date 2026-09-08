@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from artifacts.runtime_status import RuntimeFailureStatus
 from drone_sim_scorekeeper.descent import (
     DescentScorer,
     GroundTruthSample,
@@ -18,11 +19,11 @@ DT = 50_000_000
 
 class ProtocolRecorder:
     def __init__(self) -> None:
-        self.statuses: list[tuple[str, dict[str, object]]] = []
+        self.statuses = []
         self.quiescence: list[str] = []
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        self.statuses.append((name, document))
+    def write_status(self, status) -> None:
+        self.statuses.append(status)
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
@@ -109,17 +110,11 @@ def test_duplicate_ground_truth_writes_failure_and_never_score_finished(tmp_path
     assert result["diagnostic"] == "ground_truth_timestamp_duplicate"
     assert all(operation[0] != "finished" for operation in operations)
     assert protocol.statuses == [
-        (
-            "runtime-failure",
-            {
-                "run_id": RUN_ID,
-                "module": "scorekeeper",
-                "reason": "ground_truth_timestamp_duplicate",
-                "diagnostic_paths": [
-                    "scoring/events.jsonl",
-                    "scoring/result.json",
-                ],
-            },
+        RuntimeFailureStatus(
+            RUN_ID,
+            "scorekeeper",
+            "ground_truth_timestamp_duplicate",
+            ("scoring/events.jsonl", "scoring/result.json"),
         )
     ]
 
@@ -159,26 +154,12 @@ def test_active_scenario_fails_closed_even_with_perfect_ground_truth(tmp_path):
     assert result["complete"] is False
     assert result["diagnostic"] == "scenario_not_inactive"
     assert all(operation[0] != "finished" for operation in operations)
-    assert protocol.statuses[0][0] == "runtime-failure"
+    assert type(protocol.statuses[0]) is RuntimeFailureStatus
 
 
 def test_existing_global_failure_does_not_prevent_scorekeeper_quiescence(tmp_path):
     """The shared first-wins failure slot must not deadlock aggregate freeze."""
-    class FirstWinsProtocol(ProtocolRecorder):
-        def write_status(self, name, document):
-            assert name == "runtime-failure"
-            raise FileExistsError("another module already recorded the primary failure")
-
-        def read_status(self, name):
-            assert name == "runtime-failure"
-            return {
-                "run_id": RUN_ID,
-                "module": "gazebo",
-                "reason": "gazebo_failed",
-                "diagnostic_paths": ["gazebo/server.log.partial"],
-            }
-
-    protocol = FirstWinsProtocol()
+    protocol = ProtocolRecorder()
     runtime = ScorekeeperRuntime(
         RUN_ID,
         DescentScorer(
@@ -199,3 +180,4 @@ def test_existing_global_failure_does_not_prevent_scorekeeper_quiescence(tmp_pat
     assert runtime.result.complete is False
     assert runtime.quiescent is True
     assert protocol.quiescence == ["scorekeeper"]
+    assert type(protocol.statuses[0]) is RuntimeFailureStatus

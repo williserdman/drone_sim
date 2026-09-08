@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from artifacts.runtime_status import SourceFinishedStatus
 from drone_sim_scorekeeper.runtime_node import (
     _RosBoundary,
     ScorekeeperDriver,
@@ -160,9 +161,9 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
             self.terminal = None
             self.quiescence = []
 
-        def read_status(self, name):
-            assert name == "source-finished"
-            return {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 0}
+        def read_status(self, status_type):
+            assert status_type is SourceFinishedStatus
+            return SourceFinishedStatus(RUN_ID, 0)
 
         def read_finalize_request(self):
             return self.finalize
@@ -170,7 +171,7 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
         def read_terminal_committed(self):
             return self.terminal
 
-        def write_status(self, _name, _document):
+        def write_status(self, _status):
             raise AssertionError("complete score must not write runtime failure")
 
         def write_quiescence(self, module):
@@ -230,8 +231,9 @@ def test_driver_observes_source_and_finalize_once_then_waits_for_terminal(tmp_pa
 def test_driver_drains_ros_ground_truth_through_source_timestamp_before_scoring(tmp_path):
     """The durable source marker can race ahead of still-queued ROS samples."""
     class Protocol:
-        def read_status(self, _name):
-            return {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 0}
+        def read_status(self, status_type):
+            assert status_type is SourceFinishedStatus
+            return SourceFinishedStatus(RUN_ID, 0)
 
         def read_finalize_request(self):
             return None
@@ -239,7 +241,7 @@ def test_driver_drains_ros_ground_truth_through_source_timestamp_before_scoring(
         def read_terminal_committed(self):
             return None
 
-        def write_status(self, _name, _document):
+        def write_status(self, _status):
             raise AssertionError("a queued sample is not data loss")
 
         def write_quiescence(self, _module):

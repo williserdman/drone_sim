@@ -7,7 +7,6 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 from typing import Any, TypeVar
-from uuid import UUID
 
 from artifacts.protocol_files import (
     ProtocolIOError,
@@ -15,6 +14,16 @@ from artifacts.protocol_files import (
     canonical_json,
     read_json_object_at,
     write_json_object_at,
+)
+from artifacts.runtime_status import (
+    RuntimeStatus,
+    RuntimeStatusError,
+    StatusT,
+    canonical_run_id,
+    parse_status,
+    status_document,
+    status_name,
+    status_write_policy,
 )
 
 
@@ -28,40 +37,6 @@ _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
 _QUIESCENCE_MODULES = frozenset(
     {"orchestration", "companion", "ardupilot_sitl", "gazebo", "electromagnet", "scorekeeper"}
 )
-_STATUS_NAMES = frozenset(
-    {
-        "artifacts-ready",
-        "gazebo-ready",
-        "ardupilot-ready",
-        "companion-ready",
-        "mission-ready",
-        "mission-command-delivered",
-        "runtime-running",
-        "source-finished",
-        "mission-finished",
-        "score-finished",
-        "runtime-failure",
-        "runtime-frozen",
-        "artifacts-final",
-        "terminal-notified",
-    }
-)
-_INITIAL_COMMAND_WINDOW_NS = 50_000_000
-_FLIGHT_EXCHANGE_KEYS = frozenset(
-    {
-        "online",
-        "servo_packets_received",
-        "motor_updates",
-        "duplicate_servo_packets",
-        "servo_frame_gaps",
-        "json_states_sent",
-        "json_send_errors",
-        "last_servo_frame",
-        "last_json_sim_time_ns",
-    }
-)
-
-
 class ProtocolError(RuntimeError):
     """A runtime protocol path or document violates the frozen contract."""
 
@@ -72,193 +47,15 @@ _T = TypeVar("_T")
 def _translate_io(call: Callable[[], _T]) -> _T:
     try:
         return call()
-    except ProtocolIOError as error:
+    except (ProtocolIOError, RuntimeStatusError) as error:
         raise ProtocolError(str(error)) from error
 
 
-def canonical_run_id(value: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError("run_id must be a canonical UUID")
-    try:
-        parsed = UUID(value)
-    except (ValueError, TypeError, AttributeError) as error:
-        raise ValueError("run_id must be a canonical UUID") from error
-    if str(parsed) != value:
-        raise ValueError("run_id must be a canonical UUID")
-    return value
-
-
-def _safe_relative_path(value: Any) -> bool:
+def _valid_manifest_relative_path(value: Any) -> bool:
     if not isinstance(value, str) or not value or "\\" in value:
         return False
     path = PurePosixPath(value)
     return not path.is_absolute() and path.parts not in ((), (".",)) and ".." not in path.parts
-
-
-def _nonnegative_integer(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _valid_flight_exchange(value: Any) -> bool:
-    return bool(
-        isinstance(value, dict)
-        and set(value) == _FLIGHT_EXCHANGE_KEYS
-        and value["online"] is True
-        and all(
-            type(value[key]) is int and value[key] >= 0
-            for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
-        )
-        and value["servo_packets_received"] >= 1
-        and value["motor_updates"] >= 1
-        and value["json_states_sent"] >= 1
-        and value["servo_frame_gaps"] == 0
-        and value["json_send_errors"] == 0
-    )
-
-
-def _validate_status(name: str, document: Mapping[str, Any], run_id: str) -> None:
-    if name not in _STATUS_NAMES:
-        raise ValueError("runtime status name is not part of the frozen protocol")
-    if not isinstance(document, dict) or document.get("run_id") != run_id:
-        raise ProtocolError("runtime status has the wrong run_id")
-    if name == "artifacts-ready":
-        valid = set(document) == {"run_id", "ready"} and document["ready"] is True
-    elif name == "gazebo-ready":
-        valid = (
-            set(document) == {"run_id", "ready", "flight_exchange"}
-            and document["ready"] is True
-            and _valid_flight_exchange(document["flight_exchange"])
-        )
-    elif name == "ardupilot-ready":
-        valid = (
-            set(document)
-            == {"run_id", "ready", "json_exchange", "mavlink_endpoint"}
-            and document["ready"] is True
-            and document["json_exchange"] is True
-            and document["mavlink_endpoint"] == "tcp://ardupilot-sitl:5760"
-        )
-    elif name == "companion-ready":
-        valid = (
-            set(document)
-            == {
-                "run_id",
-                "ready",
-                "mavlink_endpoint",
-                "mavlink_transport_connected",
-            }
-            and document["ready"] is True
-            and document["mavlink_endpoint"] == "tcp://ardupilot-sitl:5760"
-            and document["mavlink_transport_connected"] is True
-        )
-    elif name == "mission-ready":
-        valid = (
-            set(document)
-            == {
-                "run_id",
-                "ready",
-                "heartbeat_observed",
-                "prearm_checks_healthy",
-            }
-            and document["ready"] is True
-            and document["heartbeat_observed"] is True
-            and document["prearm_checks_healthy"] is True
-        )
-    elif name == "mission-command-delivered":
-        valid = (
-            set(document)
-            == {"run_id", "command", "sim_timestamp_ns", "delivered"}
-            and document["command"] == "SET_GUIDED"
-            and _nonnegative_integer(document["sim_timestamp_ns"])
-            and document["sim_timestamp_ns"] <= _INITIAL_COMMAND_WINDOW_NS
-            and document["delivered"] is True
-        )
-    elif name == "runtime-running":
-        valid = (
-            set(document) == {"run_id", "state", "sim_timestamp_ns"}
-            and document["state"] == "RUNNING"
-            and _nonnegative_integer(document["sim_timestamp_ns"])
-        )
-    elif name == "source-finished":
-        valid = (
-            set(document) == {"run_id", "finished", "sim_timestamp_ns"}
-            and document["finished"] is True
-            and _nonnegative_integer(document["sim_timestamp_ns"])
-        )
-    elif name == "mission-finished":
-        valid = (
-            set(document) == {
-                "run_id",
-                "finished",
-                "sim_timestamp_ns",
-                "outcome",
-            }
-            and document["finished"] is True
-            and _nonnegative_integer(document["sim_timestamp_ns"])
-            and document["outcome"] == "LANDED"
-        )
-    elif name == "score-finished":
-        valid = (
-            set(document) == {"run_id", "finished", "sim_timestamp_ns"}
-            and document["finished"] is True
-            and _nonnegative_integer(document["sim_timestamp_ns"])
-        )
-    elif name == "runtime-failure":
-        paths = document.get("diagnostic_paths")
-        valid = (
-            set(document) == {"run_id", "module", "reason", "diagnostic_paths"}
-            and isinstance(document.get("module"), str)
-            and bool(document["module"])
-            and isinstance(document.get("reason"), str)
-            and bool(document["reason"])
-            and isinstance(paths, list)
-            and all(isinstance(path, str) for path in paths)
-            and len(paths) == len(set(paths))
-            and all(_safe_relative_path(path) for path in paths)
-        )
-    elif name == "runtime-frozen":
-        valid = set(document) == {"run_id", "frozen"} and document["frozen"] is True
-    elif name == "terminal-notified":
-        valid = set(document) == {"run_id", "notified"} and document["notified"] is True
-    else:
-        valid = _valid_artifacts_final(document, run_id)
-    if not valid:
-        raise ProtocolError(f"runtime status {name!r} has an invalid schema")
-
-
-def _valid_artifacts_final(document: Mapping[str, Any], run_id: str) -> bool:
-    if set(document) != {"run_id", "complete", "records"}:
-        return False
-    if document.get("run_id") != run_id or not isinstance(document.get("complete"), bool):
-        return False
-    records = document.get("records")
-    required = ("video/onboard.mp4", "video/observer.mp4", "rosbag")
-    if not isinstance(records, list) or len(records) != 3:
-        return False
-    paths: list[str] = []
-    for record in records:
-        if not isinstance(record, dict) or set(record) != {
-            "relative_path", "status", "detail", "size_bytes", "sha256", "semantic"
-        }:
-            return False
-        paths.append(record.get("relative_path"))
-        if record.get("status") not in {"valid", "missing", "invalid"}:
-            return False
-        if not isinstance(record.get("detail"), str):
-            return False
-        if record.get("size_bytes") is not None and not _nonnegative_integer(record["size_bytes"]):
-            return False
-        digest = record.get("sha256")
-        if digest is not None and (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
-            return False
-        if not isinstance(record.get("semantic"), dict) or not record["semantic"]:
-            return False
-    return tuple(paths) == required and document["complete"] == all(
-        record["status"] == "valid" for record in records
-    )
 
 
 def _validate_control(name: str, document: Mapping[str, Any], run_id: str) -> None:
@@ -336,26 +133,33 @@ class RuntimeProtocol:
             raise ProtocolError(f"protocol directory {name!r} is unsafe")
         return descriptor
 
-    def write_status(self, name: str, document: Mapping[str, Any]) -> Path:
-        _validate_status(name, document, self.run_id)
+    def write_status(self, status: RuntimeStatus) -> Path:
+        name = _translate_io(lambda: status_name(type(status)))
+        document = _translate_io(lambda: status_document(status))
+        policy = _translate_io(lambda: status_write_policy(type(status)))
+        _translate_io(
+            lambda: parse_status(type(status), document, expected_run_id=self.run_id)
+        )
         status_fd = self._open_directory(".status")
         try:
-            _translate_io(
+            persisted, _created = _translate_io(
                 lambda: write_json_object_at(
                     status_fd,
                     f"{name}.json",
                     document,
                     mode=0o644,
-                    policy=WritePolicy.IDENTICAL,
+                    policy=policy,
                 )
             )
         finally:
             os.close(status_fd)
+        _translate_io(
+            lambda: parse_status(type(status), persisted, expected_run_id=self.run_id)
+        )
         return self.run_directory / ".status" / f"{name}.json"
 
-    def read_status(self, name: str) -> dict[str, Any] | None:
-        if name not in _STATUS_NAMES:
-            raise ValueError("runtime status name is not part of the frozen protocol")
+    def read_status(self, status_type: type[StatusT]) -> StatusT | None:
+        name = _translate_io(lambda: status_name(status_type))
         status_fd = self._open_directory(".status")
         try:
             document = _translate_io(
@@ -363,9 +167,11 @@ class RuntimeProtocol:
             )
         finally:
             os.close(status_fd)
-        if document is not None:
-            _validate_status(name, document, self.run_id)
-        return document
+        if document is None:
+            return None
+        return _translate_io(
+            lambda: parse_status(status_type, document, expected_run_id=self.run_id)
+        )
 
     @staticmethod
     def _validate_quiescence_module(module: str) -> None:
@@ -469,14 +275,14 @@ class RuntimeProtocol:
             relative_path = record.get("relative_path")
             validation = record.get("validation")
             if (
-                not _safe_relative_path(relative_path)
+                not _valid_manifest_relative_path(relative_path)
                 or relative_path in validations
                 or validation not in {"valid", "missing", "invalid"}
             ):
                 raise ProtocolError("manifest status artifact record is invalid")
             validations[relative_path] = validation
         if (
-            any(not _safe_relative_path(path) for path in incomplete)
+            any(not _valid_manifest_relative_path(path) for path in incomplete)
             or len(incomplete) != len(set(incomplete))
             or any(validations.get(path) not in {"missing", "invalid"} for path in incomplete)
         ):

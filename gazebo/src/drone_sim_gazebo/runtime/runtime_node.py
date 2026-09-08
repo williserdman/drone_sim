@@ -12,6 +12,7 @@ from threading import Event, Thread
 import time
 
 from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.runtime_status import ArtifactsReadyStatus, MissionCommandDeliveredStatus
 from artifacts.structured_log import StructuredEvent, write_event
 from orchestration.config import load_run_config
 
@@ -228,7 +229,7 @@ class PublicEpochRendezvous:
             return False
         if not self._run_to_requested:
             return False
-        if self._protocol.read_status("mission-command-delivered") is None:
+        if self._protocol.read_status(MissionCommandDeliveredStatus) is None:
             return False
         if self._unpause_attempts_started == 0:
             self._start_unpause()
@@ -379,7 +380,10 @@ def main() -> int:
                 if exchange_ready:
                     gazebo_ready_seen = True
                     inbox.append(GazeboReady(run_id))
-            if not artifacts_ready_seen and protocol.read_status("artifacts-ready") is not None:
+            if (
+                not artifacts_ready_seen
+                and protocol.read_status(ArtifactsReadyStatus) is not None
+            ):
                 if adapter.recorders_ready():
                     artifacts_ready_seen = True
                     inbox.append(ArtifactsReady(run_id))

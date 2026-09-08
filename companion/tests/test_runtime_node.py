@@ -8,6 +8,7 @@ import threading
 
 import pytest
 
+from artifacts.runtime_status import MissionCommandDeliveredStatus, MissionReadyStatus
 import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.runtime_node import (
     RuntimeConfig,
@@ -549,10 +550,10 @@ def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> N
 def test_runtime_wires_passive_facts_to_durable_mission_readiness() -> None:
     class Protocol:
         def __init__(self) -> None:
-            self.statuses: list[tuple[str, dict[str, object]]] = []
+            self.statuses = []
 
-        def write_status(self, name: str, document: dict[str, object]) -> None:
-            self.statuses.append((name, document))
+        def write_status(self, status) -> None:
+            self.statuses.append(status)
 
         def write_quiescence(self, _module: str) -> None:
             pass
@@ -584,27 +585,17 @@ def test_runtime_wires_passive_facts_to_durable_mission_readiness() -> None:
         public_clock_observed=False,
     )
 
-    assert protocol.statuses == [
-        (
-            "mission-ready",
-            {
-                "run_id": RUN_ID,
-                "ready": True,
-                "heartbeat_observed": True,
-                "prearm_checks_healthy": True,
-            },
-        )
-    ]
+    assert protocol.statuses == [MissionReadyStatus(RUN_ID)]
     assert vehicle.sent == []
 
 
 def test_initial_command_delivery_is_durable_and_exactly_at_public_zero() -> None:
     class Protocol:
         def __init__(self) -> None:
-            self.statuses: list[tuple[str, dict[str, object]]] = []
+            self.statuses = []
 
-        def write_status(self, name: str, document: dict[str, object]) -> None:
-            self.statuses.append((name, document))
+        def write_status(self, status) -> None:
+            self.statuses.append(status)
 
         def write_quiescence(self, _module: str) -> None:
             pass
@@ -614,17 +605,7 @@ def test_initial_command_delivery_is_durable_and_exactly_at_public_zero() -> Non
 
     lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, 0)
 
-    assert protocol.statuses == [
-        (
-            "mission-command-delivered",
-            {
-                "run_id": RUN_ID,
-                "command": "SET_GUIDED",
-                "sim_timestamp_ns": 0,
-                "delivered": True,
-            },
-        )
-    ]
+    assert protocol.statuses == [MissionCommandDeliveredStatus(RUN_ID, 0)]
 
 
 def test_comp2026_quiescence_follows_terminated_worker_and_executor() -> None:

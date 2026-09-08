@@ -13,6 +13,7 @@ import sys
 from typing import Any, Callable, Protocol
 from uuid import UUID
 
+from artifacts.runtime_status import SourceFinishedStatus
 from .competition import (
     CompetitionScorer,
     MissionEventSample,
@@ -210,7 +211,9 @@ def score_event_message(event: ScoreEvent, message_type: Callable[[], Any]) -> A
 
 
 class DriverProtocol(Protocol):
-    def read_status(self, name: str) -> dict[str, Any] | None: ...
+    def read_status(
+        self, status_type: type[SourceFinishedStatus]
+    ) -> SourceFinishedStatus | None: ...
     def read_finalize_request(self) -> dict[str, Any] | None: ...
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
 
@@ -248,21 +251,12 @@ class ScorekeeperDriver:
     def poll(self) -> bool:
         if not self._source_seen:
             source = (
-                self.protocol.read_status("source-finished")
+                self.protocol.read_status(SourceFinishedStatus)
                 if self._source_timestamp_ns is None
                 else None
             )
             if source is not None:
-                if (
-                    set(source) != {"run_id", "finished", "sim_timestamp_ns"}
-                    or source.get("run_id") != self.run_id
-                    or source.get("finished") is not True
-                    or not isinstance(source.get("sim_timestamp_ns"), int)
-                    or isinstance(source["sim_timestamp_ns"], bool)
-                    or source["sim_timestamp_ns"] < 0
-                ):
-                    raise ValueError("source-finished status is invalid")
-                self._source_timestamp_ns = source["sim_timestamp_ns"]
+                self._source_timestamp_ns = source.sim_timestamp_ns
             if (
                 self._source_timestamp_ns is not None
                 and self.runtime.source_inputs_observed_through(

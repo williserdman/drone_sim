@@ -7,6 +7,13 @@ from decimal import Decimal
 from typing import Any, Protocol, TextIO
 
 from artifacts.structured_log import StructuredEvent, write_event
+from artifacts.runtime_status import (
+    CompanionReadyStatus,
+    MissionCommandDeliveredStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+    RuntimeStatus,
+)
 
 from .mission import CommandKind, MissionPhase, MissionState
 
@@ -15,7 +22,7 @@ INITIAL_COMMAND_WINDOW_NS = 50_000_000
 
 
 class LifecycleProtocol(Protocol):
-    def write_status(self, name: str, document: dict[str, object]) -> Any: ...
+    def write_status(self, status: RuntimeStatus) -> Any: ...
 
     def write_quiescence(self, module: str) -> Any: ...
 
@@ -51,18 +58,12 @@ class CompanionLifecycle:
     def mark_transport_ready(self) -> None:
         if self._ready:
             return
-        document: dict[str, object] = {
-            "run_id": self._run_id,
-            "ready": True,
-            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-            "mavlink_transport_connected": True,
-        }
-        self._protocol.write_status("companion-ready", document)
+        self._protocol.write_status(CompanionReadyStatus(self._run_id))
         self.emit(
             "ready",
             None,
             {
-                "mavlink_endpoint": document["mavlink_endpoint"],
+                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
                 "mavlink_transport_connected": True,
             },
         )
@@ -76,15 +77,7 @@ class CompanionLifecycle:
     ) -> None:
         if self._mission_ready or not (heartbeat_observed and prearm_checks_healthy):
             return
-        self._protocol.write_status(
-            "mission-ready",
-            {
-                "run_id": self._run_id,
-                "ready": True,
-                "heartbeat_observed": True,
-                "prearm_checks_healthy": True,
-            },
-        )
+        self._protocol.write_status(MissionReadyStatus(self._run_id))
         self.emit("mission_ready", None, {})
         self._mission_ready = True
 
@@ -95,13 +88,7 @@ class CompanionLifecycle:
         ):
             return
         self._protocol.write_status(
-            "mission-command-delivered",
-            {
-                "run_id": self._run_id,
-                "command": command.value,
-                "sim_timestamp_ns": timestamp_ns,
-                "delivered": True,
-            },
+            MissionCommandDeliveredStatus(self._run_id, timestamp_ns)
         )
 
     def observe_terminal(self, state: MissionState) -> None:
@@ -109,15 +96,7 @@ class CompanionLifecycle:
             return
         timestamp_ns = state.last_timestamp_ns or 0
         if state.phase is MissionPhase.LANDED:
-            self._protocol.write_status(
-                "mission-finished",
-                {
-                    "run_id": self._run_id,
-                    "finished": True,
-                    "sim_timestamp_ns": timestamp_ns,
-                    "outcome": "LANDED",
-                },
-            )
+            self._protocol.write_status(MissionFinishedStatus(self._run_id, timestamp_ns))
             self.emit("mission_finished", timestamp_ns, {"outcome": "LANDED"})
         else:
             self.emit(

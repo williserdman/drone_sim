@@ -19,6 +19,14 @@ from typing import Any, Mapping
 from uuid import UUID
 
 from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.runtime_status import (
+    CompanionReadyStatus,
+    MissionCommandDeliveredStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeStatus,
+)
 
 from .autotune import Observation as AutoTuneObservation
 from .autotune import Phase as AutoTunePhase
@@ -258,16 +266,16 @@ class _ProductionProtocol:
     def __init__(self, config: RuntimeConfig) -> None:
         self._runtime = RuntimeProtocol(config.run_directory, config.run_id)
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        if name not in {
-            "companion-ready",
-            "mission-ready",
-            "mission-command-delivered",
-            "mission-finished",
-            "runtime-failure",
+    def write_status(self, status: RuntimeStatus) -> None:
+        if type(status) not in {
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            MissionCommandDeliveredStatus,
+            MissionFinishedStatus,
+            RuntimeFailureStatus,
         }:
             raise ValueError("companion does not own that status")
-        self._runtime.write_status(name, document)
+        self._runtime.write_status(status)
 
     def write_quiescence(self, module: str) -> Any:
         return self._runtime.write_quiescence(module)
@@ -940,13 +948,12 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             if runtime_failure_written:
                 return
             protocol.write_status(
-                "runtime-failure",
-                {
-                    "run_id": config.run_id,
-                    "module": "companion",
-                    "reason": reason,
-                    "diagnostic_paths": ["logs/docker/companion.log.partial"],
-                },
+                RuntimeFailureStatus(
+                    config.run_id,
+                    "companion",
+                    reason,
+                    ("logs/docker/companion.log.partial",),
+                )
             )
             runtime_failure_written = True
 

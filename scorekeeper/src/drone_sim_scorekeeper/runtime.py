@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from artifacts.runtime_status import RuntimeFailureStatus, RuntimeStatus
 from .descent import DescentScorer, GroundTruthSample
 from .models import ScoreEvent, ScoreResult
 from .output import persist_score_outputs
@@ -15,7 +16,7 @@ from .status import write_score_finished
 
 
 class RuntimeProtocol(Protocol):
-    def write_status(self, name: str, document: dict[str, object]) -> object: ...
+    def write_status(self, status: RuntimeStatus) -> object: ...
     def write_quiescence(self, module: str) -> object: ...
 
 
@@ -137,24 +138,14 @@ class ScorekeeperRuntime:
     def _write_failure(self, reason: str) -> None:
         if self._failure_written:
             return
-        try:
-            self.protocol.write_status(
-                "runtime-failure",
-                {
-                    "run_id": self.run_id,
-                    "module": "scorekeeper",
-                    "reason": reason,
-                    "diagnostic_paths": [
-                        "scoring/events.jsonl",
-                        "scoring/result.json",
-                    ],
-                },
+        self.protocol.write_status(
+            RuntimeFailureStatus(
+                self.run_id,
+                "scorekeeper",
+                reason,
+                ("scoring/events.jsonl", "scoring/result.json"),
             )
-        except Exception:
-            reader = getattr(self.protocol, "read_status", None)
-            existing = reader("runtime-failure") if callable(reader) else None
-            if not isinstance(existing, dict) or existing.get("run_id") != self.run_id:
-                raise
+        )
         self._failure_written = True
 
     def _finalize(self, *, source_timestamp_ns: int | None = None) -> ScoreResult:
