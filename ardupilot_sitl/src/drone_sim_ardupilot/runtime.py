@@ -117,6 +117,7 @@ class SITLProcess:
                     earlier_error = close_error
                 else:
                     earlier_error.add_note(f"SITL resource cleanup failed: {close_error}")
+        self._selector = None
         return earlier_error
 
     def stop(self, timeout_seconds: float) -> int | None:

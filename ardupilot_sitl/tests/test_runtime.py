@@ -87,6 +87,7 @@ def test_sitl_process_captures_both_streams_and_stops_boundedly(tmp_path: Path) 
         ("stderr", "bind port 5760 for 0"),
     }
     assert return_code < 0
+    assert process.read_line(0) is None
 
 
 def test_sitl_process_stop_without_created_child_returns_none(tmp_path: Path) -> None:
@@ -133,6 +134,11 @@ def test_sitl_process_reaps_child_and_closes_resources_when_second_selector_regi
         def close(self) -> None:
             self.closed = True
 
+        def select(self, _timeout: float) -> list[object]:
+            if self.closed:
+                raise ValueError("selector is closed")
+            return []
+
     selector = FailedSelector()
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: child)
     monkeypatch.setattr(selectors, "DefaultSelector", lambda: selector)
@@ -150,3 +156,4 @@ def test_sitl_process_reaps_child_and_closes_resources_when_second_selector_regi
     assert process.return_code == -15
     assert process.stop(0.1) == -15
     assert child.waits == 1
+    assert process.read_line(0) is None
