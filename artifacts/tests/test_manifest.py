@@ -18,6 +18,8 @@ from artifacts.manifest import (
     REQUIRED_ARTIFACT_PATHS,
     build_manifest,
     canonical_manifest_bytes,
+    is_manifest_relative_path,
+    validate_manifest,
     write_manifest_atomic,
 )
 
@@ -230,6 +232,45 @@ def test_manifest_schema_accepts_a_completed_manifest(tmp_path):
 
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(manifest.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "path", "expected"),
+    [
+        ("configuration", "./", "./", False),
+        ("configuration", "././", "././", False),
+        (
+            "evidence",
+            r"scoring/events.jsonl#bad\anchor",
+            "scoring/events.jsonl",
+            True,
+        ),
+    ],
+)
+def test_manifest_schema_matches_python_path_contract(
+    tmp_path, field_name, value, path, expected
+):
+    manifest = build_manifest(tmp_path, "run-7", "FAILED", "recording_failed")
+    if field_name == "configuration":
+        candidate = replace(
+            manifest,
+            configurations=(ConfigurationRecord(value, "a" * 64),),
+        )
+    else:
+        candidate = replace(manifest, evidence_paths=(value,))
+    schema_path = Path(__file__).parents[1] / "schemas/manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+
+    assert is_manifest_relative_path(path) is expected
+    if expected:
+        validate_manifest(candidate)
+        validator.validate(candidate.to_dict())
+    else:
+        with pytest.raises(ValueError):
+            validate_manifest(candidate)
+        with pytest.raises(ValidationError):
+            validator.validate(candidate.to_dict())
 
 
 @pytest.mark.parametrize(
