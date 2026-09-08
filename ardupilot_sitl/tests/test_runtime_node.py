@@ -440,6 +440,9 @@ def test_main_preserves_monitoring_error_and_notes_cleanup_errors(
     monitoring_error = RuntimeError("monitoring failed")
     cleanup_error = RuntimeError("stop failed")
     trace: list[str] = []
+    private_failures: list[dict[str, object]] = []
+    terminal_reasons: list[object] = []
+    shared_reasons: list[str] = []
 
     class Process:
         def __init__(self, _command: tuple[str, ...], _work: Path) -> None:
@@ -463,8 +466,10 @@ def test_main_preserves_monitoring_error_and_notes_cleanup_errors(
         def __init__(self, _run_directory: Path, _run_id: str) -> None:
             pass
 
-        def write_status(self, _status: object) -> None:
+        def write_status(self, status: object) -> None:
             trace.append("shared_failure")
+            assert isinstance(status, RuntimeFailureStatus)
+            shared_reasons.append(status.reason)
 
         def write_quiescence(self, _module: str) -> None:
             trace.append("quiescence")
@@ -479,6 +484,11 @@ def test_main_preserves_monitoring_error_and_notes_cleanup_errors(
         def emit(self, event: str, **_fields: object) -> None:
             if event == "failed":
                 trace.append("terminal")
+                terminal_reasons.append(_fields["reason"])
+
+    def atomic_document(_path: Path, document: dict[str, object]) -> None:
+        trace.append("private_failure")
+        private_failures.append(document)
 
     monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
     monkeypatch.setenv("SIM_RUN_DIRECTORY", str(tmp_path))
@@ -486,7 +496,7 @@ def test_main_preserves_monitoring_error_and_notes_cleanup_errors(
     monkeypatch.setattr(runtime_node, "SITLProcess", Process)
     monkeypatch.setattr(runtime_node, "RuntimeProtocol", Protocol)
     monkeypatch.setattr(runtime_node, "EventWriter", Writer)
-    monkeypatch.setattr(runtime_node, "atomic_document", lambda *_args: trace.append("private_failure"))
+    monkeypatch.setattr(runtime_node, "atomic_document", atomic_document)
     monkeypatch.setattr(
         runtime_node,
         "_diagnostic_paths",
@@ -498,6 +508,9 @@ def test_main_preserves_monitoring_error_and_notes_cleanup_errors(
 
     assert raised.value is monitoring_error
     assert raised.value.__notes__ == ["cleanup failure during stop/reap: stop failed"]
+    assert [document["reason"] for document in private_failures] == ["monitoring failed"]
+    assert terminal_reasons == ["monitoring failed"]
+    assert shared_reasons == ["monitoring failed"]
     assert trace == [
         "stop",
         "private_failure",

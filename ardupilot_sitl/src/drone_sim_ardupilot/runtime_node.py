@@ -58,15 +58,15 @@ def _finalize(
     confirmed_exit = False
     diagnostics: list[str] = []
 
+    if primary is not None:
+        failure_reason = failure_reason or _failure_reason(primary)
+
     try:
         return_code = process.stop(10.0)
         confirmed_exit = return_code is not None
     except BaseException as error:
         primary = _record_cleanup_error(primary, error, "stop/reap")
         failure_reason = failure_reason or _failure_reason(error)
-
-    if primary is not None:
-        failure_reason = failure_reason or _failure_reason(primary)
 
     if failure_reason is not None:
         try:
