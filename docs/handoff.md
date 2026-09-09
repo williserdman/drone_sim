@@ -57,8 +57,8 @@ dependency or a consequence, so this is not a full pass. The prior baseline was 
 | 13, adapter consolidation | -1 |
 | **Total** | **+498/-762, net -264** |
 
-Independent reviews for Tasks 1 through 12 passed. Task 13's final independent
-re-review passed after two fixes, with no Critical, Important, or Minor findings.
+Independent task reviews 1-14 and final Standards/Spec reviews passed after
+scoped review fixes; no Critical, Important, or Minor findings remain.
 
 ## Image and runtime boundary
 
