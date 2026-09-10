@@ -4,7 +4,7 @@ dronekit
 pymavlink
 future
 numpy<2
-opencv-contrib-python
+opencv-contrib-python==4.6.0.66
 gpiozero
 adafruit-blinka
 adafruit-circuitpython-lidarlite
