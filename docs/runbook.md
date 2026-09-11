@@ -11,7 +11,6 @@ image builds and real flights; do not launch a mission just to check installatio
 - Docker Engine and the Compose plugin, with permission to use the daemon.
 - A Linux/container environment able to run the pinned ROS 2 Jazzy, Gazebo
   Harmonic, and ArduPilot images. Image builds need network access and can be slow.
-- The separate mission checkout below for the Phase 3 build/run path.
 - Free disk space for images and `runs/` evidence. Check `df -h .` and
   `docker system df`; this guide does not delete old evidence or images.
 
@@ -27,28 +26,24 @@ docker compose version
 make test-unit
 ```
 
-### The separate mission checkout
+### Comp2026 mission source
 
-`companion/comp2026` is a **separate Git repository**, not currently a submodule
-or tracked source directory of this parent repository. A fresh parent clone
-does not contain it. Obtain the intended checkout and commit from the maintainer
-before building; there is no repository-owned, self-contained bootstrap yet.
-Do not substitute a similarly named upstream branch or silently use the parent
-repository's revision as the mission revision.
+`companion/comp2026` is tracked in this monorepo. A normal clone contains the
+mission source required by the Phase 3 build. Its history before the monorepo
+import remains available through Git.
 
-Once supplied, confirm it is really the nested repository:
+Confirm the source and repository state before building:
 
 ```bash
-git -C companion/comp2026 rev-parse --show-toplevel
-git -C companion/comp2026 rev-parse HEAD
-git -C companion/comp2026 status --short
+test -f companion/comp2026/README.md
+git rev-parse HEAD
+git status --short
 ```
 
-The first command must point to `companion/comp2026`, not the parent root.
-Commit or explicitly account for mission source changes before a reproducible
-build. The Docker label records HEAD, not a hash of all uncommitted source files.
+Commit or explicitly account for source changes before a reproducible build.
+The Docker label records monorepo HEAD, not a hash of uncommitted source files.
 The [Docker context allowlist](../.dockerignore) includes only the mission's
-runtime import closure; adding a new nested module may require updating it.
+runtime import closure; adding a new mission module may require updating it.
 
 ## Build runtime images
 
@@ -57,7 +52,7 @@ while another run is collecting provenance. Preserve old digests if you intend
 to inspect an old run later.
 
 ```bash
-SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD) \
+SIM_COMP2026_REVISION=$(git rev-parse HEAD) \
   docker compose --profile phase3 build
 ```
 
@@ -66,7 +61,7 @@ argument. Compose leaves it empty when omitted so inactive profiles and
 noncompanion configuration still resolve, but the companion build then fails
 before package installation or source copies. At launch the CLI checks the
 companion image's `org.opencontainers.image.comp2026.revision` label against
-nested Git HEAD and fails closed on a mismatch. Check it without launching:
+monorepo HEAD and fails closed on a mismatch. Check it without launching:
 
 ```bash
 docker image inspect drone-sim-companion-runtime:phase3 \

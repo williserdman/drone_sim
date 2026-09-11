@@ -11,8 +11,9 @@ branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 ## Maintainer start
 
 Read the architecture map, then use the runbook for current setup, build, launch,
-and acceptance commands. A fresh clone lacks the separate `companion/comp2026`
-checkout. Verify its intended revision before a Phase 3 build; a mission log or score alone is not a pass.
+and acceptance commands. The tracked `companion/comp2026` source is included in
+a fresh clone. Verify monorepo HEAD before a Phase 3 build; a mission log or
+score alone is not a pass.
 
 ## Verified behavior and limits
 
@@ -89,18 +90,15 @@ scoped review fixes; no Critical, Important, or Minor findings remain.
 ## Image and runtime boundary
 
 No image was rebuilt or retagged. Existing tags predate these changes and are
-stale and unrun for this revision. This worktree has no `companion/comp2026`;
-no symlink was created and no Phase 3 build was claimed.
+stale and unrun for this revision. That cleanup worktree had no
+`companion/comp2026`; no symlink was created and no Phase 3 build was claimed.
 
 Campaign outcomes are separate: physical mission `not run`; score `not produced`;
 artifact validity `not evaluated`; images `not rebuilt`. Source tests do not change them.
 
 ## Active priorities
 
-1. Make acquisition and pinning of the separate Comp2026 mission reproducible.
-   Publish an accessible intended revision and choose a submodule or explicit
-   acquisition method. Do not invent a remote or bypass the revision guard.
-2. Diagnose the historical range-stream sample loss, then obtain a fresh pinned,
+1. Diagnose the historical range-stream sample loss, then obtain a fresh pinned,
    full-window competition baseline. Check physical behavior, score, and artifact
    validity separately while keeping the timestamp and physical checks strict.
 
@@ -112,7 +110,7 @@ rendezvous where required.
 
 ## Preservation warning
 
-Preserve `runs/`, ArduPilot parameters, Gazebo resources and textures, provenance
-and licenses, Compose/image configuration, and the independent mission repository.
-A source edit does not rebuild an image. Before cleanup or integration, check both
-Git statuses and keep evidence tied to its source revisions and image digests.
+Preserve `runs/`, ArduPilot parameters, Gazebo resources and textures,
+provenance, licenses, Compose/image configuration, and imported mission history.
+A source edit does not rebuild an image. Before cleanup or integration, check
+Git status and keep evidence tied to its source revisions and image digests.

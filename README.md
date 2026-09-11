@@ -32,10 +32,8 @@ make test-unit
 
 This checks the host tooling; it does **not** launch a flight or prove ROS/Gazebo
 integration. The [runbook](docs/runbook.md) explains the remaining prerequisites.
-In particular, a fresh clone is not yet self-contained: the separately versioned
-mission at `companion/comp2026` must be supplied before a Phase 3 image build/run.
 
-Once that checkout and the runtime images are ready, the normal flight command is:
+Once the runtime images are ready, the normal flight command is:
 
 ```bash
 uv run --locked drone-sim start --config config/default-run.json
@@ -61,12 +59,11 @@ README. For a mission, start with [companion](companion/README.md): define its
 behavior and success/failure conditions, implement and register it through the
 existing selector, add a run template and focused tests, then follow the
 [runbook](docs/runbook.md) to build and verify. Competition mission edits may
-belong to the separate nested checkout; check ownership before editing.
+belong under `companion/comp2026`; read its local documentation before editing.
 
 Update every affected module README and shared guide **in the same change**.
 Report documentation impact (or why none is needed), tests, and any unverified
 runtime behavior when handing off.
 
-## Packaging TODO
-
-- Make `companion/comp2026` a required Git submodule after publishing its pinned integration commit to an accessible remote.
+The Comp2026 mission source and its prior Git history are included in this
+monorepo at `companion/comp2026`.

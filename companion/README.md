@@ -22,7 +22,7 @@ truth, direct Gazebo mutation, scoring, or aggregate run finalization.
   PyMAVLink translation boundary.
 - [comp2026_host.py](src/drone_sim_companion/comp2026_host.py) adapts simulation
   clock, images, range, payload calls, waypoints, events, and failure recovery
-  for the separately supplied Comp2026 mission checkout.
+  for the bundled [Comp2026 mission](comp2026/README.md).
 - [lifecycle.py](src/drone_sim_companion/lifecycle.py) owns companion readiness,
   terminal mission evidence, and quiescence publication.
 - The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
@@ -57,11 +57,12 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.
-- `companion/comp2026` is a separate, untracked checkout required for the
-  `comp2026_auto` image. Keep changes there minimal and never push it as part of
-  this repository. The Docker context admits only its explicit import closure.
+- `companion/comp2026` is tracked in this monorepo and supplies the
+  `comp2026_auto` mission. Keep changes there focused and preserve its imported
+  history and provenance. The Docker context admits only its explicit import
+  closure.
 - Building the Phase 3 companion image requires
-  `SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD)`. Compose
+  `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. Compose
   leaves the build argument empty when it is not supplied so inactive profiles
   and noncompanion configuration still resolve; the companion Dockerfile rejects
   an empty value before package installation or source copies.
@@ -113,11 +114,12 @@ uv run --locked pytest companion/tests -q
 ```
 
 These host tests cover the pure policies, adapters, mission host, and runtime
-composition. They do not supply the nested checkout or prove a live flight; use
+composition. They do not prove a live flight; use
 the [runbook](../docs/runbook.md) for image and end-to-end procedures.
 
-When the separate checkout is present, also run:
+Run the bundled mission tests separately:
 
 ```bash
-PYTHONPATH=companion/comp2026/src uv run --locked pytest companion/comp2026/tests -q
+PYTHONPATH=companion/comp2026/src:companion/comp2026/tests \
+  uv run --locked pytest companion/comp2026/tests -q
 ```
