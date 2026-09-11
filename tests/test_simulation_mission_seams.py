@@ -332,6 +332,74 @@ def test_guided_waypoint_uses_stable_speed_and_exact_mission_item_int_coordinate
     assert horiz_distance_m_for_test(exact, target) < 0.01
 
 
+def test_nonblocking_guided_waypoint_preserves_integer_coordinates():
+    vehicle = StableVehicle(FakeClock())
+    controller = controller_without_connect(vehicle)
+
+    assert (
+        controller.send_guided_waypoint(
+            GPSCoord(41.12345678, -81.87654321, 4.572)
+        )
+        == 0
+    )
+
+    assert vehicle.mission_mav.items[-1][11:14] == (
+        411234568,
+        -818765432,
+        4.572,
+    )
+
+
+def valid_precision_landing_profile():
+    return {
+        "LAND_SPD_MS": 0.50,
+        "PLND_ENABLED": 1,
+        "PLND_TYPE": 1,
+        "PLND_EST_TYPE": 0,
+        "PLND_LAG": 0.08,
+        "PLND_XY_DIST_MAX": 0.50,
+        "PLND_STRICT": 2,
+        "PLND_RET_MAX": 1,
+        "PLND_TIMEOUT": 0.50,
+        "PLND_ALT_MIN": 0.75,
+        "PLND_ALT_MAX": 8.0,
+        "PLND_OPTIONS": 4,
+    }
+
+
+class ParameterVehicle:
+    def __init__(self, parameters):
+        self.parameters = parameters
+
+
+def test_precision_landing_profile_accepts_exact_runtime_values():
+    controller = controller_without_connect(
+        ParameterVehicle(valid_precision_landing_profile())
+    )
+
+    assert controller.require_precision_landing_profile() is True
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (("PLND_OPTIONS", 0), ("LAND_SPD_MS", 0.10), ("PLND_ENABLED", 1.5)),
+)
+def test_precision_landing_profile_rejects_runtime_mismatch(name, value):
+    parameters = valid_precision_landing_profile()
+    parameters[name] = value
+    controller = controller_without_connect(ParameterVehicle(parameters))
+
+    assert controller.require_precision_landing_profile() is False
+
+
+def test_precision_landing_profile_rejects_missing_runtime_parameter():
+    parameters = valid_precision_landing_profile()
+    del parameters["PLND_OPTIONS"]
+    controller = controller_without_connect(ParameterVehicle(parameters))
+
+    assert controller.require_precision_landing_profile() is False
+
+
 def horiz_distance_m_for_test(a, b):
     from drone.control.drone_control import horiz_distance_m
 

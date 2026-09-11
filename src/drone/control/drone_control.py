@@ -27,6 +27,21 @@ FEET_TO_METERS = 0.3048
 ALT_30FT = 30 * FEET_TO_METERS  # 9.144 m
 ALT_40FT = 40 * FEET_TO_METERS  # 12.192 m
 
+PRECISION_LANDING_PARAMETERS = {
+    "LAND_SPD_MS": 0.50,
+    "PLND_ENABLED": 1,
+    "PLND_TYPE": 1,
+    "PLND_EST_TYPE": 0,
+    "PLND_LAG": 0.08,
+    "PLND_XY_DIST_MAX": 0.50,
+    "PLND_STRICT": 2,
+    "PLND_RET_MAX": 1,
+    "PLND_TIMEOUT": 0.50,
+    "PLND_ALT_MIN": 0.75,
+    "PLND_ALT_MAX": 8.0,
+    "PLND_OPTIONS": 4,
+}
+
 
 def horiz_distance_m(a: GPSCoord, b: GPSCoord):
     """Approx horizontal distance (meters) between two lat/lon pairs."""
@@ -251,6 +266,36 @@ class DroneControl:
         ):
             return -1
         return 0
+
+    def send_guided_waypoint(self, coord: GPSCoord) -> int:
+        """Send one nonblocking, full-precision earth-fixed GUIDED waypoint."""
+        _send_guided_waypoint(self.vehicle, coord.lat, coord.long, coord.alt)
+        return 0
+
+    def require_precision_landing_profile(self) -> bool:
+        """Fail closed unless the flight controller has the approved profile."""
+        for name, expected in PRECISION_LANDING_PARAMETERS.items():
+            actual = self.vehicle.parameters.get(name)
+            if actual is None:
+                print(
+                    f"[ERR] Precision landing parameter {name} is missing; "
+                    f"expected {expected}."
+                )
+                return False
+            if isinstance(expected, int):
+                numeric = float(actual)
+                matches = numeric.is_integer() and int(numeric) == expected
+            else:
+                matches = math.isclose(
+                    float(actual), expected, rel_tol=0.0, abs_tol=1e-3
+                )
+            if not matches:
+                print(
+                    f"[ERR] Precision landing parameter {name}={actual}; "
+                    f"expected {expected}."
+                )
+                return False
+        return True
 
     def move_relative_ned(self, dir: NEDMeters) -> int:
         return 0
