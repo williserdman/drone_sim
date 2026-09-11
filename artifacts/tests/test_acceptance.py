@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 from types import SimpleNamespace
 
@@ -1048,59 +1049,27 @@ def test_semantic_cli_passes_external_expected_provenance(tmp_path, monkeypatch)
     ]
 
 
-def test_make_inspect_phase3_invokes_host_orchestrator_cli_exactly(tmp_path):
+def test_makefile_exposes_exact_supported_target_inventory():
     root = Path(__file__).parents[2]
-    run_directory = tmp_path / "run"
 
     result = subprocess.run(
-        [
-            "make",
-            "--no-print-directory",
-            "-n",
-            "inspect-phase3",
-            f"RUN_DIRECTORY={run_directory}",
-            "REQUIRE_MAXIMUM_SCORE=1",
-            f"EXPECTED_SOURCE_REVISION={EXPECTED_SOURCE_REVISION}",
-            "EXPECTED_SOURCE_DIRTY=false",
-            "ORCHESTRATION_IMAGE_DIGEST="
-            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[0]],
-            "ARTIFACTS_IMAGE_DIGEST="
-            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[1]],
-            "COMPANION_IMAGE_DIGEST="
-            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[2]],
-            "ARDUPILOT_IMAGE_DIGEST="
-            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[3]],
-            "GAZEBO_IMAGE_DIGEST="
-            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[4]],
-            "ELECTROMAGNET_IMAGE_DIGEST="
-            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[5]],
-            "SCOREKEEPER_IMAGE_DIGEST="
-            + EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[6]],
-        ],
+        ["make", "--no-print-directory", "-qpRr"],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
     )
 
-    assert result.returncode == 0
-    lines = result.stdout.splitlines()
-    assert lines[:10] == [
-        f'test -n "{run_directory}"',
-        f'test -n "{EXPECTED_SOURCE_REVISION}"',
-        'test -n "false"',
-        *(f'test -n "{EXPECTED_IMAGE_DIGESTS[name]}"' for name in PHASE3_IMAGE_NAMES),
-    ]
-    command = lines[10]
-    assert command.startswith(
-        f'uv run python -m artifacts.acceptance "{run_directory}" '
-        "--rules-path scorekeeper/rules/descent_v1.json "
+    assert result.returncode in {0, 1}
+    targets = sorted(
+        line.partition(":")[0]
+        for line in result.stdout.splitlines()
+        if re.fullmatch(r"[a-z][a-z0-9-]*:.*", line)
     )
-    assert '--expected-source-revision "abc123"' in command
-    assert '--expected-source-dirty "false"' in command
-    for name in PHASE3_IMAGE_NAMES:
-        assert (
-            f'--expected-image-digest "{name}={EXPECTED_IMAGE_DIGESTS[name]}"'
-            in command
-        )
-    assert command.endswith("--require-maximum-score")
+    assert targets == [
+        "inspect-competition",
+        "test",
+        "test-foundation",
+        "test-phase2",
+        "test-unit",
+    ]

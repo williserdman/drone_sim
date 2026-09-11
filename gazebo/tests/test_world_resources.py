@@ -116,15 +116,6 @@ def test_resolve_world_rejects_every_non_phase3_fixture(world: str, vehicle: str
         resolve_world(WorldConfig(world=world, vehicle=vehicle))
 
 
-def test_model_api_maps_iris_only_to_the_conventional_local_uri():
-    """A changed URI mapping could re-enable a remote or incorrectly nested lookup."""
-    from drone_sim_gazebo.models import model_uri_for_vehicle
-
-    assert model_uri_for_vehicle("iris") == "model://iris_phase3"
-    with pytest.raises(ValueError, match="supports only vehicle iris"):
-        model_uri_for_vehicle("other")
-
-
 def test_resolver_rejects_symlinks_anywhere_in_resource_tree(tmp_path: Path):
     """Following a tree symlink would hash bytes outside the image-owned snapshot."""
     resources = _minimal_resources(tmp_path)

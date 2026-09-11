@@ -5,13 +5,17 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import json
 import math
-import os
-from pathlib import Path
 import re
 import subprocess
 import time
-from uuid import UUID, uuid4
 
+from artifacts.runtime_status import (
+    FlightExchange,
+    GazeboReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeStatusError,
+    SourceFinishedStatus,
+)
 from .model import (
     ActivateOutput,
     BeginFinalization,
@@ -61,81 +65,6 @@ def _validate_flight_status(value: object) -> dict[str, bool | int]:
     return dict(value)
 
 
-def _flight_status_ready(status: Mapping[str, bool | int]) -> bool:
-    return bool(
-        status["online"]
-        and status["servo_packets_received"] >= 1
-        and status["motor_updates"] >= 1
-        and status["json_states_sent"] >= 1
-        and status["servo_frame_gaps"] == 0
-        and status["json_send_errors"] == 0
-    )
-
-
-class GazeboReadyStatus:
-    """Publish the one module-specific readiness fact without replacing evidence."""
-
-    def __init__(self, run_directory: Path, run_id: str) -> None:
-        if str(UUID(run_id)) != run_id or run_directory.name != run_id:
-            raise ValueError("run directory and canonical run_id must agree")
-        self._directory = Path(run_directory) / ".status"
-        self._target = self._directory / "gazebo-ready.json"
-        self._run_id = run_id
-        self._flight_exchange: dict[str, bool | int] | None = None
-        self._payload: bytes | None = None
-
-    def record_flight_exchange(self, status: Mapping[str, bool | int]) -> None:
-        validated = _validate_flight_status(dict(status))
-        if not _flight_status_ready(validated):
-            raise RuntimeError("cannot record an unready ArduPilot exchange")
-        if self._payload is not None:
-            raise RuntimeError("gazebo-ready payload is already frozen")
-        if self._flight_exchange is not None and self._flight_exchange != validated:
-            raise RuntimeError("flight exchange readiness was already latched")
-        self._flight_exchange = validated
-
-    def _frozen_payload(self) -> bytes:
-        if self._payload is None:
-            document: dict[str, object] = {"run_id": self._run_id, "ready": True}
-            if self._flight_exchange is not None:
-                document["flight_exchange"] = self._flight_exchange
-            self._payload = (
-                json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
-            ).encode()
-        return self._payload
-
-    def write_gazebo_ready(self) -> Path:
-        payload = self._frozen_payload()
-        if self._target.exists():
-            if self._target.read_bytes() != payload:
-                raise RuntimeError("gazebo-ready fact conflicts with existing evidence")
-            return self._target
-        temporary = self._directory / f".gazebo-ready.{uuid4().hex}.tmp"
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-            0o644,
-        )
-        try:
-            os.write(descriptor, payload)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        try:
-            os.link(temporary, self._target)
-        except FileExistsError:
-            if self._target.read_bytes() != payload:
-                raise RuntimeError("gazebo-ready fact conflicts with existing evidence")
-        finally:
-            temporary.unlink(missing_ok=True)
-        directory_fd = os.open(self._directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-        return self._target
-
-
 class GazeboTransport:
     def __init__(
         self,
@@ -156,6 +85,12 @@ class GazeboTransport:
         self._control_service = f"/world/{world_name}/control"
         self._stats_topic = f"/world/{world_name}/stats"
         self._run = run
+
+    def assert_typed_readiness_supported(self) -> None:
+        if not self._flight:
+            raise TransportError(
+                "typed Gazebo readiness requires an ArduPilot flight exchange"
+            )
 
     def _command(self, argv: tuple[str, ...], *, timeout: float = 5.0):
         try:
@@ -192,26 +127,29 @@ class GazeboTransport:
                 f"required Gazebo service is missing: {_FLIGHT_STATUS_SERVICE}"
             )
 
-    def flight_exchange_status(self, *, timeout: float = 2.0) -> dict[str, bool | int]:
-        if not self._flight:
-            raise TransportError("the passive world has no ArduPilot exchange")
-        result = self._command(
-            (
-                "gz",
-                "service",
-                "-s",
-                _FLIGHT_STATUS_SERVICE,
-                "--reqtype",
-                "gz.msgs.Empty",
-                "--reptype",
-                "gz.msgs.StringMsg",
-                "--timeout",
-                "1000",
-                "--req",
-                "",
-            ),
-            timeout=timeout,
-        )
+    def ready_flight_exchange(
+        self, *, timeout: float = 2.0
+    ) -> FlightExchange | None:
+        try:
+            result = self._command(
+                (
+                    "gz",
+                    "service",
+                    "-s",
+                    _FLIGHT_STATUS_SERVICE,
+                    "--reqtype",
+                    "gz.msgs.Empty",
+                    "--reptype",
+                    "gz.msgs.StringMsg",
+                    "--timeout",
+                    "1000",
+                    "--req",
+                    "",
+                ),
+                timeout=timeout,
+            )
+        except TransportUnavailable:
+            return None
         output = result.stdout.strip()
         if not output.startswith('data: "'):
             raise TransportError("ArduPilot status service returned malformed data")
@@ -220,19 +158,10 @@ class GazeboTransport:
             document = json.loads(encoded)
         except (TypeError, json.JSONDecodeError) as error:
             raise TransportError("ArduPilot status service returned malformed JSON") from error
-        return _validate_flight_status(document)
-
-    def flight_exchange_ready(self, *, timeout: float = 2.0) -> bool:
-        return self.ready_flight_exchange(timeout=timeout) is not None
-
-    def ready_flight_exchange(
-        self, *, timeout: float = 2.0
-    ) -> dict[str, bool | int] | None:
         try:
-            status = self.flight_exchange_status(timeout=timeout)
-        except TransportUnavailable:
+            return FlightExchange(**_validate_flight_status(document))
+        except RuntimeStatusError:
             return None
-        return status if _flight_status_ready(status) else None
 
     def _control(self, request: str) -> None:
         result = self._command(
@@ -338,7 +267,6 @@ class ActionExecutor:
         *,
         run_id: str,
         protocol,
-        status,
         transport: GazeboTransport,
         children,
         server,
@@ -348,7 +276,6 @@ class ActionExecutor:
     ) -> None:
         self._run_id = run_id
         self._protocol = protocol
-        self._status = status
         self._transport = transport
         self._children = children
         self._server = server
@@ -361,7 +288,9 @@ class ActionExecutor:
         for action in actions:
             self._observe(action)
             if isinstance(action, PublishGazeboReady):
-                self._status.write_gazebo_ready()
+                self._protocol.write_status(
+                    GazeboReadyStatus(self._run_id, action.flight_exchange)
+                )
             elif isinstance(action, RequestSteps):
                 self._transport.request_steps(action.count)
             elif isinstance(action, SetPaused):
@@ -373,22 +302,16 @@ class ActionExecutor:
                 self._activate_output()
             elif isinstance(action, WriteSourceFinished):
                 self._protocol.write_status(
-                    "source-finished",
-                    {
-                        "run_id": self._run_id,
-                        "finished": True,
-                        "sim_timestamp_ns": action.sim_timestamp_ns,
-                    },
+                    SourceFinishedStatus(self._run_id, action.sim_timestamp_ns)
                 )
             elif isinstance(action, WriteRuntimeFailure):
                 self._protocol.write_status(
-                    "runtime-failure",
-                    {
-                        "run_id": self._run_id,
-                        "module": "gazebo",
-                        "reason": action.reason,
-                        "diagnostic_paths": list(action.diagnostic_paths),
-                    },
+                    RuntimeFailureStatus(
+                        self._run_id,
+                        "gazebo",
+                        action.reason,
+                        action.diagnostic_paths,
+                    )
                 )
             elif isinstance(action, BeginFinalization):
                 continue

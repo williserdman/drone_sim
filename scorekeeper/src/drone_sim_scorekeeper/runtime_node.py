@@ -11,8 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 from typing import Any, Callable, Protocol
-from uuid import UUID
 
+from artifacts.runtime_status import SourceFinishedStatus, canonical_run_id
 from .competition import (
     CompetitionScorer,
     MissionEventSample,
@@ -29,18 +29,6 @@ from .runtime import ScenarioSample, ScorekeeperRuntime
 _FRAME_INTERVAL_NS = 50_000_000
 
 
-def _canonical_run_id(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("run_id must be a canonical UUID")
-    try:
-        parsed = UUID(value)
-    except (TypeError, ValueError, AttributeError) as error:
-        raise ValueError("run_id must be a canonical UUID") from error
-    if str(parsed) != value:
-        raise ValueError("run_id must be a canonical UUID")
-    return value
-
-
 @dataclass(frozen=True)
 class RuntimeSettings:
     scenario: str
@@ -49,7 +37,7 @@ class RuntimeSettings:
 
 def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
     """Read only the resolved fields that define score input cardinality."""
-    canonical = _canonical_run_id(run_id)
+    canonical = canonical_run_id(run_id)
     try:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -210,7 +198,9 @@ def score_event_message(event: ScoreEvent, message_type: Callable[[], Any]) -> A
 
 
 class DriverProtocol(Protocol):
-    def read_status(self, name: str) -> dict[str, Any] | None: ...
+    def read_status(
+        self, status_type: type[SourceFinishedStatus]
+    ) -> SourceFinishedStatus | None: ...
     def read_finalize_request(self) -> dict[str, Any] | None: ...
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
 
@@ -221,6 +211,7 @@ class ScoreRuntimeProtocol(Protocol):
 
     def source_inputs_observed_through(self, timestamp_ns: int) -> bool: ...
     def accept_source_finished(self, sim_timestamp_ns: int) -> ScoreResult: ...
+    def fail(self, reason: str) -> None: ...
     def begin_finalization(self) -> None: ...
 
 
@@ -236,7 +227,7 @@ class ScorekeeperDriver:
         on_scored: Callable[[bool, float, int], None] = lambda _complete, _score, _stamp: None,
         before_quiescence: Callable[[], None] = lambda: None,
     ) -> None:
-        self.run_id = _canonical_run_id(run_id)
+        self.run_id = canonical_run_id(run_id)
         self.runtime = runtime
         self.protocol = protocol
         self._source_seen = False
@@ -248,21 +239,12 @@ class ScorekeeperDriver:
     def poll(self) -> bool:
         if not self._source_seen:
             source = (
-                self.protocol.read_status("source-finished")
+                self.protocol.read_status(SourceFinishedStatus)
                 if self._source_timestamp_ns is None
                 else None
             )
             if source is not None:
-                if (
-                    set(source) != {"run_id", "finished", "sim_timestamp_ns"}
-                    or source.get("run_id") != self.run_id
-                    or source.get("finished") is not True
-                    or not isinstance(source.get("sim_timestamp_ns"), int)
-                    or isinstance(source["sim_timestamp_ns"], bool)
-                    or source["sim_timestamp_ns"] < 0
-                ):
-                    raise ValueError("source-finished status is invalid")
-                self._source_timestamp_ns = source["sim_timestamp_ns"]
+                self._source_timestamp_ns = source.sim_timestamp_ns
             if (
                 self._source_timestamp_ns is not None
                 and self.runtime.source_inputs_observed_through(
@@ -279,15 +261,13 @@ class ScorekeeperDriver:
         if not self._finalize_seen:
             request = self.protocol.read_finalize_request()
             if request is not None:
-                if request.get("run_id") != self.run_id:
-                    raise ValueError("finalize request belongs to another run")
                 self._finalize_seen = True
                 self._before_quiescence()
                 self.runtime.begin_finalization()
         if not self.runtime.quiescent:
             return False
         committed = self.protocol.read_terminal_committed()
-        return committed is not None and committed.get("run_id") == self.run_id
+        return committed is not None
 
 
 class _StructuredLogger:
@@ -369,59 +349,83 @@ def _create_ros_boundary(
 
     def accept_ground_truth(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             runtime_ref[0].accept_ground_truth(ground_truth_from_message(message))
         except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
 
     def accept_scenario(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             sample = scenario_from_message(message)
             runtime_ref[0].accept_scenario(sample)
-            if sample.run_id == run_id:
-                logger.emit(
-                    "scenario_observed",
-                    sim_timestamp_ns=sample.sim_timestamp_ns,
-                    event_id=sample.event_id,
-                    magnet_id=sample.magnet_id,
-                    state=sample.state,
-                )
+        except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
+            errors.append(error)
+            return
+        try:
+            logger.emit(
+                "scenario_observed",
+                sim_timestamp_ns=sample.sim_timestamp_ns,
+                event_id=sample.event_id,
+                magnet_id=sample.magnet_id,
+                state=sample.state,
+            )
         except BaseException as error:
             errors.append(error)
 
     def accept_payload_state(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             runtime_ref[0].accept_payload_state(payload_state_from_message(message))
         except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
 
     def accept_payload_event(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             sample = payload_event_from_message(message)
             runtime_ref[0].accept_payload_event(sample)
-            if sample.run_id == run_id:
-                logger.emit(
-                    "payload_event_observed",
-                    sim_timestamp_ns=sample.sim_timestamp_ns,
-                    event_id=sample.event_id,
-                    aruco_id=sample.aruco_id,
-                    action=sample.action,
-                    state=sample.state,
-                )
+        except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
+            errors.append(error)
+            return
+        try:
+            logger.emit(
+                "payload_event_observed",
+                sim_timestamp_ns=sample.sim_timestamp_ns,
+                event_id=sample.event_id,
+                aruco_id=sample.aruco_id,
+                action=sample.action,
+                state=sample.state,
+            )
         except BaseException as error:
             errors.append(error)
 
     def accept_mission_event(message: Any) -> None:
         try:
+            if message.run_id != run_id:
+                return
             sample = mission_event_from_message(message)
             runtime_ref[0].accept_mission_event(sample)
-            if sample.run_id == run_id:
-                logger.emit(
-                    "mission_event_observed",
-                    sim_timestamp_ns=sample.sim_timestamp_ns,
-                    event_id=sample.event_id,
-                    phase=sample.phase,
-                    state=sample.state,
-                )
+        except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
+            errors.append(error)
+            return
+        try:
+            logger.emit(
+                "mission_event_observed",
+                sim_timestamp_ns=sample.sim_timestamp_ns,
+                event_id=sample.event_id,
+                phase=sample.phase,
+                state=sample.state,
+            )
         except BaseException as error:
             errors.append(error)
 
@@ -502,7 +506,7 @@ def main() -> int:
     import rclpy
     from artifacts.runtime_protocol import RuntimeProtocol
 
-    run_id = _canonical_run_id(os.environ["SIM_RUN_ID"])
+    run_id = canonical_run_id(os.environ["SIM_RUN_ID"])
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"]).resolve(strict=True)
     config_path = Path(
         os.environ.get(

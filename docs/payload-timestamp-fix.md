@@ -49,16 +49,18 @@ An independent read of recorded physical states (not scorer output) confirmed:
 - Home completion was at 261.20 seconds. Ground truth at that exact timestamp
   confirmed contact, zero speed, and position only 0.0062 metres from home centre.
 
-The independent check returned `physical_mission_verified: true`. Its
-[recorded evidence](../runs/259863d9-c558-4102-ae34-fe6c31f5cf94/review_video/physical-verification.json)
+The independent check returned `physical_mission_verified: true`. Its recorded
+evidence at
+`runs/259863d9-c558-4102-ae34-fe6c31f5cf94/review_video/physical-verification.json`
 contains the attachment, lift, release, settled position, and home-state values.
+These ignored, machine-local evidence files must be transferred separately.
 
 The timestamp fault did not recur during the flight. Both independent review
 videos were closed normally and fully decoded with FFmpeg without errors:
 
-- [Onboard video](../runs/259863d9-c558-4102-ae34-fe6c31f5cf94/review_video/onboard.mp4)
+- Onboard video: `runs/259863d9-c558-4102-ae34-fe6c31f5cf94/review_video/onboard.mp4`
   (264.70 seconds).
-- [Observer video](../runs/259863d9-c558-4102-ae34-fe6c31f5cf94/review_video/observer.mp4)
+- Observer video: `runs/259863d9-c558-4102-ae34-fe6c31f5cf94/review_video/observer.mp4`
   (264.90 seconds).
 
 Review approximately 3:15–3:42 for the third payload's lift, transport, and drop;

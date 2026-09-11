@@ -8,14 +8,41 @@ import threading
 
 import pytest
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
+import artifacts.manifest as manifest_module
 from artifacts.manifest import (
+    ArtifactRecord,
+    ConfigurationRecord,
     FinalizationConflict,
     REQUIRED_ARTIFACT_PATHS,
     build_manifest,
     canonical_manifest_bytes,
+    is_manifest_relative_path,
+    validate_manifest,
     write_manifest_atomic,
 )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("configuration/run.json", True),
+        ("video/onboard.mp4", True),
+        ("rosbag", True),
+        ("", False),
+        (".", False),
+        ("/absolute", False),
+        ("../escape", False),
+        ("a/../escape", False),
+        (r"logs/docker/bad\name.log", False),
+    ],
+)
+def test_manifest_relative_path_uses_portable_posix_grammar(value, expected):
+    predicate = getattr(manifest_module, "is_manifest_relative_path", None)
+
+    assert predicate is not None, "shared manifest path predicate is missing"
+    assert predicate(value) is expected
 
 
 def _write(run_dir, relative_path, contents="artifact"):
@@ -205,6 +232,136 @@ def test_manifest_schema_accepts_a_completed_manifest(tmp_path):
 
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(manifest.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "path", "expected"),
+    [
+        ("configuration", "./", "./", False),
+        ("configuration", "././", "././", False),
+        ("configuration", ".//.", ".//.", False),
+        ("configuration", "...", "...", True),
+        ("configuration", "\nlogs", "\nlogs", True),
+        ("configuration", "logs/a\nb", "logs/a\nb", True),
+        ("configuration", "logs/end\n", "logs/end\n", True),
+        ("configuration", ".\n", ".\n", True),
+        ("configuration", "logs/a\nb\\bad", "logs/a\nb\\bad", False),
+        ("configuration", "logs/a\n/../escape", "logs/a\n/../escape", False),
+        ("evidence", ".//#selector", ".//.", False),
+        ("evidence", "...#selector", "...", True),
+        ("evidence", "\nlogs#selector", "\nlogs", True),
+        ("evidence", "logs/a\nb#selector", "logs/a\nb", True),
+        ("evidence", "logs/end\n#selector", "logs/end\n", True),
+        ("evidence", ".\n#selector", ".\n", True),
+        (
+            "evidence",
+            r"scoring/events.jsonl#bad\anchor",
+            "scoring/events.jsonl",
+            True,
+        ),
+    ],
+)
+def test_manifest_schema_matches_python_path_contract(
+    tmp_path, field_name, value, path, expected
+):
+    manifest = build_manifest(tmp_path, "run-7", "FAILED", "recording_failed")
+    if field_name == "configuration":
+        candidate = replace(
+            manifest,
+            configurations=(ConfigurationRecord(value, "a" * 64),),
+        )
+    else:
+        candidate = replace(manifest, evidence_paths=(value,))
+    schema_path = Path(__file__).parents[1] / "schemas/manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+
+    assert is_manifest_relative_path(path) is expected
+    if expected:
+        validate_manifest(candidate)
+        validator.validate(candidate.to_dict())
+    else:
+        with pytest.raises(ValueError):
+            validate_manifest(candidate)
+        with pytest.raises(ValidationError):
+            validator.validate(candidate.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("section", "path"),
+    [
+        ("configurations", "configuration/run.json"),
+        ("artifacts", "video/onboard.mp4"),
+        ("incomplete_paths", "rosbag"),
+        ("evidence_paths", "scoring/events.jsonl#12"),
+    ],
+)
+def test_manifest_schema_accepts_portable_relative_paths(tmp_path, section, path):
+    _complete_run_directory(tmp_path)
+    document = build_manifest(tmp_path, "run-7", "COMPLETED", "mission_complete").to_dict()
+    if section == "configurations":
+        document[section] = [{"relative_path": path, "sha256": "a" * 64}]
+    elif section == "artifacts":
+        document[section][0]["relative_path"] = path
+    elif section == "evidence_paths":
+        document["scoring"][section] = [path]
+    else:
+        document[section] = [path]
+    schema_path = Path(__file__).parents[1] / "schemas/manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    Draft202012Validator(schema).validate(document)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["", ".", "/absolute", r"logs/docker/bad\name.log", "../escape", "a/../escape"],
+)
+@pytest.mark.parametrize(
+    "section", ["configurations", "artifacts", "incomplete_paths", "evidence_paths"]
+)
+def test_manifest_schema_rejects_nonportable_paths(tmp_path, section, path):
+    _complete_run_directory(tmp_path)
+    document = build_manifest(tmp_path, "run-7", "COMPLETED", "mission_complete").to_dict()
+    if section == "configurations":
+        document[section] = [{"relative_path": path, "sha256": "a" * 64}]
+    elif section == "artifacts":
+        document[section][0]["relative_path"] = path
+    elif section == "evidence_paths":
+        document["scoring"][section] = [path]
+    else:
+        document[section] = [path]
+    schema_path = Path(__file__).parents[1] / "schemas/manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(document)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {
+            "configurations": (
+                ConfigurationRecord(r"configuration\run.json", "a" * 64),
+            )
+        },
+        {
+            "artifacts": (
+                ArtifactRecord(r"logs/docker/bad\name.log", 1, "a" * 64, "valid", "valid"),
+            )
+        },
+        {"incomplete_paths": (r"video\onboard.mp4",)},
+        {"evidence_paths": (r"scoring\events.jsonl#12",)},
+    ],
+)
+def test_manifest_persistence_rejects_nonportable_paths_before_publication(tmp_path, changes):
+    manifest = build_manifest(tmp_path, "run-7", "FAILED", "recording_failed")
+
+    with pytest.raises(ValueError):
+        write_manifest_atomic(tmp_path, replace(manifest, **changes))
+
+    assert not (tmp_path / "manifest.json").exists()
 
 
 def test_manifest_schema_rejects_phase_one_present_validation(tmp_path):

@@ -46,9 +46,21 @@ PHASE2_IMAGES = (
 )
 
 
+def _compose_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in (
+        "COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_PROJECT_DIR",
+        "COMPOSE_PROJECT_DIRECTORY", "COMPOSE_DISABLE_ENV_FILE",
+    ):
+        environment.pop(name, None)
+    environment["COMPOSE_DISABLE_ENV_FILE"] = "1"
+    return environment
+
+
 @pytest.fixture(scope="module")
 def compose_document() -> dict:
-    environment = os.environ.copy()
+    environment = _compose_environment()
     for name in (
         "SIM_RUN_ID",
         "SIM_RUN_DIRECTORY",
@@ -59,7 +71,11 @@ def compose_document() -> dict:
     ):
         environment.pop(name, None)
     result = subprocess.run(
-        ["docker", "compose", "--profile", "phase2", "config", "--format", "json"],
+        [
+            "docker", "compose", "--file", "compose.yaml",
+            "--project-directory", str(ROOT), "--profile", "phase2",
+            "config", "--format", "json",
+        ],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -132,10 +148,13 @@ def test_container_contract_phase2_services_are_profile_scoped_and_unprivileged(
 
 
 def _compose_output(*arguments: str, project_name: str) -> tuple[str, ...]:
-    environment = os.environ.copy()
-    environment["COMPOSE_PROFILES"] = "phase2"
+    environment = _compose_environment()
     result = subprocess.run(
-        ["docker", "compose", "--project-name", project_name, *arguments],
+        [
+            "docker", "compose", "--file", "compose.yaml",
+            "--project-directory", str(ROOT), "--profile", "phase2",
+            "--project-name", project_name, *arguments,
+        ],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -158,9 +177,14 @@ def test_phase2_profile_resolves_exact_stable_project_independent_service_images
 
 
 def test_foundation_has_separate_profile_while_plain_config_remains_valid() -> None:
+    environment = _compose_environment()
     result = subprocess.run(
-        ["docker", "compose", "config", "--format", "json"],
+        [
+            "docker", "compose", "--file", "compose.yaml",
+            "--project-directory", str(ROOT), "config", "--format", "json",
+        ],
         cwd=ROOT,
+        env=environment,
         capture_output=True,
         text=True,
         check=False,
@@ -170,8 +194,13 @@ def test_foundation_has_separate_profile_while_plain_config_remains_valid() -> N
     assert document["services"] == {}
 
     all_profiles = subprocess.run(
-        ["docker", "compose", "--profile", "*", "config", "--format", "json"],
+        [
+            "docker", "compose", "--file", "compose.yaml",
+            "--project-directory", str(ROOT), "--profile", "*",
+            "config", "--format", "json",
+        ],
         cwd=ROOT,
+        env=environment,
         capture_output=True,
         text=True,
         check=False,

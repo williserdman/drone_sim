@@ -26,6 +26,11 @@ required evidence is missing or invalid.
   owns the required inventory, manifest model, validation, and atomic publication.
 - [`runtime_configuration.py`](src/artifacts/runtime_configuration.py) derives the
   recorder contract from the resolved run configuration.
+- [`runtime_status.py`](src/artifacts/runtime_status.py) owns the typed runtime
+  status schema, canonical JSON conversion, and write policy.
+  [`RuntimeProtocol`](src/artifacts/runtime_protocol.py) is the container-side
+  adapter over the strict, descriptor-safe persistence mechanics in
+  [`protocol_files.py`](src/artifacts/protocol_files.py).
 - [`acceptance.py`](src/artifacts/acceptance.py) and
   [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
   implement independent semantic acceptance for completed physical runs.
@@ -56,6 +61,9 @@ evidence, per-module logs, scoring files, diagnostics, and `manifest.json`. The
 required inventory is defined by
 [`REQUIRED_ARTIFACT_PATHS`](src/artifacts/manifest.py), and recorder-local semantic
 records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
+Manifest paths use portable POSIX-relative syntax. The executable contract is
+[`is_manifest_relative_path`](src/artifacts/manifest.py), with its JSON form in
+the [`manifest.json` schema](schemas/manifest.schema.json).
 
 ## Constraints worth preserving
 
@@ -72,6 +80,13 @@ records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
 - Completed runs require every required artifact; failed and aborted runs retain
   explicit missing/invalid records. Finalization is no-clobber and scoped to the
   current run directory.
+- The shared protocol helper operates within the cooperative trust boundary
+  defined in the [architecture guide](../docs/architecture.md#shared-communication-guarantees).
+  Its advisory lock is not a security boundary against a hostile process with
+  the same filesystem permissions.
+- Runtime components publish typed values from the shared
+  [`runtime_status.py`](src/artifacts/runtime_status.py) contract. Do not add a
+  module-local JSON writer or duplicate its field validation here.
 - CPU and optional GPU encoding must satisfy the same video contract. Deployment
   and GPU setup belong in the [runbook](../docs/runbook.md#optional-nvidia-path).
 
@@ -80,8 +95,9 @@ records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
 Run from the project root:
 
 ```bash
-uv run pytest artifacts/tests/test_runtime_configuration.py \
-  artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
+uv run pytest artifacts/tests/test_protocol_files.py \
+  artifacts/tests/test_runtime_protocol.py artifacts/tests/test_runtime_configuration.py -q
+uv run pytest artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
 uv run pytest artifacts/tests/test_manifest.py artifacts/tests/test_session.py \
   artifacts/tests/test_acceptance.py -q
 ```

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import tempfile
 
@@ -180,12 +180,20 @@ def _require_digest(
         raise ValueError(f"{field_name} must be an exact lowercase SHA-256 digest")
 
 
+def is_manifest_relative_path(value: object) -> bool:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return False
+    path = PurePosixPath(value)
+    return (
+        not path.is_absolute()
+        and path.parts not in ((), (".",))
+        and ".." not in path.parts
+    )
+
+
 def _require_relative_path(field_name: str, value: str) -> None:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field_name} must be a nonempty relative path")
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"{field_name} must be contained inside the run directory")
+    if not is_manifest_relative_path(value):
+        raise ValueError(f"{field_name} must be a portable path inside the run directory")
 
 
 def _validate_timing(simulation: SimulationTiming, wall: WallTiming) -> None:
@@ -309,7 +317,10 @@ def validate_manifest(
         raise ValueError("incomplete_paths must be unique")
     for incomplete_path in manifest.incomplete_paths:
         _check_deadline(deadline_check)
-        if incomplete_path not in REQUIRED_ARTIFACT_PATHS:
+        if (
+            not is_manifest_relative_path(incomplete_path)
+            or incomplete_path not in REQUIRED_ARTIFACT_PATHS
+        ):
             raise ValueError("incomplete_paths must name required artifact paths")
     required_records = {
         artifact.relative_path: artifact

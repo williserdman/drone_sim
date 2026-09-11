@@ -12,6 +12,17 @@ import time
 from typing import Any, Callable, Iterable, Protocol
 
 from artifacts.runtime_protocol import RuntimeProtocol, canonical_run_id
+from artifacts.runtime_status import (
+    ArduPilotReadyStatus,
+    CompanionReadyStatus,
+    GazeboReadyStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeFrozenStatus,
+    RuntimeRunningStatus,
+    RuntimeStatus,
+    StatusT,
+)
 from artifacts.structured_log import StructuredEvent, write_event
 
 
@@ -46,10 +57,10 @@ _PHASE3_RUN_STATE_NODES = frozenset(
 
 
 class _Protocol(Protocol):
-    def read_status(self, name: str) -> dict[str, Any] | None: ...
+    def read_status(self, status_type: type[StatusT]) -> StatusT | None: ...
     def read_finalize_request(self) -> dict[str, Any] | None: ...
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
-    def write_status(self, name: str, document: dict[str, Any]) -> Any: ...
+    def write_status(self, status: RuntimeStatus) -> Any: ...
     def write_quiescence(self, module: str) -> Any: ...
     def read_quiescence(self, module: str) -> dict[str, Any] | None: ...
 
@@ -158,7 +169,7 @@ class OrchestrationRuntime:
         protocol: _Protocol,
         publish: Callable[[RuntimeStateEvent], None],
         diagnostic: Callable[[str], None] = lambda _message: None,
-        required_durable_readiness: tuple[str, ...] = (),
+        required_durable_readiness: tuple[type[RuntimeStatus], ...] = (),
         require_gazebo_ready: bool = False,
     ) -> None:
         self.run_id = canonical_run_id(run_id)
@@ -173,9 +184,9 @@ class OrchestrationRuntime:
         self._publish = publish
         self._diagnostic = diagnostic
         allowed_readiness = {
-            "ardupilot-ready",
-            "companion-ready",
-            "mission-ready",
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
         }
         if (
             len(required_durable_readiness) != len(set(required_durable_readiness))
@@ -216,7 +227,7 @@ class OrchestrationRuntime:
             return
         if (
             self._require_gazebo_ready
-            and self._protocol.read_status("gazebo-ready") is None
+            and self._protocol.read_status(GazeboReadyStatus) is None
         ):
             return
         self._emit("READY")
@@ -246,18 +257,13 @@ class OrchestrationRuntime:
     def _start_running(self) -> None:
         self._emit("RUNNING")
         self._protocol.write_status(
-            "runtime-running",
-            {
-                "run_id": self.run_id,
-                "state": "RUNNING",
-                "sim_timestamp_ns": self.last_sim_timestamp_ns,
-            },
+            RuntimeRunningStatus(self.run_id, self.last_sim_timestamp_ns)
         )
 
     def _flight_peers_ready(self) -> bool:
         return all(
-            self._protocol.read_status(name) is not None
-            for name in self._required_durable_readiness
+            self._protocol.read_status(status_type) is not None
+            for status_type in self._required_durable_readiness
         )
 
     def poll(self) -> bool:
@@ -283,9 +289,7 @@ class OrchestrationRuntime:
                     for module in _QUIESCENCE_PEERS
                 ):
                     return False
-                self._protocol.write_status(
-                    "runtime-frozen", {"run_id": self.run_id, "frozen": True}
-                )
+                self._protocol.write_status(RuntimeFrozenStatus(self.run_id))
                 self._freeze_written = True
             committed = self._protocol.read_terminal_committed()
             if committed is not None:
@@ -372,7 +376,7 @@ def main() -> None:
             "stale_input", runtime.last_sim_timestamp_ns, detail=detail
         ),
         required_durable_readiness=(
-            ("ardupilot-ready", "companion-ready", "mission-ready")
+            (ArduPilotReadyStatus, CompanionReadyStatus, MissionReadyStatus)
             if config.get("runtime_profile") == "phase3"
             else ()
         ),
@@ -412,13 +416,12 @@ def main() -> None:
             else _PHASE2_RUN_STATE_NODES
         ),
         failure=lambda reason: protocol.write_status(
-            "runtime-failure",
-            {
-                "run_id": run_id,
-                "module": "orchestration",
-                "reason": reason,
-                "diagnostic_paths": ["logs/docker/orchestration.log.partial"],
-            },
+            RuntimeFailureStatus(
+                run_id,
+                "orchestration",
+                reason,
+                ("logs/docker/orchestration.log.partial",),
+            )
         ),
     )
     try:

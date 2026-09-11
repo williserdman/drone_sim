@@ -57,7 +57,8 @@ class SITLProcess:
         self._command = command
         self._working_directory = working_directory
         self._process: subprocess.Popen[str] | None = None
-        self._selector = selectors.DefaultSelector()
+        self._selector: selectors.BaseSelector | None = None
+        self._resources_closed = False
 
     def start(self) -> None:
         if self._process is not None:
@@ -74,14 +75,26 @@ class SITLProcess:
             start_new_session=True,
         )
         assert self._process.stdout is not None and self._process.stderr is not None
-        self._selector.register(self._process.stdout, selectors.EVENT_READ, "stdout")
-        self._selector.register(self._process.stderr, selectors.EVENT_READ, "stderr")
+        try:
+            self._selector = selectors.DefaultSelector()
+            self._selector.register(self._process.stdout, selectors.EVENT_READ, "stdout")
+            self._selector.register(self._process.stderr, selectors.EVENT_READ, "stderr")
+        except BaseException as error:
+            try:
+                self.stop(10.0)
+            except BaseException as cleanup_error:
+                error.add_note(f"SITL cleanup after selector failure: {cleanup_error}")
+                for note in getattr(cleanup_error, "__notes__", ()):
+                    error.add_note(note)
+            raise
 
     @property
     def return_code(self) -> int | None:
         return None if self._process is None else self._process.poll()
 
     def read_line(self, timeout_seconds: float) -> tuple[str, str] | None:
+        if self._selector is None:
+            return None
         for key, _mask in self._selector.select(timeout_seconds):
             line = key.fileobj.readline()
             if line:
@@ -89,16 +102,41 @@ class SITLProcess:
             self._selector.unregister(key.fileobj)
         return None
 
-    def stop(self, timeout_seconds: float) -> int:
-        if self._process is None:
-            raise RuntimeError("SITL process has not started")
-        if self._process.poll() is None:
-            self._process.terminate()
+    def _close_resources(self, earlier_error: BaseException | None) -> BaseException | None:
+        if self._resources_closed:
+            return earlier_error
+        self._resources_closed = True
+        assert self._process is not None
+        for resource in (self._selector, self._process.stdout, self._process.stderr):
+            if resource is None:
+                continue
             try:
-                self._process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=timeout_seconds)
+                resource.close()
+            except BaseException as close_error:
+                if earlier_error is None:
+                    earlier_error = close_error
+                else:
+                    earlier_error.add_note(f"SITL resource cleanup failed: {close_error}")
+        self._selector = None
+        return earlier_error
+
+    def stop(self, timeout_seconds: float) -> int | None:
+        if self._process is None:
+            return None
+        try:
+            if self._process.poll() is None:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait(timeout=timeout_seconds)
+        except BaseException as error:
+            self._close_resources(error)
+            raise
+        cleanup_error = self._close_resources(None)
+        if cleanup_error is not None:
+            raise cleanup_error
         return int(self._process.returncode)
 
 

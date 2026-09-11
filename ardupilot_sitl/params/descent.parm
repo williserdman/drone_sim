@@ -25,9 +25,9 @@ INS_ACC2SCAL_Y 1.001
 INS_ACC2SCAL_Z 1.001
 FS_THR_ENABLE 0
 FLTMODE_CH 0
-# Copter 4.7's final LAND-stage descent target. Keep touchdown deliberately
-# slow while remaining well below the competition's vertical-speed limit.
-LAND_SPD_MS 0.10
+# Keep Copter 4.7's final LAND-stage descent fast. The companion rejects stale,
+# inconsistent target observations and holds in GUIDED before data can destabilize it.
+LAND_SPD_MS 0.50
 PLND_ENABLED 1
 PLND_TYPE 1
 # Compensate the measured onboard-frame to MAVLink receipt latency.
@@ -35,6 +35,14 @@ PLND_LAG 0.08
 # The simulator target is stationary and camera measurements are physically accurate;
 # consume each measurement directly instead of the oscillatory Kalman estimate.
 PLND_EST_TYPE 0
+PLND_XY_DIST_MAX 0.50
+PLND_STRICT 2
+PLND_RET_MAX 1
+PLND_TIMEOUT 0.50
+PLND_ALT_MIN 0.75
+PLND_ALT_MAX 8.0
+# Bit 2 keeps the normal final descent speed during precision landing.
+PLND_OPTIONS 4
 LOG_BACKEND_TYPE 1
 LOG_DISARMED 1
 SERIAL0_PROTOCOL 2

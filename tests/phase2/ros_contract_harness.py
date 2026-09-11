@@ -91,12 +91,6 @@ class Observer(Node):
                 QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE),
             )
             self.create_subscription(
-                Image,
-                f"/camera/{stream}/image_raw",
-                lambda _message: None,
-                QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE),
-            )
-            self.create_subscription(
                 FrameMetadata,
                 f"/camera/{stream}/frame_metadata",
                 lambda _message: None,

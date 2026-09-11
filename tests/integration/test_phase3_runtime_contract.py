@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,8 +24,24 @@ PHASE3_SERVICES = {
 }
 
 
-def _phase3_document(*compose_files: str) -> dict:
+def _compose_environment() -> dict[str, str]:
     environment = os.environ.copy()
+    for name in (
+        "COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_PROJECT_DIR",
+        "COMPOSE_PROJECT_DIRECTORY", "COMPOSE_DISABLE_ENV_FILE",
+    ):
+        environment.pop(name, None)
+    environment["COMPOSE_DISABLE_ENV_FILE"] = "1"
+    return environment
+
+
+def _compose_document(
+    *compose_files: str,
+    profile: str | None = None,
+    revision: str | None = None,
+) -> dict:
+    environment = _compose_environment()
     for name in (
         "SIM_RUN_ID",
         "SIM_RUN_DIRECTORY",
@@ -32,16 +49,23 @@ def _phase3_document(*compose_files: str) -> dict:
         "SIM_PHASE2_FAULT",
         "SIM_SYNTHETIC_WALL_DELAY_MS",
         "SIM_SYNTHETIC_QUIESCENCE_DELAY_MS",
+        "SIM_COMP2026_REVISION",
     ):
         environment.pop(name, None)
+    if revision is not None:
+        environment["SIM_COMP2026_REVISION"] = revision
     file_arguments = [argument for path in compose_files for argument in ("-f", path)]
+    profile_arguments = [] if profile is None else ["--profile", profile]
     result = subprocess.run(
         [
             "docker",
             "compose",
+            "--file",
+            "compose.yaml",
+            "--project-directory",
+            str(ROOT),
             *file_arguments,
-            "--profile",
-            "phase3",
+            *profile_arguments,
             "config",
             "--format",
             "json",
@@ -56,6 +80,84 @@ def _phase3_document(*compose_files: str) -> dict:
     return json.loads(result.stdout)
 
 
+def _phase3_document(*compose_files: str, revision: str | None = None) -> dict:
+    return _compose_document(*compose_files, profile="phase3", revision=revision)
+
+
+def _dockerfile_instructions(path: Path) -> list[str]:
+    instructions: list[str] = []
+    continuation: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not continuation and (not line or line.startswith("#")):
+            continue
+        continued = line.endswith("\\")
+        continuation.append(line.removesuffix("\\").rstrip())
+        if not continued:
+            instructions.append(" ".join(continuation))
+            continuation = []
+    assert not continuation, "Dockerfile ends with an unterminated instruction"
+    return instructions
+
+
+def test_compose_profiles_resolve_without_revision_and_preserve_explicit_revision() -> None:
+    base = _compose_document()
+    phase2 = _compose_document(profile="phase2")
+    phase3 = _phase3_document()
+    gpu_phase3 = _phase3_document("compose.gpu.yaml")
+
+    assert base["services"] == {}
+    assert "companion-runtime" not in phase2["services"]
+    for document in (phase3, gpu_phase3):
+        assert document["services"]["companion-runtime"]["build"]["args"][
+            "SIM_COMP2026_REVISION"
+        ] == ""
+
+    sentinel = "0123456789abcdef0123456789abcdef01234567"
+    explicit = _phase3_document(revision=sentinel)
+    assert explicit["services"]["companion-runtime"]["build"]["args"][
+        "SIM_COMP2026_REVISION"
+    ] == sentinel
+
+
+def test_companion_revision_guard_is_the_first_build_step_and_executes() -> None:
+    instructions = _dockerfile_instructions(ROOT / "companion/Dockerfile")
+    argument = instructions.index("ARG SIM_COMP2026_REVISION")
+    label = instructions.index(
+        'LABEL org.opencontainers.image.comp2026.revision="${SIM_COMP2026_REVISION}"'
+    )
+    first_run = next(
+        index for index, value in enumerate(instructions) if value.startswith("RUN ")
+    )
+    apt_run = next(index for index, value in enumerate(instructions) if "apt-get" in value)
+    first_copy = next(
+        index for index, value in enumerate(instructions) if value.startswith("COPY ")
+    )
+
+    assert label == argument + 1
+    assert first_run == label + 1
+    assert first_run < apt_run
+    assert first_run < first_copy
+    guard = instructions[first_run].removeprefix("RUN ")
+    assert "apt-get" not in guard
+
+    environment = os.environ.copy()
+    environment["SIM_COMP2026_REVISION"] = ""
+    empty = subprocess.run(
+        ["sh", "-c", guard], env=environment, capture_output=True, text=True, check=False
+    )
+    assert empty.returncode == 2
+    assert empty.stderr.strip() == (
+        "SIM_COMP2026_REVISION is required for the Phase 3 companion image"
+    )
+
+    environment["SIM_COMP2026_REVISION"] = "sentinel"
+    nonempty = subprocess.run(
+        ["sh", "-c", guard], env=environment, capture_output=True, text=True, check=False
+    )
+    assert nonempty.returncode == 0
+
+
 def test_gpu_override_is_opt_in_for_rendering_and_video_encoding() -> None:
     base_services = _phase3_document()["services"]
     assert all(
@@ -63,7 +165,7 @@ def test_gpu_override_is_opt_in_for_rendering_and_video_encoding() -> None:
         for service in base_services.values()
     )
 
-    gpu_services = _phase3_document("compose.yaml", "compose.gpu.yaml")["services"]
+    gpu_services = _phase3_document("compose.gpu.yaml")["services"]
     gpu_request = gpu_services["gazebo-runtime"]["deploy"]["resources"]["reservations"][
         "devices"
     ]
@@ -138,7 +240,7 @@ def test_gpu_override_nvidia_egl_descriptor_selects_the_driver_library() -> None
 
 
 def test_gpu_shared_namespace_has_no_conflicting_port_declarations() -> None:
-    services = _phase3_document("compose.yaml", "compose.gpu.yaml")["services"]
+    services = _phase3_document("compose.gpu.yaml")["services"]
     for name in PHASE3_SERVICES - {"gazebo-runtime"}:
         assert services[name]["network_mode"] == "service:gazebo-runtime"
         assert services[name]["ipc"] == "service:gazebo-runtime"
@@ -152,6 +254,22 @@ def test_phase3_profile_has_exact_seven_production_services_and_no_synthetic_rol
     document = _phase3_document()
     assert set(document["services"]) == PHASE3_SERVICES
     assert not any(name.startswith("synthetic-") for name in document["services"])
+
+
+def test_ardupilot_image_and_package_include_the_shared_runtime_protocol() -> None:
+    dockerfile = (ROOT / "ardupilot_sitl/Dockerfile").read_text(encoding="utf-8")
+    assert "COPY artifacts/src /opt/drone_sim/artifacts/src" in dockerfile
+    assert (
+        "ENV PYTHONPATH=/opt/drone_sim/ardupilot_sitl/src:/opt/drone_sim/artifacts/src"
+        in dockerfile
+    )
+
+    for project_path in (
+        ROOT / "ardupilot_sitl/pyproject.toml",
+        ROOT / "scorekeeper/pyproject.toml",
+    ):
+        project = tomllib.loads(project_path.read_text(encoding="utf-8"))["project"]
+        assert "drone-sim-artifacts==0.1.0" in project["dependencies"]
 
 
 def test_companion_starts_only_after_ardupilot_container() -> None:
@@ -308,18 +426,7 @@ def test_ardupilot_starts_after_gazebo_service_without_dependency_cycle() -> Non
 
 
 def test_phase2_profile_remains_exactly_the_original_seven_services() -> None:
-    environment = os.environ.copy()
-    environment["COMPOSE_PROFILES"] = "phase2"
-    result = subprocess.run(
-        ["docker", "compose", "config", "--services"],
-        cwd=ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert set(result.stdout.splitlines()) == {
+    assert set(_compose_document(profile="phase2")["services"]) == {
         "orchestration-runtime",
         "artifacts-runtime",
         "synthetic-companion",

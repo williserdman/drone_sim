@@ -60,6 +60,18 @@ RECOVERY_PARTIALS = {
 }
 
 
+def _compose_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in (
+        "COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_PROJECT_DIR",
+        "COMPOSE_PROJECT_DIRECTORY", "COMPOSE_DISABLE_ENV_FILE",
+    ):
+        environment.pop(name, None)
+    environment["COMPOSE_DISABLE_ENV_FILE"] = "1"
+    return environment
+
+
 def _run(
     command: list[str],
     *,
@@ -81,7 +93,14 @@ def _run(
 def stable_phase2_images() -> None:
     if os.environ.get("DRONE_SIM_PHASE2_IMAGES_BUILT") == "1":
         return
-    built = _run(["docker", "compose", "--profile", "phase2", "build"], timeout=900)
+    built = _run(
+        [
+            "docker", "compose", "--file", "compose.yaml",
+            "--project-directory", str(ROOT), "--profile", "phase2", "build",
+        ],
+        env=_compose_environment(),
+        timeout=900,
+    )
     assert built.returncode == 0, built.stdout + built.stderr
 
 
@@ -189,6 +208,10 @@ def _cleanup_project(run_id: str) -> None:
         [
             "docker",
             "compose",
+            "--file",
+            "compose.yaml",
+            "--project-directory",
+            str(ROOT),
             "--profile",
             "phase2",
             "-p",
@@ -196,6 +219,7 @@ def _cleanup_project(run_id: str) -> None:
             "down",
             "--remove-orphans",
         ],
+        env=_compose_environment(),
         timeout=60,
     )
 

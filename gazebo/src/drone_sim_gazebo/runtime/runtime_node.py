@@ -12,6 +12,7 @@ from threading import Event, Thread
 import time
 
 from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.runtime_status import ArtifactsReadyStatus, MissionCommandDeliveredStatus
 from artifacts.structured_log import StructuredEvent, write_event
 from orchestration.config import load_run_config
 
@@ -21,7 +22,6 @@ from .children import ChildSupervisor, gazebo_child_specs
 from .entrypoint import (
     ActionExecutor,
     FinalizationDeadlineLatch,
-    GazeboReadyStatus,
     GazeboTransport,
     TransportError,
 )
@@ -228,7 +228,7 @@ class PublicEpochRendezvous:
             return False
         if not self._run_to_requested:
             return False
-        if self._protocol.read_status("mission-command-delivered") is None:
+        if self._protocol.read_status(MissionCommandDeliveredStatus) is None:
             return False
         if self._unpause_attempts_started == 0:
             self._start_unpause()
@@ -282,6 +282,7 @@ def main() -> int:
     transport = GazeboTransport(
         environment=spec.environment, world_name=resolved.world_name
     )
+    transport.assert_typed_readiness_supported()
     startup_deadline = time.monotonic() + config.startup_wall_seconds
     _start_server_ready(
         server,
@@ -293,7 +294,6 @@ def main() -> int:
     inbox: deque = deque()
     model = RuntimeModel(run_id=run_id, expected_frames=config.expected_camera_frames)
     protocol = RuntimeProtocol(run_directory, run_id)
-    status = GazeboReadyStatus(run_directory, run_id)
     deadline_latch = FinalizationDeadlineLatch(config.finalization_wall_seconds)
     children = ChildSupervisor()
     rclpy.init()
@@ -321,35 +321,22 @@ def main() -> int:
             world_name=resolved.world_name,
         )
     )
-    epoch_rendezvous = (
-        PublicEpochRendezvous(
-            transport=transport,
-            protocol=protocol,
-            public_epoch_native_ns=config.simulation.public_epoch_native_ns,
-            activate_output=adapter.activate_output,
-            prepare_output=adapter.prepare_output_epoch,
-            epoch_reached=adapter.public_epoch_reached,
-        )
-        if resolved.world_name in {"vertical_descent", "competition_mission"}
-        else None
+    epoch_rendezvous = PublicEpochRendezvous(
+        transport=transport,
+        protocol=protocol,
+        public_epoch_native_ns=config.simulation.public_epoch_native_ns,
+        activate_output=adapter.activate_output,
+        prepare_output=adapter.prepare_output_epoch,
+        epoch_reached=adapter.public_epoch_reached,
     )
     action_executor = ActionExecutor(
         run_id=run_id,
         protocol=protocol,
-        status=status,
         transport=transport,
         children=children,
         server=server,
-        activate_output=(
-            epoch_rendezvous.begin
-            if epoch_rendezvous is not None
-            else adapter.activate_output
-        ),
-        start_warmup=(
-            epoch_rendezvous.start_warmup
-            if epoch_rendezvous is not None
-            else None
-        ),
+        activate_output=epoch_rendezvous.begin,
+        start_warmup=epoch_rendezvous.start_warmup,
         observe=lambda action: _event(
             run_id, "runtime_action", fields={"action": type(action).__name__}
         ),
@@ -362,24 +349,19 @@ def main() -> int:
         _event(run_id, "runtime_started", fields={"partition": spec.environment["GZ_PARTITION"]})
         while not quiescent:
             ros_executor.spin_once(timeout_sec=0.05)
-            if epoch_rendezvous is not None and epoch_rendezvous.release_if_delivered():
+            if epoch_rendezvous.release_if_delivered():
                 _event(run_id, "public_epoch_released", sim_timestamp_ns=0)
             if not gazebo_ready_seen and adapter.transport_ready():
-                exchange_ready = True
-                if resolved.world_name in {
-                    "vertical_descent",
-                    "competition_mission",
-                }:
-                    flight_exchange = _probe_flight_exchange(
-                        transport, deadline=startup_deadline
-                    )
-                    exchange_ready = flight_exchange is not None
-                    if flight_exchange is not None:
-                        status.record_flight_exchange(flight_exchange)
-                if exchange_ready:
+                flight_exchange = _probe_flight_exchange(
+                    transport, deadline=startup_deadline
+                )
+                if flight_exchange is not None:
                     gazebo_ready_seen = True
-                    inbox.append(GazeboReady(run_id))
-            if not artifacts_ready_seen and protocol.read_status("artifacts-ready") is not None:
+                    inbox.append(GazeboReady(run_id, flight_exchange))
+            if (
+                not artifacts_ready_seen
+                and protocol.read_status(ArtifactsReadyStatus) is not None
+            ):
                 if adapter.recorders_ready():
                     artifacts_ready_seen = True
                     inbox.append(ArtifactsReady(run_id))

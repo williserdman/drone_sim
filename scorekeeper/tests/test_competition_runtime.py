@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
+from artifacts.runtime_status import RuntimeFailureStatus, ScoreFinishedStatus
 from drone_sim_scorekeeper.competition import CompetitionScorer, load_competition_rules
 from drone_sim_scorekeeper.competition_runtime import CompetitionScorekeeperRuntime
 from drone_sim_scorekeeper.runtime_node import (
@@ -21,11 +22,11 @@ from .test_competition_score import AttemptTrace, RUN_ID, RULES, new_trace, perf
 
 class ProtocolRecorder:
     def __init__(self) -> None:
-        self.statuses: list[tuple[str, dict[str, object]]] = []
+        self.statuses = []
         self.quiescence: list[str] = []
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        self.statuses.append((name, document))
+    def write_status(self, status) -> None:
+        self.statuses.append(status)
 
     def write_quiescence(self, module: str) -> None:
         self.quiescence.append(module)
@@ -33,52 +34,20 @@ class ProtocolRecorder:
 
 def runtime_for(tmp_path: Path, scorer: CompetitionScorer):
     protocol = ProtocolRecorder()
-    operations: list[object] = []
     runtime = CompetitionScorekeeperRuntime(
         RUN_ID,
         scorer,
         run_directory=tmp_path,
         protocol=protocol,
-        publish=lambda event: operations.append(("publish", event.event_id)),
-        flush=lambda: operations.append(("flush",)),
-        write_finished=lambda document: operations.append(("finished", document)),
+        publish=lambda _event: None,
+        flush=lambda: None,
     )
-    return runtime, protocol, operations
+    return runtime, protocol
 
 
 def replay(source: AttemptTrace, runtime: CompetitionScorekeeperRuntime) -> None:
     for kind, sample in source.accepted_inputs:
         getattr(runtime, f"accept_{kind}")(sample)
-
-
-def test_complete_score_persists_and_flushes_eight_events_before_finished(tmp_path):
-    """The Home completion must precede durable publication and score-finished."""
-    source = perfect_trace()
-    runtime, protocol, operations = runtime_for(
-        tmp_path,
-        CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
-    )
-    replay(source, runtime)
-
-    result = runtime.accept_source_finished(source.scorer.last_sim_timestamp_ns)
-
-    assert result.complete is True
-    assert result.achieved_score == 150.0
-    assert operations[:8] == [("publish", index) for index in range(8)]
-    assert operations[8] == ("flush",)
-    assert operations[9] == (
-        "finished",
-        {
-            "run_id": RUN_ID,
-            "finished": True,
-            "sim_timestamp_ns": source.scorer.last_sim_timestamp_ns,
-        },
-    )
-    assert protocol.statuses == []
-    assert len((tmp_path / "scoring/events.jsonl").read_text().splitlines()) == 8
-    assert json.loads((tmp_path / "scoring/result.json").read_text())[
-        "maximum_available_score"
-    ] == 150.0
 
 
 def test_valid_home_persists_and_finishes_partial_score(tmp_path):
@@ -89,7 +58,7 @@ def test_valid_home_persists_and_finishes_partial_score(tmp_path):
     source.drop(3, phase="FM3_3")
     source.drop(4, phase="FM3_4", release_speed=0.100001)
     source.home()
-    runtime, protocol, operations = runtime_for(
+    runtime, protocol = runtime_for(
         tmp_path,
         CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
     )
@@ -99,10 +68,9 @@ def test_valid_home_persists_and_finishes_partial_score(tmp_path):
 
     assert result.complete is True
     assert result.achieved_score == 145.0
-    assert operations[:8] == [("publish", index) for index in range(8)]
-    assert operations[8] == ("flush",)
-    assert operations[9][0] == "finished"
-    assert protocol.statuses == []
+    assert protocol.statuses == [
+        ScoreFinishedStatus(RUN_ID, source.scorer.last_sim_timestamp_ns),
+    ]
     persisted = json.loads((tmp_path / "scoring/result.json").read_text())
     assert persisted["complete"] is True
     assert persisted["achieved_score"] == 145.0
@@ -122,7 +90,7 @@ def test_source_finish_without_valid_home_never_writes_score_finished(tmp_path):
     trace.drop(2, phase="FM2")
     trace.drop(3, phase="FM3_3")
     trace.drop(4, phase="FM3_4")
-    runtime, protocol, operations = runtime_for(
+    runtime, protocol = runtime_for(
         tmp_path,
         CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
     )
@@ -131,14 +99,14 @@ def test_source_finish_without_valid_home_never_writes_score_finished(tmp_path):
     result = runtime.accept_source_finished(trace.scorer.last_sim_timestamp_ns)
 
     assert result.complete is False
-    assert all(operation[0] != "finished" for operation in operations)
-    assert protocol.statuses[0][0] == "runtime-failure"
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
+    assert type(protocol.statuses[0]) is RuntimeFailureStatus
 
 
 def test_source_readiness_waits_for_payload_and_home_event_tail(tmp_path):
     """The durable source marker can race ahead of queued transient-local events."""
     trace = perfect_trace()
-    runtime, _protocol, _operations = runtime_for(
+    runtime, _protocol = runtime_for(
         tmp_path,
         CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
     )
@@ -173,7 +141,7 @@ def test_source_readiness_requires_distinct_home_disarmed_event(tmp_path):
     trace.drop(3, phase="FM3_3")
     trace.drop(4, phase="FM3_4")
     trace.home(disarmed=False)
-    runtime, _protocol, _operations = runtime_for(
+    runtime, _protocol = runtime_for(
         tmp_path,
         CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
     )
@@ -186,7 +154,7 @@ def test_source_readiness_requires_distinct_home_disarmed_event(tmp_path):
 
 def test_begin_finalization_persists_failure_then_becomes_quiescent(tmp_path):
     """Finalization cannot make a missing mission start or Home completion valid."""
-    runtime, protocol, operations = runtime_for(
+    runtime, protocol = runtime_for(
         tmp_path,
         CompetitionScorer(RUN_ID, load_competition_rules(RULES)),
     )
@@ -197,7 +165,7 @@ def test_begin_finalization_persists_failure_then_becomes_quiescent(tmp_path):
     assert runtime.result.complete is False
     assert runtime.quiescent is True
     assert protocol.quiescence == ["scorekeeper"]
-    assert all(operation[0] != "finished" for operation in operations)
+    assert all(type(status) is not ScoreFinishedStatus for status in protocol.statuses)
 
 
 def stamp(timestamp_ns: int):

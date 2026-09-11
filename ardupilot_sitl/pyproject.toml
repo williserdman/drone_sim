@@ -2,7 +2,7 @@
 name = "drone-sim-ardupilot"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["drone-sim-artifacts==0.1.0"]
 
 [project.scripts]
 drone-sim-ardupilot-runtime = "drone_sim_ardupilot.runtime_node:main"

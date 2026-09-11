@@ -13,6 +13,8 @@ import sys
 import time
 from typing import Any, Callable
 
+from artifacts.runtime_status import RuntimeRunningStatus
+
 
 FRAME_INTERVAL_NS = 50_000_000
 FRAME_COUNT = 40
@@ -245,12 +247,12 @@ class SyntheticGazeboModel:
 
 def apply_durable_lifecycle(
     model: SyntheticGazeboModel,
-    running_status: dict[str, Any] | None,
+    running_status: RuntimeRunningStatus | None,
     finalize_request: dict[str, Any] | None,
 ) -> None:
     """Apply current-run durable evidence when a one-shot ROS sample is missed."""
     if running_status is not None:
-        model.accept_run_state(running_status["run_id"], running_status["state"])
+        model.accept_run_state(running_status.run_id, "RUNNING")
     if finalize_request is not None:
         model.accept_run_state(finalize_request["run_id"], "FINALIZING")
 
@@ -297,6 +299,10 @@ def main() -> None:
     from sensor_msgs.msg import Image
     from simulation_interfaces.msg import FrameMetadata, GroundTruth, RunState
     from artifacts.runtime_protocol import RuntimeProtocol
+    from artifacts.runtime_status import (
+        RuntimeFailureStatus,
+        SourceFinishedStatus,
+    )
     from artifacts.structured_log import StructuredEvent, write_event
     from module_stub import QuiescenceBoundary
 
@@ -405,8 +411,7 @@ def main() -> None:
         wall_delay_ms=delay_ms,
         publish=publish,
         source_finished=lambda stamp: protocol.write_status(
-            "source-finished",
-            {"run_id": run_id, "finished": True, "sim_timestamp_ns": stamp},
+            SourceFinishedStatus(run_id, stamp)
         ),
     )
     transport_barrier = CameraTransportBarrier(
@@ -420,13 +425,12 @@ def main() -> None:
         },
         deadline=time.monotonic() + float(config["startup_wall_seconds"]),
         failure=lambda reason: protocol.write_status(
-            "runtime-failure",
-            {
-                "run_id": run_id,
-                "module": "gazebo",
-                "reason": reason,
-                "diagnostic_paths": ["logs/docker/gazebo.log.partial"],
-            },
+            RuntimeFailureStatus(
+                run_id,
+                "gazebo",
+                reason,
+                ("logs/docker/gazebo.log.partial",),
+            )
         ),
     )
 
@@ -486,7 +490,7 @@ def main() -> None:
                 model,
                 None
                 if model.running
-                else protocol.read_status("runtime-running"),
+                else protocol.read_status(RuntimeRunningStatus),
                 None
                 if model.finalizing
                 else protocol.read_finalize_request(),

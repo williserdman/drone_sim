@@ -5,11 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import collections
 import collections.abc
+import hashlib
+import hmac
 import inspect
 import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import threading
@@ -19,6 +22,14 @@ from typing import Any, Mapping
 from uuid import UUID
 
 from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.runtime_status import (
+    CompanionReadyStatus,
+    MissionCommandDeliveredStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeStatus,
+)
 
 from .autotune import Observation as AutoTuneObservation
 from .autotune import Phase as AutoTunePhase
@@ -27,7 +38,7 @@ from .hover import Observation as HoverObservation
 from .hover import Phase as HoverPhase
 from .hover import RollHoverDriver
 from .controller import MissionController, mission_policy_active, process_telemetry
-from .lifecycle import CompanionLifecycle
+from .lifecycle import CompanionLifecycle, INITIAL_COMMAND_WINDOW_NS
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
 from .comp2026_host import (
@@ -44,6 +55,26 @@ from .comp2026_host import (
     load_course_waypoints,
     refresh_comp2026_start_gate,
 )
+
+
+def _validate_sha256_digest(value: object, field: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _verify_competition_source(path: Path, expected_digest: str, source: str) -> None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise ValueError(f"resolved {source} competition source is unreadable") from error
+    if not hmac.compare_digest(digest.hexdigest(), expected_digest):
+        raise ValueError(
+            f"resolved {source} competition source hash does not match run.json"
+        )
 
 
 @dataclass(frozen=True)
@@ -125,10 +156,16 @@ class RuntimeConfig:
                 or competition.get("scenario") != "scenario.yaml"
             ):
                 raise ValueError("comp2026_auto requires resolved competition sources")
+            course_digest = _validate_sha256_digest(
+                competition.get("course_sha256"), "course_sha256"
+            )
+            scenario_digest = _validate_sha256_digest(
+                competition.get("scenario_sha256"), "scenario_sha256"
+            )
             course_path = config_path.parent / "course.yaml"
             scenario_path = config_path.parent / "scenario.yaml"
-            if not course_path.is_file() or not scenario_path.is_file():
-                raise ValueError("resolved competition sources are unreadable")
+            _verify_competition_source(course_path, course_digest, "course")
+            _verify_competition_source(scenario_path, scenario_digest, "scenario")
         timeout = override if timeout_override is not None else float(startup_wall_seconds)
         endpoint = environment.get("SIM_MAVLINK_ENDPOINT", "tcp:ardupilot-sitl:5760")
         if endpoint != "tcp:ardupilot-sitl:5760":
@@ -196,24 +233,82 @@ def autotune_control_timestamp_ns(
     return 0 if first_command_pending else None
 
 
-def comp2026_initial_command_timestamp_ns(
+class _Comp2026ShutdownAdmission:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._finalizing = False
+        self._stop_requested = False
+
+    @property
+    def finalizing(self) -> bool:
+        with self._lock:
+            return self._finalizing
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop_requested
+
+    @property
+    def shutdown_requested(self) -> bool:
+        with self._lock:
+            return self._finalizing or self._stop_requested
+
+    def begin_finalizing(self) -> None:
+        with self._lock:
+            self._finalizing = True
+
+    def request_stop_from_signal(self) -> None:
+        self._stop_requested = True
+
+    def run_if_active(self, operation: Callable[[], None]) -> bool:
+        with self._lock:
+            if self._finalizing or self._stop_requested:
+                return False
+            operation()
+            return True
+
+
+def _deliver_comp2026_initial_command(
     *,
-    mission_running: bool,
-    latest_clock_ns: int | None,
-    mission_ready: bool,
-    command_delivered: bool,
-    failed: bool,
-) -> int | None:
-    """Latch the first available public instant for the startup handshake."""
-    if (
-        not mission_running
-        or latest_clock_ns is None
-        or not mission_ready
-        or command_delivered
-        or failed
-    ):
-        return None
-    return latest_clock_ns
+    vehicle: object,
+    vehicle_mode_type: Callable[[str], object],
+    lifecycle: CompanionLifecycle,
+    gate: Comp2026StartGate,
+    attempt_failure: AttemptFailureCoordinator,
+    clock: SimulationClock,
+    mark_delivered: Callable[[], None],
+    shutdown_admission: _Comp2026ShutdownAdmission | None = None,
+) -> bool:
+    delivered = False
+    admission = shutdown_admission or _Comp2026ShutdownAdmission()
+
+    def deliver_at(timestamp_ns: int) -> None:
+        nonlocal delivered
+        if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
+            raise _InitialCommandWindowMissed
+        vehicle.mode = vehicle_mode_type("GUIDED")  # type: ignore[attr-defined]
+        lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, timestamp_ns)
+        gate.mark_command_delivered()
+        mark_delivered()
+        delivered = True
+
+    try:
+        claimed = attempt_failure.finish_success(
+            lambda: admission.run_if_active(
+                lambda: clock.run_at_current_timestamp(deliver_at)
+            )
+        )
+    except _InitialCommandWindowMissed:
+        attempt_failure.fail("initial GUIDED command missed the 50 ms delivery window")
+        return False
+    except Exception as error:
+        attempt_failure.fail(f"initial GUIDED command failed: {error}")
+        return False
+    return claimed and delivered
+
+
+class _InitialCommandWindowMissed(Exception):
+    pass
 
 
 def comp2026_start_gate_poll_required(
@@ -258,16 +353,16 @@ class _ProductionProtocol:
     def __init__(self, config: RuntimeConfig) -> None:
         self._runtime = RuntimeProtocol(config.run_directory, config.run_id)
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        if name not in {
-            "companion-ready",
-            "mission-ready",
-            "mission-command-delivered",
-            "mission-finished",
-            "runtime-failure",
+    def write_status(self, status: RuntimeStatus) -> None:
+        if type(status) not in {
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            MissionCommandDeliveredStatus,
+            MissionFinishedStatus,
+            RuntimeFailureStatus,
         }:
             raise ValueError("companion does not own that status")
-        self._runtime.write_status(name, document)
+        self._runtime.write_status(status)
 
     def write_quiescence(self, module: str) -> Any:
         return self._runtime.write_quiescence(module)
@@ -868,9 +963,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         callback_group=service_callback_group,
     )
     payload_client = _RosPayloadClient(ros_payload_client, PayloadCommand)
-    finalizing = False
+    shutdown_admission = _Comp2026ShutdownAdmission()
     mission_running = False
-    requested_stop = False
     initial_command_delivered = False
     runtime_failure_written = False
     runtime_failure_lock = threading.Lock()
@@ -880,18 +974,17 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     last_start_readiness: dict[str, bool] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
-        nonlocal requested_stop
-        requested_stop = True
+        shutdown_admission.request_stop_from_signal()
 
     def state_callback(message: Any) -> None:
-        nonlocal finalizing, mission_running
+        nonlocal mission_running
         if message.run_id != config.run_id:
             return
         if message.state == RunState.RUNNING:
             mission_running = True
             gate.accept_running()
         elif message.state == RunState.FINALIZING:
-            finalizing = True
+            shutdown_admission.begin_finalizing()
 
     def clock_callback(message: Any) -> None:
         if not mission_running:
@@ -940,13 +1033,12 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             if runtime_failure_written:
                 return
             protocol.write_status(
-                "runtime-failure",
-                {
-                    "run_id": config.run_id,
-                    "module": "companion",
-                    "reason": reason,
-                    "diagnostic_paths": ["logs/docker/companion.log.partial"],
-                },
+                RuntimeFailureStatus(
+                    config.run_id,
+                    "companion",
+                    reason,
+                    ("logs/docker/companion.log.partial",),
+                )
             )
             runtime_failure_written = True
 
@@ -1028,6 +1120,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 )
             )
         except Exception as error:
+            if shutdown_admission.shutdown_requested:
+                return
             phase = emitter.last_phase or "WAIT_READY"
             reason = f"original comp2026 mission failed in {phase}: {error}"
             attempt_failure.fail(reason)
@@ -1095,7 +1189,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 prearm_checks_healthy=True,
             )
 
-        while rclpy.ok() and not requested_stop and not finalizing:
+        while (
+            rclpy.ok()
+            and not shutdown_admission.stop_requested
+            and not shutdown_admission.finalizing
+        ):
             if controller is not None and comp2026_start_gate_poll_required(
                 mission_running=mission_running,
                 mission_start_ready=gate.mission_start_ready,
@@ -1121,19 +1219,25 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         readiness,
                     )
                     last_start_readiness = readiness
-                initial_command_timestamp_ns = comp2026_initial_command_timestamp_ns(
-                    mission_running=mission_running,
-                    latest_clock_ns=clock.timestamp_ns,
-                    mission_ready=gate.mission_ready,
-                    command_delivered=initial_command_delivered,
-                    failed=attempt_failure.failed,
-                )
-                if initial_command_timestamp_ns is not None:
-                    controller.vehicle.mode = VehicleMode("GUIDED")
-                    lifecycle.observe_command_delivery(
-                        CommandKind.SET_GUIDED, initial_command_timestamp_ns
+                if (
+                    mission_running
+                    and gate.mission_ready
+                    and not initial_command_delivered
+                ):
+                    def mark_initial_command_delivered() -> None:
+                        nonlocal initial_command_delivered
+                        initial_command_delivered = True
+
+                    _deliver_comp2026_initial_command(
+                        vehicle=controller.vehicle,
+                        vehicle_mode_type=VehicleMode,
+                        lifecycle=lifecycle,
+                        gate=gate,
+                        attempt_failure=attempt_failure,
+                        clock=clock,
+                        mark_delivered=mark_initial_command_delivered,
+                        shutdown_admission=shutdown_admission,
                     )
-                    initial_command_delivered = True
             if (
                 sensor_subscriptions_active
                 and mission_worker is not None
@@ -1150,7 +1254,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             ):
                 attempt_failure.recover_once()
             if protocol.read_finalize_request() is not None:
-                finalizing = True
+                shutdown_admission.begin_finalizing()
             if time.monotonic() >= overall_wall_deadline and not runtime_failure_written:
                 attempt_failure.fail("companion exceeded the overall run wall failsafe")
             time.sleep(0.02)

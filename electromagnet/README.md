@@ -18,15 +18,18 @@ terminal status to orchestration and the validated manifest.
 
 - [runtime_node.py](src/drone_sim_electromagnet/runtime_node.py) is the process
   entry point and selects the resolved `descent_v1` or `competition_v1` path.
-- [payload.py](src/drone_sim_electromagnet/payload.py) is the ROS-free policy:
-  request validation, capacity rules, pickup eligibility, and command-ID ledger.
+- [payload.py](src/drone_sim_electromagnet/payload.py) is the stateless ROS-free
+  policy for request validation, capacity rules, and pickup eligibility.
 - [controller.py](src/drone_sim_electromagnet/controller.py) joins physical facts,
-  serializes operations, waits for coordinator results, caches responses, and
-  publishes confirmed events.
+  serializes operations, owns the sole process-lifetime command-ID ledger, waits
+  for coordinator results, and publishes confirmed events.
 - [scenario.py](src/drone_sim_electromagnet/scenario.py) contains the preserved
   inactive descent policy.
 - The installed command is defined in [pyproject.toml](pyproject.toml); Compose
   starts it in the [`electromagnet-runtime` service](../compose.yaml).
+- Runtime readiness, failure, and quiescence use the shared
+  [typed status contract](../artifacts/src/artifacts/runtime_status.py) and
+  [container protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 
 ## Interfaces and configuration
 
@@ -55,6 +58,9 @@ resolved run copies of [course.yaml](../config/course.yaml) and
 - A completed duplicate command ID replays its original response and sequence
   without another wire or event. Reusing the ID for different content conflicts.
   Operations are serialized through validation and confirmation.
+- Matching physical success is cached before its single event-publication
+  attempt. If that publisher raises, the first call is ambiguous to its caller,
+  but exact retries replay the cached success without publishing again.
 - The gateway authorizes from the newest recent timestamp shared by vehicle and
   all three payload streams. It rejects regressing, stale, or multiply-attached
   truth rather than inventing a coherent state.
@@ -62,6 +68,8 @@ resolved run copies of [course.yaml](../config/course.yaml) and
   monotonic `PayloadState.attached` samples remain the attachment authority.
 - On finalization, the last structured event precedes the module's quiescence
   marker, after which the module must remain silent.
+- Runtime failures use the shared first-wins policy. This module does not replace
+  an earlier durable failure from another producer.
 
 ## Focused checks
 

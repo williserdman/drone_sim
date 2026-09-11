@@ -3,6 +3,15 @@ from dataclasses import dataclass
 import pytest
 
 import orchestration.runtime_node as runtime_node
+from artifacts.runtime_status import (
+    ArduPilotReadyStatus,
+    CompanionReadyStatus,
+    FlightExchange,
+    GazeboReadyStatus,
+    MissionReadyStatus,
+    RuntimeFrozenStatus,
+    RuntimeRunningStatus,
+)
 
 from orchestration.runtime_node import (
     OrchestrationRuntime,
@@ -14,21 +23,9 @@ from orchestration.runtime_node import (
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
-GAZEBO_READY = {
-    "run_id": RUN_ID,
-    "ready": True,
-    "flight_exchange": {
-        "online": True,
-        "servo_packets_received": 2,
-        "motor_updates": 2,
-        "duplicate_servo_packets": 0,
-        "servo_frame_gaps": 0,
-        "json_states_sent": 2,
-        "json_send_errors": 0,
-        "last_servo_frame": 1,
-        "last_json_sim_time_ns": 0,
-    },
-}
+GAZEBO_READY = GazeboReadyStatus(
+    RUN_ID, FlightExchange(True, 2, 2, 0, 0, 2, 0, 1, 0)
+)
 
 
 class FakeProtocol:
@@ -46,11 +43,11 @@ class FakeProtocol:
     def read_terminal_committed(self):
         return self.terminal
 
-    def write_status(self, name, document):
-        self.statuses.append((name, document))
+    def write_status(self, status):
+        self.statuses.append(status)
 
-    def read_status(self, name):
-        return self.readable_statuses.get(name)
+    def read_status(self, status_type):
+        return self.readable_statuses.get(status_type)
 
     def write_quiescence(self, module):
         self.quiescence_writes.append(module)
@@ -89,9 +86,9 @@ def _phase3_runtime():
         publish=published.append,
         diagnostic=diagnostics.append,
         required_durable_readiness=(
-            "ardupilot-ready",
-            "companion-ready",
-            "mission-ready",
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
         ),
         require_gazebo_ready=True,
     )
@@ -269,12 +266,7 @@ def test_starting_ready_running_order_and_exact_first_clock_stamp():
         ("READY", 0),
         ("RUNNING", 0),
     ]
-    assert protocol.statuses == [
-        (
-            "runtime-running",
-            {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
-        )
-    ]
+    assert protocol.statuses == [RuntimeRunningStatus(RUN_ID, 0)]
     assert runtime.last_sim_timestamp_ns == 50_000_000
 
 
@@ -295,7 +287,7 @@ def test_phase3_artifact_status_waits_for_durable_gazebo_readiness_exactly_once(
     assert runtime.poll() is False
     assert [item.state for item in published] == ["STARTING"]
 
-    protocol.readable_statuses["gazebo-ready"] = GAZEBO_READY
+    protocol.readable_statuses[GazeboReadyStatus] = GAZEBO_READY
     assert runtime.poll() is False
     runtime.accept_artifact_status(RUN_ID, True)
     assert runtime.poll() is False
@@ -305,7 +297,7 @@ def test_phase3_artifact_status_waits_for_durable_gazebo_readiness_exactly_once(
 
 def test_phase3_gazebo_readiness_waits_for_artifact_status():
     runtime, protocol, published, _ = _phase3_runtime()
-    protocol.readable_statuses["gazebo-ready"] = GAZEBO_READY
+    protocol.readable_statuses[GazeboReadyStatus] = GAZEBO_READY
     runtime.start()
 
     assert runtime.poll() is False
@@ -320,35 +312,20 @@ def test_phase3_enters_running_after_durable_flight_readiness_without_public_clo
     runtime, protocol, published, _ = _phase3_runtime()
     runtime.start()
     runtime.accept_artifact_status(RUN_ID, True)
-    protocol.readable_statuses["gazebo-ready"] = GAZEBO_READY
+    protocol.readable_statuses[GazeboReadyStatus] = GAZEBO_READY
     assert runtime.poll() is False
     assert [item.state for item in published] == ["STARTING", "READY"]
     assert protocol.statuses == []
 
-    protocol.readable_statuses["ardupilot-ready"] = {
-        "run_id": RUN_ID,
-        "ready": True,
-        "json_exchange": True,
-        "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-    }
+    protocol.readable_statuses[ArduPilotReadyStatus] = ArduPilotReadyStatus(RUN_ID)
     assert runtime.poll() is False
     assert [item.state for item in published] == ["STARTING", "READY"]
 
-    protocol.readable_statuses["companion-ready"] = {
-        "run_id": RUN_ID,
-        "ready": True,
-        "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-        "mavlink_transport_connected": True,
-    }
+    protocol.readable_statuses[CompanionReadyStatus] = CompanionReadyStatus(RUN_ID)
     assert runtime.poll() is False
     assert [item.state for item in published] == ["STARTING", "READY"]
 
-    protocol.readable_statuses["mission-ready"] = {
-        "run_id": RUN_ID,
-        "ready": True,
-        "heartbeat_observed": True,
-        "prearm_checks_healthy": True,
-    }
+    protocol.readable_statuses[MissionReadyStatus] = MissionReadyStatus(RUN_ID)
     assert runtime.poll() is False
 
     assert [(item.state, item.sim_timestamp_ns) for item in published] == [
@@ -356,12 +333,7 @@ def test_phase3_enters_running_after_durable_flight_readiness_without_public_clo
         ("READY", 0),
         ("RUNNING", 0),
     ]
-    assert protocol.statuses == [
-        (
-            "runtime-running",
-            {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
-        )
-    ]
+    assert protocol.statuses == [RuntimeRunningStatus(RUN_ID, 0)]
 
 
 @pytest.mark.parametrize("preterminal", ["STARTING", "READY", "RUNNING"])
@@ -385,7 +357,7 @@ def test_finalize_from_every_preterminal_state_leaves_live_notification_to_artif
         RUN_ID, "FINALIZING", 123 if preterminal == "RUNNING" else 0, "operator requested", "a" * 64
     )
     assert protocol.quiescence_writes == ["orchestration"]
-    assert not any(name == "runtime-frozen" for name, _document in protocol.statuses)
+    assert not any(type(status) is RuntimeFrozenStatus for status in protocol.statuses)
     for module in ("companion", "ardupilot_sitl", "gazebo", "electromagnet", "scorekeeper"):
         protocol.quiescence[module] = {
             "run_id": RUN_ID,
@@ -393,10 +365,7 @@ def test_finalize_from_every_preterminal_state_leaves_live_notification_to_artif
             "quiescent": True,
         }
     assert runtime.poll() is False
-    assert protocol.statuses[-1] == (
-        "runtime-frozen",
-        {"run_id": RUN_ID, "frozen": True},
-    )
+    assert protocol.statuses[-1] == RuntimeFrozenStatus(RUN_ID)
     protocol.terminal = {
         "run_id": RUN_ID,
         "terminal_status": terminal,
@@ -406,11 +375,8 @@ def test_finalize_from_every_preterminal_state_leaves_live_notification_to_artif
     assert runtime.poll() is True
     assert published[-1].state == "FINALIZING"
     assert runtime.state == terminal
-    assert protocol.statuses[-1] == (
-        "runtime-frozen",
-        {"run_id": RUN_ID, "frozen": True},
-    )
-    assert not any(name == "terminal-notified" for name, _ in protocol.statuses)
+    assert protocol.statuses[-1] == RuntimeFrozenStatus(RUN_ID)
+    assert not any(status.name == "terminal-notified" for status in protocol.statuses)
     count = len(published)
     assert runtime.poll() is True
     assert len(published) == count
@@ -436,7 +402,7 @@ def test_aggregate_freeze_waits_for_all_six_quiescence_owners_and_writes_once():
             "quiescent": True,
         }
         assert runtime.poll() is False
-        assert not any(name == "runtime-frozen" for name, _document in protocol.statuses)
+        assert not any(type(status) is RuntimeFrozenStatus for status in protocol.statuses)
 
     protocol.quiescence["scorekeeper"] = {
         "run_id": RUN_ID,
@@ -444,14 +410,14 @@ def test_aggregate_freeze_waits_for_all_six_quiescence_owners_and_writes_once():
         "quiescent": True,
     }
     assert runtime.poll() is False
-    assert [item for item in protocol.statuses if item[0] == "runtime-frozen"] == [
-        ("runtime-frozen", {"run_id": RUN_ID, "frozen": True})
-    ]
+    assert [
+        status for status in protocol.statuses if type(status) is RuntimeFrozenStatus
+    ] == [RuntimeFrozenStatus(RUN_ID)]
     runtime.poll()
     assert protocol.quiescence_writes == ["orchestration"]
-    assert [item for item in protocol.statuses if item[0] == "runtime-frozen"] == [
-        ("runtime-frozen", {"run_id": RUN_ID, "frozen": True})
-    ]
+    assert [
+        status for status in protocol.statuses if type(status) is RuntimeFrozenStatus
+    ] == [RuntimeFrozenStatus(RUN_ID)]
 
 
 def test_stale_ids_are_diagnosed_before_quiescence_and_ignored():

@@ -10,6 +10,7 @@ PHASE2 = Path(__file__).resolve().parent
 sys.path.insert(0, str(PHASE2))
 
 import module_stub
+from artifacts.runtime_status import RuntimeRunningStatus
 from module_stub import write_bytes_atomic
 from synthetic_gazebo import (
     BoundedPublicationQueue,
@@ -160,11 +161,10 @@ def test_durable_lifecycle_fallback_is_run_scoped_and_preempts_ack_wait():
     model = SyntheticGazeboModel(RUN_ID, publish=lambda *_args: None)
     apply_durable_lifecycle(
         model,
-        {
-            "run_id": "22222222-2222-4222-8222-222222222222",
-            "state": "RUNNING",
-            "sim_timestamp_ns": 0,
-        },
+        RuntimeRunningStatus(
+            run_id="22222222-2222-4222-8222-222222222222",
+            sim_timestamp_ns=0,
+        ),
         None,
     )
     assert model.running is False
@@ -172,7 +172,7 @@ def test_durable_lifecycle_fallback_is_run_scoped_and_preempts_ack_wait():
 
     apply_durable_lifecycle(
         model,
-        {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
+        RuntimeRunningStatus(run_id=RUN_ID, sim_timestamp_ns=0),
         None,
     )
     assert model.running is True

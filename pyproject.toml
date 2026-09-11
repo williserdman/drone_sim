@@ -3,6 +3,7 @@ name = "drone-sim-dev"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "drone-sim-ardupilot",
     "drone-sim-artifacts",
     "drone-sim-companion",
     "drone-sim-electromagnet",
@@ -31,9 +32,10 @@ pythonpath = [
 ]
 
 [tool.uv.workspace]
-members = ["artifacts", "companion", "electromagnet", "gazebo", "orchestration", "scorekeeper"]
+members = ["ardupilot_sitl", "artifacts", "companion", "electromagnet", "gazebo", "orchestration", "scorekeeper"]
 
 [tool.uv.sources]
+drone-sim-ardupilot = { workspace = true }
 drone-sim-artifacts = { workspace = true }
 drone-sim-companion = { workspace = true }
 drone-sim-electromagnet = { workspace = true }

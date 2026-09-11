@@ -75,10 +75,63 @@ time or hide gaps by restamping queued samples. Run IDs isolate streams; invalid
 ordering or missing required samples fail validation rather than proving success.
 Reliable transport with bounded history is not a guarantee of lossless recording.
 
+[`runtime_status.py`](../artifacts/src/artifacts/runtime_status.py) is the single
+owner of typed runtime status schemas, canonical JSON conversion, registered
+names, and write policy. [`RuntimeProtocol`](../artifacts/src/artifacts/runtime_protocol.py)
+adapts that contract for container producers and consumers;
+[`StatusStore`](../orchestration/src/orchestration/status_store.py) adapts it for
+the host controller. Both use the strict, descriptor-relative persistence in
+[`protocol_files.py`](../artifacts/src/artifacts/protocol_files.py).
+Manifest producers and both readers accept only portable POSIX-relative paths,
+as defined by [`is_manifest_relative_path`](../artifacts/src/artifacts/manifest.py)
+and the [`manifest.json` schema](../artifacts/schemas/manifest.schema.json).
+
+Readers request an exact registered status type. Subclasses and a same-named
+unregistered class cannot select a schema. Runtime failures use first-wins
+publication so concurrent producers preserve one valid initial cause; other
+status files accept only byte-equivalent canonical retries. Path changes,
+conflicting immutable values, and wrong file modes make writers fail closed, and
+callers do not repair or reinterpret malformed facts. Cooperating helper callers
+serialize through an advisory directory lock and publish durable atomic files.
+This is not a security boundary against a hostile process with the same
+filesystem permissions.
+
+Typed `GazeboReadyStatus` always includes a real ArduPilot flight exchange. The
+passive `phase3_foundation` world has no such exchange and the Gazebo runtime now
+rejects it before server startup. Operators who still need that passive world
+require a separate readiness-contract decision; endpoint presence is not valid
+flight readiness evidence.
+
+Comp2026 process readiness does not release the original mission worker. The
+[runtime composition](../companion/src/drone_sim_companion/runtime_node.py)
+must assign the initial GUIDED mode and complete the durable
+[`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
+write by the inclusive 50 ms public-time limit before the
+[start gate](../companion/src/drone_sim_companion/comp2026_host.py) can release
+that worker. The [companion lifecycle](../companion/src/drone_sim_companion/lifecycle.py)
+owns the executable deadline and status write. A missed deadline, mode-setting
+error, or status-write error fails the attempt and leaves the gate closed.
+
+For payload precision landing, the camera boundary returns a marker vector and
+its source timestamp atomically; a side-channel timestamp is not sufficient
+freshness evidence. The hosted mission owns the fixed earth-frame target anchor,
+measurement acceptance, LAND/GUIDED hold transitions, and one bounded return to
+the search hover. ArduPilot owns stabilization and descent execution, but only
+accepted observations reach its `LANDING_TARGET` input. No target messages are
+sent during the GUIDED hold. Once LiDAR reports an AGL at or below the overlay's
+`PLND_ALT_MIN`, the companion keeps LAND active and no longer requires marker
+visibility; ArduPilot then owns the final descent and touchdown decision. The
+parameter overlay remains the durable source of flight-controller settings, and
+the companion reads those live settings before entering the first precision
+LAND.
+
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and
-conflicting reuse of an ID is rejected. Recurring physical payload state, not a
-service response, establishes actual attachment and lift.
+conflicting reuse of an ID is rejected. A matching physical success is cached
+before its at-most-once event-publication attempt, so a publisher exception makes
+the first call ambiguous while exact retries replay success without republishing.
+Recurring physical payload state, not a service response, establishes actual
+attachment and lift.
 
 Finalization is a file-backed handshake: a finalize request leads to publisher
 quiescence, a runtime-frozen marker, closed artifacts and an artifacts-final
