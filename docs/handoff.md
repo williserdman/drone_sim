@@ -8,6 +8,74 @@ verified on the isolated `fix/precision-landing-reacquire` parent and nested
 branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 600-second window with accepted terminal artifacts and a 150/150 score.
 
+## 2026-09-07 QGC flight-safety software checkpoint
+
+The guarded parent QGC host and nested FM1/FM2 safety implementation are
+accepted on offline source evidence. The final frozen-tree runs passed all
+1,118 nested tests and 1,933 parent tests across artifacts, companion,
+electromagnet, Gazebo, orchestration, scorekeeper, and root contracts; 27 parent
+tests were explicitly skipped. The parent companion subset passed 476 tests.
+Maximum-intelligence standards and spec reviews, plus a separate hostile-error
+fidelity audit, report no actionable findings. Both repository diff checks pass,
+and the operator waypoint store remains byte-identical to its initial snapshot.
+
+On interruption, the companion retains simulation/navigation time for one
+original-H cruise-altitude transit home followed by LAND, with one separately
+guarded local-LAND fallback. A TAKEOFF interruption selects local LAND. It never
+assumes the independent pilot has taken control: only a fresh healthy RC switch
+edge followed by a new accepted `LOITER` or `STABILIZE` observation establishes
+sticky `PILOT`, after which the companion is permanently command-silent. Fatal
+infrastructure failures may stop the shared clock; overlapping error paths keep
+the first error authoritative and cannot downgrade a required hard stop.
+
+This is not deployment or flight approval. ArduCopter is pinned to 4.5.7 commit
+`2a3dc4b7bf2507120f7378a7b2fde73185e0c325`; Ubuntu 22.04 is selected, but the
+exact companion model/CPU architecture and hardware dependency lock are not
+verified. No image matching this frozen source was built, and no live QGC, ROS,
+integrated SITL, bench, device, actuator, or aircraft run was performed.
+Hardware FM3 remains disabled. The known pre-existing roll-gain mismatch also
+remains unresolved:
+the dirty overlay has `ATC_RAT_RLL_P=0.0503722`, while its test expects
+`0.0675`; do not change either without aircraft tuning evidence.
+
+Keep every physical gate closed until the exact QGC build/profile/action file,
+aircraft FC/RC configuration, FC watchdog/link-loss behavior, operating-site
+corridor/reserve, rangefinder/precision-landing/landing-reposition/yaw policy,
+matching image provenance, integrated fault matrix, propellers-removed bench,
+and staged supervised-flight evidence are recorded.
+
+## 2026-09-06 paused-startup correction
+
+The guarded parent host now opts into the nested listener's narrow
+`staged_simulation` telemetry mode. Source-only fake tests prove that listener
+readiness no longer waits for telemetry cadence while Gazebo is paused, the
+first admitted guarded GUIDED delivery precedes post-gate verification, and no
+ARM output occurs before valid advancing telemetry. The default physical path
+still completes telemetry configuration and collection before listener
+installation. Cancellation, clock stop, missing installation, zero-time data,
+wrong-source data, and failed verification remain closed and clean the startup
+collector.
+
+This is software evidence only. The remaining gate is a fresh pinned
+ArduCopter 4.5.7, QGC application, parent companion, and Gazebo run that observes
+the real pause-to-GUIDED release, post-release telemetry cadence, normal FM1/FM2
+flight, failure cases, complete cleanup, score, and valid artifacts. No image
+build, Docker run, device use, or physical flight was performed for this fix.
+
+## 2026-09-06 firmware source target
+
+Parent build source and provenance now target official ArduCopter 4.5.7 commit
+`2a3dc4b7bf2507120f7378a7b2fde73185e0c325`. The native serial argument is
+`tcp:5760`; the overlay translates the retained 0.50 m/s landing target to
+`LAND_SPEED=50` cm/s and channel 0 passive readiness to `SR0_EXT_STAT=1` Hz.
+It also translates the prior 2547.76 deg/s² roll acceleration request to
+`ATC_ACCEL_R_MAX=254776` centidegrees/s². That request exceeds both releases'
+published parameter ranges and is not a flight-approved tune. Source tests
+stubbed the external process. No parent image was built, no parent integration
+or flight ran, and existing image tags and historical 4.7 evidence remain
+unchanged. The `comp2026_auto` quarantine still applies. The selected Ubuntu
+22.04 LTS onboard target was not provisioned by this simulator-source change.
+
 ## Maintainer start
 
 Read the architecture map, then use the runbook for current setup, build, launch,

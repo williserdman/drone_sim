@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
+import time
 from typing import Callable, ClassVar, Protocol
 
 import numpy as np
@@ -78,20 +79,40 @@ class SimulationClock:
     def ready(self) -> bool:
         return self.timestamp_ns is not None
 
+    @property
+    def stopped(self) -> bool:
+        with self._condition:
+            return self._stop_reason is not None
+
     def accept(self, timestamp_ns: int) -> None:
         if isinstance(timestamp_ns, bool) or not isinstance(timestamp_ns, int):
             raise TypeError("simulation timestamp must be an integer")
         if timestamp_ns < 0:
             raise ValueError("simulation timestamp must be nonnegative")
         with self._condition:
+            self._raise_if_stopped()
             if self._timestamp_ns is not None and timestamp_ns < self._timestamp_ns:
                 raise ValueError("authoritative simulation clock regressed")
             self._timestamp_ns = timestamp_ns
             self._condition.notify_all()
 
     def now(self) -> float:
-        timestamp_ns = self.timestamp_ns
-        return 0.0 if timestamp_ns is None else timestamp_ns / 1_000_000_000
+        with self._condition:
+            self._raise_if_stopped()
+            return (
+                0.0
+                if self._timestamp_ns is None
+                else self._timestamp_ns / 1_000_000_000
+            )
+
+    def read_timestamp_ns(self) -> int:
+        """Return current authoritative time, failing closed when unavailable."""
+
+        with self._condition:
+            self._raise_if_stopped()
+            if self._timestamp_ns is None:
+                raise StaleSensorError("authoritative simulation clock is unavailable")
+            return self._timestamp_ns
 
     def run_at_current_timestamp(self, operation: Callable[[int], None]) -> bool:
         with self._condition:
@@ -130,20 +151,21 @@ class SimulationClock:
 
 
 class RosFrameSource:
-    """Retain recent onboard images for blocking BGR capture."""
+    """Retain only the latest onboard image for blocking BGR capture."""
 
     def __init__(self, *, width_px: int, height_px: int) -> None:
         self._width_px = width_px
         self._height_px = height_px
         self._condition = threading.Condition()
-        self._images: dict[int, object] = {}
+        self._latest_image: object | None = None
+        self._latest_timestamp_ns: int | None = None
         self.last_timestamp_ns: int | None = None
         self._stop_reason: str | None = None
 
     @property
     def ready(self) -> bool:
         with self._condition:
-            return bool(self._available_images())
+            return self._stop_reason is None and self._latest_image is not None
 
     def accept_image(self, message: object) -> None:
         timestamp_ns = _stamp_ns(message.header.stamp)  # type: ignore[attr-defined]
@@ -158,9 +180,17 @@ class RosFrameSource:
         ):
             raise ValueError("image does not match the resolved 640x480 RGB8 contract")
         with self._condition:
+            if self._stop_reason is not None:
+                raise StaleSensorError(
+                    f"frame source stopped before a newer frame: {self._stop_reason}"
+                )
             if self.last_timestamp_ns is None or timestamp_ns > self.last_timestamp_ns:
-                self._images.setdefault(timestamp_ns, message)
-                self._prune_buffers()
+                if (
+                    self._latest_timestamp_ns is None
+                    or timestamp_ns > self._latest_timestamp_ns
+                ):
+                    self._latest_timestamp_ns = timestamp_ns
+                    self._latest_image = message
             self._condition.notify_all()
 
     def capture_frame(
@@ -169,11 +199,16 @@ class RosFrameSource:
         del quality  # The original API's quality hint must not rescale public evidence.
         with self._condition:
             while True:
-                images = self._available_images()
-                if images:
-                    timestamp_ns = images[0]
-                    image = self._images.pop(timestamp_ns)
-                    self._discard_through(timestamp_ns)
+                if self._stop_reason is not None:
+                    raise StaleSensorError(
+                        f"frame source stopped before a newer frame: {self._stop_reason}"
+                    )
+                if self._latest_image is not None:
+                    timestamp_ns = self._latest_timestamp_ns
+                    image = self._latest_image
+                    assert timestamp_ns is not None
+                    self._latest_image = None
+                    self._latest_timestamp_ns = None
                     self.last_timestamp_ns = timestamp_ns
                     try:
                         data = bytes(image.data)  # type: ignore[attr-defined]
@@ -193,106 +228,146 @@ class RosFrameSource:
                         f"no newer frame after {self.last_timestamp_ns} before "
                         f"simulation deadline {deadline_sim_ns}"
                     )
-                if self._stop_reason is not None:
-                    raise StaleSensorError(
-                        f"frame source stopped before a newer frame: {self._stop_reason}"
-                    )
                 self._condition.wait()
 
     def stop(self, reason: str) -> None:
         with self._condition:
             self._stop_reason = reason or "shutdown"
+            self._latest_image = None
+            self._latest_timestamp_ns = None
             self._condition.notify_all()
-
-    def _available_images(self) -> list[int]:
-        return sorted(
-            timestamp
-            for timestamp in self._images
-            if (self.last_timestamp_ns is None or timestamp > self.last_timestamp_ns)
-        )
-
-    def _discard_through(self, timestamp_ns: int) -> None:
-        for stale in tuple(key for key in self._images if key <= timestamp_ns):
-            self._images.pop(stale, None)
-
-    def _prune_buffers(self) -> None:
-        """Keep only a small newest pairing window, never a recording queue."""
-
-        timestamps = sorted(self._images)
-        for stale in timestamps[:-4]:
-            self._images.pop(stale, None)
 
 
 class RosLidar:
     """Latest downward range whose age is measured only in simulation time."""
 
-    def __init__(self, clock: SimulationClock) -> None:
+    def __init__(
+        self,
+        clock: SimulationClock,
+        *,
+        sample_factory: Callable[[float, float, int, int], object],
+    ) -> None:
+        if not callable(sample_factory):
+            raise TypeError("range sample_factory must be callable")
         self._clock = clock
-        self._lock = threading.Lock()
-        self._distance_m: float | None = None
-        self._timestamp_ns: int | None = None
-        self._pending_distance_m: float | None = None
+        self._sample_factory = sample_factory
+        self._lock = threading.RLock()
+        self._sample: object | None = None
+        self._sample_timestamp_ns: int | None = None
+        self._pending_sample: object | None = None
         self._pending_timestamp_ns: int | None = None
+        self._latest_source_timestamp_ns: int | None = None
+        self._sequence = 0
+        self._invalidation_generation = 0
+        self._stop_reason: str | None = None
 
     @property
     def ready(self) -> bool:
         with self._lock:
-            return self._timestamp_ns is not None
+            return self._sample is not None and self._stop_reason is None
 
     def accept(self, message: object, sim_timestamp_ns: int) -> None:
-        try:
-            ranges = list(message.ranges)  # type: ignore[attr-defined]
-            range_min = float(message.range_min)  # type: ignore[attr-defined]
-            range_max = float(message.range_max)  # type: ignore[attr-defined]
-        except (AttributeError, TypeError, ValueError) as error:
-            raise ValueError("downward range message is malformed") from error
-        if len(ranges) != 1:
-            raise ValueError("downward range must contain exactly one beam")
-        distance_m = float(ranges[0])
-        if (
-            not math.isfinite(distance_m)
-            or not math.isfinite(range_min)
-            or not math.isfinite(range_max)
-            or range_min < 0
-            or range_max <= range_min
-            or not range_min <= distance_m <= range_max
-        ):
-            raise ValueError("downward range is invalid")
         if isinstance(sim_timestamp_ns, bool) or not isinstance(sim_timestamp_ns, int):
+            self.invalidate()
             raise TypeError("range simulation timestamp must be an integer")
-        current_clock_ns = self._clock.timestamp_ns
+        if sim_timestamp_ns < 0:
+            self.invalidate()
+            raise ValueError("range simulation timestamp must be nonnegative")
+
         with self._lock:
+            if self._stop_reason is not None:
+                raise StaleSensorError(f"downward range stopped: {self._stop_reason}")
+            current_clock_ns = self._clock.timestamp_ns
             self._promote_pending_through(current_clock_ns)
-            latest_timestamp_ns = (
-                self._pending_timestamp_ns
-                if self._pending_timestamp_ns is not None
-                else self._timestamp_ns
-            )
-            if latest_timestamp_ns is not None and sim_timestamp_ns < latest_timestamp_ns:
-                raise ValueError("downward range timestamp regressed")
+            if (
+                self._latest_source_timestamp_ns is not None
+                and sim_timestamp_ns <= self._latest_source_timestamp_ns
+            ):
+                self._invalidate_locked()
+                raise ValueError("downward range timestamp must advance")
+            self._latest_source_timestamp_ns = sim_timestamp_ns
+            try:
+                ranges = list(message.ranges)  # type: ignore[attr-defined]
+                range_min = float(message.range_min)  # type: ignore[attr-defined]
+                range_max = float(message.range_max)  # type: ignore[attr-defined]
+                if len(ranges) != 1:
+                    raise ValueError("downward range must contain exactly one beam")
+                distance_m = float(ranges[0])
+            except Exception as error:
+                self._invalidate_locked()
+                raise ValueError("downward range message is malformed") from error
+            if (
+                not math.isfinite(distance_m)
+                or not math.isfinite(range_min)
+                or not math.isfinite(range_max)
+                or range_min < 0
+                or range_max <= range_min
+                or not range_min <= distance_m <= range_max
+            ):
+                self._invalidate_locked()
+                raise ValueError("downward range is invalid")
+            sequence = self._sequence + 1
+            try:
+                sample = self._sample_factory(
+                    distance_m,
+                    sim_timestamp_ns / 1_000_000_000,
+                    sequence,
+                    self._invalidation_generation,
+                )
+            except Exception:
+                self._invalidate_locked()
+                raise
+            self._sequence = sequence
             if current_clock_ns is not None and sim_timestamp_ns <= current_clock_ns:
-                self._timestamp_ns = sim_timestamp_ns
-                self._distance_m = distance_m
+                self._sample_timestamp_ns = sim_timestamp_ns
+                self._sample = sample
                 self._pending_timestamp_ns = None
-                self._pending_distance_m = None
+                self._pending_sample = None
             else:
                 self._pending_timestamp_ns = sim_timestamp_ns
-                self._pending_distance_m = distance_m
+                self._pending_sample = sample
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._invalidate_locked()
+
+    def stop(self, reason: str) -> None:
+        with self._lock:
+            if self._stop_reason is None:
+                self._stop_reason = reason or "shutdown"
+            self._invalidate_locked()
+
+    def get_sample(self) -> object:
+        with self._lock:
+            if self._stop_reason is not None:
+                raise StaleSensorError(f"downward range stopped: {self._stop_reason}")
+            if self._clock.stopped:
+                raise StaleSensorError("downward range clock stopped")
+            now_ns = self._clock.timestamp_ns
+            self._promote_pending_through(now_ns)
+            timestamp_ns = self._sample_timestamp_ns
+            sample = self._sample
+            if timestamp_ns is None or sample is None or now_ns is None:
+                raise StaleSensorError("downward range is not ready")
+            age_ns = now_ns - timestamp_ns
+            if age_ns < 0:
+                raise StaleSensorError("downward range is newer than the current clock")
+            if age_ns > MAX_RANGE_AGE_NS:
+                raise StaleSensorError(
+                    "downward range is older than 0.5 simulated seconds"
+                )
+            return sample
 
     def get_distance(self) -> float:
-        now_ns = self._clock.timestamp_ns
-        with self._lock:
-            self._promote_pending_through(now_ns)
-            timestamp_ns = self._timestamp_ns
-            distance_m = self._distance_m
-        if timestamp_ns is None or distance_m is None or now_ns is None:
-            raise StaleSensorError("downward range is not ready")
-        age_ns = now_ns - timestamp_ns
-        if age_ns < 0:
-            raise StaleSensorError("downward range is newer than the current clock")
-        if age_ns > MAX_RANGE_AGE_NS:
-            raise StaleSensorError("downward range is older than 0.5 simulated seconds")
-        return distance_m
+        sample = self.get_sample()
+        return sample.distance_m  # type: ignore[attr-defined, no-any-return]
+
+    def _invalidate_locked(self) -> None:
+        self._sample = None
+        self._sample_timestamp_ns = None
+        self._pending_sample = None
+        self._pending_timestamp_ns = None
+        self._invalidation_generation += 1
 
     def _promote_pending_through(self, clock_timestamp_ns: int | None) -> None:
         if (
@@ -300,10 +375,79 @@ class RosLidar:
             and self._pending_timestamp_ns is not None
             and self._pending_timestamp_ns <= clock_timestamp_ns
         ):
-            self._timestamp_ns = self._pending_timestamp_ns
-            self._distance_m = self._pending_distance_m
+            self._sample_timestamp_ns = self._pending_timestamp_ns
+            self._sample = self._pending_sample
             self._pending_timestamp_ns = None
-            self._pending_distance_m = None
+            self._pending_sample = None
+
+
+@dataclass(frozen=True)
+class QgcLidarStopStatus:
+    """Compatibility result for a synchronous ROS lidar shutdown."""
+
+    worker_stopped: bool
+    cleanup_completed: bool
+
+
+class QgcRangeIngress:
+    """Serialize ROS range ingress with nested lidar shutdown."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._open = True
+
+    def accept(self, operation: Callable[[], bool]) -> bool:
+        with self._lock:
+            if not self._open:
+                return False
+            return operation()
+
+    def close_and_stop(self, operation: Callable[[], None]) -> None:
+        with self._lock:
+            self._open = False
+            operation()
+
+
+class QgcRosLidarAdapter:
+    """Expose a synchronous ``RosLidar`` through the QGC lidar contract."""
+
+    def __init__(
+        self, lidar: RosLidar, *, range_ingress: QgcRangeIngress | None = None
+    ) -> None:
+        self._lidar = lidar
+        self._range_ingress = range_ingress
+
+    def get_sample(self) -> object:
+        return self._lidar.get_sample()
+
+    def get_distance(self) -> float:
+        return self._lidar.get_distance()
+
+    def stop(
+        self, *, timeout_seconds: float | None = None
+    ) -> QgcLidarStopStatus:
+        if timeout_seconds is not None:
+            if isinstance(timeout_seconds, bool) or not isinstance(
+                timeout_seconds, (int, float)
+            ):
+                raise TypeError("timeout_seconds must be numeric")
+            try:
+                normalized_timeout = float(timeout_seconds)
+            except (OverflowError, ValueError) as error:
+                raise ValueError(
+                    "timeout_seconds must be finite and nonnegative"
+                ) from error
+            if not math.isfinite(normalized_timeout) or normalized_timeout < 0:
+                raise ValueError("timeout_seconds must be finite and nonnegative")
+        stop = lambda: self._lidar.stop("QGC listener cleanup")
+        if self._range_ingress is None:
+            stop()
+        else:
+            self._range_ingress.close_and_stop(stop)
+        return QgcLidarStopStatus(
+            worker_stopped=True,
+            cleanup_completed=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -327,11 +471,23 @@ class PayloadResponse:
 
 
 class BlockingPayloadClient(Protocol):
-    def call(self, request: PayloadRequest) -> object: ...
+    def prepare(self, request: PayloadRequest) -> object: ...
+
+    def dispatch(self, prepared: object) -> object: ...
+
+    def await_response(
+        self, pending: object, *, cancelled: threading.Event
+    ) -> object: ...
+
+
+class PayloadPermissionError(PermissionError):
+    """A payload request lacks current permission at its dispatch boundary."""
 
 
 class PayloadDropper:
     """Original dropper shape backed by confirmed run-scoped ROS commands."""
+
+    supports_attachment = True
 
     def __init__(
         self,
@@ -339,64 +495,212 @@ class PayloadDropper:
         aruco_id: int,
         client: BlockingPayloadClient,
         clock: SimulationClock,
+        *,
+        permission: Callable[[], bool],
+        delay_wall_timeout_seconds: float,
     ) -> None:
+        if isinstance(aruco_id, bool) or not isinstance(aruco_id, int):
+            raise TypeError("payload ArUco ID must be an integer")
+        if not callable(permission):
+            raise ValueError("payload permission must be callable")
+        if not callable(getattr(permission, "actuate", None)):
+            raise ValueError("payload permission needs an atomic actuation hook")
+        if (
+            isinstance(delay_wall_timeout_seconds, bool)
+            or not isinstance(delay_wall_timeout_seconds, (int, float))
+            or not math.isfinite(delay_wall_timeout_seconds)
+            or delay_wall_timeout_seconds <= 0
+        ):
+            raise ValueError("payload delay wall timeout must be finite and positive")
         self._run_id = run_id
         self._aruco_id = aruco_id
         self._client = client
         self._clock = clock
+        self._permission = permission
+        self._delay_wall_timeout_seconds = float(delay_wall_timeout_seconds)
         self._sequence = {PayloadRequest.ATTACH: 0, PayloadRequest.RELEASE: 0}
         self._lock = threading.Lock()
+        self._production_lock = threading.RLock()
+        self._closed = threading.Event()
+
+    @property
+    def aruco_id(self) -> int:
+        return self._aruco_id
 
     def attach(self, aruco_id: int) -> bool:
         if aruco_id != self._aruco_id:
             raise ValueError("attachment marker does not match this payload adapter")
-        return self._command(PayloadRequest.ATTACH, "attach")
+        self._command(PayloadRequest.ATTACH, "attach", self._actuate)
+        return True
 
-    def drop(self, delay_hold: float = 0.0) -> bool:
+    def drop(self, delay_hold: float = 0.0) -> None:
+        self.drop_with_guard(self._actuate, self._actuate, delay_hold=delay_hold)
+
+    def drop_with_guard(
+        self,
+        release_actuate: Callable[[Callable[[], None]], None],
+        continuation_actuate: Callable[[Callable[[], None]], None],
+        *,
+        delay_hold: float = 0.0,
+    ) -> None:
+        if not callable(release_actuate) or not callable(continuation_actuate):
+            raise TypeError("release and continuation actuators must be callable")
         if delay_hold:
-            self._clock.sleep(delay_hold)
-        return self._command(PayloadRequest.RELEASE, "release")
+            self._wait_before_release(delay_hold)
+        self._command(PayloadRequest.RELEASE, "release", release_actuate)
 
-    def _command(self, action: int, action_name: str) -> bool:
-        for attempt in range(2):
-            with self._lock:
-                self._sequence[action] += 1
-                command_id = (
-                    f"run:{self._aruco_id}:{action_name}:{self._sequence[action]}"
-                )
-            request = PayloadRequest(
-                self._run_id,
-                self._aruco_id,
-                action,
-                command_id,
+    def cleanup_passive(self) -> bool:
+        """Stop this adapter from producing or waiting for local ROS requests."""
+
+        with self._production_lock:
+            self._closed.set()
+        return True
+
+    def _actuate(self, output: Callable[[], None]) -> None:
+        transaction = getattr(self._permission, "actuate", None)
+        if not callable(transaction):
+            raise PayloadPermissionError(
+                "payload atomic actuation transaction is not installed"
             )
-            response = self._client.call(request)
-            if response is None:
-                raise RuntimeError(f"payload {command_id} returned no confirmation")
-            if getattr(response, "command_id", None) != command_id:
-                raise RuntimeError(f"payload response command_id did not match {command_id}")
-            response_sequence = getattr(response, "response_sequence", None)
-            if (
-                isinstance(response_sequence, bool)
-                or not isinstance(response_sequence, int)
-                or response_sequence <= 0
-            ):
-                raise RuntimeError(
-                    f"payload {command_id} returned an invalid response sequence"
-                )
-            if getattr(response, "accepted", None) is True:
-                return True
-            code = getattr(response, "code", "REJECTED")
-            detail = getattr(response, "detail", "")
-            if (
-                action == PayloadRequest.RELEASE
-                and code == "STALE_PHYSICAL_STATE"
-                and attempt == 0
-            ):
-                self._clock.sleep(0.1)
-                continue
-            raise RuntimeError(f"payload {command_id} failed: {code}: {detail}")
-        raise AssertionError("unreachable payload retry state")
+        transaction(output)
+
+    def _require_permission(self) -> None:
+        try:
+            permitted = self._permission() is True
+        except Exception as error:
+            raise PayloadPermissionError("payload permission check failed") from error
+        if not permitted:
+            raise PayloadPermissionError("payload actuation permission is not current")
+
+    def _ensure_open(self) -> None:
+        if self._closed.is_set():
+            raise RuntimeError("payload adapter is closed")
+
+    def _wait_before_release(self, seconds: float) -> None:
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            raise TypeError("payload delay must be numeric")
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("payload delay must be finite and nonnegative")
+        wall_deadline = time.monotonic() + self._delay_wall_timeout_seconds
+        start_ns = self._clock.timestamp_ns
+        while start_ns is None:
+            self._ensure_open()
+            if self._clock.stopped:
+                self._clock.read_timestamp_ns()
+            self._require_permission()
+            self._wait_for_delay_poll(wall_deadline)
+            start_ns = self._clock.timestamp_ns
+        delay_ns = int(float(seconds) * 1_000_000_000)
+        while True:
+            self._ensure_open()
+            if self._clock.stopped:
+                self._clock.read_timestamp_ns()
+            self._require_permission()
+            now_ns = self._clock.timestamp_ns
+            if time.monotonic() >= wall_deadline:
+                raise TimeoutError("payload release delay timed out")
+            if now_ns is not None and now_ns - start_ns >= delay_ns:
+                return
+            self._wait_for_delay_poll(wall_deadline)
+
+    def _wait_for_delay_poll(self, wall_deadline: float) -> None:
+        remaining = wall_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("payload release delay timed out")
+        self._closed.wait(min(0.05, remaining))
+
+    def _command(
+        self,
+        action: int,
+        action_name: str,
+        actuate: Callable[[Callable[[], None]], None],
+    ) -> None:
+        self._ensure_open()
+        with self._lock:
+            self._sequence[action] += 1
+            command_id = f"run:{self._aruco_id}:{action_name}:{self._sequence[action]}"
+        request = PayloadRequest(
+            self._run_id,
+            self._aruco_id,
+            action,
+            command_id,
+        )
+        prepared = self._client.prepare(request)
+        self._require_permission()
+        pending_calls: list[object] = []
+
+        def dispatch() -> None:
+            with self._production_lock:
+                self._ensure_open()
+                pending_calls.append(self._client.dispatch(prepared))
+
+        actuate(dispatch)
+        if len(pending_calls) != 1:
+            raise RuntimeError("payload actuation did not dispatch exactly one request")
+        response = self._client.await_response(
+            pending_calls[0], cancelled=self._closed
+        )
+        if response is None:
+            raise RuntimeError(f"payload {command_id} returned no confirmation")
+        if getattr(response, "command_id", None) != command_id:
+            raise RuntimeError(f"payload response command_id did not match {command_id}")
+        response_sequence = getattr(response, "response_sequence", None)
+        if (
+            isinstance(response_sequence, bool)
+            or not isinstance(response_sequence, int)
+            or response_sequence <= 0
+        ):
+            raise RuntimeError(
+                f"payload {command_id} returned an invalid response sequence"
+            )
+        if getattr(response, "accepted", None) is True:
+            return
+        code = getattr(response, "code", "REJECTED")
+        detail = getattr(response, "detail", "")
+        raise RuntimeError(f"payload {command_id} failed: {code}: {detail}")
+
+
+class QgcFm2PayloadAdapter:
+    """Expose only scenario payload 2 for the FM2 release mission."""
+
+    supports_attachment = False
+
+    def __init__(self, dropper: PayloadDropper, *, aruco_id: int) -> None:
+        if isinstance(aruco_id, bool) or not isinstance(aruco_id, int):
+            raise TypeError("FM2 payload ArUco ID must be integer 2")
+        if aruco_id != 2:
+            raise ValueError("FM2 payload ArUco ID must be integer 2")
+        delegate_aruco_id = getattr(dropper, "aruco_id", None)
+        if isinstance(delegate_aruco_id, bool) or not isinstance(
+            delegate_aruco_id, int
+        ):
+            raise TypeError("FM2 payload delegate must expose integer ArUco ID 2")
+        if delegate_aruco_id != aruco_id:
+            raise ValueError("FM2 payload delegate ArUco ID must match integer 2")
+        self._dropper = dropper
+
+    def drop(self, delay_hold: float = 0.0) -> None:
+        self._dropper.drop(delay_hold=delay_hold)
+
+    def drop_with_guard(
+        self,
+        release_actuate: Callable[[Callable[[], None]], None],
+        continuation_actuate: Callable[[Callable[[], None]], None],
+        *,
+        delay_hold: float = 0.0,
+    ) -> None:
+        self._dropper.drop_with_guard(
+            release_actuate,
+            continuation_actuate,
+            delay_hold=delay_hold,
+        )
+
+    def cleanup_passive(self) -> bool:
+        return self._dropper.cleanup_passive() is True
+
+    def attach(self, aruco_id: int) -> bool:
+        del aruco_id
+        raise NotImplementedError("FM2 payload adapter does not support attachment")
 
 
 @dataclass(frozen=True)
@@ -412,23 +716,39 @@ class MissionEventRecord:
 class MissionEventEmitter:
     """Convert the nested phase callback into ordered current-time records."""
 
+    _SEQUENCE = (
+        ("FM1", "STARTED"),
+        ("FM1", "COMPLETE"),
+        ("FM2", "STARTED"),
+        ("FM2", "COMPLETE"),
+    )
+
     def __init__(self, run_id: str, clock: SimulationClock, publish) -> None:
         self._run_id = run_id
         self._clock = clock
         self._publish = publish
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._next_event_id = 0
         self.last_phase: str | None = None
         self.last_state: str | None = None
         self._stop_reason: str | None = None
+        self._publishing = False
 
     def __call__(self, phase: str, state: str) -> None:
-        timestamp_ns = self._clock.timestamp_ns
-        if timestamp_ns is None:
-            raise StaleSensorError("mission event cannot precede the public clock")
         with self._lock:
             if self._stop_reason is not None:
                 raise RuntimeError(f"mission event emitter stopped: {self._stop_reason}")
+            if self._publishing:
+                raise RuntimeError("mission event publication is already in progress")
+            if self._next_event_id == len(self._SEQUENCE):
+                raise RuntimeError("mission event sequence is complete")
+            expected = self._SEQUENCE[self._next_event_id]
+            if (phase, state) != expected:
+                raise ValueError(
+                    "next mission event must be "
+                    f"{expected[0]} {expected[1]}, got {phase} {state}"
+                )
+            timestamp_ns = self._clock.read_timestamp_ns()
             record = MissionEventRecord(
                 self._run_id,
                 timestamp_ns,
@@ -437,21 +757,23 @@ class MissionEventEmitter:
                 state,
                 "automatic attempt",
             )
-            self._next_event_id += 1
-            self.last_phase = phase
-            self.last_state = state
-            self._publish(record)
+            self._publishing = True
+            try:
+                self._publish(record)
+            except BaseException as error:
+                self._stop_reason = f"publication failed: {type(error).__name__}"
+                raise
+            else:
+                self._next_event_id += 1
+                self.last_phase = phase
+                self.last_state = state
+            finally:
+                self._publishing = False
 
     def stop(self, reason: str) -> None:
         with self._lock:
             if self._stop_reason is None:
                 self._stop_reason = reason or "shutdown"
-
-    @property
-    def home_complete(self) -> bool:
-        with self._lock:
-            return self.last_phase == "HOME" and self.last_state == "COMPLETE"
-
 
 class AttemptFailureCoordinator:
     """Own the first fatal attempt reason, cancellation, and recovery claim."""
@@ -713,6 +1035,10 @@ __all__ = [
     "PayloadDropper",
     "PayloadRequest",
     "PayloadResponse",
+    "QgcFm2PayloadAdapter",
+    "QgcLidarStopStatus",
+    "QgcRangeIngress",
+    "QgcRosLidarAdapter",
     "RosFrameSource",
     "RosLidar",
     "SimulationClock",

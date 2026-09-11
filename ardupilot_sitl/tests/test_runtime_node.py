@@ -11,6 +11,14 @@ import drone_sim_ardupilot.runtime_node as runtime_node
 
 
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
+LAUNCH_ORIGIN_JSON = json.dumps(
+    {
+        "latitude_deg": 37.4003371,
+        "longitude_deg": -122.0800351,
+        "amsl_m": 12.5,
+        "heading_deg": 270,
+    }
+)
 
 
 class RecordingProtocol:
@@ -84,6 +92,7 @@ def _install_fake_process(
 
     monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
     monkeypatch.setenv("SIM_RUN_DIRECTORY", str(run_directory))
+    monkeypatch.setenv("SIM_LAUNCH_ORIGIN_JSON", LAUNCH_ORIGIN_JSON)
     monkeypatch.setattr(runtime_node, "resolve_gazebo_address", lambda _host: "127.0.0.1")
     monkeypatch.setattr(runtime_node, "SITLProcess", FakeProcess)
 
@@ -91,6 +100,43 @@ def _install_fake_process(
 def _install_recording_protocol(monkeypatch: Any) -> None:
     RecordingProtocol.instances = []
     monkeypatch.setattr(runtime_node, "RuntimeProtocol", RecordingProtocol)
+
+
+@pytest.mark.parametrize(
+    "launch_origin_json",
+    [
+        "",
+        "[]",
+        '{"latitude_deg":0,"longitude_deg":0,"amsl_m":0}',
+        '{"latitude_deg":0,"longitude_deg":0,"amsl_m":0,"heading_deg":0,"extra":0}',
+        '{"latitude_deg":true,"longitude_deg":0,"amsl_m":0,"heading_deg":0}',
+        '{"latitude_deg":NaN,"longitude_deg":0,"amsl_m":0,"heading_deg":0}',
+        '{"latitude_deg":0,"latitude_deg":1,"longitude_deg":0,"amsl_m":0,"heading_deg":0}',
+    ],
+)
+def test_main_rejects_invalid_launch_origin_before_startup_side_effects(
+    launch_origin_json: str,
+    tmp_path: Path,
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    run_directory = tmp_path / "run"
+    resolver_calls: list[str] = []
+    monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
+    monkeypatch.setenv("SIM_RUN_DIRECTORY", str(run_directory))
+    monkeypatch.setenv("SIM_LAUNCH_ORIGIN_JSON", launch_origin_json)
+    monkeypatch.setattr(
+        runtime_node,
+        "resolve_gazebo_address",
+        lambda host: resolver_calls.append(host) or "127.0.0.1",
+    )
+
+    with pytest.raises(ValueError):
+        runtime_node.main()
+
+    assert resolver_calls == []
+    assert not run_directory.exists()
+    assert capsys.readouterr().out == ""
 
 
 def test_main_publishes_ready_and_quiescence_through_one_closed_protocol(
@@ -135,6 +181,7 @@ def test_main_preserves_private_failure_and_publishes_shared_failure(
 
     monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
     monkeypatch.setenv("SIM_RUN_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("SIM_LAUNCH_ORIGIN_JSON", LAUNCH_ORIGIN_JSON)
     monkeypatch.setattr(runtime_node, "resolve_gazebo_address", lambda _host: "127.0.0.1")
     monkeypatch.setattr(runtime_node, "SITLProcess", FailedProcess)
     _install_recording_protocol(monkeypatch)
@@ -257,6 +304,7 @@ def test_main_uses_strict_finalize_reader_and_cleans_up_before_reraising(
 
     monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
     monkeypatch.setenv("SIM_RUN_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("SIM_LAUNCH_ORIGIN_JSON", LAUNCH_ORIGIN_JSON)
     monkeypatch.setattr(runtime_node, "resolve_gazebo_address", lambda _host: "127.0.0.1")
     monkeypatch.setattr(runtime_node, "RuntimeProtocol", TracedProtocol)
     monkeypatch.setattr(runtime_node, "SITLProcess", Process)
@@ -418,6 +466,7 @@ def test_main_attempts_later_cleanup_phases_after_each_failure(
 
     monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
     monkeypatch.setenv("SIM_RUN_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("SIM_LAUNCH_ORIGIN_JSON", LAUNCH_ORIGIN_JSON)
     monkeypatch.setattr(runtime_node, "resolve_gazebo_address", lambda _host: "127.0.0.1")
     monkeypatch.setattr(runtime_node, "SITLProcess", Process)
     monkeypatch.setattr(runtime_node, "RuntimeProtocol", Protocol)
@@ -492,6 +541,7 @@ def test_main_preserves_monitoring_error_and_notes_cleanup_errors(
 
     monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
     monkeypatch.setenv("SIM_RUN_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("SIM_LAUNCH_ORIGIN_JSON", LAUNCH_ORIGIN_JSON)
     monkeypatch.setattr(runtime_node, "resolve_gazebo_address", lambda _host: "127.0.0.1")
     monkeypatch.setattr(runtime_node, "SITLProcess", Process)
     monkeypatch.setattr(runtime_node, "RuntimeProtocol", Protocol)

@@ -26,11 +26,29 @@ from drone_sim_companion.runtime_node import (
     quiesce_comp2026_runtime,
 )
 from drone_sim_companion.controller import MissionController
+from drone_sim_companion.comp2026_host import (
+    AttemptFailureCoordinator,
+    RosLidar,
+    SimulationClock,
+    StaleSensorError,
+)
 from drone_sim_companion.lifecycle import CompanionLifecycle
 from drone_sim_companion.mission import CommandKind, Telemetry
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def runtime_lidar(clock: SimulationClock) -> RosLidar:
+    return RosLidar(
+        clock,
+        sample_factory=lambda distance, sampled_at, sequence, generation: SimpleNamespace(
+            distance_m=distance,
+            sampled_at=sampled_at,
+            sequence=sequence,
+            invalidation_generation=generation,
+        ),
+    )
 
 
 def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() -> None:
@@ -844,6 +862,47 @@ def test_comp2026_stops_sensor_inputs_after_attempt_finishes() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "invalid_message",
+    [
+        SimpleNamespace(ranges=[4.25], range_min=0.1, range_max=30.0),
+        SimpleNamespace(
+            header=SimpleNamespace(stamp=SimpleNamespace(sec=2, nanosec=0)),
+            range_min=0.1,
+            range_max=30.0,
+        ),
+    ],
+)
+def test_comp2026_range_callback_invalidates_before_fatal_reporting(
+    invalid_message: object,
+) -> None:
+    clock = SimulationClock()
+    clock.accept(2_000_000_000)
+    lidar = runtime_lidar(clock)
+    valid_scan = SimpleNamespace(ranges=[4.25], range_min=0.1, range_max=30.0)
+    lidar.accept(valid_scan, 1_750_000_000)
+    assert lidar.get_sample().distance_m == pytest.approx(4.25)
+    events: list[str] = []
+
+    def write_failure(_reason: str) -> None:
+        with pytest.raises(StaleSensorError, match="not ready"):
+            lidar.get_sample()
+        events.append("failure_recorded_after_invalidation")
+
+    coordinator = AttemptFailureCoordinator(
+        stop_attempt=lambda _reason: events.append("attempt_stopped"),
+        write_failure=write_failure,
+        recover=lambda: None,
+    )
+
+    assert not runtime_node.accept_comp2026_range_input(
+        lidar=lidar,
+        message=invalid_message,
+        guard_input=coordinator.guard_input,
+    )
+    assert events == ["attempt_stopped", "failure_recorded_after_invalidation"]
+
+
 def write_resolved_config(
     run_directory: Path,
     *,
@@ -934,6 +993,57 @@ def test_runtime_config_accepts_roll_hover_without_competition_sources(
     assert config.mission == "hover_roll"
 
 
+def test_non_comp2026_runtime_rejects_qgc_configuration(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory)
+    document = json.loads(config_path.read_text())
+    document["qgc"] = {}
+    config_path.write_text(json.dumps(document))
+
+    with pytest.raises(ValueError, match="QGC.*comp2026_auto"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
+
+
+def test_comp2026_runtime_config_requires_resolved_qgc_object(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    configuration = run_directory / "configuration"
+    config_path = write_resolved_config(run_directory, mission="comp2026_auto")
+    repository = Path(__file__).parents[2]
+    (configuration / "course.yaml").write_bytes(
+        (repository / "config/course.yaml").read_bytes()
+    )
+    (configuration / "scenario.yaml").write_bytes(
+        (repository / "config/scenario.yaml").read_bytes()
+    )
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    document["competition"] = {
+        "course": "course.yaml",
+        "scenario": "scenario.yaml",
+        "course_sha256": hashlib.sha256(
+            (configuration / "course.yaml").read_bytes()
+        ).hexdigest(),
+        "scenario_sha256": hashlib.sha256(
+            (configuration / "scenario.yaml").read_bytes()
+        ).hexdigest(),
+    }
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="QGC"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
+
+
 def test_runtime_config_preserves_explicit_startup_timeout_override(tmp_path: Path) -> None:
     run_directory = tmp_path / RUN_ID
     config_path = write_resolved_config(run_directory)
@@ -954,8 +1064,48 @@ def test_runtime_selects_original_competition_host_from_resolved_mission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_directory = tmp_path / RUN_ID
+    configuration = run_directory / "configuration"
     config_path = write_resolved_config(run_directory, mission="comp2026_auto")
+    repository = Path(__file__).parents[2]
+    (configuration / "course.yaml").write_bytes(
+        (repository / "config/course.yaml").read_bytes()
+    )
+    (configuration / "scenario.yaml").write_bytes(
+        (repository / "config/scenario.yaml").read_bytes()
+    )
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    document["competition"] = {
+        "course": "course.yaml",
+        "scenario": "scenario.yaml",
+        "course_sha256": hashlib.sha256(
+            (configuration / "course.yaml").read_bytes()
+        ).hexdigest(),
+        "scenario_sha256": hashlib.sha256(
+            (configuration / "scenario.yaml").read_bytes()
+        ).hexdigest(),
+    }
+    document["qgc"] = {
+        "deployment_profile": "deployment-profile.json",
+        "deployment_profile_sha256": "2" * 64,
+        "listener_session": "listener-session.json",
+        "listener_session_sha256": "3" * 64,
+        "qgc_actions": "qgc-actions.json",
+        "qgc_actions_sha256": "4" * 64,
+        "runtime_policy": "qgc-runtime.json",
+        "runtime_policy_sha256": "5" * 64,
+        "attempt_state_id": "sha256-" + "2" * 64,
+    }
+    document["runtime_profile"] = "phase3"
+    document["simulation"] = {
+        "seed": 2026,
+        "duration_sim_seconds": 600.0,
+        "public_epoch_native_sim_seconds": 90.0,
+        "target_real_time_factor": 0.25,
+    }
+    document["output_root"] = str(tmp_path / "outputs")
+    config_path.write_text(json.dumps(document), encoding="utf-8")
     selected: list[str] = []
+    monkeypatch.setattr(runtime_node, "resolved_qgc_inputs", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runtime_node, "_run_controlled_descent", lambda _config: selected.append("controlled") or 0)
     monkeypatch.setattr(runtime_node, "_run_comp2026", lambda _config: selected.append("comp2026") or 0)
     monkeypatch.setattr(
@@ -1214,111 +1364,6 @@ def test_runtime_has_no_gazebo_ground_truth_dependency() -> None:
     assert "GroundTruth" not in source
     assert '"/simulation/ground_truth"' not in source
     assert "vertical_truth" not in source
-
-
-def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> None:
-    source = (
-        Path(__file__).parents[1]
-        / "src/drone_sim_companion/runtime_node.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    run_comp2026 = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_run_comp2026"
-    )
-    constructors = [
-        node
-        for node in ast.walk(run_comp2026)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "DroneControl"
-    ]
-
-    assert len(constructors) == 1
-    keywords = {
-        keyword.arg: keyword.value
-        for keyword in constructors[0].keywords
-    }
-    wait_ready = keywords["wait_ready"]
-    assert isinstance(wait_ready, ast.Constant)
-    assert wait_ready.value is False
-    heartbeat_timeout = keywords["heartbeat_timeout"]
-    assert isinstance(heartbeat_timeout, ast.Attribute)
-    assert isinstance(heartbeat_timeout.value, ast.Name)
-    assert heartbeat_timeout.value.id == "config"
-    assert heartbeat_timeout.attr == "startup_timeout_seconds"
-
-
-def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -> None:
-    source = (
-        Path(__file__).parents[1]
-        / "src/drone_sim_companion/runtime_node.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    run_comp2026 = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_run_comp2026"
-    )
-    subscriptions = [
-        node
-        for node in ast.walk(run_comp2026)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "create_subscription"
-    ]
-
-    assert len(subscriptions) == 4
-    expected_groups = {
-        "state_callback": "clock_callback_group",
-        "clock_callback": "clock_callback_group",
-        "range_callback": "range_callback_group",
-        "image_callback": "image_callback_group",
-    }
-    for subscription in subscriptions:
-        callback = subscription.args[2]
-        assert isinstance(callback, ast.Name)
-        callback_group = next(
-            (keyword.value for keyword in subscription.keywords if keyword.arg == "callback_group"),
-            None,
-        )
-        assert isinstance(callback_group, ast.Name)
-        assert callback_group.id == expected_groups[callback.id]
-
-        if callback.id in {"clock_callback", "range_callback"}:
-            qos_call = subscription.args[3]
-            assert isinstance(qos_call, ast.Call)
-            assert isinstance(qos_call.func, ast.Name)
-            assert qos_call.func.id == "qos"
-            assert isinstance(qos_call.args[0], ast.Constant)
-            assert qos_call.args[0].value == 1
-
-    executors = [
-        node
-        for node in ast.walk(run_comp2026)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "MultiThreadedExecutor"
-    ]
-    assert len(executors) == 1
-    thread_count = next(
-        keyword.value
-        for keyword in executors[0].keywords
-        if keyword.arg == "num_threads"
-    )
-    assert isinstance(thread_count, ast.Constant)
-    assert thread_count.value == 4
-
-
-def test_competition_runtime_emits_start_readiness_changes() -> None:
-    source = (
-        Path(__file__).parents[1]
-        / "src/drone_sim_companion/runtime_node.py"
-    ).read_text(encoding="utf-8")
-
-    assert '"mission_start_readiness"' in source
-    assert "gate.readiness" in source
 
 
 def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> None:

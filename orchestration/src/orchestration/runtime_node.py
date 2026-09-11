@@ -56,6 +56,15 @@ _PHASE3_RUN_STATE_NODES = frozenset(
 )
 
 
+def _phase3_durable_readiness(
+    mission: str,
+) -> tuple[type[RuntimeStatus], ...]:
+    flight_readiness = (ArduPilotReadyStatus, CompanionReadyStatus)
+    if mission == "comp2026_auto":
+        return flight_readiness
+    return (*flight_readiness, MissionReadyStatus)
+
+
 class _Protocol(Protocol):
     def read_status(self, status_type: type[StatusT]) -> StatusT | None: ...
     def read_finalize_request(self) -> dict[str, Any] | None: ...
@@ -376,7 +385,7 @@ def main() -> None:
             "stale_input", runtime.last_sim_timestamp_ns, detail=detail
         ),
         required_durable_readiness=(
-            (ArduPilotReadyStatus, CompanionReadyStatus, MissionReadyStatus)
+            _phase3_durable_readiness(config["mission"])
             if config.get("runtime_profile") == "phase3"
             else ()
         ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -11,7 +12,7 @@ from typing import Any
 from artifacts.runtime_protocol import RuntimeProtocol
 from artifacts.runtime_status import ArduPilotReadyStatus, RuntimeFailureStatus
 
-from .config import RuntimeConfig, resolve_gazebo_address
+from .config import LaunchOrigin, RuntimeConfig, resolve_gazebo_address
 from .runtime import (
     DiagnosticInventory,
     EventWriter,
@@ -19,6 +20,48 @@ from .runtime import (
     SITLProcess,
     atomic_document,
 )
+
+
+_LAUNCH_ORIGIN_KEYS = {
+    "latitude_deg",
+    "longitude_deg",
+    "amsl_m",
+    "heading_deg",
+}
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON number {value}")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError(f"duplicate JSON key {key}")
+        document[key] = value
+    return document
+
+
+def _decode_launch_origin(value: str) -> LaunchOrigin:
+    try:
+        value.encode("utf-8", errors="strict")
+        document = json.loads(
+            value,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (AttributeError, TypeError, UnicodeEncodeError, json.JSONDecodeError) as error:
+        raise ValueError("SIM_LAUNCH_ORIGIN_JSON must contain valid UTF-8 JSON") from error
+    if not isinstance(document, dict) or set(document) != _LAUNCH_ORIGIN_KEYS:
+        raise ValueError(
+            "SIM_LAUNCH_ORIGIN_JSON must be an object with exactly "
+            "latitude_deg, longitude_deg, amsl_m, and heading_deg"
+        )
+    try:
+        return LaunchOrigin(**document)
+    except (TypeError, ValueError) as error:
+        raise ValueError("SIM_LAUNCH_ORIGIN_JSON contains an invalid launch origin") from error
 
 
 def _diagnostic_paths(run_directory: Path, working_directory: Path) -> list[str]:
@@ -133,12 +176,14 @@ def _finalize(
 
 
 def main() -> int:
+    launch_origin = _decode_launch_origin(os.environ["SIM_LAUNCH_ORIGIN_JSON"])
     run_id = os.environ["SIM_RUN_ID"]
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"])
     gazebo_service = os.environ.get("SIM_GAZEBO_HOST", "gazebo-runtime")
     config = RuntimeConfig(
         run_id=run_id,
         run_directory=run_directory,
+        launch_origin=launch_origin,
         gazebo_host=resolve_gazebo_address(gazebo_service),
     )
     work = run_directory / "ardupilot_sitl"
@@ -160,7 +205,7 @@ def main() -> int:
         signal.signal(signal.SIGINT, request_stop)
         writer.emit(
             "starting",
-            ardupilot_revision="1511f27194f1dcc3728270883047bdf022b3fd53",
+            ardupilot_revision="2a3dc4b7bf2507120f7378a7b2fde73185e0c325",
             gazebo_endpoint=f"udp://{gazebo_service}:{config.gazebo_port}",
             gazebo_resolved_address=config.gazebo_host,
             mavlink_endpoint=f"tcp://ardupilot-sitl:{config.mavlink_port}",

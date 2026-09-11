@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+import yaml
 
 import orchestration.config as config_module
 from artifacts import (
@@ -45,6 +46,7 @@ from artifacts.validation import ValidationStatus
 from orchestration._adapters.compose import ComposeCommandResult, ComposeRuntime
 from orchestration.controller import ControllerError, RunController, RunResult, TerminalCause
 from orchestration.status_store import OperatorStatus, ProtocolFileError, StatusStore
+from orchestration.config import QGCSources, resolve_run_config
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000606"
@@ -87,6 +89,35 @@ def _topology(profile: str):
     return config_module.RuntimeTopology(profile=profile, ownership=ownership)
 
 
+def _qgc_sources(
+    *,
+    deployment_profile: bytes = b'{"profile":"alpha"}',
+    origin: object = None,
+) -> QGCSources:
+    if origin is None:
+        origin = {
+            "latitude_deg": 52.1,
+            "longitude_deg": 13.2,
+            "amsl_m": 48.25,
+            "heading_deg": 123,
+        }
+    return QGCSources(
+        deployment_profile=deployment_profile,
+        listener_session=b"{}",
+        qgc_actions=b"{}",
+        runtime_policy=json.dumps({"simulator_launch_origin": origin}).encode(),
+    )
+
+
+def _qgc_state(tmp_path: Path, qgc: QGCSources) -> tuple[Path, Path]:
+    root = (tmp_path / "attempt-state").resolve()
+    state = root / qgc.attempt_state_id
+    state.mkdir(parents=True)
+    (state / "attempt-ledger.json").write_bytes(b'{"used":false}\n')
+    (state / "attempt-ledger.json.lock").write_bytes(b"")
+    return root, state
+
+
 def _template(tmp_path: Path, **updates) -> Path:
     document = {
         "world": "competition",
@@ -108,6 +139,35 @@ def _template(tmp_path: Path, **updates) -> Path:
     path = tmp_path / "template.json"
     path.write_text(json.dumps(document), encoding="utf-8")
     return path
+
+
+def _comp2026_template(tmp_path: Path, **updates) -> Path:
+    source_root = Path(__file__).parents[2] / "config"
+    (tmp_path / "course.yaml").write_bytes((source_root / "course.yaml").read_bytes())
+    (tmp_path / "scenario.yaml").write_bytes(
+        (source_root / "scenario.yaml").read_bytes()
+    )
+    qgc_sources = {
+        "deployment_profile": "deployment-profile-source.json",
+        "listener_session": "listener-session-source.json",
+        "qgc_actions": "qgc-actions-source.json",
+        "runtime_policy": "qgc-runtime-source.json",
+    }
+    for field, name in qgc_sources.items():
+        (tmp_path / name).write_text(json.dumps({"fixture": field}), encoding="utf-8")
+    return _template(
+        tmp_path,
+        mission="comp2026_auto",
+        recording={
+            "width_px": 640,
+            "height_px": 480,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+        competition={"course": "course.yaml", "scenario": "scenario.yaml"},
+        qgc=qgc_sources,
+        **updates,
+    )
 
 
 def _write_json(path: Path, document: dict) -> None:
@@ -684,6 +744,10 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         "DOCKER_TLS_VERIFY": "1",
         "PATH": "/bin",
         "SIM_CONFIG_PATH": str(config_path),
+        "SIM_LAUNCH_ORIGIN_JSON": (
+            '{"amsl_m":0.0,"heading_deg":0.0,'
+            '"latitude_deg":37.4003371,"longitude_deg":-122.0800351}'
+        ),
         "SIM_PHASE2_PROFILE": "1",
         "SIM_RUN_DIRECTORY": str(run_directory),
         "SIM_RUN_ID": RUN_ID,
@@ -723,6 +787,489 @@ def test_compose_runtime_gpu_overlay_uses_only_the_owned_gpu_file(tmp_path):
         "--project-directory",
     ]
     assert "SIM_COMPOSE_OVERLAY" not in environment
+
+
+def test_qgc_compose_uses_owned_overlay_state_and_canonical_origin(tmp_path):
+    calls = []
+
+    def runner(command, *, env, timeout):
+        calls.append((command, env.copy(), timeout))
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    qgc = _qgc_sources()
+    state_root, _state = _qgc_state(tmp_path, qgc)
+    project = tmp_path.resolve()
+    run_directory = (tmp_path / "runs" / RUN_ID).resolve()
+    runtime = ComposeRuntime(
+        project_directory=project,
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_path=run_directory / "configuration/run.json",
+        topology=_topology("phase3"),
+        qgc=qgc,
+        runner=runner,
+        base_environment={
+            "PATH": "/bin",
+            "SIM_COMPOSE_OVERLAY": "gpu",
+            "DOCKER_HOST": "tcp://hostile.example:2376",
+            "DOCKER_CONTEXT": "hostile-saved-context",
+            "DOCKER_TLS": "1",
+            "DOCKER_TLS_VERIFY": "1",
+            "DOCKER_CERT_PATH": "/hostile/certs",
+            "SIM_QGC_ATTEMPT_STATE_DIRECTORY": "/tmp/hostile-state",
+            "SIM_LAUNCH_ORIGIN_JSON": '{"latitude_deg":0}',
+        },
+        test_only_qgc_state_root=state_root,
+    )
+
+    runtime.up(4.5)
+
+    production_state = (
+        Path("/var/lib/drone-sim/comp2026-attempt-state") / qgc.attempt_state_id
+    )
+    assert calls == [
+        (
+            [
+                "docker",
+                "--host",
+                "unix:///var/run/docker.sock",
+                "compose",
+                "--file",
+                str(project / "compose.yaml"),
+                "--file",
+                str(project / "compose.gpu.yaml"),
+                "--file",
+                str(project / "compose.qgc.yaml"),
+                "--project-directory",
+                str(project),
+                "-p",
+                "drone-sim-00000000000040008000000000000606",
+                "up",
+                "--detach",
+                "--no-build",
+            ],
+            {
+                "COMPOSE_DISABLE_ENV_FILE": "1",
+                "COMPOSE_PROFILES": "phase3",
+                "PATH": "/bin",
+                "SIM_CONFIG_PATH": str(run_directory / "configuration/run.json"),
+                "SIM_LAUNCH_ORIGIN_JSON": (
+                    '{"amsl_m":48.25,"heading_deg":123.0,'
+                    '"latitude_deg":52.1,"longitude_deg":13.2}'
+                ),
+                "SIM_QGC_ATTEMPT_STATE_DIRECTORY": str(production_state),
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_RUN_ID": RUN_ID,
+            },
+            4.5,
+        )
+    ]
+
+
+def test_qgc_direct_image_inspect_is_pinned_to_the_local_daemon(tmp_path):
+    calls = []
+    qgc = _qgc_sources()
+    state_root, _state = _qgc_state(tmp_path, qgc)
+
+    def runner(command, *, env, timeout):
+        calls.append((command, env.copy()))
+        return SimpleNamespace(returncode=0, stdout=("b" * 40 + "\n").encode())
+
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=(tmp_path / "run").resolve(),
+        config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase3"),
+        qgc=qgc,
+        runner=runner,
+        base_environment={"DOCKER_CONTEXT": "persisted-remote"},
+        test_only_qgc_state_root=state_root,
+    )
+
+    runtime.bind_source_revisions(
+        (
+            SourceRevision("drone_sim", "a" * 40, True),
+            SourceRevision("comp2026", "b" * 40, True),
+        ),
+        1,
+    )
+
+    command, environment = calls[0]
+    assert command[:5] == [
+        "docker",
+        "--host",
+        "unix:///var/run/docker.sock",
+        "image",
+        "inspect",
+    ]
+    assert "DOCKER_CONTEXT" not in environment
+
+
+def test_non_qgc_compose_replaces_ambient_origin_with_diagnostic_origin(tmp_path):
+    calls = []
+    run_directory = (tmp_path / "run").resolve()
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_path=run_directory / "configuration/run.json",
+        topology=_topology("phase3"),
+        runner=lambda command, *, env, timeout: calls.append((command, env.copy()))
+        or SimpleNamespace(returncode=0, stdout=b""),
+        base_environment={
+            "SIM_QGC_ATTEMPT_STATE_DIRECTORY": "/ambient/state",
+            "SIM_LAUNCH_ORIGIN_JSON": '{"ambient":true}',
+        },
+    )
+
+    runtime.up(1)
+
+    command, environment = calls[0]
+    assert environment["SIM_QGC_ATTEMPT_STATE_DIRECTORY"] == "/ambient/state"
+    assert environment["SIM_LAUNCH_ORIGIN_JSON"] == (
+        '{"amsl_m":0.0,"heading_deg":0.0,'
+        '"latitude_deg":37.4003371,"longitude_deg":-122.0800351}'
+    )
+    assert str(tmp_path.resolve() / "compose.qgc.yaml") not in command
+
+
+@pytest.mark.parametrize(
+    ("template_name", "mission"),
+    [
+        ("vertical-descent-run.json", "controlled_descent"),
+        ("autotune-roll-run.json", "autotune_roll"),
+        ("hover-roll-run.json", "hover_roll"),
+    ],
+)
+def test_controller_gives_every_diagnostic_mission_the_frozen_launch_origin(
+    tmp_path, template_name, mission
+):
+    project = Path(__file__).parents[2]
+    config = resolve_run_config(
+        project / "config" / template_name,
+        run_id_factory=lambda: FIXED_UUID,
+    )
+    controller = RunController(project_directory=project)
+
+    runtime = controller._default_compose(config, tmp_path.resolve())
+
+    assert config.mission == mission
+    assert config.qgc is None
+    assert runtime.environment["SIM_LAUNCH_ORIGIN_JSON"] == (
+        '{"amsl_m":0.0,"heading_deg":0.0,'
+        '"latitude_deg":37.4003371,"longitude_deg":-122.0800351}'
+    )
+
+
+def test_qgc_state_path_depends_on_profile_digest_not_run_id(tmp_path):
+    environments = []
+    qgc_a = _qgc_sources(deployment_profile=b'{"profile":"same"}')
+    qgc_b = _qgc_sources(deployment_profile=b'{"profile":"different"}')
+    state_root = (tmp_path / "attempt-state").resolve()
+    for qgc in (qgc_a, qgc_b):
+        state = state_root / qgc.attempt_state_id
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "attempt-ledger.json").write_bytes(b"{}")
+        (state / "attempt-ledger.json.lock").write_bytes(b"")
+
+    def runner(command, *, env, timeout):
+        environments.append(env.copy())
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    for run_id, qgc in (
+        (RUN_ID, qgc_a),
+        ("00000000-0000-4000-8000-000000000607", qgc_a),
+        ("00000000-0000-4000-8000-000000000608", qgc_b),
+    ):
+        run_directory = (tmp_path / "runs" / run_id).resolve()
+        ComposeRuntime(
+            project_directory=tmp_path.resolve(),
+            run_id=run_id,
+            run_directory=run_directory,
+            config_path=run_directory / "configuration/run.json",
+            topology=_topology("phase3"),
+            qgc=qgc,
+            runner=runner,
+            base_environment={},
+            test_only_qgc_state_root=state_root,
+        ).up(1)
+
+    paths = [env["SIM_QGC_ATTEMPT_STATE_DIRECTORY"] for env in environments]
+    assert paths[0] == paths[1]
+    assert paths[0] != paths[2]
+    assert RUN_ID not in paths[0]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        {},
+        {"latitude_deg": 0, "longitude_deg": 0, "amsl_m": 0, "heading_deg": 0, "x": 1},
+        {"latitude_deg": True, "longitude_deg": 0, "amsl_m": 0, "heading_deg": 0},
+        {"latitude_deg": 0, "longitude_deg": 0, "amsl_m": 10**1000, "heading_deg": 0},
+        {"latitude_deg": 91, "longitude_deg": 0, "amsl_m": 0, "heading_deg": 0},
+        {"latitude_deg": 0, "longitude_deg": -181, "amsl_m": 0, "heading_deg": 0},
+        {"latitude_deg": 0, "longitude_deg": 0, "amsl_m": 0, "heading_deg": 360},
+    ],
+)
+def test_qgc_compose_rejects_malformed_launch_origin_before_runner(tmp_path, origin):
+    calls = []
+    qgc = _qgc_sources(origin=origin)
+    state_root, _state = _qgc_state(tmp_path, qgc)
+
+    with pytest.raises(ValueError, match="simulator launch origin"):
+        ComposeRuntime(
+            project_directory=tmp_path.resolve(),
+            run_id=RUN_ID,
+            run_directory=(tmp_path / "run").resolve(),
+            config_path=(tmp_path / "run/configuration/run.json").resolve(),
+            topology=_topology("phase3"),
+            qgc=qgc,
+            runner=lambda *args, **kwargs: calls.append((args, kwargs)),
+            base_environment={},
+            test_only_qgc_state_root=state_root,
+        )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "missing",
+        "missing-lock",
+        "extra",
+        "ledger-symlink",
+        "ledger-fifo",
+        "lock-symlink",
+        "state-symlink",
+        "root-symlink",
+    ],
+)
+def test_qgc_compose_rejects_unsafe_or_missing_state_before_runner(tmp_path, unsafe):
+    calls = []
+    qgc = _qgc_sources()
+    state_root, state = _qgc_state(tmp_path, qgc)
+    if unsafe == "missing":
+        (state / "attempt-ledger.json").unlink()
+    elif unsafe == "missing-lock":
+        (state / "attempt-ledger.json.lock").unlink()
+    elif unsafe == "extra":
+        (state / ".attempt-ledger.json.tmp").write_bytes(b"partial")
+    elif unsafe == "ledger-symlink":
+        ledger = state / "attempt-ledger.json"
+        ledger.unlink()
+        ledger.symlink_to(tmp_path / "outside-ledger")
+    elif unsafe == "ledger-fifo":
+        ledger = state / "attempt-ledger.json"
+        ledger.unlink()
+        os.mkfifo(ledger)
+    elif unsafe == "lock-symlink":
+        lock = state / "attempt-ledger.json.lock"
+        lock.unlink()
+        lock.symlink_to(tmp_path / "outside-lock")
+    elif unsafe == "state-symlink":
+        moved = state_root / "real-state"
+        state.rename(moved)
+        state.symlink_to(moved, target_is_directory=True)
+    else:
+        real_root = tmp_path / "real-root"
+        state_root.rename(real_root)
+        state_root.symlink_to(real_root, target_is_directory=True)
+
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=(tmp_path / "run").resolve(),
+        config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase3"),
+        qgc=qgc,
+        runner=lambda *args, **kwargs: calls.append((args, kwargs)),
+        base_environment={},
+        test_only_qgc_state_root=state_root,
+    )
+
+    with pytest.raises(ValueError, match="attempt state"):
+        runtime.up(1)
+    assert calls == []
+
+
+@pytest.mark.parametrize("alias", ["//tmp/qgc-state", "/tmp/qgc-state\0suffix"])
+def test_qgc_compose_rejects_noncanonical_test_state_root(tmp_path, alias):
+    qgc = _qgc_sources()
+
+    with pytest.raises(ValueError, match="attempt state root"):
+        ComposeRuntime(
+            project_directory=tmp_path.resolve(),
+            run_id=RUN_ID,
+            run_directory=(tmp_path / "run").resolve(),
+            config_path=(tmp_path / "run/configuration/run.json").resolve(),
+            topology=_topology("phase3"),
+            qgc=qgc,
+            base_environment={},
+            test_only_qgc_state_root=alias,
+        )
+
+
+def test_qgc_compose_state_validation_does_not_read_or_mutate_files(tmp_path, monkeypatch):
+    calls = []
+    qgc = _qgc_sources()
+    state_root, state = _qgc_state(tmp_path, qgc)
+    lock = state / "attempt-ledger.json.lock"
+    lock.write_bytes(b"locked")
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in state.iterdir()
+    }
+    monkeypatch.setattr(os, "read", lambda *args: (_ for _ in ()).throw(AssertionError("read")))
+
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=(tmp_path / "run").resolve(),
+        config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase3"),
+        qgc=qgc,
+        runner=lambda command, *, env, timeout: calls.append(command)
+        or SimpleNamespace(returncode=0, stdout=b""),
+        base_environment={},
+        test_only_qgc_state_root=state_root,
+    )
+    runtime.up(1)
+
+    after = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in state.iterdir()
+    }
+    assert after == before
+    assert calls
+
+
+def test_qgc_state_changes_after_up_do_not_block_observation_or_teardown(tmp_path):
+    calls = []
+    qgc = _qgc_sources()
+    state_root, state = _qgc_state(tmp_path, qgc)
+
+    def runner(command, *, env, timeout):
+        calls.append(command)
+        if command[-2:] == ["config", "--images"]:
+            output = b"phase3-image\n"
+        elif command[3:5] == ["image", "inspect"]:
+            output = ("sha256:" + "a" * 64 + "\n").encode()
+        else:
+            output = b"[]"
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=(tmp_path / "run").resolve(),
+        config_path=(tmp_path / "run/configuration/run.json").resolve(),
+        topology=_topology("phase3"),
+        qgc=qgc,
+        runner=runner,
+        base_environment={},
+        test_only_qgc_state_root=state_root,
+    )
+    runtime.up(1)
+
+    (state / ".attempt-ledger.json.tmp").write_bytes(b"partial")
+    (state / "attempt-ledger.json").unlink()
+    replacement = state_root / "replaced-state"
+    state.rename(replacement)
+    state.symlink_to(replacement, target_is_directory=True)
+
+    runtime.ps(1)
+    runtime.logs(
+        [
+            "docker",
+            "compose",
+            "-p",
+            runtime.project_name,
+            "logs",
+            "--no-color",
+            "--no-log-prefix",
+            "gazebo-runtime",
+        ],
+        1,
+    )
+    runtime.stop_services(["companion-runtime"], 1)
+    runtime.down(1)
+    assert runtime.image_digests(1) == (ImageDigest("phase3-image", "a" * 64),)
+
+    assert [command[-1] for command in calls] == [
+        "--no-build",
+        "json",
+        "gazebo-runtime",
+        "companion-runtime",
+        "--remove-orphans",
+        "--images",
+        "phase3-image",
+    ]
+    assert all(
+        command[:3] == ["docker", "--host", "unix:///var/run/docker.sock"]
+        for command in calls
+    )
+
+
+def test_qgc_overlay_gives_state_only_to_companion_and_origin_only_to_sitl():
+    overlay = yaml.safe_load(
+        (Path(__file__).parents[2] / "compose.qgc.yaml").read_text(encoding="utf-8")
+    )
+
+    assert set(overlay) == {"services"}
+    assert set(overlay["services"]) == {"companion-runtime", "ardupilot-sitl"}
+    companion = overlay["services"]["companion-runtime"]
+    sitl = overlay["services"]["ardupilot-sitl"]
+    assert companion == {
+        "volumes": [
+            {
+                "type": "bind",
+                "source": "${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}",
+                "target": "${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}",
+                "read_only": False,
+                "bind": {"create_host_path": False},
+            }
+        ]
+    }
+    assert sitl == {
+        "environment": {
+            "SIM_LAUNCH_ORIGIN_JSON": "${SIM_LAUNCH_ORIGIN_JSON:?QGC launch origin is required}"
+        }
+    }
+
+
+def test_base_compose_allows_direct_config_without_origin_only_for_ardupilot_sitl():
+    document = yaml.safe_load(
+        (Path(__file__).parents[2] / "compose.yaml").read_text(encoding="utf-8")
+    )
+    services = document["services"]
+
+    assert services["ardupilot-sitl"]["environment"]["SIM_LAUNCH_ORIGIN_JSON"] == (
+        "${SIM_LAUNCH_ORIGIN_JSON:-}"
+    )
+    assert all(
+        "SIM_LAUNCH_ORIGIN_JSON" not in service.get("environment", {})
+        for name, service in services.items()
+        if name != "ardupilot-sitl"
+    )
+
+
+def test_phase2_compose_command_keeps_the_diagnostic_origin_out_of_services(tmp_path):
+    document = yaml.safe_load(
+        (Path(__file__).parents[2] / "compose.yaml").read_text(encoding="utf-8")
+    )
+    active_services = [
+        service
+        for service in document["services"].values()
+        if "phase2" in service.get("profiles", [])
+    ]
+
+    assert active_services
+    assert all(
+        "SIM_LAUNCH_ORIGIN_JSON" not in service.get("environment", {})
+        for service in active_services
+    )
 
 
 def test_compose_runtime_rejects_unknown_overlay(tmp_path):
@@ -1043,6 +1590,95 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
     assert holder["log_ownership"] == _topology("phase3").ownership
 
 
+def test_comp2026_controller_waits_for_runtime_before_mission_ready(tmp_path):
+    controller, trace, _clock, _holder = _controller(
+        tmp_path,
+        statuses=(
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            RuntimeRunningStatus,
+            MissionReadyStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
+        ),
+    )
+
+    result = controller.start(
+        _comp2026_template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        )
+    )
+
+    assert result.state == "COMPLETED"
+    assert trace.index("wait ardupilot-ready") < trace.index("wait companion-ready")
+    assert trace.index("wait companion-ready") < trace.index("wait runtime-running")
+    assert trace.index("wait runtime-running") < trace.index("wait mission-ready")
+    assert trace.index("wait mission-ready") < trace.index("wait source-finished")
+
+
+@pytest.mark.parametrize(
+    ("statuses", "reason"),
+    [
+        (
+            (
+                ArtifactsReadyStatus,
+                GazeboReadyStatus,
+                ArduPilotReadyStatus,
+                CompanionReadyStatus,
+                RuntimeFrozenStatus,
+                TerminalNotifiedStatus,
+            ),
+            "clock_source_stall",
+        ),
+        (
+            (
+                ArtifactsReadyStatus,
+                GazeboReadyStatus,
+                ArduPilotReadyStatus,
+                CompanionReadyStatus,
+                RuntimeRunningStatus,
+                RuntimeFrozenStatus,
+                TerminalNotifiedStatus,
+            ),
+            "mission_readiness_stall",
+        ),
+    ],
+    ids=("runtime-running", "mission-ready"),
+)
+def test_comp2026_timeout_identifies_the_next_missing_status(tmp_path, statuses, reason):
+    controller, _trace, _clock, _holder = _controller(tmp_path, statuses=statuses)
+
+    result = controller.start(
+        _comp2026_template(
+            tmp_path,
+            runtime_profile="phase3",
+            max_wall_seconds=2,
+            finalization_wall_seconds=5,
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        )
+    )
+
+    assert result.state == "FAILED"
+    assert result.reason == reason
+
+
 def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
     def replace_score_run_id(path: Path) -> None:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -1239,6 +1875,10 @@ def test_phase3_compose_binds_nested_revision_label_before_launch(tmp_path):
                 "COMPOSE_PROFILES": "phase3",
                 "SIM_COMP2026_REVISION": "b" * 40,
                 "SIM_CONFIG_PATH": str((tmp_path / "run/configuration/run.json").resolve()),
+                "SIM_LAUNCH_ORIGIN_JSON": (
+                    '{"amsl_m":0.0,"heading_deg":0.0,'
+                    '"latitude_deg":37.4003371,"longitude_deg":-122.0800351}'
+                ),
                 "SIM_RUN_DIRECTORY": str((tmp_path / "run").resolve()),
                 "SIM_RUN_ID": RUN_ID,
             },

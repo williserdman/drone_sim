@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import re
 
 import pytest
 
-from drone_sim_ardupilot.config import RuntimeConfig, resolve_gazebo_address
+from drone_sim_ardupilot.config import LaunchOrigin, RuntimeConfig, resolve_gazebo_address
 
 
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
+
+
+def _launch_origin() -> LaunchOrigin:
+    return LaunchOrigin(37.4003371, -122.0800351, 12.5, 270)
 
 
 def _descent_parameters() -> dict[str, str]:
@@ -25,7 +31,9 @@ def test_descent_parameters_disable_rc_flight_mode_override() -> None:
 
 
 def test_descent_parameters_enable_passive_extended_status_readiness() -> None:
-    assert _descent_parameters()["MAV1_EXT_STAT"] == "1"
+    parameters = _descent_parameters()
+    assert parameters["SR0_EXT_STAT"] == "1"
+    assert "MAV1_EXT_STAT" not in parameters
 
 
 def test_descent_parameters_enable_mavlink_precision_landing() -> None:
@@ -53,14 +61,14 @@ def test_descent_parameters_use_promoted_roll_autotune_gains() -> None:
             "ATC_RAT_RLL_P",
             "ATC_RAT_RLL_I",
             "ATC_RAT_RLL_D",
-            "ATC_ACC_R_MAX",
+            "ATC_ACCEL_R_MAX",
         )
     } == {
         "ATC_ANG_RLL_P": "13.1974",
         "ATC_RAT_RLL_P": "0.0503722",
         "ATC_RAT_RLL_I": "0.0503722",
         "ATC_RAT_RLL_D": "0.000375",
-        "ATC_ACC_R_MAX": "2547.76",
+        "ATC_ACCEL_R_MAX": "254776",
     }
 
 
@@ -96,7 +104,7 @@ def test_descent_parameters_use_fast_guarded_precision_landing_profile() -> None
     assert {
         name: float(parameters[name])
         for name in (
-            "LAND_SPD_MS",
+            "LAND_SPEED",
             "PLND_LAG",
             "PLND_XY_DIST_MAX",
             "PLND_TIMEOUT",
@@ -105,7 +113,7 @@ def test_descent_parameters_use_fast_guarded_precision_landing_profile() -> None
         )
     } == pytest.approx(
         {
-            "LAND_SPD_MS": 0.50,
+            "LAND_SPEED": 50,
             "PLND_LAG": 0.08,
             "PLND_XY_DIST_MAX": 0.50,
             "PLND_TIMEOUT": 0.50,
@@ -154,6 +162,7 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
     config = RuntimeConfig(
         run_id=RUN_ID,
         run_directory=tmp_path,
+        launch_origin=_launch_origin(),
         executable=Path("/opt/ardupilot/bin/arducopter"),
         parameter_file=Path("/opt/drone_sim/ardupilot/params/descent.parm"),
     )
@@ -171,14 +180,62 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "--sim-port-out",
         "9002",
         "--serial0",
-        "tcp:0.0.0.0:5760",
+        "tcp:5760",
         "--defaults",
         "/opt/drone_sim/ardupilot/params/descent.parm",
         "--home",
-        "37.4003371,-122.0800351,0,0",
+        "37.4003371,-122.0800351,12.5,270",
         "--wipe",
     )
     assert "--no-lockstep" not in config.argv
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("latitude_deg", True),
+        ("latitude_deg", float("nan")),
+        ("latitude_deg", 90.0000001),
+        ("longitude_deg", float("inf")),
+        ("longitude_deg", -180.0000001),
+        ("amsl_m", "0"),
+        ("heading_deg", -0.0000001),
+        ("heading_deg", 360),
+    ],
+)
+def test_launch_origin_rejects_invalid_values(field: str, value: object) -> None:
+    values: dict[str, object] = {
+        "latitude_deg": 0,
+        "longitude_deg": 0,
+        "amsl_m": 0,
+        "heading_deg": 0,
+    }
+    values[field] = value
+
+    with pytest.raises(ValueError):
+        LaunchOrigin(**values)  # type: ignore[arg-type]
+
+
+def test_launch_origin_formats_boundary_values_for_ardupilot_home() -> None:
+    origin = LaunchOrigin(-90, 180, -3.25, 359.5)
+    assert origin.ardupilot_home == "-90,180,-3.25,359.5"
+
+
+def test_build_and_provenance_pin_exact_official_copter_release() -> None:
+    module_root = Path(__file__).parents[1]
+    dockerfile = (module_root / "Dockerfile").read_text(encoding="utf-8")
+    provenance = json.loads(
+        (module_root / "provenance/ardupilot.json").read_text(encoding="utf-8")
+    )
+    revision_match = re.search(
+        r"^ARG ARDUPILOT_COMMIT=([0-9a-f]{40})$", dockerfile, re.MULTILINE
+    )
+
+    assert revision_match is not None
+    assert revision_match.group(1) == "2a3dc4b7bf2507120f7378a7b2fde73185e0c325"
+    assert provenance["tag"] == "Copter-4.5.7"
+    assert provenance["revision"] == revision_match.group(1)
+    assert 'grep -Fqx \'#define THISFIRMWARE "ArduCopter V4.5.7"\'' in dockerfile
 
 
 @pytest.mark.parametrize(
@@ -194,7 +251,11 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
 def test_runtime_config_rejects_ambiguous_identity_and_endpoints(
     tmp_path: Path, replacement: dict[str, object]
 ) -> None:
-    values: dict[str, object] = {"run_id": RUN_ID, "run_directory": tmp_path}
+    values: dict[str, object] = {
+        "run_id": RUN_ID,
+        "run_directory": tmp_path,
+        "launch_origin": _launch_origin(),
+    }
     values.update(replacement)
 
     with pytest.raises(ValueError):

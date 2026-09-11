@@ -1,0 +1,5 @@
+# Copter 4.5.7 test-only MAVLink identities and two private links.
+# Names are checked against the pinned source during the image build.
+SYSID_THISMAV 1
+SERIAL0_PROTOCOL 2
+SERIAL1_PROTOCOL 2

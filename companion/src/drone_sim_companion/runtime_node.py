@@ -18,8 +18,11 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any, Mapping
 from uuid import UUID
+
+import yaml
 
 from artifacts.runtime_protocol import RuntimeProtocol
 from artifacts.runtime_status import (
@@ -41,6 +44,13 @@ from .controller import MissionController, mission_policy_active, process_teleme
 from .lifecycle import CompanionLifecycle, INITIAL_COMMAND_WINDOW_NS
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
+from .qgc_runtime_config import (
+    ResolvedQGCInputs,
+    project_qgc_runtime,
+    read_resolved_run_document,
+    resolved_qgc_inputs,
+    validate_resolved_competition,
+)
 from .comp2026_host import (
     AttemptFailureCoordinator,
     Comp2026StartGate,
@@ -49,6 +59,9 @@ from .comp2026_host import (
     MissionEventRecord,
     PayloadDropper,
     PayloadRequest,
+    QgcFm2PayloadAdapter,
+    QgcRangeIngress,
+    QgcRosLidarAdapter,
     RosFrameSource,
     RosLidar,
     SimulationClock,
@@ -88,6 +101,38 @@ class RuntimeConfig:
     finalization_wall_seconds: float = 120.0
     course_path: Path | None = None
     scenario_path: Path | None = None
+    qgc: ResolvedQGCInputs | None = None
+    output_root: Path | None = None
+
+    @staticmethod
+    def _validate_qgc_structure(raw: object) -> None:
+        artifact_names = {
+            "deployment_profile": "deployment-profile.json",
+            "listener_session": "listener-session.json",
+            "qgc_actions": "qgc-actions.json",
+            "runtime_policy": "qgc-runtime.json",
+        }
+        expected_fields = {
+            *artifact_names,
+            *(f"{field}_sha256" for field in artifact_names),
+            "attempt_state_id",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected_fields:
+            raise ValueError("resolved QGC configuration has missing or unknown fields")
+        for field, artifact_name in artifact_names.items():
+            if raw[field] != artifact_name:
+                raise ValueError("resolved QGC sources must use canonical artifact names")
+            digest = raw[f"{field}_sha256"]
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(f"{field}_sha256 must be a lowercase SHA-256")
+        if raw["attempt_state_id"] != (
+            "sha256-" + raw["deployment_profile_sha256"]
+        ):
+            raise ValueError("attempt_state_id does not match the deployment profile digest")
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "RuntimeConfig":
@@ -109,12 +154,7 @@ class RuntimeConfig:
             raise ValueError("run and config paths must be absolute")
         if config_path != run_directory / "configuration/run.json":
             raise ValueError("SIM_CONFIG_PATH must be the run's resolved configuration")
-        try:
-            document = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise ValueError("SIM_CONFIG_PATH must contain readable JSON") from error
-        if not isinstance(document, dict):
-            raise ValueError("SIM_CONFIG_PATH must contain a JSON object")
+        document = read_resolved_run_document(config_path)
         if document.get("run_id") != run_id:
             raise ValueError("resolved configuration run_id must match SIM_RUN_ID")
         startup_wall_seconds = document.get("startup_wall_seconds")
@@ -148,24 +188,43 @@ class RuntimeConfig:
             raise ValueError("resolved mission must select an approved companion host")
         course_path: Path | None = None
         scenario_path: Path | None = None
+        qgc: ResolvedQGCInputs | None = None
+        output_root: Path | None = None
+        if mission != "comp2026_auto" and "qgc" in document:
+            raise ValueError("QGC configuration is only valid for comp2026_auto")
+        if "qgc" in document and (
+            document.get("runtime_profile") != "phase3"
+            or not isinstance(document.get("simulation"), dict)
+        ):
+            raise ValueError("QGC configuration requires an explicit phase3 simulation")
         if mission == "comp2026_auto":
+            cls._validate_qgc_structure(document.get("qgc"))
             competition = document.get("competition")
             if (
                 not isinstance(competition, dict)
                 or competition.get("course") != "course.yaml"
                 or competition.get("scenario") != "scenario.yaml"
+                or set(competition)
+                != {"course", "scenario", "course_sha256", "scenario_sha256"}
             ):
                 raise ValueError("comp2026_auto requires resolved competition sources")
-            course_digest = _validate_sha256_digest(
-                competition.get("course_sha256"), "course_sha256"
+            course_path, scenario_path = validate_resolved_competition(
+                competition, configuration_directory=config_path.parent
             )
-            scenario_digest = _validate_sha256_digest(
-                competition.get("scenario_sha256"), "scenario_sha256"
+            qgc = resolved_qgc_inputs(
+                document.get("qgc"),
+                configuration_directory=config_path.parent,
+                competition=competition,
             )
-            course_path = config_path.parent / "course.yaml"
-            scenario_path = config_path.parent / "scenario.yaml"
-            _verify_competition_source(course_path, course_digest, "course")
-            _verify_competition_source(scenario_path, scenario_digest, "scenario")
+            output_root_value = document.get("output_root")
+            if not isinstance(output_root_value, str) or output_root_value.startswith("//"):
+                raise ValueError("comp2026_auto requires a canonical output_root")
+            output_root = Path(output_root_value)
+            if (
+                not output_root.is_absolute()
+                or output_root != Path(os.path.abspath(output_root))
+            ):
+                raise ValueError("comp2026_auto requires a canonical output_root")
         timeout = override if timeout_override is not None else float(startup_wall_seconds)
         endpoint = environment.get("SIM_MAVLINK_ENDPOINT", "tcp:ardupilot-sitl:5760")
         if endpoint != "tcp:ardupilot-sitl:5760":
@@ -180,6 +239,8 @@ class RuntimeConfig:
             finalization_wall_seconds=float(finalization_wall_seconds),
             course_path=course_path,
             scenario_path=scenario_path,
+            qgc=qgc,
+            output_root=output_root,
         )
 
 
@@ -330,6 +391,28 @@ def comp2026_sensor_inputs_required(
     return not mission_running or mission_worker_alive
 
 
+def create_comp2026_lidar(clock: SimulationClock) -> RosLidar:
+    """Bind the ROS range adapter to the nested mission's exact sample type."""
+
+    from drone.sensors.lidar.lidar import LidarSample
+
+    return RosLidar(clock, sample_factory=LidarSample)
+
+
+def accept_comp2026_range_input(*, lidar: RosLidar, message: Any, guard_input) -> bool:
+    """Invalidate malformed range evidence before fatal input coordination."""
+
+    def accept() -> None:
+        try:
+            timestamp_ns = stamp_ns(message.header.stamp)
+        except Exception:
+            lidar.invalidate()
+            raise
+        lidar.accept(message, timestamp_ns)
+
+    return guard_input("range", accept)
+
+
 def connect_autotune_vehicle(
     factory: Callable[..., Any],
     endpoint: str,
@@ -443,15 +526,30 @@ def _enable_dronekit_python312_compatibility() -> None:
 class _RosPayloadClient:
     """Block a mission worker while the one responsive executor resolves ROS."""
 
-    def __init__(self, client: Any, service_type: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        service_type: Any,
+        *,
+        response_timeout_seconds: float,
+    ) -> None:
+        if (
+            isinstance(response_timeout_seconds, bool)
+            or not isinstance(response_timeout_seconds, (int, float))
+            or not math.isfinite(response_timeout_seconds)
+            or response_timeout_seconds <= 0
+        ):
+            raise ValueError("payload response timeout must be finite and positive")
         self._client = client
         self._service_type = service_type
+        self._response_timeout_seconds = float(response_timeout_seconds)
         self._stopped = threading.Event()
+        self._production_lock = threading.Lock()
 
     def service_is_ready(self) -> bool:
         return bool(self._client.service_is_ready())
 
-    def call(self, request: PayloadRequest) -> Any:
+    def prepare(self, request: PayloadRequest) -> Any:
         if self._stopped.is_set():
             raise RuntimeError("payload client stopped")
         ros_request = self._service_type.Request()
@@ -459,17 +557,39 @@ class _RosPayloadClient:
         ros_request.aruco_id = request.aruco_id
         ros_request.action = request.action
         ros_request.command_id = request.command_id
-        future = self._client.call_async(ros_request)
+        return ros_request
+
+    def dispatch(self, prepared: object) -> Any:
+        with self._production_lock:
+            if self._stopped.is_set():
+                raise RuntimeError("payload client stopped")
+            future = self._client.call_async(prepared)
         completed = threading.Event()
         future.add_done_callback(lambda _future: completed.set())
-        while not completed.wait(0.05):
+        return future, completed
+
+    def await_response(
+        self, pending: object, *, cancelled: threading.Event
+    ) -> Any:
+        future, completed = pending
+        deadline = time.monotonic() + self._response_timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                future.cancel()
+                raise TimeoutError("payload confirmation timed out")
+            if completed.wait(min(0.05, remaining)):
+                return future.result()
+            if cancelled.is_set():
+                future.cancel()
+                raise RuntimeError("payload adapter closed during confirmation")
             if self._stopped.is_set():
                 future.cancel()
                 raise RuntimeError("payload client stopped during confirmation")
-        return future.result()
 
     def stop(self) -> None:
-        self._stopped.set()
+        with self._production_lock:
+            self._stopped.set()
 
 
 def _run_controlled_descent(config: RuntimeConfig) -> int:
@@ -887,405 +1007,1061 @@ def _create_simulator_camera(
     camera_manager_type: Any,
     camera_type: Any,
     frame_source: Any,
+    *,
+    clock: SimulationClock,
+    scenario_path: Path,
 ) -> Any:
+    """Build the legacy camera against the fixed simulation camera contract."""
+
+    try:
+        scenario = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
+        camera_config = scenario["camera"]
+        marker_size_mm = scenario["payload_geometry"]["marker_size_mm"]
+    except (OSError, yaml.YAMLError, TypeError, KeyError) as error:
+        raise ValueError("simulator camera scenario is unreadable") from error
+    expected_camera = {
+        "width_px": 640,
+        "height_px": 480,
+        "update_rate_hz": 20,
+        "horizontal_fov_rad": 0.6,
+        "body_position_m": [0.0, 0.0, -0.1],
+    }
+    if camera_config != expected_camera or marker_size_mm != 100:
+        raise ValueError(
+            "simulator camera scenario does not match its calibration and mounting"
+        )
+
     calibration_path = Path(__file__).with_name("gazebo_camera_calibration.json")
+    mounting_path = Path(__file__).with_name("gazebo_camera_mounting.json")
     manager = camera_manager_type(
         frame_source=frame_source,
         calibration_path=calibration_path,
+        clock=clock.read_timestamp_ns,
+        max_exposure_age_ns=500_000_000,
     )
-    return camera_type(100, manager=manager)
+    return camera_type(
+        marker_size_mm,
+        manager=manager,
+        mounting_path=mounting_path,
+    )
 
 
-def _run_comp2026(config: RuntimeConfig) -> int:
-    """Host one original nested attempt behind current ROS/lifecycle seams."""
-
-    if config.course_path is None or config.scenario_path is None:
-        raise ValueError("competition runtime requires resolved course and scenario")
-
-    protocol = _ProductionProtocol(config)
-    lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
-    lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
-    _enable_dronekit_python312_compatibility()
-
-    import rclpy
-    from drone.auto_attempt import run_auto_attempt
+def _load_qgc_timebase() -> Any:
     from drone import timebase
+
+    return timebase
+
+
+def _load_qgc_live_dependencies() -> Any:
+    """Import live-only ROS, DroneKit, and nested listener dependencies lazily."""
+
+    _enable_dronekit_python312_compatibility()
+    import rclpy
     from drone.control.drone_control import DroneControl
-    from drone.control.mission_info import MissonTracker
-    from drone.sensors.camera._camera_manager import CameraManager
-    from drone.sensors.camera.camera import Camera
-    from dronekit import VehicleMode
+    from drone.control.listener import (
+        DroneKitQGCAckTransport,
+        LiveComponentFactories,
+        TelemetryStartupCollector,
+        start_repl,
+    )
+    from drone.control.mission_supervisor import CommandRejected
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.duration import Duration
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from rclpy.signals import SignalHandlerOptions
     from rosgraph_msgs.msg import Clock
-    from sensor_msgs.msg import Image, LaserScan
+    from sensor_msgs.msg import LaserScan
     from simulation_interfaces.msg import MissionEvent, RunState
     from simulation_interfaces.srv import PayloadCommand
 
-    def qos(depth: int, *, transient: bool = False) -> Any:
-        return QoSProfile(
+    return SimpleNamespace(
+        rclpy=rclpy,
+        DroneControl=DroneControl,
+        DroneKitQGCAckTransport=DroneKitQGCAckTransport,
+        LiveComponentFactories=LiveComponentFactories,
+        TelemetryStartupCollector=TelemetryStartupCollector,
+        start_repl=start_repl,
+        CommandRejected=CommandRejected,
+        MutuallyExclusiveCallbackGroup=MutuallyExclusiveCallbackGroup,
+        MultiThreadedExecutor=MultiThreadedExecutor,
+        Node=Node,
+        DurabilityPolicy=DurabilityPolicy,
+        Duration=Duration,
+        QoSProfile=QoSProfile,
+        ReliabilityPolicy=ReliabilityPolicy,
+        Clock=Clock,
+        LaserScan=LaserScan,
+        MissionEvent=MissionEvent,
+        RunState=RunState,
+        PayloadCommand=PayloadCommand,
+        SignalHandlerOptions=SignalHandlerOptions,
+        QgcRosLidarAdapter=QgcRosLidarAdapter,
+        QgcFm2PayloadAdapter=QgcFm2PayloadAdapter,
+        thread_factory=threading.Thread,
+        wall_now=time.monotonic,
+    )
+
+
+class _QgcSignalLatch:
+    """Record the first host signal without entering any synchronized API."""
+
+    def __init__(self) -> None:
+        self.reason: str | None = None
+
+    def latch(self, reason: str) -> None:
+        if self.reason is None:
+            self.reason = reason
+
+
+class _QgcStopCoordinator:
+    """Route one latched host interruption to the current listener phase."""
+
+    def __init__(self, clock: SimulationClock, monitoring_stop: threading.Event) -> None:
+        self._clock = clock
+        self._monitoring_stop = monitoring_stop
+        self._lock = threading.RLock()
+        self._reason: str | None = None
+        self._runtime: object | None = None
+        self._clock_stop_dispatched = False
+        self._abort_dispatched = False
+        self._monitoring_stop_dispatched = False
+        self._unbound_stop_dispatched = False
+
+    @staticmethod
+    def _raise_failures(errors: list[BaseException]) -> None:
+        if not errors:
+            return
+        if len(errors) == 1:
+            raise errors[0]
+        raise BaseExceptionGroup("QGC stop coordination failed", errors)
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+    def bind_runtime(self, runtime: object) -> None:
+        with self._lock:
+            self._runtime = runtime
+            reason = self._reason
+            dispatch_abort = reason is not None and not self._abort_dispatched
+            dispatch_monitoring_stop = (
+                reason is not None and not self._monitoring_stop_dispatched
+            )
+            self._abort_dispatched |= dispatch_abort
+            self._monitoring_stop_dispatched |= dispatch_monitoring_stop
+        errors: list[BaseException] = []
+        if dispatch_abort:
+            try:
+                runtime.request_abort(reason)  # type: ignore[attr-defined]
+            except BaseException as error:
+                errors.append(error)
+        if dispatch_monitoring_stop:
+            try:
+                runtime.stop_monitoring()  # type: ignore[attr-defined]
+            except BaseException as error:
+                errors.append(error)
+        self._raise_failures(errors)
+
+    def request(self, reason: str, *, stop_clock: bool = False) -> None:
+        with self._lock:
+            if self._reason is None:
+                self._reason = reason
+            selected = self._reason
+            runtime = self._runtime
+            dispatch_clock_stop = stop_clock and not self._clock_stop_dispatched
+            dispatch_abort = runtime is not None and not self._abort_dispatched
+            dispatch_monitoring_stop = (
+                runtime is not None and not self._monitoring_stop_dispatched
+            )
+            dispatch_unbound_stop = (
+                runtime is None and not self._unbound_stop_dispatched
+            )
+            self._clock_stop_dispatched |= dispatch_clock_stop
+            self._abort_dispatched |= dispatch_abort
+            self._monitoring_stop_dispatched |= dispatch_monitoring_stop
+            self._unbound_stop_dispatched |= dispatch_unbound_stop
+        errors: list[BaseException] = []
+        if dispatch_clock_stop:
+            try:
+                self._clock.stop(selected)
+            except BaseException as error:
+                errors.append(error)
+        if runtime is not None:
+            if dispatch_abort:
+                try:
+                    runtime.request_abort(selected)  # type: ignore[attr-defined]
+                except BaseException as error:
+                    errors.append(error)
+            if dispatch_monitoring_stop:
+                try:
+                    runtime.stop_monitoring()  # type: ignore[attr-defined]
+                except BaseException as error:
+                    errors.append(error)
+        elif dispatch_unbound_stop:
+            try:
+                self._monitoring_stop.set()
+            except BaseException as error:
+                errors.append(error)
+        self._raise_failures(errors)
+
+
+@dataclass(frozen=True)
+class _QgcHostCleanup:
+    first_error: BaseException | None
+    diagnostics: tuple[str, ...]
+    confirmed: bool
+    protocol_safe_to_close: bool
+
+
+def _exception_detail(error: BaseException) -> str:
+    try:
+        return str(error) or type(error).__name__
+    except BaseException:
+        return type(error).__name__
+
+
+class _Comp2026QgcRosHost:
+    """Lazy ROS producers and accepted nested factories for one QGC attempt."""
+
+    _MISSION_EVENT_TOPIC = "/simulation/mission_events"
+    _MISSION_EVENT_TYPE = "simulation_interfaces/msg/MissionEvent"
+    _SCOREKEEPER_NODE = "drone_sim_scorekeeper"
+    _ROSBAG_NODE_PREFIX = "rosbag2_recorder_"
+
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        projection: object,
+        clock: SimulationClock,
+        lifecycle: CompanionLifecycle,
+        dependencies: object,
+        stop: _QgcStopCoordinator,
+        monitoring_stop: threading.Event,
+        protocol: _ProductionProtocol,
+    ) -> None:
+        self.config = config
+        self.projection = projection
+        self.runtime_config = projection.runtime_configuration  # type: ignore[attr-defined]
+        self.clock = clock
+        self.lifecycle = lifecycle
+        self.dependencies = dependencies
+        self.stop = stop
+        self.monitoring_stop = monitoring_stop
+        self.protocol = protocol
+        self.admission = threading.Event()
+        self._callbacks_active = threading.Event()
+        self._callbacks_active.set()
+        self._lock = threading.RLock()
+        self._fatal_policy_lock = threading.Lock()
+        self._first_error: BaseException | None = None
+        self._fatal_error: BaseException | None = None
+        self._fatal_context: str | None = None
+        self._fatal_reason: str | None = None
+        self._fatal_stop_clock = False
+        self._fatal_diagnostics: list[str] = []
+        self._ros_started = False
+        self._rclpy_initialized = False
+        self._mission_running = False
+        self.node: object | None = None
+        self.executor: object | None = None
+        self.executor_thread: threading.Thread | None = None
+        self._executor_thread_started = False
+        self.control_thread: threading.Thread | None = None
+        self._control_thread_started = False
+        self._control_stop = threading.Event()
+        self.subscriptions: list[object] = []
+        self.mission_publisher: object | None = None
+        self.mission_event_emitter: MissionEventEmitter | None = None
+        self.payload_client: _RosPayloadClient | None = None
+        self.lidar: RosLidar | None = None
+        self.range_ingress = QgcRangeIngress()
+        self._controller: object | None = None
+        self._controller_handed_off = False
+        heartbeat_freshness = projection.flight_profile.freshness_bounds["heartbeat"]  # type: ignore[attr-defined]
+        self.heartbeat_freshness_s = min(
+            float(self.runtime_config.connection.heartbeat_timeout_s),
+            float(heartbeat_freshness),
+        )
+        if not math.isfinite(self.heartbeat_freshness_s) or self.heartbeat_freshness_s <= 0:
+            raise ValueError("validated heartbeat freshness must be finite and positive")
+        self._overall_wall_deadline = dependencies.wall_now() + config.max_wall_seconds
+
+    @property
+    def first_error(self) -> BaseException | None:
+        with self._lock:
+            return self._first_error
+
+    def _record_fatal_error(
+        self, error: BaseException, context: str, *, stop_clock: bool = True
+    ) -> None:
+        with self._fatal_policy_lock:
+            self._fatal_stop_clock |= stop_clock
+        with self._lock:
+            if self._fatal_error is None:
+                self._fatal_error = error
+                self._fatal_context = context
+                if self._first_error is None:
+                    self._first_error = error
+                self._fatal_reason = (
+                    f"{self._fatal_context}: {_exception_detail(self._fatal_error)}"
+                )
+            elif self._fatal_reason is None:
+                return
+            reason = self._fatal_reason
+        with self._fatal_policy_lock:
+            selected_stop_clock = self._fatal_stop_clock
+        try:
+            self.stop.request(reason, stop_clock=selected_stop_clock)
+        except BaseException as stop_error:
+            self._record_fatal_diagnostics(stop_error)
+
+    def _record_fatal_diagnostics(self, error: BaseException) -> None:
+        if isinstance(error, BaseExceptionGroup):
+            for nested in error.exceptions:
+                self._record_fatal_diagnostics(nested)
+            return
+        with self._lock:
+            self._fatal_diagnostics.append(_exception_detail(error))
+
+    def _guard_input(self, name: str, operation: Callable[[], None]) -> bool:
+        if not self._callbacks_active.is_set():
+            return False
+        try:
+            operation()
+        except BaseException as error:
+            self._record_fatal_error(error, f"{name} input failed")
+            return False
+        return True
+
+    def _qos(self, depth: int, *, transient: bool = False) -> object:
+        deps = self.dependencies
+        return deps.QoSProfile(
             depth=depth,
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=deps.ReliabilityPolicy.RELIABLE,
             durability=(
-                DurabilityPolicy.TRANSIENT_LOCAL
+                deps.DurabilityPolicy.TRANSIENT_LOCAL
                 if transient
-                else DurabilityPolicy.VOLATILE
+                else deps.DurabilityPolicy.VOLATILE
             ),
         )
 
-    rclpy.init()
-    node = Node("drone_sim_companion")
-    clock_callback_group = MutuallyExclusiveCallbackGroup()
-    range_callback_group = MutuallyExclusiveCallbackGroup()
-    image_callback_group = MutuallyExclusiveCallbackGroup()
-    service_callback_group = MutuallyExclusiveCallbackGroup()
-    executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(node)
-    executor_thread = threading.Thread(
-        target=executor.spin,
-        name="companion-ros-executor",
-        daemon=True,
-    )
-    clock = SimulationClock()
-    frame_source = RosFrameSource(width_px=640, height_px=480)
-    lidar = RosLidar(clock)
-    gate = Comp2026StartGate()
-    mission_publisher = node.create_publisher(
-        MissionEvent,
-        "/simulation/mission_events",
-        qos(100, transient=True),
-    )
-    ros_payload_client = node.create_client(
-        PayloadCommand,
-        "/simulation/payload_command",
-        callback_group=service_callback_group,
-    )
-    payload_client = _RosPayloadClient(ros_payload_client, PayloadCommand)
-    shutdown_admission = _Comp2026ShutdownAdmission()
-    mission_running = False
-    initial_command_delivered = False
-    runtime_failure_written = False
-    runtime_failure_lock = threading.Lock()
-    exit_code = 0
-    controller: Any | None = None
-    mission_worker: threading.Thread | None = None
-    last_start_readiness: dict[str, bool] | None = None
-
-    def stop(_signum: int, _frame: Any) -> None:
-        shutdown_admission.request_stop_from_signal()
-
-    def state_callback(message: Any) -> None:
-        nonlocal mission_running
-        if message.run_id != config.run_id:
+    def _state_callback(self, message: object) -> None:
+        if not self._callbacks_active.is_set() or getattr(message, "run_id", None) != self.config.run_id:
             return
-        if message.state == RunState.RUNNING:
-            mission_running = True
-            gate.accept_running()
-        elif message.state == RunState.FINALIZING:
-            shutdown_admission.begin_finalizing()
+        state = getattr(message, "state", None)
+        if state == self.dependencies.RunState.RUNNING:
+            self._mission_running = True
+        elif state == self.dependencies.RunState.FINALIZING:
+            try:
+                self.stop.request("orchestration finalization")
+            except BaseException as error:
+                self._record_fatal_error(
+                    error,
+                    "orchestration finalization stop coordination failed",
+                    stop_clock=True,
+                )
 
-    def clock_callback(message: Any) -> None:
-        if not mission_running:
+    def _clock_callback(self, message: object) -> None:
+        if not self._mission_running:
             return
-
-        def accept() -> None:
-            clock.accept(stamp_ns(message.clock))
-            gate.accept_clock()
-
-        attempt_failure.guard_input("clock", accept)
-
-    def image_callback(message: Any) -> None:
-        if not mission_running:
-            return
-        attempt_failure.guard_input(
-            "image", lambda: frame_source.accept_image(message)
+        self._guard_input(
+            "clock", lambda: self.clock.accept(stamp_ns(message.clock))  # type: ignore[attr-defined]
         )
 
-    def range_callback(message: Any) -> None:
-        if not mission_running:
+    def _range_callback(self, message: object) -> None:
+        if not self._mission_running or self.lidar is None:
             return
+        self.range_ingress.accept(
+            lambda: accept_comp2026_range_input(
+                lidar=self.lidar,  # type: ignore[arg-type]
+                message=message,
+                guard_input=self._guard_input,
+            )
+        )
 
-        def accept() -> None:
-            timestamp_ns = stamp_ns(message.header.stamp)
-            lidar.accept(message, timestamp_ns)
-
-        attempt_failure.guard_input("range", accept)
-
-    def publish_mission_event(record: MissionEventRecord) -> None:
-        message = MissionEvent()
+    def _publish_mission_event(self, record: MissionEventRecord) -> None:
+        if self.mission_publisher is None:
+            raise RuntimeError("mission event publisher is unavailable")
+        if not self._mission_event_consumers_ready():
+            raise RuntimeError(
+                "mission event publisher requires both scorekeeper and rosbag subscribers"
+            )
+        message = self.dependencies.MissionEvent()
         message.run_id = record.run_id
-        message.sim_timestamp.sec = record.sim_timestamp_ns // 1_000_000_000
-        message.sim_timestamp.nanosec = record.sim_timestamp_ns % 1_000_000_000
+        seconds, nanoseconds = divmod(record.sim_timestamp_ns, 1_000_000_000)
+        message.sim_timestamp.sec = seconds
+        message.sim_timestamp.nanosec = nanoseconds
         message.event_id = record.event_id
         message.phase = record.phase
         message.state = record.state
         message.detail = record.detail
-        mission_publisher.publish(message)
+        self.mission_publisher.publish(message)  # type: ignore[attr-defined]
 
-    emitter = MissionEventEmitter(config.run_id, clock, publish_mission_event)
-
-    def write_runtime_failure(reason: str) -> None:
-        nonlocal runtime_failure_written, exit_code
-        with runtime_failure_lock:
-            exit_code = 1
-            if runtime_failure_written:
-                return
-            protocol.write_status(
-                RuntimeFailureStatus(
-                    config.run_id,
-                    "companion",
-                    reason,
-                    ("logs/docker/companion.log.partial",),
-                )
+    def _mission_event_consumers_ready(self) -> bool:
+        if self.node is None:
+            return False
+        deps = self.dependencies
+        valid_names = {
+            endpoint.node_name
+            for endpoint in self.node.get_subscriptions_info_by_topic(  # type: ignore[attr-defined]
+                self._MISSION_EVENT_TOPIC
             )
-            runtime_failure_written = True
-
-    def best_effort_recovery() -> None:
-        if controller is None:
-            return
-        with timebase.configured(clock):
-            for name, action in (
-                ("RTL", controller.rtl),
-                ("LAND", controller.simple_land),
-                ("DISARM", controller.disarm),
-            ):
-                try:
-                    action()
-                except Exception as error:
-                    lifecycle.emit(
-                        "recovery_failed",
-                        clock.timestamp_ns,
-                        {"action": name, "reason": str(error)},
-                    )
-
-    def stop_attempt(reason: str) -> None:
-        gate.stop(reason)
-        frame_source.stop(reason)
-        payload_client.stop()
-        clock.stop(reason)
-        emitter.stop(reason)
-
-    def record_attempt_failure(reason: str) -> None:
-        phase = emitter.last_phase or "WAIT_READY"
-        lifecycle.emit(
-            "mission_failed",
-            clock.timestamp_ns,
-            {"phase": phase, "reason": reason},
+            if endpoint.node_namespace == "/"
+            and endpoint.topic_type == self._MISSION_EVENT_TYPE
+            and endpoint.qos_profile.reliability == deps.ReliabilityPolicy.RELIABLE
+            and endpoint.qos_profile.durability
+            == deps.DurabilityPolicy.TRANSIENT_LOCAL
+        }
+        return self._SCOREKEEPER_NODE in valid_names and any(
+            name.startswith(self._ROSBAG_NODE_PREFIX) for name in valid_names
         )
-        write_runtime_failure(reason)
 
-    attempt_failure = AttemptFailureCoordinator(
-        stop_attempt=stop_attempt,
-        write_failure=record_attempt_failure,
-        recover=best_effort_recovery,
-    )
-
-    def run_original_attempt() -> None:
+    def observe_phase(self, phase: str, state: str) -> None:
+        emitter = self.mission_event_emitter
+        if emitter is None:
+            raise RuntimeError("mission event emitter is unavailable")
         try:
-            gate.wait_until_ready()
-            assert controller is not None
-            current_home = controller.get_current_gps()
-            home = GPSCoord(current_home.lat, current_home.long, 0.0)
-            waypoints = load_course_waypoints(config.course_path, home)
-            camera = _create_simulator_camera(
-                CameraManager,
-                Camera,
-                frame_source,
+            emitter(phase, state)
+        except BaseException as error:
+            self._record_fatal_error(
+                error,
+                "mission event publication failed",
+                stop_clock=False,
             )
-            tracker = MissonTracker(600)
-            payloads = {
-                marker: PayloadDropper(config.run_id, marker, payload_client, clock)
-                for marker in (2, 3, 4)
-            }
-            with timebase.configured(clock):
-                run_auto_attempt(
-                    tracker=tracker,
-                    controller=controller,
-                    camera=camera,
-                    lidar=lidar,
-                    payloads=payloads,
-                    waypoints=waypoints,
-                    emit=emitter,
-                )
-            if not emitter.home_complete:
-                raise RuntimeError("original attempt returned without HOME/COMPLETE")
-            attempt_failure.finish_success(
-                lambda: lifecycle.observe_terminal(
-                    MissionState(
-                        MissionPhase.LANDED,
-                        last_timestamp_ns=clock.timestamp_ns or 0,
+            raise
+
+    def _start_ros(self) -> None:
+        if self._ros_started:
+            return
+        deps = self.dependencies
+        deps.rclpy.init(signal_handler_options=deps.SignalHandlerOptions.NO)
+        self._rclpy_initialized = True
+        self.node = deps.Node("drone_sim_companion", parameter_overrides=[])
+        state_group = deps.MutuallyExclusiveCallbackGroup()
+        range_group = deps.MutuallyExclusiveCallbackGroup()
+        service_group = deps.MutuallyExclusiveCallbackGroup()
+        self.mission_publisher = self.node.create_publisher(
+            deps.MissionEvent,
+            self._MISSION_EVENT_TOPIC,
+            self._qos(100, transient=True),
+        )
+        self.mission_event_emitter = MissionEventEmitter(
+            self.config.run_id,
+            self.clock,
+            self._publish_mission_event,
+        )
+        raw_payload_client = self.node.create_client(
+            deps.PayloadCommand,
+            "/simulation/payload_command",
+            callback_group=service_group,
+        )
+        self.payload_client = _RosPayloadClient(
+            raw_payload_client,
+            deps.PayloadCommand,
+            response_timeout_seconds=self.projection.payload_delay_wall_timeout_s,  # type: ignore[attr-defined]
+        )
+        self.lidar = create_comp2026_lidar(self.clock)
+        self.subscriptions = [
+            self.node.create_subscription(
+                deps.RunState,
+                "/simulation/run_state",
+                self._state_callback,
+                self._qos(1, transient=True),
+                callback_group=state_group,
+            ),
+            self.node.create_subscription(
+                deps.Clock,
+                "/clock",
+                self._clock_callback,
+                self._qos(1),
+                callback_group=state_group,
+            ),
+            self.node.create_subscription(
+                deps.LaserScan,
+                "/competition/range/downward",
+                self._range_callback,
+                self._qos(1),
+                callback_group=range_group,
+            ),
+        ]
+        self.executor = deps.MultiThreadedExecutor(num_threads=3)
+        self.executor.add_node(self.node)
+        executor_entered = threading.Event()
+
+        def spin() -> None:
+            executor_entered.set()
+            try:
+                self.executor.spin()  # type: ignore[attr-defined]
+            except BaseException as error:
+                self._record_fatal_error(error, "ROS executor failed")
+            else:
+                if self._callbacks_active.is_set():
+                    error = RuntimeError("ROS executor stopped before host cleanup")
+                    self._record_fatal_error(error, "ROS executor failed")
+
+        self.executor_thread = deps.thread_factory(
+            target=spin,
+            name="companion-qgc-ros-executor",
+            daemon=True,
+        )
+        self.executor_thread.start()
+        self._executor_thread_started = True
+        if not executor_entered.wait(min(self.config.startup_timeout_seconds, 5.0)):
+            raise TimeoutError("ROS executor did not start before vehicle connection")
+        self._ros_started = True
+
+    def start_control_monitor(self, signal_reason: Callable[[], str | None]) -> None:
+        if self._control_thread_started:
+            return
+        control_checked = threading.Event()
+
+        def monitor_host_control() -> None:
+            signal_dispatched = False
+            finalize_dispatched = False
+
+            def request_stop(
+                reason: str, *, stop_clock: bool, failure_context: str
+            ) -> bool:
+                try:
+                    self.stop.request(reason, stop_clock=stop_clock)
+                except BaseException as error:
+                    self._record_fatal_error(
+                        error,
+                        failure_context,
+                        stop_clock=True,
+                    )
+                    return False
+                return True
+
+            while not self._control_stop.is_set():
+                try:
+                    pending_signal = signal_reason()
+                    finalize_requested = self.protocol.read_finalize_request() is not None
+                    wall_expired = (
+                        self.dependencies.wall_now() >= self._overall_wall_deadline
+                    )
+                except BaseException as error:
+                    self._record_fatal_error(error, "host control monitor failed")
+                    control_checked.set()
+                    return
+                control_checked.set()
+                if pending_signal is not None and not signal_dispatched:
+                    if not request_stop(
+                        pending_signal,
+                        stop_clock=False,
+                        failure_context="host signal stop coordination failed",
+                    ):
+                        return
+                    signal_dispatched = True
+                if finalize_requested and not finalize_dispatched:
+                    if not request_stop(
+                        "orchestration finalize request",
+                        stop_clock=False,
+                        failure_context="host finalize stop coordination failed",
+                    ):
+                        return
+                    finalize_dispatched = True
+                if wall_expired:
+                    request_stop(
+                        "companion exceeded the overall run wall failsafe",
+                        stop_clock=True,
+                        failure_context="host wall failsafe stop coordination failed",
+                    )
+                    return
+                self._control_stop.wait(0.02)
+
+        self.control_thread = threading.Thread(
+            target=monitor_host_control,
+            name="companion-qgc-host-control",
+            daemon=True,
+        )
+        self.control_thread.start()
+        self._control_thread_started = True
+        if not control_checked.wait(min(self.config.startup_timeout_seconds, 5.0)):
+            raise TimeoutError("host control monitor did not start")
+
+    def controller_factory(
+        self, *, config: object, flight_state: object, permission_guard: object, decoders: object
+    ) -> object:
+        self._start_ros()
+        if self.stop.reason is not None or self.first_error is not None:
+            raise RuntimeError(f"QGC startup stopped before vehicle connection: {self.stop.reason}")
+        connection = config.connection  # type: ignore[attr-defined]
+        controller = self.dependencies.DroneControl(
+            connection.endpoint,
+            source_identity=connection.source_identity,
+            flight_controller_target=connection.target_identity,
+            wait_ready=connection.wait_ready,
+            heartbeat_timeout=connection.heartbeat_timeout_s,
+            flight_state=flight_state,
+            permission_guard=permission_guard,
+            heartbeat_mode_decoder=decoders.heartbeat_mode_decoder,
+            rc_health_decoder=decoders.rc_health_decoder,
+            sys_status_observer=decoders.observe_sys_status,
+            failsafe_decoders={"HEARTBEAT": decoders.heartbeat_failsafe_decoder},
+            mission_home_check=config.operating_site.mission_home_check,  # type: ignore[attr-defined]
+            fc_home_position_tolerance_m=config.fc_home_position_tolerance_m,  # type: ignore[attr-defined]
+            fc_home_altitude_tolerance_m=config.fc_home_altitude_tolerance_m,  # type: ignore[attr-defined]
+            clearance_calibration=config.clearance_calibration,  # type: ignore[attr-defined]
+            release_stability_config=config.release_stability,  # type: ignore[attr-defined]
+            home_request_timeout_s=config.telemetry.home_request_timeout_s,  # type: ignore[attr-defined]
+            telemetry_poll_interval_s=config.telemetry.poll_interval_s,  # type: ignore[attr-defined]
+            guided_output_delivery_callback=self._guided_output_delivered,
+        )
+        self._controller = controller
+        self.lifecycle.mark_transport_ready()
+        self._controller_handed_off = True
+        return controller
+
+    def _guided_output_delivered(self) -> None:
+        self.lifecycle.observe_command_delivery(
+            CommandKind.SET_GUIDED,
+            self.clock.read_timestamp_ns(),
+        )
+
+    def ack_transport_factory(self, *, controller: object, config: object) -> object:
+        return self.dependencies.DroneKitQGCAckTransport(
+            controller.vehicle,  # type: ignore[attr-defined]
+            expected_source=config.connection.source_identity,  # type: ignore[attr-defined]
+            wire_protocol=config.connection.wire_protocol,  # type: ignore[attr-defined]
+        )
+
+    def telemetry_collector_factory(
+        self, *, controller: object, profile: object, config: object
+    ) -> object:
+        return self.dependencies.TelemetryStartupCollector(
+            controller=controller,
+            flight_profile=profile,
+            policy=config.telemetry,  # type: ignore[attr-defined]
+            autopilot_version=config.autopilot_version,  # type: ignore[attr-defined]
+        )
+
+    def lidar_factory(self, *, config: object) -> object:
+        del config
+        if self.lidar is None:
+            raise RuntimeError("ROS LiDAR was not established before listener construction")
+        return self.dependencies.QgcRosLidarAdapter(
+            self.lidar,
+            range_ingress=self.range_ingress,
+        )
+
+    def dropper_factory(self, *, config: object, permission: object) -> object:
+        del config
+        if self.payload_client is None:
+            raise RuntimeError("ROS payload client was not established before FM1 admission")
+        dropper = PayloadDropper(
+            self.config.run_id,
+            2,
+            self.payload_client,
+            self.clock,
+            permission=permission,
+            delay_wall_timeout_seconds=self.projection.payload_delay_wall_timeout_s,  # type: ignore[attr-defined]
+        )
+        return self.dependencies.QgcFm2PayloadAdapter(dropper, aruco_id=2)
+
+    @staticmethod
+    def camera_factory(**_kwargs: object) -> object:
+        raise RuntimeError("FM3 camera construction is disabled for this composition")
+
+    def factories(self) -> object:
+        return self.dependencies.LiveComponentFactories(
+            backend=self.runtime_config.components.backend,
+            controller_factory=self.controller_factory,
+            ack_transport_factory=self.ack_transport_factory,
+            telemetry_collector_factory=self.telemetry_collector_factory,
+            lidar_factory=self.lidar_factory,
+            dropper_factory=self.dropper_factory,
+            camera_factory=self.camera_factory,
+            supports_attachment=False,
+            telemetry_startup_mode="staged_simulation",
+        )
+
+    def require_admission_open(self) -> None:
+        if not self.admission.is_set():
+            raise self.dependencies.CommandRejected(
+                "host mission-ready admission is closed"
+            )
+
+    def listener_ready(self, runtime: object) -> None:
+        self.stop.bind_runtime(runtime)
+        if self.stop.reason is not None or self.first_error is not None:
+            raise RuntimeError(f"QGC startup stopped before mission-ready: {self.stop.reason}")
+        if not self._mission_running or self.clock.ready is not True:
+            raise RuntimeError(
+                "matching RUNNING state and public clock are required before mission-ready"
+            )
+        if (
+            self.mission_publisher is None
+            or not self._mission_event_consumers_ready()
+        ):
+            raise RuntimeError(
+                "mission event publisher requires both scorekeeper and rosbag subscribers "
+                "before mission-ready"
+            )
+        vehicle = runtime.controller.vehicle  # type: ignore[attr-defined]
+        heartbeat = getattr(vehicle, "last_heartbeat", None)
+        heartbeat_ready = (
+            isinstance(heartbeat, (int, float))
+            and not isinstance(heartbeat, bool)
+            and math.isfinite(heartbeat)
+            and 0.0 <= heartbeat <= self.heartbeat_freshness_s
+        )
+        armable = getattr(vehicle, "is_armable", None) is True
+        if not heartbeat_ready or not armable:
+            raise RuntimeError(
+                "connected vehicle lacks a fresh heartbeat or literal armable state"
+            )
+        self.lifecycle.observe_mission_readiness(
+            heartbeat_observed=heartbeat_ready,
+            prearm_checks_healthy=armable,
+        )
+        self.admission.set()
+
+    def close(self) -> _QgcHostCleanup:
+        """Bound ROS callbacks and producers after nested cleanup has completed."""
+
+        self._callbacks_active.clear()
+        errors: list[BaseException] = []
+
+        def record(error: BaseException) -> None:
+            errors.append(error)
+
+        if self.mission_event_emitter is not None:
+            try:
+                self.mission_event_emitter.stop("QGC host cleanup")
+            except BaseException as error:
+                record(error)
+
+        if self.mission_publisher is not None:
+            try:
+                if not self._mission_event_consumers_ready():
+                    raise RuntimeError(
+                        "mission event delivery cannot be confirmed without both scorekeeper "
+                        "and rosbag subscribers"
+                    )
+                acknowledged = self.mission_publisher.wait_for_all_acked(  # type: ignore[attr-defined]
+                    timeout=self.dependencies.Duration(
+                        seconds=self.runtime_config.cleanup_timeout_s
                     )
                 )
-            )
-        except Exception as error:
-            if shutdown_admission.shutdown_requested:
-                return
-            phase = emitter.last_phase or "WAIT_READY"
-            reason = f"original comp2026 mission failed in {phase}: {error}"
-            attempt_failure.fail(reason)
+                if acknowledged is not True:
+                    raise RuntimeError(
+                        "mission event delivery was not acknowledged before cleanup"
+                    )
+                if not self._mission_event_consumers_ready():
+                    raise RuntimeError(
+                        "mission event delivery cannot be confirmed after acknowledgement "
+                        "without both scorekeeper and rosbag subscribers"
+                    )
+            except BaseException as error:
+                record(error)
 
-    node.create_subscription(
-        RunState,
-        "/simulation/run_state",
-        state_callback,
-        qos(1, transient=True),
-        callback_group=clock_callback_group,
+        self._control_stop.set()
+        control_stopped = True
+        if self.control_thread is not None and self._control_thread_started:
+            try:
+                self.control_thread.join(self.runtime_config.cleanup_timeout_s)
+                control_stopped = not self.control_thread.is_alive()
+                if not control_stopped:
+                    record(RuntimeError("host control monitor did not stop"))
+            except BaseException as error:
+                control_stopped = False
+                record(error)
+        if self.executor is not None:
+            try:
+                stopped = self.executor.shutdown(
+                    timeout_sec=self.runtime_config.cleanup_timeout_s
+                )
+                if stopped is False:
+                    raise RuntimeError("ROS executor shutdown was unconfirmed")
+            except BaseException as error:
+                record(error)
+        executor_stopped = True
+        if self.executor_thread is not None and self._executor_thread_started:
+            try:
+                self.executor_thread.join(self.runtime_config.cleanup_timeout_s)
+                executor_stopped = not self.executor_thread.is_alive()
+                if not executor_stopped:
+                    record(RuntimeError("ROS executor thread did not stop"))
+            except BaseException as error:
+                executor_stopped = False
+                record(error)
+        if self.node is not None:
+            for subscription in self.subscriptions:
+                try:
+                    self.node.destroy_subscription(subscription)
+                except BaseException as error:
+                    record(error)
+            if self.mission_publisher is not None:
+                try:
+                    self.node.destroy_publisher(self.mission_publisher)
+                except BaseException as error:
+                    record(error)
+            try:
+                self.node.destroy_node()
+            except BaseException as error:
+                record(error)
+        if self.payload_client is not None:
+            try:
+                self.payload_client.stop()
+            except BaseException as error:
+                record(error)
+        if self._controller is not None and not self._controller_handed_off:
+            vehicle = getattr(self._controller, "vehicle", None)
+            close = getattr(vehicle, "close", None)
+            if callable(close):
+                close_errors: list[BaseException] = []
+
+                def close_vehicle() -> None:
+                    try:
+                        close()
+                    except BaseException as error:
+                        close_errors.append(error)
+
+                closer = threading.Thread(
+                    target=close_vehicle,
+                    name="companion-qgc-unhanded-controller-close",
+                    daemon=True,
+                )
+                try:
+                    closer.start()
+                    closer.join(self.runtime_config.cleanup_timeout_s)
+                    if closer.is_alive():
+                        record(RuntimeError("unhanded controller close did not stop"))
+                    elif close_errors:
+                        record(close_errors[0])
+                except BaseException as error:
+                    record(error)
+        if self._rclpy_initialized:
+            try:
+                self.dependencies.rclpy.shutdown()
+            except BaseException as error:
+                record(error)
+        self.clock.stop("QGC host cleanup")
+        with self._lock:
+            fatal_diagnostics = tuple(self._fatal_diagnostics)
+        return _QgcHostCleanup(
+            first_error=errors[0] if errors else None,
+            diagnostics=fatal_diagnostics
+            + tuple(_exception_detail(error) for error in errors[1:]),
+            confirmed=not errors and control_stopped and executor_stopped,
+            protocol_safe_to_close=control_stopped,
+        )
+
+
+def _qgc_cleanup_failure(result: object) -> str | None:
+    cleanup = getattr(result, "cleanup_report", None)
+    if cleanup is None:
+        return "nested listener returned without a cleanup report"
+    required = (
+        "lidar_stopped",
+        "lidar_cleanup_completed",
+        "camera_stopped",
+        "recordings_completed",
+        "payload_closed",
+        "vehicle_closed",
     )
-    node.create_subscription(
-        Clock,
-        "/clock",
-        clock_callback,
-        qos(1),
-        callback_group=clock_callback_group,
-    )
-    image_subscription = node.create_subscription(
-        Image,
-        "/camera/onboard/image_raw",
-        image_callback,
-        qos(100),
-        callback_group=image_callback_group,
-    )
-    range_subscription = node.create_subscription(
-        LaserScan,
-        "/competition/range/downward",
-        range_callback,
-        qos(1),
-        callback_group=range_callback_group,
-    )
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    executor_thread.start()
-    sensor_subscriptions = (
-        image_subscription,
-        range_subscription,
-    )
-    sensor_subscriptions_active = True
-    overall_wall_deadline = time.monotonic() + config.max_wall_seconds
+    if any(getattr(cleanup, name, None) is not True for name in required):
+        return "nested listener cleanup was incomplete or unconfirmed"
+    diagnostics = getattr(cleanup, "diagnostics", ())
+    if diagnostics:
+        return f"nested listener cleanup reported diagnostics: {diagnostics}"
+    return None
+
+
+def _run_comp2026(config: RuntimeConfig) -> int:
+    """Host the guarded QGC listener without issuing an automatic command."""
+
+    protocol = _ProductionProtocol(config)
+    lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
+    clock = SimulationClock()
+    monitoring_stop = threading.Event()
+    stop = _QgcStopCoordinator(clock, monitoring_stop)
+    signal_latch = _QgcSignalLatch()
+    host: _Comp2026QgcRosHost | None = None
+    result: object | None = None
+    primary_error: BaseException | None = None
+    cleanup_diagnostics: list[str] = []
+    terminal_timestamp_ns: int | None = None
+    cleanup_confirmed = True
+    protocol_safe_to_close = True
+    timebase = _load_qgc_timebase()
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+
+    def retain(error: BaseException) -> None:
+        nonlocal primary_error
+        if primary_error is None:
+            primary_error = error
+        else:
+            cleanup_diagnostics.append(_exception_detail(error))
+
+    def report_secondary(message: str) -> None:
+        try:
+            lifecycle.emit(
+                "cleanup_diagnostic",
+                terminal_timestamp_ns,
+                {"message": message},
+            )
+        except BaseException:
+            print(f"companion cleanup diagnostic: {message}", file=sys.stderr)
+
+    def interrupt(_signum: int, _frame: object) -> None:
+        signal_latch.latch("host termination signal")
+
     try:
         try:
-            controller = DroneControl(
-                config.mavlink_endpoint,
-                wait_ready=False,
-                heartbeat_timeout=config.startup_timeout_seconds,
-            )
-        except Exception as error:
-            attempt_failure.fail(f"DroneKit connection failed: {error}")
-        else:
-            lifecycle.mark_transport_ready()
-            mission_worker = threading.Thread(
-                target=run_original_attempt,
-                name="comp2026-original-attempt",
-                daemon=True,
-            )
-            mission_worker.start()
-            gate.mark_process_ready()
-            # Preserve the established status schema. For this mission these
-            # booleans attest to the initialized DroneKit/gated worker seam;
-            # RUNNING-era armability is independently required by the gate.
-            lifecycle.observe_mission_readiness(
-                heartbeat_observed=True,
-                prearm_checks_healthy=True,
-            )
-
-        while (
-            rclpy.ok()
-            and not shutdown_admission.stop_requested
-            and not shutdown_admission.finalizing
-        ):
-            if controller is not None and comp2026_start_gate_poll_required(
-                mission_running=mission_running,
-                mission_start_ready=gate.mission_start_ready,
-                failed=attempt_failure.failed,
-            ):
+            lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
+            signal.signal(signal.SIGTERM, interrupt)
+            signal.signal(signal.SIGINT, interrupt)
+            with timebase.configured(clock):
                 try:
-                    refresh_comp2026_start_gate(
-                        gate,
-                        frame_source=frame_source,
-                        lidar=lidar,
-                        payload_client=payload_client,
-                        vehicle=controller.vehicle,
+                    projected = project_qgc_runtime(
+                        config,
+                        epoch_seconds=timebase.epoch(),
                     )
-                except Exception as error:
-                    attempt_failure.fail(
-                        f"competition start readiness failed: {error}"
+                    if signal_latch.reason is not None:
+                        stop.request(signal_latch.reason)
+                        raise RuntimeError(signal_latch.reason)
+                    dependencies = _load_qgc_live_dependencies()
+                    host = _Comp2026QgcRosHost(
+                        config,
+                        projected,
+                        clock,
+                        lifecycle,
+                        dependencies,
+                        stop,
+                        monitoring_stop,
+                        protocol,
                     )
-                readiness = gate.readiness
-                if readiness != last_start_readiness:
-                    lifecycle.emit(
-                        "mission_start_readiness",
-                        clock.timestamp_ns,
-                        readiness,
+                    host.start_control_monitor(lambda: signal_latch.reason)
+                    if signal_latch.reason is not None:
+                        stop.request(signal_latch.reason)
+                        raise RuntimeError(signal_latch.reason)
+                    result = dependencies.start_repl(
+                        projected.validated_listener_artifacts,
+                        projected.runtime_configuration,
+                        factories=host.factories(),
+                        diagnostics=lambda message: lifecycle.emit(
+                            "listener_diagnostic",
+                            clock.timestamp_ns,
+                            {"message": message},
+                        ),
+                        monitoring_stop=monitoring_stop,
+                        startup_admission_check=host.require_admission_open,
+                        on_listener_ready=host.listener_ready,
+                        manage_signals=False,
+                        phase_observer=host.observe_phase,
                     )
-                    last_start_readiness = readiness
-                if (
-                    mission_running
-                    and gate.mission_ready
-                    and not initial_command_delivered
-                ):
-                    def mark_initial_command_delivered() -> None:
-                        nonlocal initial_command_delivered
-                        initial_command_delivered = True
+                    if signal_latch.reason is not None:
+                        stop.request(signal_latch.reason)
+                except BaseException as error:
+                    if stop.reason is not None:
+                        retain(RuntimeError(stop.reason))
+                    retain(error)
 
-                    _deliver_comp2026_initial_command(
-                        vehicle=controller.vehicle,
-                        vehicle_mode_type=VehicleMode,
-                        lifecycle=lifecycle,
-                        gate=gate,
-                        attempt_failure=attempt_failure,
-                        clock=clock,
-                        mark_delivered=mark_initial_command_delivered,
-                        shutdown_admission=shutdown_admission,
+                terminal_timestamp_ns = clock.timestamp_ns
+                if host is not None:
+                    host_cleanup = host.close()
+                    cleanup_confirmed = host_cleanup.confirmed
+                    protocol_safe_to_close = host_cleanup.protocol_safe_to_close
+
+                    # Callback ingress is closed and producers are joined before
+                    # this final outcome snapshot.
+                    if host.first_error is not None:
+                        retain(host.first_error)
+                    if stop.reason is not None:
+                        retain(RuntimeError(stop.reason))
+                    if host_cleanup.first_error is not None:
+                        retain(host_cleanup.first_error)
+                    cleanup_diagnostics.extend(host_cleanup.diagnostics)
+
+                if result is None:
+                    if host is not None:
+                        cleanup_confirmed = False
+                    if primary_error is None:
+                        retain(RuntimeError("QGC listener returned without a terminal result"))
+                else:
+                    cleanup_failure = _qgc_cleanup_failure(result)
+                    if cleanup_failure is not None:
+                        cleanup_confirmed = False
+                        retain(RuntimeError(cleanup_failure))
+
+                if primary_error is None and result is not None:
+                    terminal_tuple = (
+                        getattr(result, "mission_result", None),
+                        getattr(result, "recovery_outcome", None),
+                        getattr(result, "monitoring_exit_reason", None),
                     )
-            if (
-                sensor_subscriptions_active
-                and mission_worker is not None
-                and not comp2026_sensor_inputs_required(
-                    mission_running=mission_running,
-                    mission_worker_alive=mission_worker.is_alive(),
-                )
-            ):
-                for subscription in sensor_subscriptions:
-                    node.destroy_subscription(subscription)
-                sensor_subscriptions_active = False
-            if attempt_failure.failed and (
-                mission_worker is None or not mission_worker.is_alive()
-            ):
-                attempt_failure.recover_once()
-            if protocol.read_finalize_request() is not None:
-                shutdown_admission.begin_finalizing()
-            if time.monotonic() >= overall_wall_deadline and not runtime_failure_written:
-                attempt_failure.fail("companion exceeded the overall run wall failsafe")
-            time.sleep(0.02)
+                    if terminal_tuple != ("SUCCEEDED", "HOME_LANDED", "NOT_REQUIRED"):
+                        retain(
+                            RuntimeError(
+                                "QGC listener ended without mission success: "
+                                f"mission={getattr(result, 'mission_result', None)}, "
+                                f"recovery={getattr(result, 'recovery_outcome', None)}, "
+                                "monitoring="
+                                f"{getattr(result, 'monitoring_exit_reason', None)}"
+                            )
+                        )
+
+                for diagnostic in tuple(cleanup_diagnostics):
+                    report_secondary(diagnostic)
+
+                try:
+                    if primary_error is None:
+                        lifecycle.observe_terminal(
+                            MissionState(
+                                MissionPhase.LANDED,
+                                last_timestamp_ns=terminal_timestamp_ns or 0,
+                            )
+                        )
+                    else:
+                        lifecycle.observe_terminal(
+                            MissionState(
+                                MissionPhase.FAILED,
+                                last_timestamp_ns=terminal_timestamp_ns or 0,
+                                failure_reason=_exception_detail(primary_error),
+                            )
+                        )
+                except BaseException as error:
+                    retain(error)
+
+                if primary_error is not None:
+                    reason = _exception_detail(primary_error)
+                    try:
+                        protocol.write_status(
+                            RuntimeFailureStatus(
+                                config.run_id,
+                                "companion",
+                                reason,
+                                ("logs/docker/companion.log.partial",),
+                            )
+                        )
+                    except BaseException as error:
+                        retain(error)
+
+                if cleanup_confirmed:
+                    try:
+                        lifecycle.finalize(terminal_timestamp_ns)
+                    except BaseException as error:
+                        retain(error)
+        except BaseException as error:
+            retain(error)
     finally:
-        def close_output_producers() -> None:
-            if attempt_failure.failed and (
-                mission_worker is None or not mission_worker.is_alive()
-            ):
-                attempt_failure.recover_once()
-            node.destroy_node()
-            if controller is not None:
-                try:
-                    controller.vehicle.close()
-                except Exception:
-                    pass
-
-        quiesce_comp2026_runtime(
-            stop_attempt=stop_attempt,
-            mission_worker=mission_worker,
-            executor=executor,
-            executor_thread=executor_thread,
-            close_output_producers=close_output_producers,
-            finalize=lambda: lifecycle.finalize(clock.timestamp_ns),
-            write_failure=attempt_failure.fail,
-            timeout_seconds=config.finalization_wall_seconds,
-        )
-        protocol.close()
-        rclpy.shutdown()
-    return exit_code
-
-
+        try:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            signal.signal(signal.SIGINT, previous_sigint)
+        except BaseException as error:
+            retain(error)
+        if protocol_safe_to_close:
+            try:
+                protocol.close()
+            except BaseException as error:
+                retain(error)
+    return 0 if primary_error is None else 1
 def main() -> int:
     config = RuntimeConfig.from_environment(os.environ)
     if config.mission == "controlled_descent":
@@ -1301,7 +2077,9 @@ if __name__ == "__main__":
 
 __all__ = [
     "RuntimeConfig",
+    "accept_comp2026_range_input",
     "connect_mavlink",
+    "create_comp2026_lidar",
     "first_heartbeat_wall_failure",
     "main",
     "process_runtime_telemetry",

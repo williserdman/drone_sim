@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import socket
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from uuid import UUID
@@ -10,6 +12,7 @@ from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 import orchestration.config as config_module
 from orchestration.config import (
+    QGCSources,
     RecordingConfig,
     RunConfig,
     RunTemplate,
@@ -162,10 +165,16 @@ def _write_competition_template(
     *,
     course: dict = COURSE_DOCUMENT,
     scenario: dict = SCENARIO_DOCUMENT,
+    include_qgc: bool = True,
 ) -> Path:
     (tmp_path / "course.yaml").write_text(json.dumps(course), encoding="utf-8")
     (tmp_path / "scenario.yaml").write_text(json.dumps(scenario), encoding="utf-8")
-    return _write_template(tmp_path, _competition_document())
+    document = _competition_document()
+    if include_qgc:
+        for field, name in QGC_SOURCE_NAMES.items():
+            (tmp_path / name).write_bytes(QGC_PAYLOADS[field])
+        document["qgc"] = dict(QGC_SOURCE_NAMES)
+    return _write_template(tmp_path, document)
 
 
 def _write_template(tmp_path: Path, document: dict, name: str = "run.json") -> Path:
@@ -174,7 +183,737 @@ def _write_template(tmp_path: Path, document: dict, name: str = "run.json") -> P
     return path
 
 
-def test_default_template_resolves_complete_competition_attempt(tmp_path):
+QGC_PAYLOADS = {
+    "deployment_profile": b'{"kind":"deployment","value":1}\n',
+    "listener_session": b'{"kind":"session","value":2}\n',
+    "qgc_actions": b'{"kind":"actions","value":3}\n',
+    "runtime_policy": b'{"kind":"policy","value":4}\n',
+}
+QGC_SOURCE_NAMES = {
+    "deployment_profile": "operator-profile.json",
+    "listener_session": "operator-session.json",
+    "qgc_actions": "operator-actions.json",
+    "runtime_policy": "operator-policy.json",
+}
+QGC_ARTIFACT_NAMES = {
+    "deployment_profile": "deployment-profile.json",
+    "listener_session": "listener-session.json",
+    "qgc_actions": "qgc-actions.json",
+    "runtime_policy": "qgc-runtime.json",
+}
+
+
+def _schema_competition_document(schema_name: str) -> dict:
+    if schema_name == "run-template.schema.json":
+        document = _competition_document()
+        document["qgc"] = dict(QGC_SOURCE_NAMES)
+        return document
+    document = _resolved_document()
+    digests = {
+        f"{field}_sha256": hashlib.sha256(payload).hexdigest()
+        for field, payload in QGC_PAYLOADS.items()
+    }
+    document["qgc"] = {
+        **QGC_ARTIFACT_NAMES,
+        **digests,
+        "attempt_state_id": "sha256-" + digests["deployment_profile_sha256"],
+    }
+    _rewrite_resolved_checksum(document)
+    return document
+
+
+def _write_qgc_template(tmp_path: Path, document: dict | None = None) -> Path:
+    (tmp_path / "course.yaml").write_text(json.dumps(COURSE_DOCUMENT), encoding="utf-8")
+    (tmp_path / "scenario.yaml").write_text(
+        json.dumps(SCENARIO_DOCUMENT), encoding="utf-8"
+    )
+    for field, name in QGC_SOURCE_NAMES.items():
+        (tmp_path / name).write_bytes(QGC_PAYLOADS[field])
+    document = _competition_document() if document is None else document
+    document["qgc"] = dict(QGC_SOURCE_NAMES)
+    return _write_template(tmp_path, document)
+
+
+def _write_security_qgc_template(
+    directory: Path,
+    payloads: dict[str, bytes] = QGC_PAYLOADS,
+    *,
+    phase3: bool = True,
+) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "course.yaml").write_bytes((CONFIG / "course.yaml").read_bytes())
+    (directory / "scenario.yaml").write_bytes((CONFIG / "scenario.yaml").read_bytes())
+    for field, name in QGC_SOURCE_NAMES.items():
+        (directory / name).write_bytes(payloads[field])
+    document = _competition_document()
+    if not phase3:
+        document.pop("runtime_profile")
+        document.pop("simulation")
+    document["qgc"] = dict(QGC_SOURCE_NAMES)
+    return _write_template(directory, document)
+
+
+def test_qgc_sources_resolve_to_exact_immutable_bytes_and_canonical_identity(tmp_path):
+    template = _write_qgc_template(tmp_path)
+
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    written = write_resolved_config(tmp_path / "run", resolved)
+    document = json.loads(written.read_text(encoding="utf-8"))
+
+    assert resolved.qgc is not None
+    for field, payload in QGC_PAYLOADS.items():
+        assert getattr(resolved.qgc, field) == payload
+        artifact_name = QGC_ARTIFACT_NAMES[field]
+        assert (written.parent / artifact_name).read_bytes() == payload
+        assert document["qgc"][field] == artifact_name
+        assert document["qgc"][f"{field}_sha256"] == hashlib.sha256(payload).hexdigest()
+    profile_digest = hashlib.sha256(QGC_PAYLOADS["deployment_profile"]).hexdigest()
+    assert document["qgc"]["attempt_state_id"] == f"sha256-{profile_digest}"
+    without_checksum = {
+        key: value for key, value in document.items() if key != "config_sha256"
+    }
+    assert document["config_sha256"] == hashlib.sha256(
+        json.dumps(without_checksum, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def test_qgc_snapshot_uses_bytes_retained_during_template_load(tmp_path):
+    template = _write_qgc_template(tmp_path)
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    for name in QGC_SOURCE_NAMES.values():
+        (tmp_path / name).write_bytes(b'{"changed":true}\n')
+
+    written = write_resolved_config(tmp_path / "run", resolved)
+
+    for field, payload in QGC_PAYLOADS.items():
+        assert (written.parent / QGC_ARTIFACT_NAMES[field]).read_bytes() == payload
+
+
+@pytest.mark.parametrize("unsafe", ["", ".", "../outside.json", "/outside.json"])
+def test_qgc_template_rejects_unsafe_source_paths(tmp_path, unsafe):
+    template = _write_qgc_template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    document["qgc"]["runtime_policy"] = unsafe
+    template.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="safe relative path|relative path"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_qgc_template_rejects_symlinked_source_directory(tmp_path):
+    template = _write_qgc_template(tmp_path)
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "policy.json").write_bytes(QGC_PAYLOADS["runtime_policy"])
+    (tmp_path / "linked").symlink_to(actual, target_is_directory=True)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    document["qgc"]["runtime_policy"] = "linked/policy.json"
+    template.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="non-symlink"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_load_run_config_retains_verified_qgc_snapshot_bytes(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+    written = write_resolved_config(tmp_path / "run", resolved)
+
+    loaded = load_run_config(written)
+
+    assert loaded.qgc == resolved.qgc
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b"[]\n", b"null\n", b"{broken\n", b"\xff\n"],
+    ids=["array", "null", "invalid-json", "invalid-utf8"],
+)
+def test_qgc_template_rejects_sources_that_are_not_utf8_json_objects(
+    tmp_path, payload
+):
+    template = _write_qgc_template(tmp_path)
+    (tmp_path / QGC_SOURCE_NAMES["runtime_policy"]).write_bytes(payload)
+
+    with pytest.raises(ValueError, match="UTF-8 JSON|JSON object"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "fifo", "socket"])
+def test_qgc_template_rejects_non_regular_sources(tmp_path, kind):
+    template = _write_qgc_template(tmp_path)
+    source = tmp_path / QGC_SOURCE_NAMES["runtime_policy"]
+    source.unlink()
+    opened_socket = None
+    if kind == "symlink":
+        target = tmp_path / "real-policy.json"
+        target.write_bytes(QGC_PAYLOADS["runtime_policy"])
+        source.symlink_to(target)
+    elif kind == "directory":
+        source.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(source)
+    else:
+        opened_socket = socket.socket(socket.AF_UNIX)
+        opened_socket.bind(str(source))
+    try:
+        with pytest.raises(ValueError, match="regular non-symlink"):
+            resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    finally:
+        if opened_socket is not None:
+            opened_socket.close()
+
+
+@pytest.mark.parametrize("alias_kind", ["normalized-path", "hard-link"])
+def test_qgc_template_requires_four_distinct_source_files(tmp_path, alias_kind):
+    template = _write_qgc_template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    if alias_kind == "normalized-path":
+        document["qgc"]["listener_session"] = "./operator-profile.json"
+        template.write_text(json.dumps(document), encoding="utf-8")
+    else:
+        session = tmp_path / QGC_SOURCE_NAMES["listener_session"]
+        session.unlink()
+        os.link(tmp_path / QGC_SOURCE_NAMES["deployment_profile"], session)
+
+    with pytest.raises(ValueError, match="pairwise distinct"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_qgc_destination_collision_is_preflighted_before_any_snapshot_write(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    configuration = tmp_path / "run/configuration"
+    configuration.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"unchanged")
+    collision = configuration / "qgc-actions.json"
+    collision.symlink_to(outside)
+
+    with pytest.raises(FileExistsError):
+        write_resolved_config(tmp_path / "run", resolved)
+
+    assert sorted(path.name for path in configuration.iterdir()) == ["qgc-actions.json"]
+    assert outside.read_bytes() == b"unchanged"
+
+
+def _rewrite_resolved_checksum(document: dict) -> None:
+    without_checksum = {
+        key: value for key, value in document.items() if key != "config_sha256"
+    }
+    document["config_sha256"] = hashlib.sha256(
+        json.dumps(without_checksum, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda qgc: qgc.update(runtime_policy="policy.json"), id="artifact-name"
+        ),
+        pytest.param(
+            lambda qgc: qgc.update(runtime_policy_sha256="A" * 64), id="digest-case"
+        ),
+        pytest.param(
+            lambda qgc: qgc.update(attempt_state_id="sha256-" + "0" * 64),
+            id="state-relation",
+        ),
+        pytest.param(lambda qgc: qgc.update(ledger_path="ledger.json"), id="ledger"),
+    ],
+)
+def test_load_run_config_rejects_tampered_qgc_metadata(tmp_path, mutate):
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    written = write_resolved_config(tmp_path / "run", resolved)
+    document = json.loads(written.read_text(encoding="utf-8"))
+    mutate(document["qgc"])
+    _rewrite_resolved_checksum(document)
+    written.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_run_config(written)
+
+
+@pytest.mark.parametrize("tamper", ["bytes", "symlink"])
+def test_load_run_config_rejects_tampered_qgc_artifact(tmp_path, tamper):
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    written = write_resolved_config(tmp_path / "run", resolved)
+    policy = written.parent / "qgc-runtime.json"
+    if tamper == "bytes":
+        policy.write_bytes(b'{"changed":true}\n')
+    else:
+        policy.unlink()
+        target = tmp_path / "outside-policy.json"
+        target.write_bytes(QGC_PAYLOADS["runtime_policy"])
+        policy.symlink_to(target)
+
+    with pytest.raises(ValueError):
+        load_run_config(written)
+
+
+def test_qgc_snapshot_never_creates_attempt_state_artifacts(tmp_path):
+    resolved = resolve_run_config(
+        _write_qgc_template(tmp_path), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    written = write_resolved_config(tmp_path / "run", resolved)
+
+    names = {path.name for path in written.parent.iterdir()}
+    assert not any("ledger" in name or name.endswith(".lock") for name in names)
+
+
+def test_historical_competition_templates_are_quarantined_without_qgc():
+    for template in (DEFAULT_TEMPLATE, REALTIME_TEMPLATE):
+        with pytest.raises(ValueError, match="comp2026_auto requires QGC"):
+            resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_qgc_sources_reject_non_object_payloads():
+    with pytest.raises(ValueError, match="JSON object"):
+        QGCSources(b"[]", b"{}", b"{}", b"{}")
+
+
+def test_qgc_sources_are_frozen():
+    sources = QGCSources(**QGC_PAYLOADS)
+
+    with pytest.raises(FrozenInstanceError):
+        sources.runtime_policy = b"{}"
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "non-string"])
+def test_qgc_template_requires_exact_source_fields(tmp_path, change):
+    template = _write_qgc_template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    if change == "missing":
+        document["qgc"].pop("runtime_policy")
+    elif change == "extra":
+        document["qgc"]["ledger"] = "ledger.json"
+    else:
+        document["qgc"]["runtime_policy"] = None
+    template.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_qgc_write_rejects_symlinked_configuration_directory(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "configuration").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(FileExistsError):
+        write_resolved_config(run_dir, resolved)
+
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_config_schemas_accept_phase3_qgc_bundle(schema_name):
+    if schema_name == "run-template.schema.json":
+        document = _competition_document()
+        document["qgc"] = dict(QGC_SOURCE_NAMES)
+    else:
+        document = _resolved_document()
+        digests = {
+            f"{field}_sha256": hashlib.sha256(payload).hexdigest()
+            for field, payload in QGC_PAYLOADS.items()
+        }
+        document["qgc"] = {
+            **QGC_ARTIFACT_NAMES,
+            **digests,
+            "attempt_state_id": "sha256-"
+            + digests["deployment_profile_sha256"],
+        }
+        _rewrite_resolved_checksum(document)
+
+    _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_comp2026_schema_requires_qgc_bundle(schema_name):
+    document = (
+        _competition_document()
+        if schema_name == "run-template.schema.json"
+        else _resolved_document()
+    )
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_qgc_schema_requires_explicit_phase3_profile(schema_name):
+    document = _phase2_document()
+    if schema_name == "run-template.schema.json":
+        document["qgc"] = dict(QGC_SOURCE_NAMES)
+    else:
+        digests = {
+            f"{field}_sha256": hashlib.sha256(payload).hexdigest()
+            for field, payload in QGC_PAYLOADS.items()
+        }
+        document.update(
+            run_id=str(FIXED_RUN_ID),
+            output_root=str((ROOT / "../runs").resolve()),
+            qgc={
+                **QGC_ARTIFACT_NAMES,
+                **digests,
+                "attempt_state_id": "sha256-"
+                + digests["deployment_profile_sha256"],
+            },
+        )
+        _rewrite_resolved_checksum(document)
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+@pytest.mark.parametrize(
+    "mission", ["controlled_descent", "autotune_roll", "hover_roll"]
+)
+def test_qgc_schema_requires_comp2026_mission(schema_name, mission):
+    document = _schema_competition_document(schema_name)
+    document["mission"] = mission
+    document["recording"]["width_px"] = 320
+    document["recording"]["height_px"] = 240
+    if schema_name == "run.schema.json":
+        _rewrite_resolved_checksum(document)
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
+def test_resolved_schema_rejects_uppercase_uuid():
+    document = _phase2_document()
+    document.update(
+        run_id="00000000-0000-4000-8000-000000000ABC",
+        output_root=str((ROOT / "../runs").resolve()),
+        config_sha256="a" * 64,
+    )
+
+    with pytest.raises(ValidationError):
+        _load_validator("run.schema.json").validate(document)
+
+
+def test_plain_resolved_schema_rejects_uuid_with_trailing_newline():
+    schema = json.loads((CONFIG / "run.schema.json").read_text(encoding="utf-8"))
+    document = _phase2_document()
+    document.update(
+        run_id=str(FIXED_RUN_ID) + "\n",
+        output_root=str((ROOT / "../runs").resolve()),
+        config_sha256="a" * 64,
+    )
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+@pytest.mark.parametrize("change", ["missing", "extra", "unsafe-path-or-name"])
+def test_config_schemas_reject_malformed_qgc_bundle(schema_name, change):
+    if schema_name == "run-template.schema.json":
+        document = _competition_document()
+        qgc = dict(QGC_SOURCE_NAMES)
+        if change == "unsafe-path-or-name":
+            qgc["runtime_policy"] = "."
+    else:
+        document = _resolved_document()
+        digests = {
+            f"{field}_sha256": hashlib.sha256(payload).hexdigest()
+            for field, payload in QGC_PAYLOADS.items()
+        }
+        qgc = {
+            **QGC_ARTIFACT_NAMES,
+            **digests,
+            "attempt_state_id": "sha256-"
+            + digests["deployment_profile_sha256"],
+        }
+        if change == "unsafe-path-or-name":
+            qgc["runtime_policy"] = "policy.json"
+    if change == "missing":
+        qgc.pop("runtime_policy")
+    elif change == "extra":
+        qgc["ledger"] = "ledger.json"
+    document["qgc"] = qgc
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "deployment_profile_sha256",
+        "listener_session_sha256",
+        "qgc_actions_sha256",
+        "runtime_policy_sha256",
+        "attempt_state_id",
+    ],
+)
+@pytest.mark.parametrize("malformation", ["terminal-newline", "too-short"])
+def test_resolved_schema_rejects_wrong_length_qgc_identities(field, malformation):
+    document = _resolved_document()
+    digests = {
+        f"{name}_sha256": hashlib.sha256(payload).hexdigest()
+        for name, payload in QGC_PAYLOADS.items()
+    }
+    document["qgc"] = {
+        **QGC_ARTIFACT_NAMES,
+        **digests,
+        "attempt_state_id": "sha256-" + digests["deployment_profile_sha256"],
+    }
+    value = document["qgc"][field]
+    document["qgc"][field] = (
+        value + "\n" if malformation == "terminal-newline" else value[:-1]
+    )
+    _rewrite_resolved_checksum(document)
+
+    with pytest.raises(ValidationError):
+        _load_validator("run.schema.json").validate(document)
+
+
+@pytest.mark.parametrize("resolved", [False, True], ids=["template", "resolved"])
+def test_explicit_null_qgc_is_rejected(tmp_path, resolved):
+    if not resolved:
+        document = _phase2_document()
+        document["qgc"] = None
+        path = _write_template(tmp_path, document)
+        with pytest.raises(ValueError, match="QGC configuration"):
+            resolve_run_config(path, run_id_factory=lambda: FIXED_RUN_ID)
+        return
+
+    document = _competition_document()
+    document.update(
+        run_id=str(FIXED_RUN_ID),
+        qgc=None,
+    )
+    _rewrite_resolved_checksum(document)
+    path = _write_template(tmp_path, document)
+    with pytest.raises(ValueError, match="resolved QGC configuration"):
+        load_run_config(path)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"value":NaN}',
+        b'{"value":Infinity}',
+        b'{"value":-Infinity}',
+        b'{"value":1,"value":2}',
+    ],
+    ids=["nan", "infinity", "negative-infinity", "duplicate-key"],
+)
+def test_qgc_json_objects_reject_nonstandard_numbers_and_duplicate_keys(
+    tmp_path, payload
+):
+    template = _write_qgc_template(tmp_path)
+    (tmp_path / QGC_SOURCE_NAMES["runtime_policy"]).write_bytes(payload)
+
+    with pytest.raises(ValueError, match="valid UTF-8 JSON"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    with pytest.raises(ValueError, match="valid UTF-8 JSON"):
+        QGCSources(
+            QGC_PAYLOADS["deployment_profile"],
+            QGC_PAYLOADS["listener_session"],
+            QGC_PAYLOADS["qgc_actions"],
+            payload,
+        )
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["./operator-policy.json", "./.", "nested\n/policy.json", "nested/.."]
+)
+def test_qgc_runtime_and_template_schema_reject_the_same_unsafe_paths(
+    tmp_path, unsafe
+):
+    template = _write_qgc_template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    document["qgc"]["runtime_policy"] = unsafe
+    template.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="safe relative path"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(document)
+
+
+def test_qgc_runtime_rejects_embedded_nul_as_an_unsafe_path(tmp_path):
+    template = _write_qgc_template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    document["qgc"]["runtime_policy"] = "nested\x00/policy.json"
+    template.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="safe relative path"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_qgc_template_schema_rejects_embedded_nul_path():
+    document = _competition_document()
+    document["qgc"] = {
+        **QGC_SOURCE_NAMES,
+        "runtime_policy": "nested\x00/policy.json",
+    }
+
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(document)
+
+
+def test_template_and_qgc_reads_stay_on_one_directory_descriptor(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    template = _write_security_qgc_template(source)
+    replacement_payloads = {
+        field: json.dumps({"replacement": field}).encode()
+        for field in QGC_PAYLOADS
+    }
+    replacement = tmp_path / "replacement"
+    _write_security_qgc_template(replacement, replacement_payloads)
+    held = tmp_path / "held-source"
+    original = config_module._qgc_from_template
+
+    def substitute_directory(document, *args):
+        source.rename(held)
+        replacement.rename(source)
+        return original(document, *args)
+
+    monkeypatch.setattr(config_module, "_qgc_from_template", substitute_directory)
+
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+    assert resolved.qgc.runtime_policy == QGC_PAYLOADS["runtime_policy"]
+
+
+def test_resolved_run_and_qgc_reads_stay_on_one_directory_descriptor(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    resolved = resolve_run_config(
+        _write_security_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    written = write_resolved_config(tmp_path / "run", resolved)
+    configuration = written.parent
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (replacement / "run.json").write_bytes(written.read_bytes())
+    (replacement / "course.yaml").write_bytes((configuration / "course.yaml").read_bytes())
+    (replacement / "scenario.yaml").write_bytes(
+        (configuration / "scenario.yaml").read_bytes()
+    )
+    for field, artifact in QGC_ARTIFACT_NAMES.items():
+        (replacement / artifact).write_bytes(
+            json.dumps({"replacement": field}).encode()
+        )
+    held = tmp_path / "held-configuration"
+    original = config_module._qgc_from_resolved
+
+    def substitute_directory(document, *args):
+        configuration.rename(held)
+        replacement.rename(configuration)
+        return original(document, *args)
+
+    monkeypatch.setattr(config_module, "_qgc_from_resolved", substitute_directory)
+
+    loaded = load_run_config(written)
+
+    assert loaded.qgc == resolved.qgc
+
+
+@pytest.mark.parametrize("resolved", [False, True], ids=["template", "resolved"])
+def test_qgc_load_rejects_symlinked_owning_directory(tmp_path, resolved):
+    source = tmp_path / "source"
+    if resolved:
+        inputs = tmp_path / "inputs"
+        config = resolve_run_config(
+            _write_security_qgc_template(inputs), run_id_factory=lambda: FIXED_RUN_ID
+        )
+        path = write_resolved_config(source.parent / "run", config)
+        source = path.parent
+    else:
+        path = _write_security_qgc_template(source)
+    alias = tmp_path / "alias"
+    alias.symlink_to(source, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="non-symlink directory"):
+        if resolved:
+            load_run_config(alias / "run.json")
+        else:
+            resolve_run_config(alias / path.name, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_snapshot_writes_stay_on_the_acquired_configuration_descriptor(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    resolved = resolve_run_config(
+        _write_security_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    run_dir = tmp_path / "run"
+    configuration = run_dir / "configuration"
+    held = tmp_path / "held-configuration"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_open = os.open
+    substituted = False
+
+    def substitute_after_directory_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal substituted
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        path_text = os.fspath(path)
+        opening_configuration = (
+            not substituted
+            and flags & os.O_DIRECTORY
+            and (
+                path_text == os.fspath(configuration)
+                or (path_text == "configuration" and dir_fd is not None)
+            )
+        )
+        if opening_configuration:
+            assert not (configuration / "run.json").exists()
+            configuration.rename(held)
+            configuration.symlink_to(outside, target_is_directory=True)
+            substituted = True
+        return descriptor
+
+    monkeypatch.setattr(config_module.os, "open", substitute_after_directory_open)
+
+    write_resolved_config(run_dir, resolved)
+
+    assert substituted is True
+    assert list(outside.iterdir()) == []
+    assert sorted(path.name for path in held.iterdir()) == [
+        "course.yaml",
+        "deployment-profile.json",
+        "listener-session.json",
+        "qgc-actions.json",
+        "qgc-runtime.json",
+        "run.json",
+        "scenario.yaml",
+    ]
+
+
+def test_qgc_template_resolves_complete_competition_attempt(tmp_path):
     calls = 0
 
     def fixed_uuid() -> UUID:
@@ -182,7 +921,7 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
         calls += 1
         return FIXED_RUN_ID
 
-    resolved = resolve_run_config(DEFAULT_TEMPLATE, run_id_factory=fixed_uuid)
+    resolved = resolve_run_config(_write_qgc_template(tmp_path), run_id_factory=fixed_uuid)
 
     assert isinstance(resolved, RunConfig)
     assert resolved.run_id == "00000000-0000-4000-8000-000000000222"
@@ -206,18 +945,18 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
         fps=20,
         encoding="rgb8",
     )
-    assert resolved.startup_wall_seconds == 1800
-    assert resolved.max_wall_seconds == 14400
-    assert resolved.finalization_wall_seconds == 900
-    assert resolved.output_root == (ROOT / "../runs").resolve()
+    assert resolved.startup_wall_seconds == 120
+    assert resolved.max_wall_seconds == 5400
+    assert resolved.finalization_wall_seconds == 600
+    assert resolved.output_root == (Path.cwd() / "runs").resolve()
     assert resolved.competition is not None
-    assert resolved.competition.course_source == CONFIG / "course.yaml"
-    assert resolved.competition.scenario_source == CONFIG / "scenario.yaml"
+    assert resolved.competition.course_source == tmp_path / "course.yaml"
+    assert resolved.competition.scenario_source == tmp_path / "scenario.yaml"
     assert resolved.competition.course_sha256 == hashlib.sha256(
-        (CONFIG / "course.yaml").read_bytes()
+        (tmp_path / "course.yaml").read_bytes()
     ).hexdigest()
     assert resolved.competition.scenario_sha256 == hashlib.sha256(
-        (CONFIG / "scenario.yaml").read_bytes()
+        (tmp_path / "scenario.yaml").read_bytes()
     ).hexdigest()
     assert calls == 1
     with pytest.raises(FrozenInstanceError):
@@ -227,15 +966,18 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
 
     written = write_resolved_config(tmp_path, resolved)
     assert (written.parent / "course.yaml").read_bytes() == (
-        CONFIG / "course.yaml"
+        tmp_path / "course.yaml"
     ).read_bytes()
     assert (written.parent / "scenario.yaml").read_bytes() == (
-        CONFIG / "scenario.yaml"
+        tmp_path / "scenario.yaml"
     ).read_bytes()
 
 
-def test_realtime_template_resolves_competition_attempt_at_one_x():
-    config = resolve_run_config(REALTIME_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+def test_realtime_qgc_template_resolves_competition_attempt_at_one_x(tmp_path):
+    document = json.loads(REALTIME_TEMPLATE.read_text(encoding="utf-8"))
+    config = resolve_run_config(
+        _write_qgc_template(tmp_path, document), run_id_factory=lambda: FIXED_RUN_ID
+    )
 
     assert config.world == "competition_mission"
     assert config.simulation.target_real_time_factor == 1.0
@@ -336,6 +1078,191 @@ def test_competition_sources_must_be_regular_non_symlink_files(tmp_path):
 
     with pytest.raises(ValueError, match="regular non-symlink"):
         resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_resolver_rejects_comp2026_without_qgc_inputs(tmp_path):
+    template = _write_competition_template(tmp_path, include_qgc=False)
+
+    with pytest.raises(ValueError, match="comp2026_auto.*QGC"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_resolver_rejects_qgc_inputs_outside_phase3(tmp_path):
+    template = _write_security_qgc_template(tmp_path, phase3=False)
+
+    with pytest.raises(ValueError, match="QGC.*phase3"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+@pytest.mark.parametrize("mission", ["controlled_descent", "autotune_roll", "hover_roll"])
+def test_resolver_rejects_qgc_for_non_comp2026_before_source_reads(
+    tmp_path, monkeypatch, mission
+):
+    document = _competition_document()
+    document["mission"] = mission
+    document["recording"] = {
+        "width_px": 320,
+        "height_px": 240,
+        "fps": 20,
+        "encoding": "rgb8",
+    }
+    template = _write_qgc_template(tmp_path, document)
+    source_reads = 0
+
+    def reject_source_read(*_args, **_kwargs):
+        nonlocal source_reads
+        source_reads += 1
+        raise AssertionError("QGC sources must not be read")
+
+    monkeypatch.setattr(config_module, "_qgc_from_template", reject_source_read)
+    monkeypatch.setattr(config_module, "_competition_from_template", reject_source_read)
+
+    with pytest.raises(ValueError, match="QGC.*comp2026_auto"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    assert source_reads == 0
+
+
+@pytest.mark.parametrize("mission", ["controlled_descent", "autotune_roll", "hover_roll"])
+def test_non_qgc_diagnostic_missions_still_resolve(tmp_path, mission):
+    document = _phase2_document()
+    document["mission"] = mission
+
+    resolved = resolve_run_config(
+        _write_template(tmp_path, document), run_id_factory=lambda: FIXED_RUN_ID
+    )
+
+    assert resolved.mission == mission
+    assert resolved.qgc is None
+
+
+def _write_resolved_competition_document(tmp_path: Path, document: dict) -> Path:
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    (configuration / "course.yaml").write_bytes((CONFIG / "course.yaml").read_bytes())
+    (configuration / "scenario.yaml").write_bytes(
+        (CONFIG / "scenario.yaml").read_bytes()
+    )
+    path = configuration / "run.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def _resolved_phase2_qgc_document() -> dict:
+    document = _phase2_document()
+    digests = {
+        f"{field}_sha256": hashlib.sha256(payload).hexdigest()
+        for field, payload in QGC_PAYLOADS.items()
+    }
+    document.update(
+        run_id=str(FIXED_RUN_ID),
+        output_root=str((ROOT / "../runs").resolve()),
+        qgc={
+            **QGC_ARTIFACT_NAMES,
+            **digests,
+            "attempt_state_id": "sha256-" + digests["deployment_profile_sha256"],
+        },
+    )
+    _rewrite_resolved_checksum(document)
+    return document
+
+
+def test_loader_rejects_qgc_inputs_outside_phase3(tmp_path):
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    for field, name in QGC_ARTIFACT_NAMES.items():
+        (configuration / name).write_bytes(QGC_PAYLOADS[field])
+    path = configuration / "run.json"
+    path.write_text(json.dumps(_resolved_phase2_qgc_document()), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="QGC.*phase3"):
+        load_run_config(path)
+
+
+@pytest.mark.parametrize("mission", ["controlled_descent", "autotune_roll", "hover_roll"])
+def test_loader_rejects_qgc_for_non_comp2026_before_source_reads(
+    tmp_path, monkeypatch, mission
+):
+    document = _schema_competition_document("run.schema.json")
+    document["mission"] = mission
+    document["recording"] = {
+        "width_px": 320,
+        "height_px": 240,
+        "fps": 20,
+        "encoding": "rgb8",
+    }
+    _rewrite_resolved_checksum(document)
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    source_reads = 0
+
+    def reject_source_read(*_args, **_kwargs):
+        nonlocal source_reads
+        source_reads += 1
+        raise AssertionError("resolved sources must not be read")
+
+    monkeypatch.setattr(config_module, "_qgc_from_resolved", reject_source_read)
+    monkeypatch.setattr(config_module, "_competition_from_resolved", reject_source_read)
+
+    with pytest.raises(ValueError, match="QGC.*comp2026_auto"):
+        load_run_config(path)
+    assert source_reads == 0
+
+
+def test_loader_rejects_comp2026_without_qgc_inputs(tmp_path):
+    document = _resolved_document()
+
+    with pytest.raises(ValueError, match="comp2026_auto.*QGC"):
+        load_run_config(_write_resolved_competition_document(tmp_path, document))
+
+
+def test_loader_rejects_uppercase_uuid_instead_of_normalizing(tmp_path):
+    document = _phase2_document()
+    document.update(
+        run_id="00000000-0000-4000-8000-000000000ABC",
+        output_root=str((ROOT / "../runs").resolve()),
+    )
+    _rewrite_resolved_checksum(document)
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="canonical UUID"):
+        load_run_config(path)
+
+
+def test_loader_rejects_uuid_with_trailing_newline(tmp_path):
+    document = _phase2_document()
+    document.update(
+        run_id=str(FIXED_RUN_ID) + "\n",
+        output_root=str((ROOT / "../runs").resolve()),
+    )
+    _rewrite_resolved_checksum(document)
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="UUID"):
+        load_run_config(path)
+
+
+def test_loader_rejects_uppercase_uuid_before_reading_qgc_snapshots(
+    tmp_path, monkeypatch
+):
+    document = _schema_competition_document("run.schema.json")
+    document["run_id"] = "00000000-0000-4000-8000-000000000ABC"
+    _rewrite_resolved_checksum(document)
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    qgc_reads = 0
+
+    def reject_qgc_read(*_args, **_kwargs):
+        nonlocal qgc_reads
+        qgc_reads += 1
+        raise AssertionError("QGC snapshots must not be read")
+
+    monkeypatch.setattr(config_module, "_qgc_from_resolved", reject_qgc_read)
+
+    with pytest.raises(ValueError, match="canonical UUID"):
+        load_run_config(path)
+    assert qgc_reads == 0
 
 
 def test_resolve_hashes_same_source_bytes_that_passed_validation(
@@ -590,8 +1517,10 @@ def test_profile_and_simulation_must_form_a_valid_pair(tmp_path, updates):
         )
 
 
-def test_run_template_and_recording_are_frozen():
-    resolved = resolve_run_config(DEFAULT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+def test_run_template_and_recording_are_frozen(tmp_path):
+    resolved = resolve_run_config(
+        _write_qgc_template(tmp_path), run_id_factory=lambda: FIXED_RUN_ID
+    )
     template = RunTemplate(
         world=resolved.world,
         vehicle=resolved.vehicle,
@@ -613,24 +1542,16 @@ def test_run_template_and_recording_are_frozen():
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
-def test_config_schemas_are_valid_and_accept_phase_3_default(schema_name):
+def test_config_schemas_are_valid_and_accept_phase3_qgc_run(schema_name):
     validator = _load_validator(schema_name)
-    document = (
-        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
-        if schema_name == "run-template.schema.json"
-        else _resolved_document()
-    )
+    document = _schema_competition_document(schema_name)
 
     validator.validate(document)
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
 def test_config_schemas_accept_exact_three_frame_duration(schema_name):
-    document = (
-        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
-        if schema_name == "run-template.schema.json"
-        else _resolved_document()
-    )
+    document = _schema_competition_document(schema_name)
     document["simulation"]["duration_sim_seconds"] = 0.15
 
     _load_validator(schema_name).validate(document)
@@ -638,11 +1559,7 @@ def test_config_schemas_accept_exact_three_frame_duration(schema_name):
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
 def test_config_schemas_accept_public_epoch_on_exact_50_ms_grid(schema_name):
-    document = (
-        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
-        if schema_name == "run-template.schema.json"
-        else _resolved_document()
-    )
+    document = _schema_competition_document(schema_name)
     document["simulation"]["public_epoch_native_sim_seconds"] = 90.0
 
     _load_validator(schema_name).validate(document)
@@ -651,11 +1568,7 @@ def test_config_schemas_accept_public_epoch_on_exact_50_ms_grid(schema_name):
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
 @pytest.mark.parametrize("epoch", [0, 90.025, 90.0000000001, 90.000000001])
 def test_config_schemas_reject_invalid_public_epoch_values(schema_name, epoch):
-    document = (
-        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
-        if schema_name == "run-template.schema.json"
-        else _resolved_document()
-    )
+    document = _schema_competition_document(schema_name)
     document["simulation"]["public_epoch_native_sim_seconds"] = epoch
 
     with pytest.raises(ValidationError):
@@ -759,11 +1672,7 @@ def test_config_schemas_reject_invalid_profile_simulation_pairs(schema_name, upd
 )
 def test_config_schemas_reject_invalid_phase_3_bindings(schema_name, mutate):
     validator = _load_validator(schema_name)
-    document = (
-        json.loads(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
-        if schema_name == "run-template.schema.json"
-        else _resolved_document()
-    )
+    document = _schema_competition_document(schema_name)
     mutate(document)
 
     with pytest.raises(ValidationError):
@@ -825,17 +1734,22 @@ def test_resolve_run_config_rejects_non_object_json(tmp_path):
 def test_resolve_run_config_uses_invoking_process_for_relative_output_root(
     tmp_path, monkeypatch
 ):
+    template = _write_qgc_template(tmp_path)
     invocation_directory = tmp_path / "invocation"
     invocation_directory.mkdir()
     monkeypatch.chdir(invocation_directory)
 
-    resolved = resolve_run_config(DEFAULT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
 
     assert resolved.output_root == invocation_directory / "runs"
 
 
 def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path):
-    resolved = resolve_run_config(DEFAULT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
     run_dir = tmp_path / resolved.run_id
 
     written = write_resolved_config(run_dir, resolved)
@@ -846,6 +1760,10 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
     ) == [
         "configuration",
         "configuration/course.yaml",
+        "configuration/deployment-profile.json",
+        "configuration/listener-session.json",
+        "configuration/qgc-actions.json",
+        "configuration/qgc-runtime.json",
         "configuration/run.json",
         "configuration/scenario.yaml",
     ]
@@ -868,17 +1786,20 @@ def test_write_resolved_config_creates_schema_valid_exclusive_snapshot(tmp_path)
     ) == resolved
 
     with pytest.raises(FileExistsError):
-        write_resolved_config(run_dir, replace(resolved, world="other"))
+        write_resolved_config(run_dir, resolved)
     assert json.loads(written.read_text(encoding="utf-8")) == document
 
 
 def test_write_resolved_config_rejects_invalid_run_id_before_creating_snapshot(
     tmp_path,
 ):
-    resolved = resolve_run_config(DEFAULT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
-    document = _resolved_document()
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    document = config_module._document_without_checksum(resolved)
     document["run_id"] = "not-a-uuid"
-    document.pop("config_sha256")
     checksum = hashlib.sha256(
         json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -893,8 +1814,113 @@ def test_write_resolved_config_rejects_invalid_run_id_before_creating_snapshot(
     assert not (tmp_path / "configuration/run.json").exists()
 
 
+@pytest.mark.parametrize("malformation", ["missing-qgc", "phase2-qgc", "common"])
+def test_write_rejects_structural_contract_before_creating_directories(
+    tmp_path, monkeypatch, malformation
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    if malformation == "missing-qgc":
+        invalid = replace(resolved, qgc=None)
+    elif malformation == "phase2-qgc":
+        invalid = replace(resolved, runtime_profile="phase2", simulation=None)
+    else:
+        invalid = replace(resolved, max_wall_seconds=0)
+    invalid = replace(
+        invalid,
+        config_sha256=config_module._checksum(
+            config_module._document_without_checksum(invalid)
+        ),
+    )
+    run_directory = tmp_path / "run"
+    side_effects: list[str] = []
+
+    def reject_side_effect(name):
+        def reject(*_args, **_kwargs):
+            side_effects.append(name)
+            raise AssertionError(f"unexpected {name}")
+
+        return reject
+
+    monkeypatch.setattr(config_module, "_open_directory_nofollow", reject_side_effect("open"))
+    monkeypatch.setattr(config_module, "_require_source_file", reject_side_effect("read"))
+    monkeypatch.setattr(config_module, "_write_exclusive", reject_side_effect("write"))
+    original_mkdir = Path.mkdir
+
+    def reject_run_mkdir(path, *args, **kwargs):
+        if path == run_directory or run_directory in path.parents:
+            side_effects.append("mkdir")
+            raise AssertionError("unexpected mkdir")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", reject_run_mkdir)
+
+    with pytest.raises(ValueError):
+        write_resolved_config(run_directory, invalid)
+
+    assert not run_directory.exists()
+    assert side_effects == []
+
+
+@pytest.mark.parametrize("mission", ["controlled_descent", "autotune_roll", "hover_roll"])
+def test_write_rejects_qgc_for_non_comp2026_before_filesystem_effects(
+    tmp_path, monkeypatch, mission
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    resolved = resolve_run_config(
+        _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
+    )
+    invalid = replace(
+        resolved,
+        mission=mission,
+        recording=RecordingConfig(320, 240, 20, "rgb8"),
+    )
+    invalid = replace(
+        invalid,
+        config_sha256=config_module._checksum(
+            config_module._document_without_checksum(invalid)
+        ),
+    )
+    run_directory = tmp_path / "run"
+    side_effects: list[str] = []
+
+    def reject_side_effect(name):
+        def reject(*_args, **_kwargs):
+            side_effects.append(name)
+            raise AssertionError(f"unexpected {name}")
+
+        return reject
+
+    monkeypatch.setattr(config_module, "_open_directory_nofollow", reject_side_effect("open"))
+    monkeypatch.setattr(config_module, "_require_source_file", reject_side_effect("read"))
+    monkeypatch.setattr(config_module, "_write_exclusive", reject_side_effect("write"))
+    original_mkdir = Path.mkdir
+
+    def reject_run_mkdir(path, *args, **kwargs):
+        if path == run_directory or run_directory in path.parents:
+            side_effects.append("mkdir")
+            raise AssertionError("unexpected mkdir")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", reject_run_mkdir)
+
+    with pytest.raises(ValueError, match="QGC.*comp2026_auto"):
+        write_resolved_config(run_directory, invalid)
+    assert not run_directory.exists()
+    assert side_effects == []
+
+
 def test_load_run_config_rejects_checksum_mismatch(tmp_path):
-    document = _resolved_document()
+    document = _phase2_document()
+    document.update(
+        run_id=str(FIXED_RUN_ID),
+        output_root=str((ROOT / "../runs").resolve()),
+        config_sha256="a" * 64,
+    )
     document["world"] = "other"
     path = tmp_path / "run.json"
     path.write_text(json.dumps(document), encoding="utf-8")

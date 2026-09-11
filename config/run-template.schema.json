@@ -25,7 +25,8 @@
     "recording": {"$ref": "#/$defs/recording"},
     "runtime_profile": {"enum": ["phase2", "phase3"]},
     "simulation": {"$ref": "#/$defs/simulation"},
-    "competition": {"$ref": "#/$defs/competition"}
+    "competition": {"$ref": "#/$defs/competition"},
+    "qgc": {"$ref": "#/$defs/qgc"}
   },
   "allOf": [
     {
@@ -47,7 +48,17 @@
     },
     {
       "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
-      "then": {"required": ["competition"]}
+      "then": {"required": ["competition", "qgc"]}
+    },
+    {
+      "if": {"required": ["qgc"]},
+      "then": {
+        "required": ["runtime_profile"],
+        "properties": {
+          "runtime_profile": {"const": "phase3"},
+          "mission": {"const": "comp2026_auto"}
+        }
+      }
     }
   ],
   "$defs": {
@@ -88,6 +99,21 @@
         "course": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
         "scenario": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"}
       }
+    },
+    "qgc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployment_profile", "listener_session", "qgc_actions", "runtime_policy"],
+      "properties": {
+        "deployment_profile": {"$ref": "#/$defs/qgc_source_path"},
+        "listener_session": {"$ref": "#/$defs/qgc_source_path"},
+        "qgc_actions": {"$ref": "#/$defs/qgc_source_path"},
+        "runtime_policy": {"$ref": "#/$defs/qgc_source_path"}
+      }
+    },
+    "qgc_source_path": {
+      "type": "string",
+      "pattern": "^(?!/)(?!\\./)(?!\\.?\\.?$)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\u0000\\r\\n]).+$"
     },
     "simulation": {
       "type": "object",

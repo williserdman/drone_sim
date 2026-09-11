@@ -1,0 +1,12 @@
+services:
+  companion-runtime:
+    volumes:
+      - type: bind
+        source: ${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}
+        target: ${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}
+        read_only: false
+        bind:
+          create_host_path: false
+  ardupilot-sitl:
+    environment:
+      SIM_LAUNCH_ORIGIN_JSON: ${SIM_LAUNCH_ORIGIN_JSON:?QGC launch origin is required}

@@ -5,6 +5,28 @@
 Run commands from the repository root. This guide separates cheap checks from
 image builds and real flights; do not launch a mission just to check installation.
 
+## Guarded `comp2026_auto` status
+
+The source now has a guarded parent QGC host for FM1 and FM2. It validates the
+complete immutable QGC input bundle and external attempt state before opening
+ROS or DroneKit, passes sealed artifact bytes to the nested listener, and sends
+no automatic command. QGC admission remains closed until the matching run is
+`RUNNING`, public simulation time is accepted, ROS telemetry production is
+alive, and the actual connected vehicle has a fresh heartbeat and literal
+armable state. FM3 is disabled.
+
+Repository default configurations do not provide the required QGC input bundle,
+so there is no copy-paste `comp2026_auto` launch command in this runbook. Do not
+invent site, calibration, RC, session, action, policy, or ledger values. Parent
+build source and provenance select official ArduCopter 4.5.7 commit
+`2a3dc4b7bf2507120f7378a7b2fde73185e0c325`, but no parent image or integrated
+run has validated it. Existing local image tags may still contain firmware 4.7.
+`FS_THR_ENABLE=0` and `FLTMODE_CH=0` remain legacy diagnostic settings, not a
+QGC/aircraft failsafe or takeover profile.
+Preserve previous run artifacts as historical evidence, not proof that current
+source is runnable or flight-ready. The controlled-descent, AutoTune, and hover
+operator workflows below are unchanged.
+
 ## Prerequisites
 
 - Python 3.12+ and `uv` for the host CLI and tests.
@@ -44,6 +66,9 @@ Commit or explicitly account for source changes before a reproducible build.
 The Docker label records monorepo HEAD, not a hash of uncommitted source files.
 The [Docker context allowlist](../.dockerignore) includes only the mission's
 runtime import closure; adding a new mission module may require updating it.
+It excludes user-generated action files, waypoint stores, sessions, ledgers,
+deployment profiles, backups, hardware experiments, and secrets. Source
+admission and parent composition do not authorize aircraft operation.
 
 ## Build runtime images
 
@@ -56,7 +81,7 @@ SIM_COMP2026_REVISION=$(git rev-parse HEAD) \
   docker compose --profile phase3 build
 ```
 
-`docker compose --profile phase3 build` requires this explicit nested HEAD build
+`docker compose --profile phase3 build` requires this explicit monorepo HEAD build
 argument. Compose leaves it empty when omitted so inactive profiles and
 noncompanion configuration still resolve, but the companion build then fails
 before package installation or source copies. At launch the CLI checks the
@@ -73,10 +98,32 @@ Expect seven services. `start` uses `--no-build`; rebuild affected images after
 source/parameter changes. In particular, the SITL parameter overlay is copied
 into the ArduPilot image. Editing it on the host does not change an existing image.
 
-## Run and monitor
+Before a companion build, check that Docker can assemble every explicitly
+admitted source used by repository Dockerfiles:
 
 ```bash
-uv run --locked drone-sim start --config config/default-run.json
+docker build --file tests/docker-context/Dockerfile .
+```
+
+An import-only check can confirm that the QGC listener package is present without
+opening MAVLink or constructing GPIO, I2C, camera, or payload devices:
+
+```bash
+PYTHONPATH=companion/comp2026/src python -c \
+  'import drone.control.listener; print(drone.control.listener.start_repl.__name__)'
+```
+
+These checks prove packaging and inert import behavior only. They do not replace
+a uniquely tagged matching image build, a QGC-to-SITL test, a scored simulation,
+or aircraft acceptance.
+
+## Run and monitor a current diagnostic
+
+This example uses the repository-default controlled-descent route. Competition
+templates still omit the required QGC bundle and attempt-state binding.
+
+```bash
+uv run --locked drone-sim start --config config/vertical-descent-run.json
 ```
 
 Keep this foreground process alive. It owns startup, finalization, and teardown.
@@ -104,10 +151,11 @@ status until terminal. Avoid killing containers or deleting the run directory;
 recorders need finalization to publish their files. `start` exits 0 for
 `COMPLETED`, 1 for `FAILED`, 130 for `ABORTED`; CLI/config errors use exit 2.
 
-### Why it can take so long
+### Historical competition timing
 
-The default has a 90-second **native simulation** warmup followed by a
-600-second **public simulation** window. Its target real-time factor is 0.25:
+The historical competition default specified a 90-second **native simulation**
+warmup followed by a 600-second **public simulation** window. Its target
+real-time factor is 0.25:
 even if achieved, these total about 46 minutes of wall time, plus startup and
 finalization. Host contention can make it slower. The flight may land home well
 before the 600-second recording/scoring window ends. Do not interpret quiet
@@ -115,11 +163,11 @@ mission logs alone as a stopped process.
 
 | Template | Purpose | Public duration / warmup / target RTF |
 | --- | --- | --- |
-| [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
+| [default-run.json](../config/default-run.json) | Quarantined competition default, historical timing only | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
 | [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |
 | [autotune-roll-run.json](../config/autotune-roll-run.json) | Roll AutoTune experiment | 120 s / 15 s / 0.1 |
-| [realtime-run.json](../config/realtime-run.json) | Competition with a higher speed target, not a speed guarantee | 600 s / 90 s / 1.0 |
+| [realtime-run.json](../config/realtime-run.json) | Quarantined competition variant, historical timing only | 600 s / 90 s / 1.0 |
 
 Short diagnostic missions do not prove competition success. AutoTune promotion
 is a separate, explicit source change using
@@ -129,10 +177,11 @@ normal launch. Inspect the saved gains and resulting parameter diff before reuse
 ### Optional NVIDIA path
 
 After provisioning and checking the host NVIDIA container runtime, EGL, NVENC,
-and the device path required by [compose.gpu.yaml](../compose.gpu.yaml):
+and the device path required by [compose.gpu.yaml](../compose.gpu.yaml), run the
+available controlled-descent diagnostic:
 
 ```bash
-SIM_COMPOSE_OVERLAY=gpu uv run --locked drone-sim start --config config/default-run.json
+SIM_COMPOSE_OVERLAY=gpu uv run --locked drone-sim start --config config/vertical-descent-run.json
 ```
 
 The overlay requests a GPU for rendering and `h264_nvenc` encoding. It currently

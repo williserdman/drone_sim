@@ -53,11 +53,24 @@ earlier cleanup step fails. The wrapper preserves the first exception and notes
 later cleanup errors on it. It publishes quiescence only after stop/reap confirms
 that SITL exited, and it always attempts to close the protocol.
 
+### Launch origin
+
+The runtime requires `SIM_LAUNCH_ORIGIN_JSON`. Its value must be a JSON object
+with exactly `latitude_deg`, `longitude_deg`, `amsl_m`, and `heading_deg`.
+Latitude and longitude must be in `[-90, 90]` and `[-180, 180]`; heading must be
+in `[0, 360)`. Every value must be a finite number.
+
+The runtime rejects missing or malformed input, extra or duplicate fields,
+booleans, non-finite numbers, and out-of-range values before DNS resolution,
+work-directory creation, process construction, or startup status. Orchestration
+supplies the QGC runtime-policy origin for QGC runs and the fixed diagnostic
+origin for controlled descent, roll AutoTune, and roll hover runs.
+
 ## Constraints worth knowing
 
-- The image freezes ArduPilot `Copter-4.7.0` at commit
-  `1511f27194f1dcc3728270883047bdf022b3fd53` and builds only `waf copter`.
-  Supply-chain details live in
+- The source build freezes ArduPilot `Copter-4.5.7` at commit
+  `2a3dc4b7bf2507120f7378a7b2fde73185e0c325`, verifies the official version
+  declaration, and builds only `waf copter`. Supply-chain details live in
   [ardupilot.json](provenance/ardupilot.json) and
   [LICENSE.ArduPilot.txt](provenance/LICENSE.ArduPilot.txt).
 - The pinned JSON backend accepts numeric IPv4 addresses, so startup resolves
@@ -67,8 +80,12 @@ that SITL exited, and it always attempts to close the protocol.
 - The parameter overlay deliberately preserves normal prearm checks. Its small
   accelerometer calibration offsets come from upstream SITL defaults; do not
   replace them with force-arm behavior.
-- Copter 4.7 uses `LAND_SPD_MS`, not legacy `LAND_SPEED`. Parameter edits require
-  rebuilding the image because the overlay is copied at build time.
+- Copter 4.5.7 uses `LAND_SPEED` in cm/s. The overlay's `50` retains the guarded
+  0.50 m/s final descent target. `SR0_EXT_STAT=1` requests channel 0 extended
+  status at 1 Hz. Parameter edits require rebuilding the image.
+- Copter 4.5.7 names the roll acceleration setting `ATC_ACCEL_R_MAX` and stores
+  it in centidegrees/s². The overlay's `254776` retains the prior 2547.76 deg/s²
+  request.
 - The overlay is also the single source for the fast, guarded precision-landing
   profile. `PLND_OPTIONS` retains the normal final descent speed while the
   companion filters measurements and owns hold/reacquire policy. Do not tune a

@@ -505,6 +505,19 @@ def test_perfect_physical_attempt_scores_150_at_required_checkpoints():
     assert result.events[-1].event_type == "score.finalized"
 
 
+def test_fm1_fm2_only_evidence_can_score_80_but_is_not_a_complete_competition():
+    trace = new_trace()
+    trace.fm1()
+    trace.drop(2, phase="FM2")
+
+    result = trace.scorer.finalize()
+
+    assert result.achieved_score == 80.0
+    assert result.maximum_available_score == 150.0
+    assert result.complete is False
+    assert result.diagnostic == "mission_sequence_invalid"
+
+
 def test_competition_ruleset_rejects_changed_binding_threshold(tmp_path):
     """The same ruleset ID must not silently authorize a larger release error."""
     document = json.loads(RULES.read_text())

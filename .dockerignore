@@ -12,11 +12,16 @@
 /.env
 /.env.*
 
-# Ignore the nested checkout by default, then admit only the automatic
-# mission's import closure. Parent directories must be re-included explicitly.
+# Ignore the nested checkout by default, then admit only the automatic mission
+# and inert QGC setup/listener import closure. Parent directories must be
+# re-included explicitly.
 /companion/comp2026/**
 !/companion/comp2026/src/
 /companion/comp2026/src/**
+!/companion/comp2026/src/gc/
+/companion/comp2026/src/gc/**
+!/companion/comp2026/src/gc/custom_missions.json
+!/companion/comp2026/src/gc/prepare_attempt.py
 !/companion/comp2026/src/drone/
 /companion/comp2026/src/drone/**
 !/companion/comp2026/src/drone/auto_attempt.py
@@ -25,12 +30,25 @@
 !/companion/comp2026/src/drone/timebase.py
 !/companion/comp2026/src/drone/control/
 /companion/comp2026/src/drone/control/**
+!/companion/comp2026/src/drone/control/__init__.py
+!/companion/comp2026/src/drone/control/attempt_setup.py
 !/companion/comp2026/src/drone/control/drone_control.py
+!/companion/comp2026/src/drone/control/flight_profile.py
+!/companion/comp2026/src/drone/control/flight_state.py
+!/companion/comp2026/src/drone/control/listener.py
+!/companion/comp2026/src/drone/control/listener_runtime.py
+!/companion/comp2026/src/drone/control/mission_data/
+/companion/comp2026/src/drone/control/mission_data/**
+!/companion/comp2026/src/drone/control/mission_data/payloads.json
 !/companion/comp2026/src/drone/control/mission_info.py
+!/companion/comp2026/src/drone/control/mission_supervisor.py
+!/companion/comp2026/src/drone/control/stability.py
 !/companion/comp2026/src/drone/missions/
 /companion/comp2026/src/drone/missions/**
+!/companion/comp2026/src/drone/missions/__init__.py
 !/companion/comp2026/src/drone/missions/fm1.py
 !/companion/comp2026/src/drone/missions/fm2.py
+!/companion/comp2026/src/drone/missions/fm3.py
 !/companion/comp2026/src/drone/missions/utils.py
 !/companion/comp2026/src/drone/sensors/
 /companion/comp2026/src/drone/sensors/**
@@ -39,6 +57,16 @@
 !/companion/comp2026/src/drone/sensors/camera/_camera_manager.py
 !/companion/comp2026/src/drone/sensors/camera/calibration.json
 !/companion/comp2026/src/drone/sensors/camera/camera.py
+!/companion/comp2026/src/drone/sensors/camera/mounting.json
+!/companion/comp2026/src/drone/sensors/lidar/
+/companion/comp2026/src/drone/sensors/lidar/**
+!/companion/comp2026/src/drone/sensors/lidar/__init__.py
+!/companion/comp2026/src/drone/sensors/lidar/clearance.py
+!/companion/comp2026/src/drone/sensors/lidar/lidar.py
+!/companion/comp2026/src/drone/sensors/servo/
+/companion/comp2026/src/drone/sensors/servo/**
+!/companion/comp2026/src/drone/sensors/servo/__init__.py
+!/companion/comp2026/src/drone/sensors/servo/servo.py
 !/companion/comp2026/src/drone/utils/
 /companion/comp2026/src/drone/utils/**
 !/companion/comp2026/src/drone/utils/position_smoother.py

@@ -75,7 +75,7 @@ def _runtime():
     return runtime, protocol, published, diagnostics
 
 
-def _phase3_runtime():
+def _phase3_runtime(*, mission="descent"):
     protocol = FakeProtocol()
     published = []
     diagnostics = []
@@ -85,11 +85,7 @@ def _phase3_runtime():
         protocol=protocol,
         publish=published.append,
         diagnostic=diagnostics.append,
-        required_durable_readiness=(
-            ArduPilotReadyStatus,
-            CompanionReadyStatus,
-            MissionReadyStatus,
-        ),
+        required_durable_readiness=runtime_node._phase3_durable_readiness(mission),
         require_gazebo_ready=True,
     )
     return runtime, protocol, published, diagnostics
@@ -308,8 +304,8 @@ def test_phase3_gazebo_readiness_waits_for_artifact_status():
     assert [item.state for item in published] == ["STARTING", "READY"]
 
 
-def test_phase3_enters_running_after_durable_flight_readiness_without_public_clock():
-    runtime, protocol, published, _ = _phase3_runtime()
+def test_comp2026_runtime_enters_running_after_companion_without_public_clock():
+    runtime, protocol, published, _ = _phase3_runtime(mission="comp2026_auto")
     runtime.start()
     runtime.accept_artifact_status(RUN_ID, True)
     protocol.readable_statuses[GazeboReadyStatus] = GAZEBO_READY
@@ -323,10 +319,6 @@ def test_phase3_enters_running_after_durable_flight_readiness_without_public_clo
 
     protocol.readable_statuses[CompanionReadyStatus] = CompanionReadyStatus(RUN_ID)
     assert runtime.poll() is False
-    assert [item.state for item in published] == ["STARTING", "READY"]
-
-    protocol.readable_statuses[MissionReadyStatus] = MissionReadyStatus(RUN_ID)
-    assert runtime.poll() is False
 
     assert [(item.state, item.sim_timestamp_ns) for item in published] == [
         ("STARTING", 0),
@@ -334,6 +326,27 @@ def test_phase3_enters_running_after_durable_flight_readiness_without_public_clo
         ("RUNNING", 0),
     ]
     assert protocol.statuses == [RuntimeRunningStatus(RUN_ID, 0)]
+
+
+def test_other_phase3_runtime_still_waits_for_mission_ready_before_running():
+    runtime, protocol, published, _ = _phase3_runtime(mission="descent")
+    runtime.start()
+    runtime.accept_artifact_status(RUN_ID, True)
+    protocol.readable_statuses.update(
+        {
+            GazeboReadyStatus: GAZEBO_READY,
+            ArduPilotReadyStatus: ArduPilotReadyStatus(RUN_ID),
+            CompanionReadyStatus: CompanionReadyStatus(RUN_ID),
+        }
+    )
+
+    assert runtime.poll() is False
+    assert runtime.poll() is False
+    assert [item.state for item in published] == ["STARTING", "READY"]
+
+    protocol.readable_statuses[MissionReadyStatus] = MissionReadyStatus(RUN_ID)
+    assert runtime.poll() is False
+    assert [item.state for item in published] == ["STARTING", "READY", "RUNNING"]
 
 
 @pytest.mark.parametrize("preterminal", ["STARTING", "READY", "RUNNING"])
