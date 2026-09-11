@@ -222,6 +222,32 @@ def test_reacquisition_count_resets_after_one_bad_frame():
     assert len([event for event in controller.events if event == ("mode", "LAND")]) == 2
 
 
+def test_marker_loss_below_precision_minimum_keeps_land_until_touchdown():
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = RecoveryLandingController()
+
+    class NearGroundLidar:
+        def get_distance(self):
+            return 0.0 if clock.now() >= 1.0 else 0.10
+
+    with timebase.configured(clock):
+        result = active.aruco_land_precision(
+            controller,
+            RecoveryLandingCamera(clock, [None] * 30),
+            NearGroundLidar(),
+            3,
+            GPSCoord(41.0, -81.0, 0.0),
+            5.0,
+            True,
+        )
+
+    assert result is active.LandingResult.TOUCHDOWN
+    assert [event for event in controller.events if event[0] == "mode"] == [
+        ("mode", "LAND")
+    ]
+
+
 def test_rejected_observation_is_compact_sorted_json(capsys):
     active = importlib.import_module("drone.mock_mission")
     clock = FakeClock()

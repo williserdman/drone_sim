@@ -28,6 +28,7 @@ ARUCO_PICKUP = GPSCoord(39.9337075, -75.7802787, 10)
 DROP_POINT = GPSCoord(39.9338306, -75.7801814, 10)
 ALT_TOL = 0.03
 HOVER_ALT_TOL = 1
+PRECISION_LANDING_MIN_AGL_METERS = 0.75
 TARGET_HOVER_HEIGHT = 4.572
 WINDOW = 5
 MULT = 0.3
@@ -192,6 +193,7 @@ def aruco_land_precision(
     hold_waypoint = None
     next_hold_command = None
     reacquired_frames = 0
+    below_precision_minimum_logged = False
 
     while time.time() <= deadline:
         now = time.time()
@@ -217,6 +219,25 @@ def aruco_land_precision(
             lidar_sample_time = now
         except Exception:
             has_lidar = False
+
+        if (
+            state == "TRACKING"
+            and has_lidar
+            and alt <= PRECISION_LANDING_MIN_AGL_METERS
+        ):
+            if not below_precision_minimum_logged:
+                _precision_log(
+                    state=state,
+                    reason="below_precision_minimum",
+                    sim_time=now,
+                    target_id=target_id,
+                    retry_number=retry_number,
+                    agl_m=alt,
+                )
+                below_precision_minimum_logged = True
+            last_healthy_time = now
+            time.sleep(0.05)
+            continue
 
         observation = None
         capture_error = None
