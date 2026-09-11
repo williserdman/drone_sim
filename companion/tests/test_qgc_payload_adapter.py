@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from drone_sim_companion import comp2026_host
 from drone_sim_companion.comp2026_host import (
     PayloadDropper,
     PayloadResponse,
@@ -208,6 +209,208 @@ def make_dropper(
         permission=selected_permission,
         delay_wall_timeout_seconds=0.25,
     )
+
+
+def make_competition_adapter(
+    service: InertPayloadService,
+    *,
+    permission=None,
+    response_timeout_seconds: float = 0.25,
+) -> object:
+    supervisor = make_supervisor()
+    return comp2026_host.QgcCompetitionPayloadAdapter(
+        RUN_ID,
+        _RosPayloadClient(
+            service,
+            InertPayloadServiceType,
+            response_timeout_seconds=response_timeout_seconds,
+        ),
+        SimulationClock(),
+        permission=permission or make_permission(supervisor),
+        delay_wall_timeout_seconds=0.25,
+    )
+
+
+def run_payload_command(
+    service: InertPayloadService,
+    operation,
+    response: PayloadResponse,
+    *,
+    request_count: int,
+) -> object:
+    returned: list[object] = []
+    errors: list[BaseException] = []
+    worker = threading.Thread(
+        target=lambda: _capture_result(returned, errors, operation), daemon=True
+    )
+    worker.start()
+    service.wait_for_request(request_count)
+    service.futures[request_count - 1].complete(response)
+    worker.join(timeout=1.0)
+    assert not worker.is_alive()
+    assert errors == []
+    assert len(returned) == 1
+    return returned[0]
+
+
+def _capture_result(returned: list[object], errors: list[BaseException], operation) -> None:
+    try:
+        returned.append(operation())
+    except BaseException as error:
+        errors.append(error)
+
+
+def test_competition_payload_adapter_executes_expected_sequence() -> None:
+    service = InertPayloadService()
+    adapter = make_competition_adapter(service)
+
+    assert adapter.supports_attachment is True
+    assert run_payload_command(
+        service,
+        adapter.drop,
+        PayloadResponse(True, "OK", "detached", "run:2:release:1", 1),
+        request_count=1,
+    ) is None
+    assert run_payload_command(
+        service,
+        lambda: adapter.attach(3),
+        PayloadResponse(True, "OK", "attached", "run:3:attach:1", 2),
+        request_count=2,
+    ) is True
+    assert run_payload_command(
+        service,
+        adapter.drop,
+        PayloadResponse(True, "OK", "detached", "run:3:release:1", 3),
+        request_count=3,
+    ) is None
+    assert run_payload_command(
+        service,
+        lambda: adapter.attach(4),
+        PayloadResponse(True, "OK", "attached", "run:4:attach:1", 4),
+        request_count=4,
+    ) is True
+    assert run_payload_command(
+        service,
+        adapter.drop,
+        PayloadResponse(True, "OK", "detached", "run:4:release:1", 5),
+        request_count=5,
+    ) is None
+
+    assert [
+        (request.aruco_id, request.action, request.command_id)
+        for request in service.requests
+    ] == [
+        (2, 2, "run:2:release:1"),
+        (3, 1, "run:3:attach:1"),
+        (3, 2, "run:3:release:1"),
+        (4, 1, "run:4:attach:1"),
+        (4, 2, "run:4:release:1"),
+    ]
+
+
+def test_competition_payload_adapter_rejects_attach_two_and_unknown_markers_without_dispatch(
+) -> None:
+    service = InertPayloadService()
+    adapter = make_competition_adapter(service)
+
+    with pytest.raises(ValueError, match="payload 2"):
+        adapter.attach(2)
+    with pytest.raises(ValueError, match="marker"):
+        adapter.attach(5)
+
+    assert service.requests == []
+
+
+def test_competition_payload_adapter_enforces_capacity_one() -> None:
+    service = InertPayloadService()
+    adapter = make_competition_adapter(service)
+
+    with pytest.raises(RuntimeError, match="capacity"):
+        adapter.attach(3)
+    assert service.requests == []
+
+    run_payload_command(
+        service,
+        adapter.drop,
+        PayloadResponse(True, "OK", "detached", "run:2:release:1", 1),
+        request_count=1,
+    )
+    run_payload_command(
+        service,
+        lambda: adapter.attach(3),
+        PayloadResponse(True, "OK", "attached", "run:3:attach:1", 2),
+        request_count=2,
+    )
+    with pytest.raises(RuntimeError, match="capacity"):
+        adapter.attach(4)
+
+    assert len(service.requests) == 2
+
+
+def test_payload_timeout_latches_indeterminate_state() -> None:
+    service = InertPayloadService()
+    adapter = make_competition_adapter(service, response_timeout_seconds=0.05)
+
+    with pytest.raises(TimeoutError, match="confirmation timed out"):
+        adapter.drop()
+    with pytest.raises(RuntimeError, match="indeterminate"):
+        adapter.drop()
+    with pytest.raises(RuntimeError, match="indeterminate"):
+        adapter.attach(3)
+
+    assert len(service.requests) == 1
+
+
+def test_payload_success_requires_ok_code_matching_command_and_increasing_response_sequence(
+) -> None:
+    cases = (
+        PayloadResponse(True, "FAILED", "unknown", "run:2:release:1", 1),
+        PayloadResponse(True, "OK", "detached", "wrong-command", 1),
+        PayloadResponse(True, "OK", "detached", "run:2:release:1", 0),
+        PayloadResponse(1, "OK", "detached", "run:2:release:1", 1),
+    )
+    for response in cases:
+        service = InertPayloadService()
+        adapter = make_competition_adapter(service)
+        errors: list[BaseException] = []
+        worker = threading.Thread(
+            target=lambda: _capture_error(errors, adapter.drop), daemon=True
+        )
+        worker.start()
+        service.wait_for_request()
+        service.futures[0].complete(response)
+        worker.join(timeout=1.0)
+
+        assert not worker.is_alive()
+        assert len(errors) == 1
+        with pytest.raises(RuntimeError, match="indeterminate"):
+            adapter.drop()
+        assert len(service.requests) == 1
+
+    service = InertPayloadService()
+    adapter = make_competition_adapter(service)
+    run_payload_command(
+        service,
+        adapter.drop,
+        PayloadResponse(True, "OK", "detached", "run:2:release:1", 7),
+        request_count=1,
+    )
+    errors = []
+    worker = threading.Thread(
+        target=lambda: _capture_error(errors, lambda: adapter.attach(3)), daemon=True
+    )
+    worker.start()
+    service.wait_for_request(2)
+    service.futures[1].complete(
+        PayloadResponse(True, "OK", "attached", "run:3:attach:1", 7)
+    )
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    with pytest.raises(RuntimeError, match="indeterminate"):
+        adapter.attach(3)
+    assert len(service.requests) == 2
 
 
 def test_final_boundary_revocation_emits_no_ros_request() -> None:

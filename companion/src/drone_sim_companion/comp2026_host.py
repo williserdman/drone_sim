@@ -484,6 +484,10 @@ class PayloadPermissionError(PermissionError):
     """A payload request lacks current permission at its dispatch boundary."""
 
 
+class PayloadCompletionIndeterminateError(RuntimeError):
+    """A dispatched payload request has no trustworthy physical outcome."""
+
+
 class PayloadDropper:
     """Original dropper shape backed by confirmed run-scoped ROS commands."""
 
@@ -518,7 +522,7 @@ class PayloadDropper:
         self._clock = clock
         self._permission = permission
         self._delay_wall_timeout_seconds = float(delay_wall_timeout_seconds)
-        self._sequence = {PayloadRequest.ATTACH: 0, PayloadRequest.RELEASE: 0}
+        self._sequence: dict[tuple[int, int], int] = {}
         self._lock = threading.Lock()
         self._production_lock = threading.RLock()
         self._closed = threading.Event()
@@ -614,14 +618,19 @@ class PayloadDropper:
         action: int,
         action_name: str,
         actuate: Callable[[Callable[[], None]], None],
-    ) -> None:
+        *,
+        aruco_id: int | None = None,
+    ) -> object:
         self._ensure_open()
+        selected_aruco_id = self._aruco_id if aruco_id is None else aruco_id
         with self._lock:
-            self._sequence[action] += 1
-            command_id = f"run:{self._aruco_id}:{action_name}:{self._sequence[action]}"
+            sequence_key = (selected_aruco_id, action)
+            sequence = self._sequence.get(sequence_key, 0) + 1
+            self._sequence[sequence_key] = sequence
+            command_id = f"run:{selected_aruco_id}:{action_name}:{sequence}"
         request = PayloadRequest(
             self._run_id,
-            self._aruco_id,
+            selected_aruco_id,
             action,
             command_id,
         )
@@ -634,30 +643,183 @@ class PayloadDropper:
                 self._ensure_open()
                 pending_calls.append(self._client.dispatch(prepared))
 
-        actuate(dispatch)
+        try:
+            actuate(dispatch)
+        except BaseException as error:
+            if pending_calls:
+                raise PayloadCompletionIndeterminateError(
+                    f"payload {command_id} completion is indeterminate"
+                ) from error
+            raise
         if len(pending_calls) != 1:
-            raise RuntimeError("payload actuation did not dispatch exactly one request")
-        response = self._client.await_response(
-            pending_calls[0], cancelled=self._closed
-        )
+            error_type = (
+                RuntimeError
+                if not pending_calls
+                else PayloadCompletionIndeterminateError
+            )
+            raise error_type("payload actuation did not dispatch exactly one request")
+        try:
+            response = self._client.await_response(
+                pending_calls[0], cancelled=self._closed
+            )
+        except BaseException as error:
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            if isinstance(error, TimeoutError):
+                raise
+            raise PayloadCompletionIndeterminateError(str(error)) from error
         if response is None:
-            raise RuntimeError(f"payload {command_id} returned no confirmation")
+            raise PayloadCompletionIndeterminateError(
+                f"payload {command_id} returned no confirmation"
+            )
         if getattr(response, "command_id", None) != command_id:
-            raise RuntimeError(f"payload response command_id did not match {command_id}")
+            raise PayloadCompletionIndeterminateError(
+                f"payload response command_id did not match {command_id}"
+            )
         response_sequence = getattr(response, "response_sequence", None)
         if (
             isinstance(response_sequence, bool)
             or not isinstance(response_sequence, int)
             or response_sequence <= 0
         ):
-            raise RuntimeError(
+            raise PayloadCompletionIndeterminateError(
                 f"payload {command_id} returned an invalid response sequence"
             )
         if getattr(response, "accepted", None) is True:
-            return
+            return response
         code = getattr(response, "code", "REJECTED")
         detail = getattr(response, "detail", "")
-        raise RuntimeError(f"payload {command_id} failed: {code}: {detail}")
+        raise PayloadCompletionIndeterminateError(
+            f"payload {command_id} failed: {code}: {detail}"
+        )
+
+
+class QgcCompetitionPayloadAdapter:
+    """Enforce the confirmed three-payload competition sequence."""
+
+    supports_attachment = True
+    _PAYLOAD_IDS = frozenset({2, 3, 4})
+
+    def __init__(
+        self,
+        run_id: str,
+        client: BlockingPayloadClient,
+        clock: SimulationClock,
+        *,
+        permission: Callable[[], bool],
+        delay_wall_timeout_seconds: float,
+    ) -> None:
+        self._dropper = PayloadDropper(
+            run_id,
+            2,
+            client,
+            clock,
+            permission=permission,
+            delay_wall_timeout_seconds=delay_wall_timeout_seconds,
+        )
+        self._operation_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._attached_id: int | None = 2
+        self._next_pickup_id: int | None = 3
+        self._last_response_sequence = 0
+        self._indeterminate = False
+
+    def attach(self, aruco_id: int) -> bool:
+        if isinstance(aruco_id, bool) or not isinstance(aruco_id, int):
+            raise ValueError("payload marker must be integer 3 or 4")
+        if aruco_id not in self._PAYLOAD_IDS:
+            raise ValueError("unknown competition payload marker")
+        if aruco_id == 2:
+            raise ValueError("payload 2 starts attached and cannot be attached")
+        with self._operation_lock:
+            with self._state_lock:
+                self._ensure_determinate_locked()
+                if self._attached_id is not None:
+                    raise RuntimeError("payload capacity one is already occupied")
+                if aruco_id != self._next_pickup_id:
+                    raise RuntimeError("payload attachment is outside the competition sequence")
+            self._confirmed_command(
+                aruco_id,
+                PayloadRequest.ATTACH,
+                "attach",
+                self._dropper._actuate,
+            )
+            with self._state_lock:
+                self._attached_id = aruco_id
+            return True
+
+    def drop(self, delay_hold: float = 0.0) -> None:
+        self.drop_with_guard(
+            self._dropper._actuate,
+            self._dropper._actuate,
+            delay_hold=delay_hold,
+        )
+
+    def drop_with_guard(
+        self,
+        release_actuate: Callable[[Callable[[], None]], None],
+        continuation_actuate: Callable[[Callable[[], None]], None],
+        *,
+        delay_hold: float = 0.0,
+    ) -> None:
+        if not callable(release_actuate) or not callable(continuation_actuate):
+            raise TypeError("release and continuation actuators must be callable")
+        del continuation_actuate
+        with self._operation_lock:
+            with self._state_lock:
+                self._ensure_determinate_locked()
+                aruco_id = self._attached_id
+                if aruco_id is None:
+                    raise RuntimeError("no payload is attached for release")
+            if delay_hold:
+                self._dropper._wait_before_release(delay_hold)
+            self._confirmed_command(
+                aruco_id,
+                PayloadRequest.RELEASE,
+                "release",
+                release_actuate,
+            )
+            with self._state_lock:
+                self._attached_id = None
+                self._next_pickup_id = {2: 3, 3: 4, 4: None}[aruco_id]
+
+    def cleanup_passive(self) -> bool:
+        return self._dropper.cleanup_passive() is True
+
+    def _ensure_determinate_locked(self) -> None:
+        if self._indeterminate:
+            raise RuntimeError("payload state is indeterminate")
+
+    def _confirmed_command(
+        self,
+        aruco_id: int,
+        action: int,
+        action_name: str,
+        actuate: Callable[[Callable[[], None]], None],
+    ) -> None:
+        try:
+            response = self._dropper._command(
+                action,
+                action_name,
+                actuate,
+                aruco_id=aruco_id,
+            )
+            response_sequence = getattr(response, "response_sequence", None)
+            if (
+                getattr(response, "accepted", None) is not True
+                or getattr(response, "code", None) != "OK"
+                or isinstance(response_sequence, bool)
+                or not isinstance(response_sequence, int)
+                or response_sequence <= self._last_response_sequence
+            ):
+                raise PayloadCompletionIndeterminateError(
+                    "payload response did not exactly confirm the requested transition"
+                )
+        except (PayloadCompletionIndeterminateError, TimeoutError):
+            with self._state_lock:
+                self._indeterminate = True
+            raise
+        self._last_response_sequence = response_sequence
 
 
 class QgcFm2PayloadAdapter:
@@ -1033,6 +1195,7 @@ __all__ = [
     "MissionEventEmitter",
     "MissionEventRecord",
     "PayloadDropper",
+    "QgcCompetitionPayloadAdapter",
     "PayloadRequest",
     "PayloadResponse",
     "QgcFm2PayloadAdapter",

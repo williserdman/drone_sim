@@ -388,6 +388,27 @@ class HostHarness:
                 harness.payload_ids.append(aruco_id)
                 self.dropper = dropper
 
+        class CompetitionPayloadAdapter:
+            supports_attachment = True
+
+            def __init__(
+                self,
+                run_id: str,
+                client: object,
+                clock: object,
+                *,
+                permission: object,
+                delay_wall_timeout_seconds: float,
+            ) -> None:
+                harness.payload_ids.extend((2, 3, 4))
+                self.arguments = (
+                    run_id,
+                    client,
+                    clock,
+                    permission,
+                    delay_wall_timeout_seconds,
+                )
+
         def start_repl(
             artifacts: object,
             config: object,
@@ -452,9 +473,14 @@ class HostHarness:
 
             permission = Permission()
             payload = factories.dropper_factory(config=config, permission=permission)
-            assert isinstance(payload, Fm2PayloadAdapter)
-            assert payload.supports_attachment is False
-            assert factories.supports_attachment is False
+            if 31002 in config.enabled_phases:
+                assert isinstance(payload, CompetitionPayloadAdapter)
+                assert payload.supports_attachment is True
+                assert factories.supports_attachment is True
+            else:
+                assert isinstance(payload, Fm2PayloadAdapter)
+                assert payload.supports_attachment is False
+                assert factories.supports_attachment is False
             on_listener_ready(harness.runtime)
             assert startup_admission_check() is None
             if harness.send_bad_range_before_lidar_stop:
@@ -526,6 +552,7 @@ class HostHarness:
             CommandRejected=RuntimeError,
             QgcRosLidarAdapter=LidarAdapter,
             QgcFm2PayloadAdapter=Fm2PayloadAdapter,
+            QgcCompetitionPayloadAdapter=CompetitionPayloadAdapter,
             start_repl=start_repl,
             timebase=self.timebase,
             thread_factory=threading.Thread,
@@ -547,7 +574,7 @@ def config(tmp_path: Path, *, qgc: object = object()) -> runtime_node.RuntimeCon
     )
 
 
-def projection(*, harness: HostHarness | None = None) -> object:
+def projection(*, harness: HostHarness | None = None, full: bool = False) -> object:
     runtime_config = SimpleNamespace(
         connection=SimpleNamespace(
             endpoint="tcp:ardupilot-sitl:5760",
@@ -568,6 +595,9 @@ def projection(*, harness: HostHarness | None = None) -> object:
         ),
         autopilot_version="arducopter-4.5.7-contract",
         components=SimpleNamespace(backend="drone-sim-ros-confirmed-v1"),
+        enabled_phases=frozenset(
+            {31000, 31001, 31002} if full else {31000, 31001}
+        ),
         cleanup_timeout_s=1.0,
     )
     return SimpleNamespace(
@@ -755,6 +785,25 @@ def test_guarded_host_composes_only_qgc_fm1_fm2_after_ros_is_listening(
         SimpleNamespace(clock=SimpleNamespace(sec=1, nanosec=0))
     )
     assert clock.timestamp_ns == 500_000_000
+
+
+def test_guarded_host_wires_one_full_payload_adapter_with_attachment_support(
+    tmp_path, monkeypatch
+) -> None:
+    harness = HostHarness(heartbeat=0.5)
+    projected = projection(harness=harness, full=True)
+    install_harness(monkeypatch, harness, projected)
+    monkeypatch.setattr(
+        runtime_node,
+        "create_comp2026_lidar",
+        lambda clock: harness.clock_seen.append(clock) or "ros-lidar",
+    )
+
+    assert runtime_node._run_comp2026(config(tmp_path)) == 0
+
+    assert harness.factories is not None
+    assert harness.factories.supports_attachment is True
+    assert harness.payload_ids == [2, 3, 4]
 
 
 def test_guarded_host_publishes_exact_qgc_phase_prefix_and_stops_emitter_before_node(

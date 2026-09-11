@@ -27,8 +27,10 @@ connected-vehicle heartbeat within the validated freshness bound, and literal
 source-filtered collector, proves interval-command ACKs and firmware metadata,
 and reaches listener readiness without waiting for cadence from paused physics.
 It sends no automatic first command. FM1 uses the nested controller and ROS
-range adapter; FM2 uses payload marker ID 2 and reports no attachment support.
-FM3/camera construction is disabled in this first binding. The admitted FM1's
+range adapter. Limited FM1/FM2 mode keeps the marker-2 release adapter and
+reports no attachment support. Full mode uses one confirmed payload adapter for
+markers 2, 3, and 4 and reports attachment support; FM3 camera construction
+remains disabled. The admitted FM1's
 first guarded GUIDED transport enqueue is the release signal. The parent
 publishes the durable command-delivery fact at the accepted public clock
 timestamp, after which the controller requires complete post-gate telemetry on
@@ -126,8 +128,9 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 
 - Mission decisions use accepted simulation time. Loss of `/clock` prevents new
   simulated decisions; wall time only bounds infrastructure and computation.
-- The first QGC host binding disables FM3 and camera construction. Camera
-  policies and adapters elsewhere in the source do not make FM3 available.
+- Full QGC mode advertises payload attachment support, but camera construction
+  remains disabled. Camera policies and adapters elsewhere in the source do not
+  make FM3 runnable yet.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.
@@ -183,10 +186,13 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   stopping the shared simulation clock. The nested runtime keeps that clock
   through its approved recovery. Fatal ROS input or executor failures and the
   absolute wall deadline may stop the clock.
-- The QGC simulation payload adapter reports no attachment support. It requires
-  a literal-true permission predicate around the exact ROS dispatch and rejects
-  missing, mismatched, stale, or timed-out confirmation. An unknown physical
-  completion cannot authorize a duplicate release.
+- The limited QGC simulation payload adapter reports no attachment support and
+  releases only marker 2. The full adapter starts with marker 2 attached and
+  permits only the confirmed sequence release 2, attach/release 3, then
+  attach/release 4. It requires a literal-true permission predicate around the
+  exact ROS dispatch and advances only for an accepted, command-ID-matched
+  `OK` response with a strictly increasing positive sequence. Any uncertain
+  dispatched result latches an indeterminate state and blocks later commands.
 
 ## Focused tests
 

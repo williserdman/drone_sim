@@ -5,13 +5,15 @@
 ## Current Comp2026 host boundary
 
 With a complete QGC input set, the parent `comp2026_auto` entry selects a guarded
-QGC composition for FM1 and FM2. Without that set it retains the automatic host.
+QGC composition. Without that set it retains the automatic host.
 It projects all immutable inputs before loading live dependencies, passes the
 sealed listener artifact snapshot to the nested runtime, and makes the nested
 controller the sole flight-command writer. The parent owns ROS simulation input,
-payload marker ID 2, lifecycle evidence, interruption, and bounded producer
-cleanup. It never issues an automatic first command; FM3/camera construction is
-disabled. Parent build source targets official ArduCopter 4.5.7 commit
+one payload client, lifecycle evidence, interruption, and bounded producer
+cleanup. Limited mode exposes only marker 2 release. Full mode exposes the
+confirmed marker 2, 3, and 4 sequence with attachment support. It never issues
+an automatic first command; FM3 camera construction remains disabled. Parent
+build source targets official ArduCopter 4.5.7 commit
 `2a3dc4b7bf2507120f7378a7b2fde73185e0c325`, matching the reviewed decoder's
 firmware contract. No parent image or integrated run has validated that source
 alignment. Existing image tags and earlier 4.7 run evidence remain historical.
@@ -44,10 +46,11 @@ observation, proves the bounded telemetry request ACKs and exact firmware
 version, and leaves cadence collection active. A full-phase staged composition
 constructs the camera without acquiring a frame; after the first guarded GUIDED
 delivery opens public simulation progress, it completes bounded camera
-preparation before FM3 admission can succeed. The current parent composition
-still selects the limited phase set. The ordinary and physical factory path
-still completes the entire telemetry cadence proof before installing the
-listener. Mission-ready and QGC admission require a matching
+preparation before FM3 admission can succeed. The parent selects a stateful
+three-payload adapter for that full phase set, although its camera factory is
+still disabled. The ordinary and physical factory path still completes the
+entire telemetry cadence proof before installing the listener. Mission-ready
+and QGC admission require a matching
 `RUNNING` state, an accepted public clock, a live executor, an actual connected
 vehicle heartbeat within the tighter of the connection and flight-profile
 freshness bounds, and literal armability. Finalization requests, wall deadline,
@@ -256,6 +259,12 @@ infrastructure without dispatching.
 Timeout or `STALE_PHYSICAL_STATE` leaves completion unknown and never triggers an
 automatic release retry. Passive cleanup only closes local request production and
 waits. It does not send a payload command or claim a physical state.
+Limited mode retains its marker-2 release-only adapter. Full mode starts with
+marker 2 attached and permits only release 2, attach/release 3, and
+attach/release 4. Its single adapter requires `code == "OK"` and a response
+sequence strictly greater than the last confirmed response. A timeout, stale or
+mismatched response, or unknown result after dispatch permanently marks local
+payload state indeterminate and rejects later commands.
 
 Finalization is a file-backed handshake: a finalize request leads to publisher
 quiescence, a runtime-frozen marker, closed artifacts and an artifacts-final

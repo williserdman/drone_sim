@@ -7,6 +7,7 @@ import pytest
 
 from drone_sim_companion.comp2026_host import (
     PayloadDropper,
+    QgcCompetitionPayloadAdapter,
     QgcFm2PayloadAdapter,
     QgcRangeIngress,
     QgcRosLidarAdapter,
@@ -120,6 +121,21 @@ def test_adapter_construction_is_inert_and_silent(capsys) -> None:
     assert captured.err == ""
     assert lidar.events == []
     assert dropper.calls == []
+
+
+def test_competition_payload_adapter_cleanup_is_passive() -> None:
+    client = InertPayloadClient()
+    adapter = QgcCompetitionPayloadAdapter(
+        "00000000-0000-4000-8000-000000000001",
+        client,
+        SimulationClock(),
+        permission=inert_permission(),
+        delay_wall_timeout_seconds=1.0,
+    )
+
+    assert adapter.cleanup_passive() is True
+    assert client.prepared == []
+    assert client.dispatched == []
 
 
 def test_payload_dropper_exposes_read_only_aruco_identity() -> None:

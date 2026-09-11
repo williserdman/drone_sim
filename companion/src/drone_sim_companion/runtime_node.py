@@ -59,6 +59,7 @@ from .comp2026_host import (
     MissionEventRecord,
     PayloadDropper,
     PayloadRequest,
+    QgcCompetitionPayloadAdapter,
     QgcFm2PayloadAdapter,
     QgcRangeIngress,
     QgcRosLidarAdapter,
@@ -1115,6 +1116,7 @@ def _load_qgc_live_dependencies() -> Any:
         PayloadCommand=PayloadCommand,
         SignalHandlerOptions=SignalHandlerOptions,
         QgcRosLidarAdapter=QgcRosLidarAdapter,
+        QgcCompetitionPayloadAdapter=QgcCompetitionPayloadAdapter,
         QgcFm2PayloadAdapter=QgcFm2PayloadAdapter,
         thread_factory=threading.Thread,
         wall_now=time.monotonic,
@@ -1669,13 +1671,24 @@ class _Comp2026QgcRosHost:
         del config
         if self.payload_client is None:
             raise RuntimeError("ROS payload client was not established before FM1 admission")
+        payload_timeout_s = getattr(
+            self.projection, "payload_delay_wall_timeout_s"
+        )
+        if 31002 in self.runtime_config.enabled_phases:
+            return self.dependencies.QgcCompetitionPayloadAdapter(
+                self.config.run_id,
+                self.payload_client,
+                self.clock,
+                permission=permission,
+                delay_wall_timeout_seconds=payload_timeout_s,
+            )
         dropper = PayloadDropper(
             self.config.run_id,
             2,
             self.payload_client,
             self.clock,
             permission=permission,
-            delay_wall_timeout_seconds=self.projection.payload_delay_wall_timeout_s,  # type: ignore[attr-defined]
+            delay_wall_timeout_seconds=payload_timeout_s,
         )
         return self.dependencies.QgcFm2PayloadAdapter(dropper, aruco_id=2)
 
@@ -1684,6 +1697,7 @@ class _Comp2026QgcRosHost:
         raise RuntimeError("FM3 camera construction is disabled for this composition")
 
     def factories(self) -> object:
+        supports_attachment = 31002 in self.runtime_config.enabled_phases
         return self.dependencies.LiveComponentFactories(
             backend=self.runtime_config.components.backend,
             controller_factory=self.controller_factory,
@@ -1692,7 +1706,7 @@ class _Comp2026QgcRosHost:
             lidar_factory=self.lidar_factory,
             dropper_factory=self.dropper_factory,
             camera_factory=self.camera_factory,
-            supports_attachment=False,
+            supports_attachment=supports_attachment,
             telemetry_startup_mode="staged_simulation",
         )
 
