@@ -57,6 +57,7 @@ from .comp2026_host import (
     GPSCoord,
     MissionEventEmitter,
     MissionEventRecord,
+    PayloadCompletionIndeterminateError,
     PayloadDropper,
     PayloadRequest,
     QgcCompetitionPayloadAdapter,
@@ -582,8 +583,13 @@ class _RosPayloadClient:
             if self._stopped.is_set():
                 raise RuntimeError("payload client stopped")
             future = self._client.call_async(prepared)
-        completed = threading.Event()
-        future.add_done_callback(lambda _future: completed.set())
+        try:
+            completed = threading.Event()
+            future.add_done_callback(lambda _future: completed.set())
+        except BaseException as error:
+            raise PayloadCompletionIndeterminateError(
+                "payload request dispatched but response tracking failed"
+            ) from error
         return future, completed
 
     def await_response(

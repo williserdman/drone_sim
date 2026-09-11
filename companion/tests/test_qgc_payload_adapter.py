@@ -10,6 +10,7 @@ import pytest
 
 from drone_sim_companion import comp2026_host
 from drone_sim_companion.comp2026_host import (
+    PayloadCompletionIndeterminateError,
     PayloadDropper,
     PayloadResponse,
     SimulationClock,
@@ -101,6 +102,22 @@ class InertPayloadService:
             assert self._condition.wait_for(
                 lambda: len(self.requests) >= count, timeout=1.0
             )
+
+
+class CallbackRegistrationFailureFuture(InertFuture):
+    def add_done_callback(self, callback) -> None:
+        del callback
+        raise RuntimeError("callback registration failed")
+
+
+class CallbackRegistrationFailureService(InertPayloadService):
+    def call_async(self, request: object) -> InertFuture:
+        future = CallbackRegistrationFailureFuture()
+        with self._condition:
+            self.requests.append(request)
+            self.futures.append(future)
+            self._condition.notify_all()
+        return future
 
 
 def test_inert_future_notifies_callback_added_after_none_completion() -> None:
@@ -359,6 +376,22 @@ def test_payload_timeout_latches_indeterminate_state() -> None:
         adapter.attach(3)
 
     assert len(service.requests) == 1
+
+
+def test_callback_registration_failure_after_call_async_latches_indeterminate_state(
+) -> None:
+    service = CallbackRegistrationFailureService()
+    adapter = make_competition_adapter(service)
+
+    with pytest.raises(PayloadCompletionIndeterminateError, match="response tracking"):
+        adapter.drop()
+    with pytest.raises(RuntimeError, match="indeterminate"):
+        adapter.drop()
+
+    assert [
+        (request.aruco_id, request.action, request.command_id)
+        for request in service.requests
+    ] == [(2, 2, "run:2:release:1")]
 
 
 def test_payload_success_requires_ok_code_matching_command_and_increasing_response_sequence(
