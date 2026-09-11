@@ -36,6 +36,21 @@ GROUND_SPEED = 10.0
 ALT_TOL = 0.8
 POS_TOL = 1.0
 TIMEOUT_MOVE = 120
+
+PRECISION_LANDING_PARAMETERS = {
+    "LAND_SPD_MS": 0.50,
+    "PLND_ENABLED": 1,
+    "PLND_TYPE": 1,
+    "PLND_EST_TYPE": 0,
+    "PLND_LAG": 0.08,
+    "PLND_XY_DIST_MAX": 0.50,
+    "PLND_STRICT": 2,
+    "PLND_RET_MAX": 1,
+    "PLND_TIMEOUT": 0.50,
+    "PLND_ALT_MIN": 0.75,
+    "PLND_ALT_MAX": 8.0,
+    "PLND_OPTIONS": 4,
+}
 TIMEOUT_MODE = 10.0
 TIMEOUT_ARM = 15.0
 TIMEOUT_ASCENT = 45.0
@@ -1689,6 +1704,70 @@ class DroneControl:
             timeout,
             recovery_target_approval=approve_target_amsl,
         )
+
+    def send_guided_waypoint(self, coord: GPSCoord) -> int:
+        """Send one guarded, nonblocking earth-fixed GUIDED hold waypoint."""
+        home = self.mission_home
+        if home is None:
+            raise FlightOperationError("GUIDED hold requires a pinned mission home")
+        if not isinstance(coord, GPSCoord) or not all(
+            _finite_number(value) for value in (coord.lat, coord.long, coord.alt)
+        ):
+            raise FlightOperationError("GUIDED hold waypoint is malformed")
+        if not -90.0 <= coord.lat <= 90.0 or not -180.0 <= coord.long <= 180.0:
+            raise FlightOperationError("GUIDED hold waypoint is outside coordinate bounds")
+        target_amsl = home.amsl_m + float(coord.alt)
+
+        def validate(current):
+            self._require_fresh(current, "mode", "armed", "landed_state")
+            if (
+                self._mode_name(current) != "GUIDED"
+                or current.armed.observation.value is not True
+                or not self._is_in_air_value(current.landed_state.observation.value)
+            ):
+                raise FlightOperationError(
+                    "GUIDED hold requires confirmed armed GUIDED flight"
+                )
+
+        self._send_guarded(
+            lambda: _send_guided_waypoint(
+                self.vehicle,
+                coord.lat,
+                coord.long,
+                target_amsl,
+                self.flight_controller_target.system_id,
+                self.flight_controller_target.component_id,
+                lambda: None,
+            ),
+            validate_snapshot=validate,
+        )
+        return 0
+
+    def require_precision_landing_profile(self) -> bool:
+        """Return true only when ArduPilot exposes the approved landing profile."""
+        parameters = getattr(self.vehicle, "parameters", None)
+        if parameters is None:
+            return False
+        for name, expected in PRECISION_LANDING_PARAMETERS.items():
+            try:
+                actual = parameters.get(name)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                return False
+            if not _finite_number(actual):
+                return False
+            numeric = float(actual)
+            if isinstance(expected, int):
+                matches = numeric.is_integer() and int(numeric) == expected
+            else:
+                matches = math.isclose(
+                    numeric,
+                    expected,
+                    rel_tol=0.0,
+                    abs_tol=1e-3,
+                )
+            if not matches:
+                return False
+        return True
 
     def _goto_waypoint(
         self,

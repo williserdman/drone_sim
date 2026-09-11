@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+import json
 import math
 from numbers import Real
+from statistics import median
 from typing import Callable, TYPE_CHECKING
 
 from . import timebase as time
@@ -27,6 +30,12 @@ if TYPE_CHECKING:
 
 
 PRECISION_LAND_DEADLINE_S = 60.0
+PRECISION_LANDING_MIN_AGL_M = 0.75
+TARGET_HEALTH_TIMEOUT_S = 0.50
+HOLD_TIMEOUT_S = 5.0
+HOLD_COMMAND_PERIOD_S = 0.20
+ANCHOR_DRIFT_LIMIT_M = 0.20
+REACQUIRE_FRAME_COUNT = 5
 REQUIRED_CENTERED_OBSERVATIONS = 5
 MAX_OBSERVATIONS_PER_GRID_CELL = REQUIRED_CENTERED_OBSERVATIONS * 2
 GRID_POSITION_TOLERANCE_M = 0.15
@@ -38,6 +47,19 @@ class PrecisionEvidenceUnavailable(RuntimeError):
 
 class _CameraAcquisitionTimeout(TimeoutError):
     """A bounded camera read produced no fresh frame."""
+
+
+class LandingResult(Enum):
+    TOUCHDOWN = "touchdown"
+    RETRY = "retry"
+    FAILED = "failed"
+
+
+def _precision_log(**fields: object) -> None:
+    print(
+        "PRECISION_LANDING "
+        + json.dumps(fields, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    )
 
 
 def _positive_number(name: str, value: object) -> float:
@@ -107,6 +129,8 @@ class PrecisionMissionPolicy:
 class _PrecisionEvidence:
     vector: RelPosComplete | None
     frame_sequence: int
+    frame_timestamp_ns: int
+    frame_age_s: float
     location: GPSCoord
     attitude: AttitudeSample
     clearance: ProjectedVerticalClearance
@@ -304,6 +328,8 @@ def _read_precision_evidence(
     return _PrecisionEvidence(
         vector=vector,
         frame_sequence=metadata.sequence,
+        frame_timestamp_ns=metadata.exposure_timestamp_ns,
+        frame_age_s=exposure_age,
         location=location,
         attitude=attitude,
         clearance=clearance,
@@ -349,6 +375,56 @@ def _marker_offset_ne(update: RelPosComplete, attitude) -> tuple[float, float]:
         + (sy * sp * cr - cy * sr) * update.z
     )
     return north, east
+
+
+def _horizontal_distance_m(first: GPSCoord, second: GPSCoord) -> float:
+    latitude = math.radians((first.lat + second.lat) / 2.0)
+    north = math.radians(second.lat - first.lat) * 6_378_137.0
+    east = (
+        math.radians(second.long - first.long)
+        * math.cos(latitude)
+        * 6_378_137.0
+    )
+    return math.hypot(north, east)
+
+
+def _offset_gps(origin: GPSCoord, north: float, east: float) -> GPSCoord:
+    radius = 6_378_137.0
+    return GPSCoord(
+        origin.lat + math.degrees(north / radius),
+        origin.long
+        + math.degrees(east / (radius * math.cos(math.radians(origin.lat)))),
+        origin.alt,
+    )
+
+
+def _projected_target(evidence: _PrecisionEvidence) -> GPSCoord:
+    if evidence.vector is None:
+        raise PrecisionEvidenceUnavailable("camera marker is unavailable")
+    north, east = _marker_offset_ne(evidence.vector, evidence.attitude)
+    return _offset_gps(evidence.location, north, east)
+
+
+def _landing_observation_reason(
+    evidence: _PrecisionEvidence,
+    *,
+    anchor: GPSCoord | None,
+    reacquiring: bool,
+    centered_tolerance_m: float,
+) -> str | None:
+    vector = evidence.vector
+    if vector is None:
+        return "target_absent"
+    if vector.z <= 0:
+        return "non_positive_down"
+    north, east = _marker_offset_ne(vector, evidence.attitude)
+    if reacquiring and math.hypot(north, east) > centered_tolerance_m:
+        return "horizontal_error"
+    if anchor is not None and _horizontal_distance_m(
+        _offset_gps(evidence.location, north, east), anchor
+    ) > ANCHOR_DRIFT_LIMIT_M:
+        return "anchor_drift"
+    return None
 
 
 def _touchdown_candidate(controller: DroneControl) -> bool:
@@ -412,14 +488,31 @@ def aruco_land_precision(
     target_id: int,
     *,
     policy: PrecisionMissionPolicy | None = None,
-) -> bool:
+    anchor: GPSCoord | None = None,
+    deadline: float | None = None,
+    return_result: bool = False,
+    retry_number: int = 0,
+) -> bool | LandingResult:
     policy = _require_policy(policy)
     _camera_ready(camera)
     started_at = _now(policy)
     controller.check_permission()
     _require_zero("LAND mode", controller.set_land_mode())
-    deadline = started_at + PRECISION_LAND_DEADLINE_S
+    deadline = (
+        started_at + PRECISION_LAND_DEADLINE_S
+        if deadline is None
+        else min(deadline, started_at + PRECISION_LAND_DEADLINE_S)
+    )
     last_sequence = 0
+    last_healthy_at = started_at
+    state = "TRACKING"
+    hold_started_at: float | None = None
+    hold_waypoint: GPSCoord | None = None
+    next_hold_command_at: float | None = None
+    reacquired_frames = 0
+
+    def finish(result: LandingResult) -> bool | LandingResult:
+        return result if return_result else result is LandingResult.TOUCHDOWN
 
     while True:
         controller.check_permission()
@@ -427,9 +520,31 @@ def aruco_land_precision(
         if remaining <= 0:
             raise TimeoutError("precision landing touchdown deadline expired")
         if _touchdown_candidate(controller):
-            return _confirm_current_land(controller, deadline=deadline, policy=policy)
+            _confirm_current_land(controller, deadline=deadline, policy=policy)
+            return finish(LandingResult.TOUCHDOWN)
         if remaining <= policy.observation_period_s:
-            return _confirm_current_land(controller, deadline=deadline, policy=policy)
+            _confirm_current_land(controller, deadline=deadline, policy=policy)
+            return finish(LandingResult.TOUCHDOWN)
+
+        if state == "TRACKING":
+            try:
+                clearance = _read_clearance(controller, lidar, policy)
+            except (
+                ClearanceUnavailableError,
+                PrecisionEvidenceUnavailable,
+                StaleSensorError,
+            ):
+                clearance = None
+            if (
+                clearance is not None
+                and clearance.projected_clearance_m <= PRECISION_LANDING_MIN_AGL_M
+            ):
+                last_healthy_at = _now(policy)
+                _sleep_bounded(deadline, policy)
+                continue
+
+        evidence = None
+        rejection = None
         try:
             evidence = _read_precision_evidence(
                 controller,
@@ -444,11 +559,7 @@ def aruco_land_precision(
             controller.check_permission()
             if _now(policy) >= deadline:
                 raise TimeoutError("precision landing touchdown deadline expired")
-            return _finalize_failed_precision_land(
-                controller,
-                deadline=deadline,
-                policy=policy,
-            )
+            rejection = "no_frame"
         except (
             ClearanceUnavailableError,
             PrecisionEvidenceUnavailable,
@@ -457,29 +568,318 @@ def aruco_land_precision(
             controller.check_permission()
             if _now(policy) >= deadline:
                 raise TimeoutError("precision landing touchdown deadline expired")
-            return _finalize_failed_precision_land(
-                controller,
-                deadline=deadline,
-                policy=policy,
-            )
+            rejection = "unavailable_evidence"
         controller.check_permission()
         if _now(policy) >= deadline:
             raise TimeoutError("precision landing touchdown deadline expired")
-        if evidence.frame_sequence <= last_sequence or evidence.vector is None:
-            return _finalize_failed_precision_land(
-                controller,
-                deadline=deadline,
-                policy=policy,
+
+        if evidence is not None:
+            if evidence.frame_sequence <= last_sequence:
+                rejection = "not_new"
+            else:
+                last_sequence = evidence.frame_sequence
+                rejection = _landing_observation_reason(
+                    evidence,
+                    anchor=anchor,
+                    reacquiring=state == "HOLD_REACQUIRE",
+                    centered_tolerance_m=policy.centered_tolerance_m,
+                )
+
+        now = _now(policy)
+        if rejection is not None:
+            vector = None if evidence is None else evidence.vector
+            horizontal_error = None
+            anchor_drift = None
+            if vector is not None:
+                north, east = _marker_offset_ne(vector, evidence.attitude)
+                horizontal_error = math.hypot(north, east)
+                if anchor is not None:
+                    anchor_drift = _horizontal_distance_m(
+                        _offset_gps(evidence.location, north, east), anchor
+                    )
+            _precision_log(
+                state=state,
+                reason=rejection,
+                sim_time=now,
+                target_id=target_id,
+                frame_sequence=(None if evidence is None else evidence.frame_sequence),
+                frame_timestamp_ns=(
+                    None if evidence is None else evidence.frame_timestamp_ns
+                ),
+                frame_age_s=None if evidence is None else evidence.frame_age_s,
+                agl_m=(
+                    None
+                    if evidence is None
+                    else evidence.clearance.projected_clearance_m
+                ),
+                marker_forward_m=None if vector is None else vector.x,
+                marker_right_m=None if vector is None else vector.y,
+                marker_down_m=None if vector is None else vector.z,
+                horizontal_error_m=horizontal_error,
+                anchor_drift_m=anchor_drift,
+                retry_number=retry_number,
+                requested_mode="LAND" if state == "TRACKING" else "GUIDED",
+                observed_mode="LAND" if state == "TRACKING" else "GUIDED",
             )
-        last_sequence = evidence.frame_sequence
-        controller.check_permission()
-        if _now(policy) >= deadline:
-            raise TimeoutError("precision landing touchdown deadline expired")
-        _require_zero(
-            "landing target",
-            controller.land_send_landing_target(evidence.vector),
-        )
+        if state == "TRACKING":
+            if rejection is None and evidence is not None:
+                controller.check_permission()
+                _require_zero(
+                    "landing target",
+                    controller.land_send_landing_target(evidence.vector),
+                )
+                last_healthy_at = now
+            elif now - last_healthy_at >= TARGET_HEALTH_TIMEOUT_S:
+                controller.check_permission()
+                _require_zero("GUIDED mode", controller.set_guided_mode())
+                snapshot = controller.flight_snapshot()
+                hold_waypoint, _ = _location(snapshot, controller)
+                hold_started_at = now
+                next_hold_command_at = now
+                reacquired_frames = 0
+                state = "HOLD_REACQUIRE"
+                _precision_log(
+                    state=state,
+                    reason="target_unhealthy",
+                    sim_time=now,
+                    target_id=target_id,
+                    retry_number=retry_number,
+                )
+        else:
+            assert hold_started_at is not None
+            assert hold_waypoint is not None
+            assert next_hold_command_at is not None
+            if now >= next_hold_command_at:
+                controller.check_permission()
+                _require_zero(
+                    "GUIDED hold waypoint",
+                    controller.send_guided_waypoint(hold_waypoint),
+                )
+                next_hold_command_at = now + HOLD_COMMAND_PERIOD_S
+            if rejection is None and evidence is not None:
+                reacquired_frames += 1
+                if reacquired_frames >= REACQUIRE_FRAME_COUNT:
+                    controller.check_permission()
+                    _require_zero("LAND mode", controller.set_land_mode())
+                    state = "TRACKING"
+                    last_healthy_at = now
+                    _precision_log(
+                        state=state,
+                        reason="target_reacquired",
+                        sim_time=now,
+                        target_id=target_id,
+                        retry_number=retry_number,
+                    )
+            else:
+                reacquired_frames = 0
+            if state == "HOLD_REACQUIRE" and now - hold_started_at >= HOLD_TIMEOUT_S:
+                _precision_log(
+                    state=state,
+                    reason="hold_timeout",
+                    sim_time=now,
+                    target_id=target_id,
+                    retry_number=retry_number,
+                )
+                return finish(LandingResult.RETRY)
         _sleep_bounded(deadline, policy)
+
+
+def _median_anchor(samples: list[GPSCoord]) -> GPSCoord | None:
+    if len(samples) != REQUIRED_CENTERED_OBSERVATIONS:
+        return None
+    if any(
+        _horizontal_distance_m(first, second) > ANCHOR_DRIFT_LIMIT_M
+        for index, first in enumerate(samples)
+        for second in samples[index + 1 :]
+    ):
+        return None
+    return GPSCoord(
+        median(sample.lat for sample in samples),
+        median(sample.long for sample in samples),
+        median(sample.alt for sample in samples),
+    )
+
+
+def _acquire_target_anchor(
+    controller: DroneControl,
+    camera: Camera,
+    lidar: Lidar,
+    target_id: int,
+    policy: PrecisionMissionPolicy,
+    *,
+    deadline: float,
+    initial_clearance: ProjectedVerticalClearance | None = None,
+) -> GPSCoord | None:
+    try:
+        clearance = (
+            initial_clearance
+            if initial_clearance is not None
+            else _read_clearance(controller, lidar, policy)
+        )
+    except (
+        ClearanceUnavailableError,
+        PrecisionEvidenceUnavailable,
+        StaleSensorError,
+    ):
+        return None
+    center_snapshot = controller.flight_snapshot()
+    center, _ = _location(center_snapshot, controller)
+    grid_size = 1.5
+    grid_offsets_ne = (
+        (0.0, 0.0),
+        (0.0, grid_size),
+        (grid_size, grid_size),
+        (grid_size, 0.0),
+        (grid_size, -grid_size),
+        (0.0, -grid_size),
+        (-grid_size, -grid_size),
+        (-grid_size, 0.0),
+        (-grid_size, grid_size),
+    )
+    last_sequence = 0
+    last_invalidation_generations = (
+        clearance.range_sample.invalidation_generation,
+        getattr(center_snapshot.location, "invalidation_generation", 0),
+        getattr(center_snapshot.attitude, "invalidation_generation", 0),
+    )
+
+    for north, east in grid_offsets_ne:
+        if _now(policy) >= deadline:
+            break
+        controller.check_permission()
+        waypoint = controller.get_location_metres(center, north, east)
+        remaining = deadline - _now(policy)
+        if remaining <= 0:
+            break
+        _require_zero(
+            "grid waypoint",
+            controller.goto_waypoint(
+                waypoint,
+                position_tol=GRID_POSITION_TOLERANCE_M,
+                timeout=remaining,
+            ),
+        )
+        if _now(policy) >= deadline:
+            return None
+        anchor_samples: list[GPSCoord] = []
+        observations_at_cell = 0
+        while (
+            _now(policy) < deadline
+            and observations_at_cell < MAX_OBSERVATIONS_PER_GRID_CELL
+        ):
+            observations_at_cell += 1
+            remaining = deadline - _now(policy)
+            try:
+                evidence = _read_precision_evidence(
+                    controller,
+                    camera,
+                    lidar,
+                    target_id,
+                    policy,
+                    after_sequence=last_sequence,
+                    timeout_s=min(policy.frame_timeout_s, remaining),
+                )
+            except _CameraAcquisitionTimeout:
+                controller.check_permission()
+                anchor_samples.clear()
+                if _now(policy) >= deadline or not _sleep_bounded(deadline, policy):
+                    return None
+                continue
+            except (
+                ClearanceUnavailableError,
+                PrecisionEvidenceUnavailable,
+                StaleSensorError,
+            ):
+                anchor_samples.clear()
+                if not _sleep_bounded(deadline, policy):
+                    return None
+                continue
+            controller.check_permission()
+            if _now(policy) >= deadline:
+                return None
+            if evidence.frame_sequence <= last_sequence:
+                anchor_samples.clear()
+                if not _sleep_bounded(deadline, policy):
+                    return None
+                continue
+            last_sequence = evidence.frame_sequence
+            invalidation_generations = (
+                evidence.clearance.range_sample.invalidation_generation,
+                evidence.location_invalidation_generation,
+                evidence.attitude_invalidation_generation,
+            )
+            if invalidation_generations != last_invalidation_generations:
+                last_invalidation_generations = invalidation_generations
+                anchor_samples.clear()
+                if not _sleep_bounded(deadline, policy):
+                    return None
+                continue
+            if evidence.vector is None or evidence.vector.z <= 0:
+                anchor_samples.clear()
+                if not _sleep_bounded(deadline, policy):
+                    return None
+                continue
+            clearance_error = (
+                evidence.clearance.projected_clearance_m
+                - policy.target_hover_height_m
+            )
+            if abs(clearance_error) > policy.hover_tolerance_m:
+                controller.check_permission()
+                remaining = deadline - _now(policy)
+                if remaining <= 0:
+                    return None
+                _require_zero(
+                    "acquisition altitude correction",
+                    controller.guide_move_relative_frame(
+                        RelPosComplete(0.0, 0.0, clearance_error),
+                        timeout=remaining,
+                    ),
+                )
+                anchor_samples.clear()
+                if _now(policy) >= deadline or not _sleep_bounded(deadline, policy):
+                    return None
+                continue
+            marker_north, marker_east = _marker_offset_ne(
+                evidence.vector,
+                evidence.attitude,
+            )
+            if math.hypot(marker_north, marker_east) > policy.centered_tolerance_m:
+                corrected = controller.get_location_metres(
+                    evidence.location,
+                    marker_north * policy.correction_gain,
+                    marker_east * policy.correction_gain,
+                )
+                controller.check_permission()
+                remaining = deadline - _now(policy)
+                if remaining <= 0:
+                    return None
+                _require_zero(
+                    "marker recenter waypoint",
+                    controller.goto_waypoint(
+                        corrected,
+                        position_tol=GRID_POSITION_TOLERANCE_M,
+                        timeout=remaining,
+                    ),
+                )
+                anchor_samples.clear()
+                if _now(policy) >= deadline or not _sleep_bounded(deadline, policy):
+                    return None
+                continue
+            projected = _projected_target(evidence)
+            candidate_samples = anchor_samples + [projected]
+            anchor = _median_anchor(candidate_samples)
+            if anchor is not None:
+                return anchor
+            if any(
+                _horizontal_distance_m(projected, prior) > ANCHOR_DRIFT_LIMIT_M
+                for prior in anchor_samples
+            ):
+                anchor_samples = [projected]
+            else:
+                anchor_samples = candidate_samples
+            if not _sleep_bounded(deadline, policy):
+                return None
+    return None
 
 
 def pickup_sequence(
@@ -537,179 +937,55 @@ def pickup_sequence(
     else:
         return False
 
-    center_snapshot = controller.flight_snapshot()
-    center, _ = _location(center_snapshot, controller)
-    grid_size = 1.5
-    grid_offsets_ne = (
-        (0.0, 0.0),
-        (0.0, grid_size),
-        (grid_size, grid_size),
-        (grid_size, 0.0),
-        (grid_size, -grid_size),
-        (0.0, -grid_size),
-        (-grid_size, -grid_size),
-        (-grid_size, 0.0),
-        (-grid_size, grid_size),
-    )
-    last_sequence = 0
-    last_invalidation_generations = (
-        clearance.range_sample.invalidation_generation,
-        getattr(center_snapshot.location, "invalidation_generation", 0),
-        getattr(center_snapshot.attitude, "invalidation_generation", 0),
-    )
-    centered_count = 0
-    target_found = False
-
-    for north, east in grid_offsets_ne:
-        if _now(policy) >= acquisition_deadline:
+    profile_checked = False
+    for retry_number in range(2):
+        anchor = _acquire_target_anchor(
+            controller,
+            camera,
+            lidar,
+            target_id,
+            policy,
+            deadline=acquisition_deadline,
+            initial_clearance=clearance if retry_number == 0 else None,
+        )
+        if anchor is None:
+            return False
+        if not profile_checked:
+            controller.check_permission()
+            if controller.require_precision_landing_profile() is not True:
+                return False
+            profile_checked = True
+        result = aruco_land_precision(
+            controller,
+            camera,
+            lidar,
+            target_id,
+            policy=policy,
+            anchor=anchor,
+            deadline=acquisition_deadline,
+            return_result=True,
+            retry_number=retry_number,
+        )
+        if result is LandingResult.TOUCHDOWN or result is True:
             break
+        if result is not LandingResult.RETRY or retry_number == 1:
+            return False
         controller.check_permission()
-        waypoint = controller.get_location_metres(center, north, east)
+        _require_zero("GUIDED mode", controller.set_guided_mode())
+        retry_hover = controller.get_location_metres(anchor, 0.0, 0.0)
+        retry_hover.alt = policy.target_hover_height_m
         remaining = acquisition_deadline - _now(policy)
         if remaining <= 0:
-            break
+            return False
         _require_zero(
-            "grid waypoint",
+            "retry search hover",
             controller.goto_waypoint(
-                waypoint,
+                retry_hover,
                 position_tol=GRID_POSITION_TOLERANCE_M,
                 timeout=remaining,
             ),
         )
-        if _now(policy) >= acquisition_deadline:
-            return False
-        centered_count = 0
-        observations_at_cell = 0
-        while (
-            _now(policy) < acquisition_deadline
-            and observations_at_cell < MAX_OBSERVATIONS_PER_GRID_CELL
-        ):
-            observations_at_cell += 1
-            remaining = acquisition_deadline - _now(policy)
-            try:
-                evidence = _read_precision_evidence(
-                    controller,
-                    camera,
-                    lidar,
-                    target_id,
-                    policy,
-                    after_sequence=last_sequence,
-                    timeout_s=min(policy.frame_timeout_s, remaining),
-                )
-            except _CameraAcquisitionTimeout:
-                controller.check_permission()
-                if _now(policy) >= acquisition_deadline:
-                    return False
-                centered_count = 0
-                if not _sleep_bounded(acquisition_deadline, policy):
-                    return False
-                continue
-            except (
-                ClearanceUnavailableError,
-                PrecisionEvidenceUnavailable,
-                StaleSensorError,
-            ):
-                centered_count = 0
-                if not _sleep_bounded(acquisition_deadline, policy):
-                    return False
-                continue
-            controller.check_permission()
-            if _now(policy) >= acquisition_deadline:
-                return False
-            if evidence.frame_sequence <= last_sequence:
-                centered_count = 0
-                if not _sleep_bounded(acquisition_deadline, policy):
-                    return False
-                continue
-            last_sequence = evidence.frame_sequence
-            invalidation_generations = (
-                evidence.clearance.range_sample.invalidation_generation,
-                evidence.location_invalidation_generation,
-                evidence.attitude_invalidation_generation,
-            )
-            if invalidation_generations != last_invalidation_generations:
-                last_invalidation_generations = invalidation_generations
-                centered_count = 0
-                if not _sleep_bounded(acquisition_deadline, policy):
-                    return False
-                continue
-            if evidence.vector is None:
-                centered_count = 0
-                if not _sleep_bounded(acquisition_deadline, policy):
-                    return False
-                continue
-            clearance_error = (
-                evidence.clearance.projected_clearance_m
-                - policy.target_hover_height_m
-            )
-            if abs(clearance_error) > policy.hover_tolerance_m:
-                controller.check_permission()
-                remaining = acquisition_deadline - _now(policy)
-                if remaining <= 0:
-                    return False
-                _require_zero(
-                    "acquisition altitude correction",
-                    controller.guide_move_relative_frame(
-                        RelPosComplete(0.0, 0.0, clearance_error),
-                        timeout=remaining,
-                    ),
-                )
-                if _now(policy) >= acquisition_deadline:
-                    return False
-                centered_count = 0
-                if not _sleep_bounded(acquisition_deadline, policy):
-                    return False
-                continue
-            marker_north, marker_east = _marker_offset_ne(
-                evidence.vector,
-                evidence.attitude,
-            )
-            horizontal_error = math.hypot(marker_north, marker_east)
-            if horizontal_error > policy.centered_tolerance_m:
-                corrected = controller.get_location_metres(
-                    evidence.location,
-                    marker_north * policy.correction_gain,
-                    marker_east * policy.correction_gain,
-                )
-                controller.check_permission()
-                remaining = acquisition_deadline - _now(policy)
-                if remaining <= 0:
-                    return False
-                _require_zero(
-                    "marker recenter waypoint",
-                    controller.goto_waypoint(
-                        corrected,
-                        position_tol=GRID_POSITION_TOLERANCE_M,
-                        timeout=remaining,
-                    ),
-                )
-                if _now(policy) >= acquisition_deadline:
-                    return False
-                centered_count = 0
-                if not _sleep_bounded(acquisition_deadline, policy):
-                    return False
-                continue
-            centered_count += 1
-            if centered_count == REQUIRED_CENTERED_OBSERVATIONS:
-                target_found = True
-                break
-            if not _sleep_bounded(acquisition_deadline, policy):
-                return False
-        if target_found:
-            break
-
-    if not target_found:
-        return False
-    controller.check_permission()
-    if _now(policy) >= acquisition_deadline:
-        return False
-    if aruco_land_precision(
-        controller,
-        camera,
-        lidar,
-        target_id,
-        policy=policy,
-    ) is not True:
+    else:
         return False
     controller.check_permission()
     _require_zero("disarm", controller.disarm())

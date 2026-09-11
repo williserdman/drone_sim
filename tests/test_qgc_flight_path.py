@@ -192,6 +192,7 @@ class InertVehicle:
         )
         self.message_factory = InertMessageFactory(harness)
         self._mode_mapping = {"GUIDED": 4, "LOITER": 5, "RTL": 6, "LAND": 9}
+        self.parameters = dict(drone_control_module.PRECISION_LANDING_PARAMETERS)
         self.listeners = {}
         self._handler = SimpleNamespace(target_system=1, target_component=1)
 

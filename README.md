@@ -307,6 +307,17 @@ geometry and is not vertical AGL. Precision and release consumers require
 distinct fresh samples, bounded source age, receipt latency and cross-stream
 skew, plus continuous stability evidence before payload output.
 
+FM3 builds an earth-fixed target anchor from five fresh centered camera
+observations. During LAND it stops forwarding rejected target measurements. If
+the target stays unhealthy for 0.50 simulated seconds, FM3 confirms GUIDED and
+reissues one fixed hold waypoint every 0.20 simulated seconds. Five consecutive
+healthy observations resume LAND. A 5.0-second hold timeout permits one return
+to the 4.572 m acquisition hover before pickup fails. At or below the configured
+0.75 m precision-landing floor, FM3 keeps LAND active without requiring another
+camera observation. Before the first LAND command it also checks the connected
+flight controller against `PRECISION_LANDING_PARAMETERS` in
+`drone/control/drone_control.py`.
+
 For enabled FM3, live construction obtains one bounded real camera observation
 before installing QGC callbacks and leaves the latest-frame producer running.
 FM3 admission only inspects current readiness; it does not wait for a frame on

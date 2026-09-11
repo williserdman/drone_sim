@@ -188,6 +188,14 @@ class PrecisionController:
         self.events.append(("land",))
         return 0
 
+    def send_guided_waypoint(self, waypoint):
+        self.events.append(("guided_waypoint", waypoint))
+        return 0
+
+    def require_precision_landing_profile(self):
+        self.events.append(("precision_profile",))
+        return True
+
     def land_send_landing_target(self, vector):
         self.events.append(("landing_target", vector))
         return 0
@@ -331,24 +339,169 @@ def test_pickup_uses_five_fresh_correlated_samples_then_disarms_and_attaches(
     assert terminal == ["disarm"]
 
 
-def test_lost_target_finalizes_land_but_never_reports_pickup_success():
-    from drone.mock_mission import aruco_land_precision
+def test_pickup_passes_five_sample_median_anchor_to_precision_land(monkeypatch):
+    import drone.mock_mission as mission
 
     clock = FakeClock()
     controller = PrecisionController(clock)
+    landing_calls = []
+
+    def land(*args, **kwargs):
+        landing_calls.append((args, kwargs))
+        return mission.LandingResult.TOUCHDOWN
+
+    monkeypatch.setattr(mission, "aruco_land_precision", land)
+
+    with timebase.configured(clock):
+        result = mission.pickup_sequence(
+            controller,
+            ReadyCamera(clock, [centered(i) for i in range(1, 7)]),
+            SampleLidar(clock),
+            3,
+            Payload(),
+            policy=policy(clock),
+        )
+
+    assert result is True
+    assert len(landing_calls) == 1
+    anchor = landing_calls[0][1]["anchor"]
+    assert anchor.lat == pytest.approx(41.00000089831528)
+    assert anchor.long == pytest.approx(-81.0)
+    assert [event for event in controller.events if event[0] == "precision_profile"] == [
+        ("precision_profile",)
+    ]
+
+
+def test_pickup_reacquires_once_after_hold_timeout(monkeypatch):
+    import drone.mock_mission as mission
+
+    clock = FakeClock()
+    controller = PrecisionController(clock)
+    outcomes = iter((mission.LandingResult.RETRY, mission.LandingResult.TOUCHDOWN))
+    landing_calls = []
+
+    def land(*args, **kwargs):
+        landing_calls.append((args, kwargs))
+        return next(outcomes)
+
+    monkeypatch.setattr(mission, "aruco_land_precision", land)
+
+    with timebase.configured(clock):
+        result = mission.pickup_sequence(
+            controller,
+            ReadyCamera(clock, [centered(i) for i in range(1, 13)]),
+            SampleLidar(clock, distances=[4.572] * 30),
+            3,
+            Payload(),
+            policy=policy(clock),
+        )
+
+    assert result is True
+    assert len(landing_calls) == 2
+    assert [call[1]["retry_number"] for call in landing_calls] == [0, 1]
+    retry_moves = [
+        event
+        for event in controller.events
+        if event[0] == "goto" and event[1].alt == pytest.approx(4.572)
+    ]
+    assert retry_moves
+    assert [event for event in controller.events if event[0] == "precision_profile"] == [
+        ("precision_profile",)
+    ]
+
+
+def test_lost_target_holds_then_reacquires_before_resuming_land():
+    from drone.mock_mission import aruco_land_precision
+
+    class TouchdownAfterReacquire(PrecisionController):
+        def flight_snapshot(self):
+            current = super().flight_snapshot()
+            if sum(event == ("land",) for event in self.events) >= 2:
+                current.landed_state = field(1, self.clock.now(), 100)
+            return current
+
+    clock = FakeClock()
+    controller = TouchdownAfterReacquire(clock)
+    observations = [(index, None) for index in range(1, 13)]
+    observations.extend(centered(index) for index in range(13, 18))
 
     with timebase.configured(clock):
         result = aruco_land_precision(
             controller,
-            ReadyCamera(clock, [(1, None)]),
-            SampleLidar(clock, distances=[1.0]),
+            ReadyCamera(clock, observations),
+            SampleLidar(clock, distances=[1.0] * 40),
             3,
             policy=policy(clock),
         )
 
-    assert result is False
+    assert result is True
+    terminal = [event[0] for event in controller.events if event[0] != "permission"]
+    assert terminal.count("land") == 2
+    guided_index = terminal.index("guided")
+    resumed_land_index = terminal.index("land", guided_index)
+    assert "guided_waypoint" in terminal[guided_index:resumed_land_index]
+    assert "landing_target" not in terminal[guided_index:resumed_land_index]
+    assert terminal[-1] == "confirm_landing"
+
+
+def test_marker_loss_below_precision_floor_stays_in_land_until_touchdown():
+    from drone.mock_mission import aruco_land_precision
+
+    class TouchdownNearGround(PrecisionController):
+        def flight_snapshot(self):
+            current = super().flight_snapshot()
+            if self.clock.now() >= 10.2:
+                current.landed_state = field(1, self.clock.now(), 100)
+            return current
+
+    class CameraMustNotBeRead(ReadyCamera):
+        def vec_to_marker_3d_bounded(self, *args, **kwargs):
+            raise AssertionError("camera must not gate descent below PLND_ALT_MIN")
+
+    clock = FakeClock()
+    controller = TouchdownNearGround(clock)
+
+    with timebase.configured(clock):
+        result = aruco_land_precision(
+            controller,
+            CameraMustNotBeRead(clock, []),
+            SampleLidar(clock, distances=[0.5] * 20),
+            3,
+            policy=policy(clock),
+        )
+
+    assert result is True
     terminal = [event[0] for event in controller.events if event[0] != "permission"]
     assert terminal == ["land", "confirm_landing"]
+
+
+def test_rejected_landing_observation_emits_parseable_diagnostic(capsys):
+    import json
+    from drone.mock_mission import LandingResult, aruco_land_precision
+
+    clock = FakeClock()
+    with timebase.configured(clock):
+        result = aruco_land_precision(
+            PrecisionController(clock),
+            ReadyCamera(clock, [(index, None) for index in range(1, 200)]),
+            SampleLidar(clock, distances=[1.0] * 400),
+            3,
+            policy=policy(clock),
+            deadline=16.0,
+            return_result=True,
+        )
+
+    records = [
+        json.loads(line.removeprefix("PRECISION_LANDING "))
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("PRECISION_LANDING ")
+    ]
+    assert result is LandingResult.RETRY
+    rejected = next(record for record in records if record["reason"] == "target_absent")
+    assert rejected["state"] == "TRACKING"
+    assert rejected["target_id"] == 3
+    assert rejected["frame_sequence"] == 1
+    assert rejected["agl_m"] == pytest.approx(1.0)
 
 
 def test_replayed_frame_resets_the_five_sample_window():
@@ -798,7 +951,7 @@ def test_slow_land_frame_cannot_emit_target_after_touchdown_deadline(monkeypatch
             mission.aruco_land_precision(
                 controller,
                 ReadyCamera(clock, [centered(1)]),
-                SampleLidar(clock, distances=[1.0]),
+                SampleLidar(clock, distances=[1.0, 1.0]),
                 3,
                 policy=policy(clock),
             )

@@ -8,7 +8,7 @@ import pytest
 from pymavlink import mavutil
 from pymavlink.dialects.v20 import ardupilotmega as mavlink2
 
-from drone.common_types import RelPosComplete
+from drone.common_types import GPSCoord, MissionHome, RelPosComplete
 from drone.control import drone_control
 from dronekit.mavlink import MAVWriter
 from drone.control.flight_state import (
@@ -348,6 +348,50 @@ def test_precision_landing_packet_uses_frd_and_reconstructs_literal_direction(
     assert (size_x, size_y) == (0.0, 0.0)
     assert vehicle.sent == vehicle.encoded
     assert vehicle.flushed is True
+
+
+def test_nonblocking_guided_hold_uses_integer_coordinates_and_pinned_home():
+    packets = []
+    controller = object.__new__(drone_control.DroneControl)
+    controller.vehicle = SimpleNamespace(
+        _master=SimpleNamespace(
+            mav=SimpleNamespace(
+                mission_item_int_send=lambda *fields: packets.append(fields)
+            )
+        )
+    )
+    controller.flight_controller_target = SourceIdentity(1, 1)
+    controller._mission_home = MissionHome(41.0, -81.0, 100.0)
+    current = SimpleNamespace(
+        mode=SimpleNamespace(fresh=True, observation=SimpleNamespace(value="GUIDED")),
+        armed=SimpleNamespace(fresh=True, observation=SimpleNamespace(value=True)),
+        landed_state=SimpleNamespace(fresh=True, observation=SimpleNamespace(value=2)),
+    )
+    controller._send_guarded = lambda output, *, validate_snapshot: (
+        validate_snapshot(current),
+        output(),
+    )[1]
+
+    assert controller.send_guided_waypoint(GPSCoord(41.12345678, -81.87654321, 4.5)) == 0
+
+    assert len(packets) == 1
+    packet = packets[0]
+    assert packet[0:2] == (1, 1)
+    assert packet[3] == mavutil.mavlink.MAV_FRAME_GLOBAL_INT
+    assert packet[4] == mavutil.mavlink.MAV_CMD_NAV_WAYPOINT
+    assert packet[-3:] == (411234568, -818765432, 104.5)
+
+
+def test_precision_landing_profile_requires_every_exact_runtime_parameter():
+    controller = object.__new__(drone_control.DroneControl)
+    controller.vehicle = SimpleNamespace(
+        parameters=dict(drone_control.PRECISION_LANDING_PARAMETERS)
+    )
+
+    assert controller.require_precision_landing_profile() is True
+
+    controller.vehicle.parameters["PLND_OPTIONS"] = 0
+    assert controller.require_precision_landing_profile() is False
 
 
 def _flight_state(clock=lambda: 10.0):
