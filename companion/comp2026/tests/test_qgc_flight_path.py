@@ -1671,7 +1671,9 @@ def test_failed_real_recovery_stays_unconfirmed_and_does_not_change_mission_fail
     assert harness.recoveries == ["UNCONFIRMED"]
 
 
-def build_factory_runtime(tmp_path, *, wm_count=6, staged=False):
+def build_factory_runtime(
+    tmp_path, *, wm_count=6, staged=False, phase_observer=None
+):
     from test_listener import prepared_startup_files
     from test_listener_runtime import runtime_configuration
 
@@ -1724,6 +1726,7 @@ def build_factory_runtime(tmp_path, *, wm_count=6, staged=False):
             config,
             factories=rig.factories(staged=staged),
             diagnostics=diagnostics.append,
+            phase_observer=phase_observer,
         )
     return runtime, rig, prepared, config, diagnostics
 
@@ -1773,7 +1776,7 @@ def test_public_live_factory_runs_complete_callback_fm1_fm2_fm3_trace(tmp_path):
     assert runtime.flight_state is rig.state
     assert rig.outbound.qsize() > 0
     assert rig.release_invalidation_injected is True
-    assert len(rig.release_partitions) == 8
+    assert len(rig.release_partitions) == 3
     fm2_release_evidence = rig.release_partitions[0]
     generations = [
         evidence.attitude_invalidation_generation
@@ -1842,7 +1845,7 @@ def test_public_live_factory_runs_complete_callback_fm1_fm2_fm3_trace(tmp_path):
     assert rig.events.index(("armed", True), attachment) > attachment
     takeoff_altitudes = [event[1] for event in rig.events if event[0] == "takeoff"]
     assert takeoff_altitudes[:3] == [10.0, 9.0, 8.0]
-    assert len(takeoff_altitudes) == 9
+    assert len(takeoff_altitudes) == 4
     expected_rearm_homes = takeoff_altitudes
     assert [event[0] for event in rig.causal_home_trace] == [
         event
@@ -1867,13 +1870,13 @@ def test_public_live_factory_runs_complete_callback_fm1_fm2_fm3_trace(tmp_path):
         assert takeoff[1] == expected_takeoff
         assert takeoff[2] == response[2]
     attachments = [event[1] for event in rig.events if event[0] == "payload-attached"]
-    assert attachments == [3, 4, 5, 6, 7, 8, 9]
-    pickup_sites = [(410004000, -810004000)] + [
-        (410003000 + index * 1000, -810003000 - index * 1000)
-        for index in range(6)
+    assert attachments == [3, 4]
+    pickup_sites = [
+        (410004000, -810004000),
+        (410003000, -810003000),
     ]
     previous_delivery = -1
-    for marker_id, pickup_site in zip(range(3, 10), pickup_sites):
+    for marker_id, pickup_site in zip(range(3, 5), pickup_sites):
         attachment_index = rig.events.index(("payload-attached", marker_id))
         pickup_index = max(
             index
@@ -1901,6 +1904,144 @@ def test_public_live_factory_runs_complete_callback_fm1_fm2_fm3_trace(tmp_path):
         ACK_IN_PROGRESS,
         ACK_ACCEPTED,
     ]
+
+
+def test_full_mode_emits_eleven_events_and_uses_fm3_home_as_recovery(tmp_path):
+    """Missing an FM3 or HOME boundary would leave official evidence incomplete."""
+    phases = []
+    runtime, rig, prepared, _config, diagnostics = build_factory_runtime(
+        tmp_path, wm_count=1, phase_observer=lambda phase, state: phases.append((phase, state))
+    )
+
+    with timebase.configured(rig.clock):
+        for command in (FM1, FM2):
+            rig.transport.deliver(Packet(command, attempt_id=prepared.attempt_id))
+            assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+    assert runtime.supervisor.terminal_result is None
+    assert runtime.supervisor.recovery_outcome is None
+    assert not any(phase == "HOME" for phase, _state in phases)
+
+    with timebase.configured(rig.clock):
+        rig.transport.deliver(Packet(FM3, attempt_id=prepared.attempt_id))
+        assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+
+    assert phases == [
+        ("FM1", "STARTED"),
+        ("FM1", "COMPLETE"),
+        ("FM2", "STARTED"),
+        ("FM2", "COMPLETE"),
+        ("FM3_3", "STARTED"),
+        ("FM3_3", "COMPLETE"),
+        ("FM3_4", "STARTED"),
+        ("FM3_4", "COMPLETE"),
+        ("HOME", "STARTED"),
+        ("HOME", "DISARMED"),
+        ("HOME", "COMPLETE"),
+    ]
+    assert runtime.supervisor.terminal_result == "SUCCEEDED"
+    assert runtime.supervisor.recovery_outcome == "HOME_LANDED"
+    assert [event for event in rig.events if event[0] == "payload-attached"] == [
+        ("payload-attached", 3),
+        ("payload-attached", 4),
+    ]
+    assert [
+        event
+        for event in rig.events
+        if event[:3] == ("waypoint", 410000000, -810000000)
+    ] == [("waypoint", 410000000, -810000000, 260.0)]
+
+
+@pytest.mark.parametrize(
+    ("failure", "last_event"),
+    (
+        ("payload3", ("FM3_3", "STARTED")),
+        ("payload4", ("FM3_4", "STARTED")),
+        ("home_navigation", ("HOME", "STARTED")),
+        ("home_landing", ("HOME", "STARTED")),
+        ("home_disarm", ("HOME", "STARTED")),
+        ("home_interval", ("HOME", "DISARMED")),
+        ("observer", ("FM3_3", "STARTED")),
+    ),
+)
+def test_full_mode_failure_withholds_later_completion_and_success(
+    tmp_path, failure, last_event
+):
+    """Each FM3 and HOME failure boundary must end the attempt fail closed."""
+    phases = []
+
+    def observe(phase, state):
+        phases.append((phase, state))
+        if failure == "observer" and (phase, state) == ("FM3_3", "STARTED"):
+            raise RuntimeError("mission event publication failed")
+
+    runtime, rig, prepared, _config, diagnostics = build_factory_runtime(
+        tmp_path, wm_count=1, phase_observer=observe
+    )
+    with timebase.configured(rig.clock):
+        for command in (FM1, FM2):
+            rig.transport.deliver(Packet(command, attempt_id=prepared.attempt_id))
+            assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+
+    delegate = runtime.dropper._delegate
+    assert delegate is not None
+    original_drop = delegate.drop
+    fm3_releases = 0
+
+    def maybe_fail_drop():
+        nonlocal fm3_releases
+        fm3_releases += 1
+        if failure == "payload3" and fm3_releases == 1:
+            raise RuntimeError("payload 3 failed")
+        if failure == "payload4" and fm3_releases == 2:
+            raise RuntimeError("payload 4 failed")
+        return original_drop()
+
+    delegate.drop = maybe_fail_drop
+    original_goto = runtime.controller.goto_waypoint
+    original_land = runtime.controller.simple_land
+    original_disarm = runtime.controller.disarm
+
+    def at_home() -> bool:
+        location = runtime.flight_state.snapshot().location.observation.value
+        return location[:2] == (410000000, -810000000)
+
+    def maybe_fail_goto(target, *args, **kwargs):
+        if failure == "home_navigation" and (target.lat, target.long) == (H.lat, H.lon):
+            return 1
+        return original_goto(target, *args, **kwargs)
+
+    def maybe_fail_land(*args, **kwargs):
+        if failure == "home_landing" and at_home():
+            return 1
+        return original_land(*args, **kwargs)
+
+    def maybe_fail_disarm(*args, **kwargs):
+        if failure == "home_disarm" and at_home():
+            return 1
+        result = original_disarm(*args, **kwargs)
+        if failure == "home_interval" and at_home():
+            rig.clock.tick_callbacks.clear()
+        return result
+
+    runtime.controller.goto_waypoint = maybe_fail_goto
+    runtime.controller.simple_land = maybe_fail_land
+    runtime.controller.disarm = maybe_fail_disarm
+
+    with timebase.configured(rig.clock):
+        rig.transport.deliver(Packet(FM3, attempt_id=prepared.attempt_id))
+        if failure == "observer":
+            with pytest.raises(RuntimeError, match="mission event publication failed"):
+                runtime.owner.process_next(timeout_s=0)
+        else:
+            assert runtime.owner.process_next(timeout_s=0) == "FAILED"
+
+    assert phases[-1] == last_event
+    assert runtime.supervisor.terminal_result == "FAILED"
+    assert ("HOME", "COMPLETE") not in phases
+    assert not any(
+        phase == last_event[0] and state == "COMPLETE"
+        for phase, state in phases[phases.index(last_event) + 1 :]
+    )
 
 
 def test_public_live_factory_rejects_wa_only_full_phase_route(tmp_path):

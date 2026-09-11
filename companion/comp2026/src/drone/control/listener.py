@@ -1328,13 +1328,18 @@ class CommandExecutionOwner:
 
     def _observe_phase_start(self, command: int) -> None:
         if command in (FM1, FM2) and self._phase_observer is not None:
-            try:
-                self._phase_observer(
-                    "FM1" if command == FM1 else "FM2",
-                    "STARTED",
-                )
-            except BaseException as error:
-                raise _PhaseObserverFailure(error) from error
+            self.observe_phase(
+                "FM1" if command == FM1 else "FM2",
+                "STARTED",
+            )
+
+    def observe_phase(self, phase: str, state: str) -> None:
+        if self._phase_observer is None:
+            return
+        try:
+            self._phase_observer(phase, state)
+        except BaseException as error:
+            raise _PhaseObserverFailure(error) from error
 
     def _recover_once(self) -> None:
         if self._recovery_started:
@@ -2372,19 +2377,17 @@ def _build_live_listener_validated(
         ) is True
 
     def fm3_handler(_envelope: CommandEnvelope) -> bool:
-        from ..common_types import GPSCoord
+        from ..common_types import GPSCoord, MissionHome
         from ..mock_mission import fm3
 
         snapshot = frozen_waypoints()
         delivery = snapshot.get_waypoint("TARGET")
-        pickup_sites = [(snapshot.get_waypoint("WA"), 3)]
-        pickup_sites.extend(
-            (snapshot.get_waypoint(f"WM{index}"), index + 3)
-            for index in range(1, 7)
+        pickup_sites = (
+            (snapshot.get_waypoint("WA"), 3, "FM3_3"),
+            (snapshot.get_waypoint("WM1"), 4, "FM3_4"),
         )
-        for pickup, marker_id in pickup_sites:
-            if pickup is None:
-                continue
+        for pickup, marker_id, phase in pickup_sites:
+            owner.observe_phase(phase, "STARTED")
             if fm3(
                 tracker,
                 controller,
@@ -2397,7 +2400,11 @@ def _build_live_listener_validated(
                 precision_policy=config.precision_policy,
             ) is not True:
                 return False
+            owner.observe_phase(phase, "COMPLETE")
         home = controller.mission_home
+        if not isinstance(home, MissionHome):
+            raise RuntimeError("terminal landing has no pinned mission home")
+        owner.observe_phase("HOME", "STARTED")
         controller.check_permission()
         if controller.goto_waypoint(
             GPSCoord(home.lat, home.lon, config.cruise_altitude_m)
@@ -2407,7 +2414,13 @@ def _build_live_listener_validated(
         if controller.simple_land() != 0:
             return False
         controller.check_permission()
-        return controller.disarm() == 0
+        if controller.disarm() != 0:
+            return False
+        owner.observe_phase("HOME", "DISARMED")
+        if supervisor.confirm_original_home_landing(controller, home) != "HOME_LANDED":
+            return False
+        owner.observe_phase("HOME", "COMPLETE")
+        return True
 
     handlers = {command: mutation_handler for command in MUTATION_COMMANDS}
     handlers.update({FM1: fm1_handler, FM2: fm2_handler, FM3: fm3_handler})

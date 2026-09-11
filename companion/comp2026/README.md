@@ -177,6 +177,7 @@ build_live_listener(
     factories=None,
     diagnostics=None,
     startup_admission_check=None,
+    phase_observer=None,
 ) -> LiveListenerRuntime
 
 start_repl(
@@ -207,16 +208,17 @@ standalone callers retain their existing behavior. These interfaces do not
 supply deployment values.
 
 `phase_observer(phase, state)` is also optional and must return normally. The
-execution owner calls it only for FM1 and FM2. STARTED follows `begin()` and the
-deadline check immediately before the handler. COMPLETE follows a finalized
-SUCCEEDED result; for a final two-phase FM2 it also follows confirmed
-`HOME_LANDED` recovery. Failed, aborted, rejected, replayed, and waypoint
-commands emit no COMPLETE event. Recovery emits no HOME or FM3 event. An
-observer exception preserves terminal ACK and queue cleanup, runs at most one
-recovery, and propagates as an infrastructure failure. If COMPLETE publication
-fails, the ACK and supervisor result still report the already finalized physical
-phase result; the parent host separately fails its lifecycle because public
-evidence publication was not confirmed.
+execution owner emits FM1 and FM2 boundaries. Full-mode FM3 emits separate
+STARTED/COMPLETE boundaries around the WA/marker-3 and WM1/marker-4 payload
+cycles, then emits HOME STARTED before return transit. HOME DISARMED follows
+confirmed disarm. HOME COMPLETE follows a strictly newer landed, disarmed, and
+original-home telemetry interval, which also records `HOME_LANDED` as the
+normal successful terminal recovery outcome. Full mode does not issue a second
+return-home operation. Limited final FM2 retains its existing recovery before
+FM2 COMPLETE. Failed, aborted, rejected, replayed, waypoint, and failure-recovery
+work emits no later COMPLETE event. An observer exception preserves terminal
+ACK and queue cleanup, runs at most one recovery, and propagates as an
+infrastructure failure.
 
 Live cleanup treats telemetry, LiDAR, camera, payload, vehicle-worker, attempt
 descriptor, and diagnostic failures as independent facts. A `BaseException`

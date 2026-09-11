@@ -42,14 +42,16 @@ post-gate telemetry on strictly advancing shared simulation time before ARM or
 TAKEOFF. Admission alone never publishes the fact or permits those commands.
 
 The parent publishes `/simulation/mission_events` with reliable,
-transient-local depth-100 QoS. This FM1/FM2 composition emits only the ordered
-prefix `FM1 STARTED`, `FM1 COMPLETE`, `FM2 STARTED`, `FM2 COMPLETE`, with IDs
-0 through 3 and current accepted simulation timestamps. A STARTED event follows
-command execution admission and the deadline check. COMPLETE follows a
-supervisor-finalized success; final FM2 also follows confirmed `HOME_LANDED`
-recovery. Rejection, replay, failure, abort, waypoint updates, and recovery do
-not invent completion, HOME, or FM3 events. Publisher failure is terminal for
-the host and is never retried.
+transient-local depth-100 QoS. Limited mode emits the ordered FM1/FM2 prefix
+with IDs 0 through 3. Full mode continues with `FM3_3 STARTED/COMPLETE`,
+`FM3_4 STARTED/COMPLETE`, and `HOME STARTED/DISARMED/COMPLETE`, ending at ID 10.
+A STARTED event follows command execution admission and the deadline check.
+COMPLETE follows confirmed phase work. Full-mode HOME DISARMED follows confirmed
+disarm, and HOME COMPLETE requires another fresh landed, disarmed, original-home
+telemetry interval. Limited final FM2 still completes only after confirmed
+`HOME_LANDED` recovery. Rejection, replay, failure, abort, waypoint updates, and
+failure recovery do not invent successful events. Publisher failure is terminal
+for the host and is never retried.
 
 The host requires both required mission-event consumers before opening
 admission: root-namespace `drone_sim_scorekeeper` and the root-namespace
@@ -62,10 +64,9 @@ nanoseconds fields. Before destroying the publisher, it calls
 still active. A missing subscriber, timeout, or unconfirmed acknowledgement
 prevents durable `mission-finished` success.
 
-That four-event prefix can support an 80/150 diagnostic score when the physical
-FM1/FM2 evidence also passes. It cannot complete the official
-`competition_v1` mission, which still requires FM3 and HOME evidence and reports
-`mission_sequence_invalid` for this prefix.
+The limited four-event prefix can support an 80/150 diagnostic score when the
+physical FM1/FM2 evidence also passes, but it cannot complete `competition_v1`.
+The full source path now emits the eleven-event grammar required by that scorer.
 This source composition is not evidence of an image build, integrated SITL run,
 scored simulation, hardware acceptance, or flight readiness.
 
@@ -148,8 +149,9 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   and noncompanion configuration still resolve; the companion Dockerfile rejects
   an empty value before package installation or source copies.
 - The automatic `drone.auto_attempt` host imports FM1 and FM2 from `missions/`
-  but imports FM3 from `drone/mock_mission.py`. The guarded QGC host still
-  admits only FM1 and FM2, so `missions/fm3.py` is not an active QGC path.
+  but imports FM3 from `drone/mock_mission.py`. The guarded QGC full mode also
+  uses that active FM3 implementation for the required WA/marker-3 and
+  WM1/marker-4 cycles; `missions/fm3.py` is not an active QGC path.
 - That deployed `mock_mission.py` owns payload-marker acquisition and precision
   landing recovery. It establishes a five-frame earth-fixed target anchor,
   rejects stale or inconsistent camera/range observations before MAVLink,

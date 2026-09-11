@@ -1492,6 +1492,7 @@ class _Comp2026QgcRosHost:
             self.config.run_id,
             self.clock,
             self._publish_mission_event,
+            full_mode=31002 in self.runtime_config.enabled_phases,
         )
         raw_payload_client = self.node.create_client(
             deps.PayloadCommand,

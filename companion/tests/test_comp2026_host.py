@@ -578,6 +578,37 @@ def test_phase_emitter_preserves_order_and_genuine_clock_timestamp() -> None:
     assert all(event.detail == "automatic attempt" for event in published)
 
 
+def test_full_phase_emitter_publishes_literal_eleven_event_sequence() -> None:
+    clock = SimulationClock()
+    published: list[object] = []
+    emit = MissionEventEmitter(RUN_ID, clock, published.append, full_mode=True)
+    expected = (
+        ("FM1", "STARTED"),
+        ("FM1", "COMPLETE"),
+        ("FM2", "STARTED"),
+        ("FM2", "COMPLETE"),
+        ("FM3_3", "STARTED"),
+        ("FM3_3", "COMPLETE"),
+        ("FM3_4", "STARTED"),
+        ("FM3_4", "COMPLETE"),
+        ("HOME", "STARTED"),
+        ("HOME", "DISARMED"),
+        ("HOME", "COMPLETE"),
+    )
+
+    for event_id, event in enumerate(expected):
+        clock.accept((event_id + 1) * 50_000_000)
+        emit(*event)
+
+    assert [
+        (event.event_id, event.phase, event.state, event.sim_timestamp_ns)
+        for event in published
+    ] == [
+        (event_id, phase, state, (event_id + 1) * 50_000_000)
+        for event_id, (phase, state) in enumerate(expected)
+    ]
+
+
 def test_phase_emitter_rejects_non_prefix_and_events_after_fm2_complete() -> None:
     clock = SimulationClock()
     clock.accept(1)

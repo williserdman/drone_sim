@@ -63,6 +63,9 @@ TERMINAL_RESULTS = frozenset(("SUCCEEDED", "FAILED", "ABORTED"))
 RECOVERY_OUTCOMES = frozenset(
     ("HOME_LANDED", "LOCAL_LANDED", "PILOT", "FC_FAILSAFE", "UNCONFIRMED")
 )
+HOME_CONFIRMATION_RADIUS_M = 1.0
+HOME_CONFIRMATION_ALTITUDE_M = 0.8
+HOME_CONFIRMATION_POLL_S = 0.05
 
 
 @dataclass(frozen=True)
@@ -696,6 +699,78 @@ class MissionSupervisor:
                 raise
             finally:
                 self._recovery_deadline.reset(token)
+
+    def confirm_original_home_landing(self, controller, home: MissionHome) -> str:
+        """Require a new on-ground, disarmed interval at the pinned mission home."""
+        if not isinstance(home, MissionHome):
+            raise TypeError("home must be a MissionHome")
+        if getattr(controller, "mission_home", None) != home:
+            raise FlightOperationError("terminal landing is not bound to mission home")
+        policy = self._recovery_policy
+        if policy is None:
+            raise FlightOperationError("terminal home confirmation policy is unavailable")
+        with self._recovery_lock:
+            if self._recovery_outcome is not None:
+                raise FlightOperationError("terminal recovery outcome is already recorded")
+            self.check_permission()
+            boundary = controller.flight_snapshot()
+            self._require_home_snapshot(boundary, home)
+            baseline = {
+                name: getattr(boundary, name).observation.sequence
+                for name in ("location", "landed_state", "armed")
+            }
+            started = policy.clock()
+            if not _finite_number(started):
+                raise FlightOperationError("terminal home clock is unavailable")
+            deadline = float(started) + policy.local_land_reserve_s
+            while True:
+                self.check_permission()
+                now = policy.clock()
+                if not _finite_number(now):
+                    raise FlightOperationError("terminal home clock is unavailable")
+                snapshot = controller.flight_snapshot()
+                try:
+                    self._require_home_snapshot(snapshot, home)
+                except FlightOperationError:
+                    if float(now) >= deadline:
+                        raise
+                else:
+                    if float(now) > float(started) and all(
+                        getattr(snapshot, name).observation.sequence > baseline[name]
+                        for name in baseline
+                    ):
+                        self.record_recovery_outcome("HOME_LANDED")
+                        return "HOME_LANDED"
+                if float(now) >= deadline:
+                    raise FlightOperationError(
+                        "terminal home landing interval was not confirmed"
+                    )
+                timebase.sleep(min(HOME_CONFIRMATION_POLL_S, deadline - float(now)))
+
+    @classmethod
+    def _require_home_snapshot(cls, snapshot, home: MissionHome) -> None:
+        location = cls._fresh_value(snapshot, "location")
+        landed = cls._fresh_value(snapshot, "landed_state")
+        armed = cls._fresh_value(snapshot, "armed")
+        if not cls._is_ground(landed) or armed is not False:
+            raise FlightOperationError("terminal home state is not landed and disarmed")
+        if (
+            not isinstance(location, tuple)
+            or len(location) != 4
+            or any(not _finite_number(value) for value in location)
+        ):
+            raise FlightOperationError("terminal home location is invalid")
+        lat = float(location[0]) / 1e7
+        lon = float(location[1]) / 1e7
+        amsl_m = float(location[2]) / 1000.0
+        mean_lat = math.radians((lat + home.lat) / 2.0)
+        east_m = math.radians(lon - home.lon) * math.cos(mean_lat) * 6_378_137.0
+        north_m = math.radians(lat - home.lat) * 6_378_137.0
+        if (
+            math.hypot(east_m, north_m) > HOME_CONFIRMATION_RADIUS_M
+            or abs(amsl_m - home.amsl_m) > HOME_CONFIRMATION_ALTITUDE_M
+        ):
+            raise FlightOperationError("terminal landing is outside mission home")
 
     def _recover(
         self,

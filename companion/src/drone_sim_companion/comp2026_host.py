@@ -879,17 +879,37 @@ class MissionEventRecord:
 class MissionEventEmitter:
     """Convert the nested phase callback into ordered current-time records."""
 
-    _SEQUENCE = (
+    _LIMITED_SEQUENCE = (
         ("FM1", "STARTED"),
         ("FM1", "COMPLETE"),
         ("FM2", "STARTED"),
         ("FM2", "COMPLETE"),
     )
 
-    def __init__(self, run_id: str, clock: SimulationClock, publish) -> None:
+    _FULL_SEQUENCE = _LIMITED_SEQUENCE + (
+        ("FM3_3", "STARTED"),
+        ("FM3_3", "COMPLETE"),
+        ("FM3_4", "STARTED"),
+        ("FM3_4", "COMPLETE"),
+        ("HOME", "STARTED"),
+        ("HOME", "DISARMED"),
+        ("HOME", "COMPLETE"),
+    )
+
+    def __init__(
+        self,
+        run_id: str,
+        clock: SimulationClock,
+        publish,
+        *,
+        full_mode: bool = False,
+    ) -> None:
+        if not isinstance(full_mode, bool):
+            raise TypeError("full_mode must be a Boolean")
         self._run_id = run_id
         self._clock = clock
         self._publish = publish
+        self._sequence = self._FULL_SEQUENCE if full_mode else self._LIMITED_SEQUENCE
         self._lock = threading.RLock()
         self._next_event_id = 0
         self.last_phase: str | None = None
@@ -903,9 +923,9 @@ class MissionEventEmitter:
                 raise RuntimeError(f"mission event emitter stopped: {self._stop_reason}")
             if self._publishing:
                 raise RuntimeError("mission event publication is already in progress")
-            if self._next_event_id == len(self._SEQUENCE):
+            if self._next_event_id == len(self._sequence):
                 raise RuntimeError("mission event sequence is complete")
-            expected = self._SEQUENCE[self._next_event_id]
+            expected = self._sequence[self._next_event_id]
             if (phase, state) != expected:
                 raise ValueError(
                     "next mission event must be "

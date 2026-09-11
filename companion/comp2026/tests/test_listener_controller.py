@@ -13,7 +13,39 @@ from drone.control.flight_state import (
     RCModeBand,
     SourceIdentity,
 )
-from drone.control.mission_supervisor import AuthorityLost
+from drone.control.mission_supervisor import (
+    FM1,
+    FM2,
+    FM3,
+    AuthorityLost,
+    CommandEnvelope,
+    CommandRejected,
+    MissionSupervisor,
+)
+
+
+def phase_envelope(command: int) -> CommandEnvelope:
+    return CommandEnvelope(200, 190, 1, 191, command, 7, (7.0,) + (0.0,) * 6, 10.0)
+
+
+def test_fm3_admission_requires_successful_fm1_and_fm2_in_order() -> None:
+    """Skipping either earlier phase must not admit the terminal mission."""
+    supervisor = MissionSupervisor(
+        7,
+        admission_check=lambda _envelope: None,
+        attempt_consumer=lambda _attempt_id: None,
+        permission_check=lambda: None,
+    )
+
+    with pytest.raises(CommandRejected, match=f"expected command {FM1}"):
+        supervisor.admit(phase_envelope(FM3))
+
+    assert supervisor.admit(phase_envelope(FM1)) is True
+    supervisor.begin(FM1)
+    supervisor.finish(FM1, "SUCCEEDED")
+
+    with pytest.raises(CommandRejected, match=f"expected command {FM2}"):
+        supervisor.admit(phase_envelope(FM3))
 
 
 class InertVehicle:

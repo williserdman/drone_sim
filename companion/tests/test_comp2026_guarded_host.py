@@ -538,6 +538,14 @@ class HostHarness:
                 phase_observer("FM1", "COMPLETE")
                 phase_observer("FM2", "STARTED")
                 phase_observer("FM2", "COMPLETE")
+                if 31002 in config.enabled_phases:
+                    phase_observer("FM3_3", "STARTED")
+                    phase_observer("FM3_3", "COMPLETE")
+                    phase_observer("FM3_4", "STARTED")
+                    phase_observer("FM3_4", "COMPLETE")
+                    phase_observer("HOME", "STARTED")
+                    phase_observer("HOME", "DISARMED")
+                    phase_observer("HOME", "COMPLETE")
                 if harness.drop_subscriber_after_phase_events:
                     harness.node.publisher_subscribers = list(
                         harness.remaining_subscribers
@@ -1141,6 +1149,47 @@ def test_guarded_host_publishes_exact_qgc_phase_prefix_and_stops_emitter_before_
     assert acknowledged < finished
 
 
+def test_guarded_full_host_flushes_eleven_events_before_terminal_success(
+    tmp_path, monkeypatch
+) -> None:
+    harness = HostHarness()
+    harness.publish_phase_events = True
+    install_harness(monkeypatch, harness, projection(harness=harness, full=True))
+    monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: "lidar")
+
+    assert runtime_node._run_comp2026(config(tmp_path)) == 0
+
+    messages = [
+        event[2]
+        for event in harness.events
+        if isinstance(event, tuple) and event[:2] == ("publish", "/simulation/mission_events")
+    ]
+    assert [(message.event_id, message.phase, message.state) for message in messages] == [
+        (0, "FM1", "STARTED"),
+        (1, "FM1", "COMPLETE"),
+        (2, "FM2", "STARTED"),
+        (3, "FM2", "COMPLETE"),
+        (4, "FM3_3", "STARTED"),
+        (5, "FM3_3", "COMPLETE"),
+        (6, "FM3_4", "STARTED"),
+        (7, "FM3_4", "COMPLETE"),
+        (8, "HOME", "STARTED"),
+        (9, "HOME", "DISARMED"),
+        (10, "HOME", "COMPLETE"),
+    ]
+    acknowledged = next(
+        index
+        for index, event in enumerate(harness.events)
+        if isinstance(event, tuple) and event[:2] == ("publisher-acked", "/simulation/mission_events")
+    )
+    finished = next(
+        index
+        for index, event in enumerate(harness.events)
+        if isinstance(event, tuple) and event[:2] == ("status", "mission-finished")
+    )
+    assert acknowledged < finished
+
+
 def test_mission_event_publication_failure_fails_host_without_retry(
     tmp_path, monkeypatch
 ) -> None:
@@ -1306,7 +1355,7 @@ def test_required_identity_disconnect_blocks_publication_after_admission(
         FakeNode.subscription_endpoint(retained),
         FakeNode.subscription_endpoint("arbitrary_replacement"),
     ]
-    install_harness(monkeypatch, harness, projection(harness=harness))
+    install_harness(monkeypatch, harness, projection(harness=harness, full=True))
     monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: "lidar")
 
     assert runtime_node._run_comp2026(config(tmp_path)) == 1
@@ -1332,7 +1381,7 @@ def test_required_identity_disconnect_makes_ack_flush_fail_closed(
         FakeNode.subscription_endpoint(retained),
         FakeNode.subscription_endpoint("arbitrary_replacement"),
     ]
-    install_harness(monkeypatch, harness, projection(harness=harness))
+    install_harness(monkeypatch, harness, projection(harness=harness, full=True))
     monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: "lidar")
 
     assert runtime_node._run_comp2026(config(tmp_path)) == 1
