@@ -50,8 +50,9 @@ preparation before FM3 admission can succeed. The parent selects a stateful
 three-payload adapter for that full phase set and subscribes to
 `/competition/camera/onboard` RGB8 images before listener construction. Its
 latest-frame source uses the validated scenario geometry and packaged camera
-calibration and mounting; cleanup stops that source before executor shutdown so
-blocked consumers wake while ROS inputs can unwind. Limited mode creates no
+calibration and mounting. Nested camera cleanup stops that source before joining
+its acquisition worker, while the ROS executor remains active; parent cleanup
+idempotently stops it again before executor shutdown. Limited mode creates no
 camera source and waits for no frame. The ordinary and physical factory path
 still completes the entire telemetry cadence proof before installing the
 listener. Mission-ready and QGC admission require a matching

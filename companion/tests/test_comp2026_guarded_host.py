@@ -889,6 +889,8 @@ def test_qgc_host_full_phase_factory_constructs_simulator_camera(
     camera = host.camera_factory(
         config=host.runtime_config, lidar=host.lidar, controller=object()
     )
+    assert host.frame_source is not None
+    assert host.frame_source.ready is True
     observation = camera.cm.capture_observation()
     cleanup = host.close()
 
@@ -981,6 +983,98 @@ def test_qgc_host_cleanup_stops_frame_source_before_destroying_ros_inputs(
     assert first_cleanup.confirmed is True
     assert second_cleanup is first_cleanup
     assert harness.events == events_after_first_close
+
+
+def test_qgc_nested_cleanup_wakes_real_camera_worker_before_parent_ros_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested_source = ROOT / "companion/comp2026/src"
+    monkeypatch.syspath_prepend(str(nested_source))
+    from drone.control.listener import LiveListenerRuntime
+    from drone.sensors.camera._camera_manager import CameraManager
+    from drone.sensors.camera.camera import Camera
+
+    harness = HostHarness()
+    dependencies = harness.dependencies()
+    dependencies.CameraManager = CameraManager
+    dependencies.Camera = Camera
+    selected_config = replace(
+        config(tmp_path), scenario_path=ROOT / "config/scenario.yaml"
+    )
+    clock = runtime_node.SimulationClock()
+    host = runtime_node._Comp2026QgcRosHost(
+        selected_config,
+        projection(harness=harness, full=True),
+        clock,
+        SimpleNamespace(),
+        dependencies,
+        runtime_node._QgcStopCoordinator(clock, threading.Event()),
+        threading.Event(),
+        FakeProtocol(harness.events),
+    )
+    monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: object())
+    host._start_ros()
+    harness.node.callbacks["/simulation/run_state"](
+        SimpleNamespace(run_id=RUN_ID, state=dependencies.RunState.RUNNING)
+    )
+    clock.accept(1_000_000_000)
+    source = host.frame_source
+    assert source is not None
+    original_capture = source.capture_frame
+    capture_calls = 0
+    second_capture_entered = threading.Event()
+
+    def observed_capture(quality: int = 4, deadline_sim_ns: int | None = None):
+        nonlocal capture_calls
+        capture_calls += 1
+        if capture_calls == 2:
+            second_capture_entered.set()
+        return original_capture(quality=quality, deadline_sim_ns=deadline_sim_ns)
+
+    source.capture_frame = observed_capture  # type: ignore[method-assign]
+    harness.node.callbacks["/competition/camera/onboard"](
+        rgb8_image(1_000_000_000)
+    )
+    camera = host.camera_factory()
+    first = camera.cm.capture_observation_bounded(timeout_s=1.0)
+    assert first.metadata.exposure_timestamp_ns == 1_000_000_000
+    assert second_capture_entered.wait(1.0)
+
+    nested_runtime = LiveListenerRuntime(
+        listener=None,
+        owner=None,
+        supervisor=None,
+        controller=SimpleNamespace(vehicle=SimpleNamespace(close=lambda: None)),
+        flight_state=None,
+        tracker=None,
+        lidar=SimpleNamespace(
+            stop=lambda *, timeout_seconds: SimpleNamespace(
+                worker_stopped=True, cleanup_completed=True
+            )
+        ),
+        camera=camera,
+        dropper=SimpleNamespace(cleanup_passive=lambda _timeout: True),
+        cleanup_timeout_s=0.05,
+        diagnostics=lambda _message: None,
+        monitoring_stop=threading.Event(),
+        manage_signals=False,
+    )
+
+    nested_cleanup = nested_runtime.close()
+    assert ("executor-shutdown", 1.0) not in harness.events
+    parent_cleanup = host.close()
+    camera.cm._acquisition_thread.join(1.0)
+
+    assert nested_cleanup.camera_stopped is True
+    assert (
+        runtime_node._qgc_cleanup_failure(
+            SimpleNamespace(cleanup_report=nested_cleanup)
+        )
+        is None
+    )
+    assert camera.cm._acquisition_thread.is_alive() is False
+    assert parent_cleanup.confirmed is True
+    assert host.close() is parent_cleanup
 
 
 def test_guarded_host_publishes_exact_qgc_phase_prefix_and_stops_emitter_before_node(

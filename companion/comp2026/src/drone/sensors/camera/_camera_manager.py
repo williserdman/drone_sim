@@ -544,7 +544,12 @@ class CameraManager:
             thread = self._acquisition_thread
         if thread is None:
             return True
-        thread.join(timeout_s)
+        source_stop = getattr(self.frame_source, "stop", None)
+        try:
+            if callable(source_stop):
+                source_stop("camera acquisition stopped")
+        finally:
+            thread.join(timeout_s)
         return not thread.is_alive()
 
     def _cancel_acquisition(self) -> None:

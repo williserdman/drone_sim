@@ -155,8 +155,10 @@ guarded GUIDED delivery releases Gazebo; ARM and TAKEOFF remain denied until
 complete requested telemetry arrives after that gate on strictly advancing
 shared simulation time. A full-phase staged runtime then performs its bounded
 camera preparation; it never waits for a frame during listener installation.
-Cleanup closes the collector and startup request capability even if QGC sends
-no command.
+During cleanup the camera manager stops an optional frame source before joining
+its acquisition worker, so a blocked source can wake within the bounded cleanup
+window. Cleanup also closes the collector and startup request capability even
+if QGC sends no command.
 
 The stable composition interfaces are:
 

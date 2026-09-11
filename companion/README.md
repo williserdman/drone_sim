@@ -34,12 +34,12 @@ camera from the validated simulator scenario, packaged calibration and mounting,
 and `/competition/camera/onboard` RGB8 input. Camera construction does not wait
 for a frame; bounded precision-readiness preparation remains after the admitted
 FM1's first guarded GUIDED transport enqueue, which is the physics-release
-signal. The parent stops the latest-frame source before shutting down the ROS
-executor so blocked camera acquisition can unwind. It publishes the durable
-command-delivery fact at the accepted public clock timestamp, after which the
-controller requires complete post-gate telemetry on strictly advancing shared
-simulation time before ARM or TAKEOFF. Admission alone never publishes the fact
-or permits those commands.
+signal. Nested camera cleanup stops the latest-frame source before joining its
+acquisition worker; parent cleanup idempotently stops it again before shutting
+down the ROS executor. It publishes the durable command-delivery fact at the
+accepted public clock timestamp, after which the controller requires complete
+post-gate telemetry on strictly advancing shared simulation time before ARM or
+TAKEOFF. Admission alone never publishes the fact or permits those commands.
 
 The parent publishes `/simulation/mission_events` with reliable,
 transient-local depth-100 QoS. This FM1/FM2 composition emits only the ordered
