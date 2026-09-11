@@ -15,9 +15,29 @@ import pytest
 from artifacts.runtime_status import status_document, status_name
 
 import drone_sim_companion.runtime_node as runtime_node
+from drone_sim_companion.comp2026_host import StaleSensorError
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
+ROOT = Path(__file__).parents[2]
+
+
+def rgb8_image(timestamp_ns: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(
+                sec=timestamp_ns // 1_000_000_000,
+                nanosec=timestamp_ns % 1_000_000_000,
+            ),
+            frame_id="camera/onboard",
+        ),
+        width=640,
+        height=480,
+        encoding="rgb8",
+        is_bigendian=False,
+        step=640 * 3,
+        data=bytes((10, 20, 30)) * (640 * 480),
+    )
 
 
 @dataclass
@@ -284,6 +304,7 @@ class HostHarness:
         self.drop_subscriber_after_phase_events = False
         self.remaining_subscribers: list[object] = []
         self.phase_observer: object | None = None
+        self.camera_subscription_expected = False
         self.rclpy = FakeRclpy(self.events)
 
     def dependencies(self) -> object:
@@ -337,11 +358,14 @@ class HostHarness:
                 for event in harness.events
                 if isinstance(event, tuple) and event[0] == "subscribe"
             }
-            assert subscribed == {
+            expected_subscriptions = {
                 "/simulation/run_state",
                 "/clock",
                 "/competition/range/downward",
             }
+            if harness.camera_subscription_expected:
+                expected_subscriptions.add("/competition/camera/onboard")
+            assert subscribed == expected_subscriptions
             assert "executor-spin" in harness.events
             harness.clock_seen.append(harness.timebase.active)
             return harness.runtime.controller
@@ -426,6 +450,7 @@ class HostHarness:
             harness.received_artifacts = artifacts
             assert artifacts is harness.validated_artifacts
             harness.factories = factories
+            harness.camera_subscription_expected = 31002 in config.enabled_phases
             harness.admission = startup_admission_check
             harness.ready_hook = on_listener_ready
             harness.phase_observer = phase_observer
@@ -540,6 +565,7 @@ class HostHarness:
                 TRANSIENT_LOCAL="transient", VOLATILE="volatile"
             ),
             Clock=object,
+            Image=object,
             LaserScan=object,
             MissionEvent=MissionEvent,
             Duration=Duration,
@@ -554,6 +580,8 @@ class HostHarness:
             QgcFm2PayloadAdapter=Fm2PayloadAdapter,
             QgcCompetitionPayloadAdapter=CompetitionPayloadAdapter,
             start_repl=start_repl,
+            CameraManager=object,
+            Camera=object,
             timebase=self.timebase,
             thread_factory=threading.Thread,
             wall_now=runtime_node.time.monotonic,
@@ -765,8 +793,6 @@ def test_guarded_host_composes_only_qgc_fm1_fm2_after_ros_is_listening(
     assert guided_index < harness.events.index("telemetry-verified")
     assert harness.events.index("telemetry-verified") < harness.events.index("arm-output")
     assert harness.vehicle.mode_writes == []
-    with pytest.raises(RuntimeError, match="FM3 camera construction is disabled"):
-        harness.factories.camera_factory()
     assert "nested-cleanup" in harness.events
     assert harness.events.index("nested-cleanup") < harness.events.index("destroy-node")
     finished = next(
@@ -804,6 +830,157 @@ def test_guarded_host_wires_one_full_payload_adapter_with_attachment_support(
     assert harness.factories is not None
     assert harness.factories.supports_attachment is True
     assert harness.payload_ids == [2, 3, 4]
+
+
+def test_qgc_host_subscribes_to_onboard_images_before_listener_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = HostHarness(heartbeat=0.5)
+    install_harness(monkeypatch, harness, projection(harness=harness, full=True))
+    monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: "lidar")
+
+    assert runtime_node._run_comp2026(config(tmp_path)) == 0
+
+    subscription = ("subscribe", "/competition/camera/onboard")
+    controller_index = next(
+        index
+        for index, event in enumerate(harness.events)
+        if isinstance(event, tuple) and event[0] == "controller"
+    )
+    assert harness.events.index(subscription) < controller_index
+
+
+def test_qgc_host_full_phase_factory_constructs_simulator_camera(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested_source = ROOT / "companion/comp2026/src"
+    monkeypatch.syspath_prepend(str(nested_source))
+    from drone.sensors.camera._camera_manager import CameraManager
+    from drone.sensors.camera.camera import Camera
+
+    harness = HostHarness()
+    dependencies = harness.dependencies()
+    dependencies.CameraManager = CameraManager
+    dependencies.Camera = Camera
+    selected_config = replace(
+        config(tmp_path), scenario_path=ROOT / "config/scenario.yaml"
+    )
+    clock = runtime_node.SimulationClock()
+    host = runtime_node._Comp2026QgcRosHost(
+        selected_config,
+        projection(harness=harness, full=True),
+        clock,
+        SimpleNamespace(),
+        dependencies,
+        runtime_node._QgcStopCoordinator(clock, threading.Event()),
+        threading.Event(),
+        FakeProtocol(harness.events),
+    )
+    monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: object())
+
+    host._start_ros()
+    harness.node.callbacks["/simulation/run_state"](
+        SimpleNamespace(run_id=RUN_ID, state=dependencies.RunState.RUNNING)
+    )
+    clock.accept(1_000_000_000)
+    harness.node.callbacks["/competition/camera/onboard"](
+        rgb8_image(1_000_000_000)
+    )
+    camera = host.camera_factory(
+        config=host.runtime_config, lidar=host.lidar, controller=object()
+    )
+    observation = camera.cm.capture_observation()
+    cleanup = host.close()
+
+    assert type(camera) is Camera
+    assert camera.cm.frame_source is host.frame_source
+    assert tuple(observation.frame[0, 0]) == (30, 20, 10)
+    assert observation.metadata.exposure_timestamp_ns == 1_000_000_000
+    assert cleanup.confirmed is True
+
+
+def test_qgc_host_limited_factory_does_not_require_camera_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = HostHarness(heartbeat=0.5)
+    dependencies = harness.dependencies()
+    dependencies.CameraManager = lambda **_kwargs: pytest.fail(
+        "limited mode constructed a camera manager"
+    )
+    dependencies.Camera = lambda *_args, **_kwargs: pytest.fail(
+        "limited mode constructed a camera"
+    )
+    install_harness(monkeypatch, harness, projection(harness=harness))
+    monkeypatch.setattr(
+        runtime_node, "_load_qgc_live_dependencies", lambda: dependencies
+    )
+    monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: "lidar")
+
+    assert runtime_node._run_comp2026(config(tmp_path)) == 0
+    assert ("subscribe", "/competition/camera/onboard") not in harness.events
+
+
+def test_qgc_host_cleanup_stops_frame_source_before_destroying_ros_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = HostHarness()
+    clock = runtime_node.SimulationClock()
+    host = runtime_node._Comp2026QgcRosHost(
+        config(tmp_path),
+        projection(harness=harness, full=True),
+        clock,
+        SimpleNamespace(),
+        harness.dependencies(),
+        runtime_node._QgcStopCoordinator(clock, threading.Event()),
+        threading.Event(),
+        FakeProtocol(harness.events),
+    )
+    monkeypatch.setattr(runtime_node, "create_comp2026_lidar", lambda _clock: object())
+    host._start_ros()
+    source = host.frame_source
+    assert source is not None
+    original_stop = source.stop
+
+    def record_stop(reason: str) -> None:
+        harness.events.append("frame-source-stop")
+        original_stop(reason)
+
+    source.stop = record_stop  # type: ignore[method-assign]
+    capture_result: list[BaseException] = []
+    capture_started = threading.Event()
+    capture_finished = threading.Event()
+
+    def capture() -> None:
+        capture_started.set()
+        try:
+            source.capture_frame()
+        except BaseException as error:
+            capture_result.append(error)
+        finally:
+            capture_finished.set()
+
+    consumer = threading.Thread(target=capture)
+    consumer.start()
+    assert capture_started.wait(1.0)
+    assert capture_finished.wait(0.05) is False
+
+    first_cleanup = host.close()
+    consumer.join(timeout=1.0)
+    events_after_first_close = list(harness.events)
+    second_cleanup = host.close()
+
+    assert consumer.is_alive() is False
+    assert len(capture_result) == 1
+    assert isinstance(capture_result[0], StaleSensorError)
+    assert harness.events.index("frame-source-stop") < harness.events.index(
+        ("executor-shutdown", 1.0)
+    )
+    assert harness.events.index("frame-source-stop") < harness.events.index(
+        ("destroy-subscription", "/competition/camera/onboard")
+    )
+    assert first_cleanup.confirmed is True
+    assert second_cleanup is first_cleanup
+    assert harness.events == events_after_first_close
 
 
 def test_guarded_host_publishes_exact_qgc_phase_prefix_and_stops_emitter_before_node(

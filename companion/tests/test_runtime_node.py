@@ -492,7 +492,7 @@ def install_comp2026_runtime_fakes(
                     encoding="rgb8",
                     is_bigendian=False,
                     step=640 * 3,
-                    data=b"",
+                    data=bytes((10, 20, 30)) * (640 * 480),
                 )
             )
             subscriptions["/competition/range/downward"](

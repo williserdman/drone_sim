@@ -29,13 +29,17 @@ and reaches listener readiness without waiting for cadence from paused physics.
 It sends no automatic first command. FM1 uses the nested controller and ROS
 range adapter. Limited FM1/FM2 mode keeps the marker-2 release adapter and
 reports no attachment support. Full mode uses one confirmed payload adapter for
-markers 2, 3, and 4 and reports attachment support; FM3 camera construction
-remains disabled. The admitted FM1's
-first guarded GUIDED transport enqueue is the release signal. The parent
-publishes the durable command-delivery fact at the accepted public clock
-timestamp, after which the controller requires complete post-gate telemetry on
-strictly advancing shared simulation time before ARM or TAKEOFF. Admission
-alone never publishes the fact or permits those commands.
+markers 2, 3, and 4, reports attachment support, and constructs the nested FM3
+camera from the validated simulator scenario, packaged calibration and mounting,
+and `/competition/camera/onboard` RGB8 input. Camera construction does not wait
+for a frame; bounded precision-readiness preparation remains after the admitted
+FM1's first guarded GUIDED transport enqueue, which is the physics-release
+signal. The parent stops the latest-frame source before shutting down the ROS
+executor so blocked camera acquisition can unwind. It publishes the durable
+command-delivery fact at the accepted public clock timestamp, after which the
+controller requires complete post-gate telemetry on strictly advancing shared
+simulation time before ARM or TAKEOFF. Admission alone never publishes the fact
+or permits those commands.
 
 The parent publishes `/simulation/mission_events` with reliable,
 transient-local depth-100 QoS. This FM1/FM2 composition emits only the ordered
@@ -128,9 +132,9 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 
 - Mission decisions use accepted simulation time. Loss of `/clock` prevents new
   simulated decisions; wall time only bounds infrastructure and computation.
-- Full QGC mode advertises payload attachment support, but camera construction
-  remains disabled. Camera policies and adapters elsewhere in the source do not
-  make FM3 runnable yet.
+- Full QGC mode supplies the validated simulator camera and attachment-capable
+  payload adapter to FM3. This source composition is not evidence of an image
+  build, integrated flight, score, or artifact validity.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.

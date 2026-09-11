@@ -187,6 +187,17 @@ def test_bounded_simulator_camera_shutdown_cannot_return_the_last_observation(
     assert "worker failed" in str(results[0])
 
 
+def test_ros_frame_source_stop_is_idempotent() -> None:
+    source = RosFrameSource(width_px=640, height_px=480)
+    source.accept_image(_image(1_000_000_000))
+
+    source.stop("first shutdown")
+    source.stop("later shutdown")
+
+    with pytest.raises(RuntimeError, match="first shutdown"):
+        source.capture_frame()
+
+
 @pytest.mark.parametrize(
     ("section", "field", "replacement"),
     [

@@ -20,10 +20,12 @@ Aircraft flight is disabled. The authority, recovery, sensor, offline
 preparation, and live runtime contracts do not form a deployment by themselves.
 The parent `comp2026_auto` entry in
 `../src/drone_sim_companion/runtime_node.py` now provides the guarded QGC host
-for the FM1/FM2 simulator composition. That host has source and offline test
-evidence only. No matching current image or integrated QGC/SITL result exists,
-and no verified aircraft configuration or supported aircraft shell invocation
-is available in this checkout.
+for both the limited FM1/FM2 and validated full-phase simulator compositions.
+The full composition supplies the nested camera from the parent's ROS RGB8
+frame source and fixed simulator calibration/mounting. That host has source and
+offline test evidence only. No matching current image or integrated QGC/SITL
+result exists, and no verified aircraft configuration or supported aircraft
+shell invocation is available in this checkout.
 
 The settled programmatic entry point is
 `start_repl(files, runtime_config, *, factories=None, diagnostics=None,

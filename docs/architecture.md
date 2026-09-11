@@ -11,8 +11,8 @@ sealed listener artifact snapshot to the nested runtime, and makes the nested
 controller the sole flight-command writer. The parent owns ROS simulation input,
 one payload client, lifecycle evidence, interruption, and bounded producer
 cleanup. Limited mode exposes only marker 2 release. Full mode exposes the
-confirmed marker 2, 3, and 4 sequence with attachment support. It never issues
-an automatic first command; FM3 camera construction remains disabled. Parent
+confirmed marker 2, 3, and 4 sequence with attachment support and the validated
+simulator camera. It never issues an automatic first command. Parent
 build source targets official ArduCopter 4.5.7 commit
 `2a3dc4b7bf2507120f7378a7b2fde73185e0c325`, matching the reviewed decoder's
 firmware contract. No parent image or integrated run has validated that source
@@ -47,10 +47,14 @@ version, and leaves cadence collection active. A full-phase staged composition
 constructs the camera without acquiring a frame; after the first guarded GUIDED
 delivery opens public simulation progress, it completes bounded camera
 preparation before FM3 admission can succeed. The parent selects a stateful
-three-payload adapter for that full phase set, although its camera factory is
-still disabled. The ordinary and physical factory path still completes the
-entire telemetry cadence proof before installing the listener. Mission-ready
-and QGC admission require a matching
+three-payload adapter for that full phase set and subscribes to
+`/competition/camera/onboard` RGB8 images before listener construction. Its
+latest-frame source uses the validated scenario geometry and packaged camera
+calibration and mounting; cleanup stops that source before executor shutdown so
+blocked consumers wake while ROS inputs can unwind. Limited mode creates no
+camera source and waits for no frame. The ordinary and physical factory path
+still completes the entire telemetry cadence proof before installing the
+listener. Mission-ready and QGC admission require a matching
 `RUNNING` state, an accepted public clock, a live executor, an actual connected
 vehicle heartbeat within the tighter of the connection and flight-profile
 freshness bounds, and literal armability. Finalization requests, wall deadline,

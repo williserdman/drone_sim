@@ -232,7 +232,8 @@ class RosFrameSource:
 
     def stop(self, reason: str) -> None:
         with self._condition:
-            self._stop_reason = reason or "shutdown"
+            if self._stop_reason is None:
+                self._stop_reason = reason or "shutdown"
             self._latest_image = None
             self._latest_timestamp_ns = None
             self._condition.notify_all()

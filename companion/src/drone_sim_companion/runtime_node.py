@@ -1089,6 +1089,8 @@ def _load_qgc_live_dependencies() -> Any:
         start_repl,
     )
     from drone.control.mission_supervisor import CommandRejected
+    from drone.sensors.camera._camera_manager import CameraManager
+    from drone.sensors.camera.camera import Camera
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.duration import Duration
     from rclpy.executors import MultiThreadedExecutor
@@ -1096,7 +1098,7 @@ def _load_qgc_live_dependencies() -> Any:
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from rclpy.signals import SignalHandlerOptions
     from rosgraph_msgs.msg import Clock
-    from sensor_msgs.msg import LaserScan
+    from sensor_msgs.msg import Image, LaserScan
     from simulation_interfaces.msg import MissionEvent, RunState
     from simulation_interfaces.srv import PayloadCommand
 
@@ -1116,6 +1118,7 @@ def _load_qgc_live_dependencies() -> Any:
         QoSProfile=QoSProfile,
         ReliabilityPolicy=ReliabilityPolicy,
         Clock=Clock,
+        Image=Image,
         LaserScan=LaserScan,
         MissionEvent=MissionEvent,
         RunState=RunState,
@@ -1124,6 +1127,8 @@ def _load_qgc_live_dependencies() -> Any:
         QgcRosLidarAdapter=QgcRosLidarAdapter,
         QgcCompetitionPayloadAdapter=QgcCompetitionPayloadAdapter,
         QgcFm2PayloadAdapter=QgcFm2PayloadAdapter,
+        CameraManager=CameraManager,
+        Camera=Camera,
         thread_factory=threading.Thread,
         wall_now=time.monotonic,
     )
@@ -1297,11 +1302,14 @@ class _Comp2026QgcRosHost:
         self.control_thread: threading.Thread | None = None
         self._control_thread_started = False
         self._control_stop = threading.Event()
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_result: _QgcHostCleanup | None = None
         self.subscriptions: list[object] = []
         self.mission_publisher: object | None = None
         self.mission_event_emitter: MissionEventEmitter | None = None
         self.payload_client: _RosPayloadClient | None = None
         self.lidar: RosLidar | None = None
+        self.frame_source: RosFrameSource | None = None
         self.range_ingress = QgcRangeIngress()
         self._controller: object | None = None
         self._controller_handed_off = False
@@ -1407,6 +1415,12 @@ class _Comp2026QgcRosHost:
             )
         )
 
+    def _image_callback(self, message: object) -> None:
+        source = self.frame_source
+        if not self._mission_running or source is None:
+            return
+        self._guard_input("image", lambda: source.accept_image(message))
+
     def _publish_mission_event(self, record: MissionEventRecord) -> None:
         if self.mission_publisher is None:
             raise RuntimeError("mission event publisher is unavailable")
@@ -1467,6 +1481,7 @@ class _Comp2026QgcRosHost:
         self.node = deps.Node("drone_sim_companion", parameter_overrides=[])
         state_group = deps.MutuallyExclusiveCallbackGroup()
         range_group = deps.MutuallyExclusiveCallbackGroup()
+        image_group = deps.MutuallyExclusiveCallbackGroup()
         service_group = deps.MutuallyExclusiveCallbackGroup()
         self.mission_publisher = self.node.create_publisher(
             deps.MissionEvent,
@@ -1489,6 +1504,9 @@ class _Comp2026QgcRosHost:
             response_timeout_seconds=self.projection.payload_delay_wall_timeout_s,  # type: ignore[attr-defined]
         )
         self.lidar = create_comp2026_lidar(self.clock)
+        full_phase = 31002 in self.runtime_config.enabled_phases
+        if full_phase:
+            self.frame_source = RosFrameSource(width_px=640, height_px=480)
         self.subscriptions = [
             self.node.create_subscription(
                 deps.RunState,
@@ -1512,7 +1530,17 @@ class _Comp2026QgcRosHost:
                 callback_group=range_group,
             ),
         ]
-        self.executor = deps.MultiThreadedExecutor(num_threads=3)
+        if full_phase:
+            self.subscriptions.append(
+                self.node.create_subscription(
+                    deps.Image,
+                    "/competition/camera/onboard",
+                    self._image_callback,
+                    self._qos(1),
+                    callback_group=image_group,
+                )
+            )
+        self.executor = deps.MultiThreadedExecutor(num_threads=4 if full_phase else 3)
         self.executor.add_node(self.node)
         executor_entered = threading.Event()
 
@@ -1698,9 +1726,22 @@ class _Comp2026QgcRosHost:
         )
         return self.dependencies.QgcFm2PayloadAdapter(dropper, aruco_id=2)
 
-    @staticmethod
-    def camera_factory(**_kwargs: object) -> object:
-        raise RuntimeError("FM3 camera construction is disabled for this composition")
+    def camera_factory(self, **_kwargs: object) -> object:
+        if 31002 not in self.runtime_config.enabled_phases:
+            raise RuntimeError("FM3 camera is unavailable in limited QGC mode")
+        if self.frame_source is None:
+            raise RuntimeError(
+                "ROS camera input was not established before listener construction"
+            )
+        if self.config.scenario_path is None:
+            raise RuntimeError("resolved simulator camera scenario is unavailable")
+        return _create_simulator_camera(
+            self.dependencies.CameraManager,
+            self.dependencies.Camera,
+            self.frame_source,
+            clock=self.clock,
+            scenario_path=self.config.scenario_path,
+        )
 
     def factories(self) -> object:
         supports_attachment = 31002 in self.runtime_config.enabled_phases
@@ -1758,6 +1799,12 @@ class _Comp2026QgcRosHost:
         self.admission.set()
 
     def close(self) -> _QgcHostCleanup:
+        with self._cleanup_lock:
+            if self._cleanup_result is None:
+                self._cleanup_result = self._close_once()
+            return self._cleanup_result
+
+    def _close_once(self) -> _QgcHostCleanup:
         """Bound ROS callbacks and producers after nested cleanup has completed."""
 
         self._callbacks_active.clear()
@@ -1806,6 +1853,11 @@ class _Comp2026QgcRosHost:
                     record(RuntimeError("host control monitor did not stop"))
             except BaseException as error:
                 control_stopped = False
+                record(error)
+        if self.frame_source is not None:
+            try:
+                self.frame_source.stop("QGC host cleanup")
+            except BaseException as error:
                 record(error)
         if self.executor is not None:
             try:
