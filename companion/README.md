@@ -74,8 +74,11 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   holds the current position in GUIDED while reacquiring, and permits one
   return to the 4.572 m search hover before failing closed. It validates the
   live flight-controller profile before the first LAND and never disarms or
-  requests attachment without confirmed touchdown. The exact flight settings
-  are owned by [descent.parm](../ardupilot_sitl/params/descent.parm).
+  requests attachment without confirmed touchdown. Below the configured
+  `PLND_ALT_MIN` of 0.75 m, LAND continues without requiring marker visibility;
+  this avoids treating the marker's normal near-ground exit from the camera
+  view as a recovery event. The exact flight settings are owned by
+  [descent.parm](../ardupilot_sitl/params/descent.parm).
 - The nested camera API returns the marker vector and source frame timestamp as
   one observation. `comp2026_host.py` supplies bounded, strictly newer frames;
   camera silence therefore becomes an unhealthy observation instead of

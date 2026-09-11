@@ -118,9 +118,12 @@ freshness evidence. The hosted mission owns the fixed earth-frame target anchor,
 measurement acceptance, LAND/GUIDED hold transitions, and one bounded return to
 the search hover. ArduPilot owns stabilization and descent execution, but only
 accepted observations reach its `LANDING_TARGET` input. No target messages are
-sent during the GUIDED hold. The parameter overlay remains the durable source
-of flight-controller settings, and the companion reads those live settings
-before entering the first precision LAND.
+sent during the GUIDED hold. Once LiDAR reports an AGL at or below the overlay's
+`PLND_ALT_MIN`, the companion keeps LAND active and no longer requires marker
+visibility; ArduPilot then owns the final descent and touchdown decision. The
+parameter overlay remains the durable source of flight-controller settings, and
+the companion reads those live settings before entering the first precision
+LAND.
 
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and
