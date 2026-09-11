@@ -1159,6 +1159,10 @@ def test_queued_abort_publishes_terminal_phase_status_before_recovery_output():
 
 def test_attempt_deadline_continues_while_idle_after_fm2():
     now = [10.0]
+    shared_clock = SimpleNamespace(
+        now=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
     listener, transport, commands = installed_listener()
     calls = []
     owner = CommandExecutionOwner(
@@ -1174,10 +1178,11 @@ def test_attempt_deadline_continues_while_idle_after_fm2():
         terminal_ack=listener.acknowledge_terminal,
         recovery=lambda: calls.append("recovery"),
     )
-    transport.deliver(Packet(command=31000))
-    assert owner.process_next(timeout_s=0.0) == "SUCCEEDED"
-    transport.deliver(Packet(command=31001))
-    assert owner.process_next(timeout_s=0.0) == "SUCCEEDED"
+    with timebase.configured(shared_clock):
+        transport.deliver(Packet(command=31000))
+        assert owner.process_next(timeout_s=0.0) == "SUCCEEDED"
+        transport.deliver(Packet(command=31001))
+        assert owner.process_next(timeout_s=0.0) == "SUCCEEDED"
 
     now[0] = 610.0
     assert owner.process_next(timeout_s=0.0) == "ABORTED"

@@ -69,13 +69,14 @@ parent binds it to a single `/simulation/mission_events` publisher with reliable
 transient-local depth-100 QoS. Limited mode emits the ordered FM1/FM2 prefix with
 IDs 0 through 3. Full mode emits the complete eleven-event competition sequence,
 ending with HOME STARTED, HOME DISARMED, and HOME COMPLETE at IDs 8 through 10.
-FM3 completion follows each confirmed payload cycle. HOME DISARMED follows
-confirmed disarm; HOME COMPLETE follows another fresh landed, disarmed,
-original-home telemetry interval. That normal FM3 landing records `HOME_LANDED`
-and is the terminal recovery result, so the owner does not issue a second return
-home. The emitter serializes clock reads, publication, failure latching, and
-shutdown. Publication failure blocks later successful events and a clean host
-lifecycle result.
+Full-mode FM2 and both FM3 payload completions follow confirmed release plus the
+shared simulation-time physical-evidence interval; permission and the mission
+deadline bound that wait. HOME DISARMED follows confirmed disarm; HOME COMPLETE
+follows another fresh landed, disarmed, original-home telemetry interval. That
+normal FM3 landing records `HOME_LANDED` and is the terminal recovery result, so
+the owner does not issue a second return home. The emitter serializes clock
+reads, publication, failure latching, and shutdown. Publication failure blocks
+later successful events and a clean host lifecycle result.
 
 Mission-event admission, publication, and final delivery confirmation require
 both expected durable consumers. The ROS graph must report root-namespace

@@ -17,6 +17,7 @@ import pytest
 from pymavlink import mavutil
 
 from drone import timebase
+from drone.auto_attempt import PHYSICAL_EVIDENCE_INTERVAL_SECONDS
 from drone.control import drone_control as drone_control_module
 from drone.control import mission_supervisor as mission_supervisor_module
 from dronekit.mavlink import MAVWriter
@@ -1910,22 +1911,39 @@ def test_full_mode_emits_eleven_events_and_uses_fm3_home_as_recovery(tmp_path):
     """Missing an FM3 or HOME boundary would leave official evidence incomplete."""
     phases = []
     runtime, rig, prepared, _config, diagnostics = build_factory_runtime(
-        tmp_path, wm_count=1, phase_observer=lambda phase, state: phases.append((phase, state))
+        tmp_path,
+        wm_count=1,
+        phase_observer=lambda phase, state: phases.append(
+            (phase, state, rig.clock.monotonic())
+        ),
     )
 
     with timebase.configured(rig.clock):
-        for command in (FM1, FM2):
-            rig.transport.deliver(Packet(command, attempt_id=prepared.attempt_id))
-            assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+        rig.transport.deliver(Packet(FM1, attempt_id=prepared.attempt_id))
+        assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+
+    releases = []
+    delegate = runtime.dropper._delegate
+    assert delegate is not None
+    original_drop = delegate.drop
+
+    def record_release():
+        original_drop()
+        releases.append(rig.clock.monotonic())
+
+    delegate.drop = record_release
+    with timebase.configured(rig.clock):
+        rig.transport.deliver(Packet(FM2, attempt_id=prepared.attempt_id))
+        assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
     assert runtime.supervisor.terminal_result is None
     assert runtime.supervisor.recovery_outcome is None
-    assert not any(phase == "HOME" for phase, _state in phases)
+    assert not any(phase == "HOME" for phase, _state, _at in phases)
 
     with timebase.configured(rig.clock):
         rig.transport.deliver(Packet(FM3, attempt_id=prepared.attempt_id))
         assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
 
-    assert phases == [
+    assert [(phase, state) for phase, state, _at in phases] == [
         ("FM1", "STARTED"),
         ("FM1", "COMPLETE"),
         ("FM2", "STARTED"),
@@ -1940,6 +1958,17 @@ def test_full_mode_emits_eleven_events_and_uses_fm3_home_as_recovery(tmp_path):
     ]
     assert runtime.supervisor.terminal_result == "SUCCEEDED"
     assert runtime.supervisor.recovery_outcome == "HOME_LANDED"
+    completed_at = {
+        phase: observed_at
+        for phase, state, observed_at in phases
+        if state == "COMPLETE" and phase in {"FM2", "FM3_3", "FM3_4"}
+    }
+    assert len(releases) == 3
+    assert all(
+        completed_at[phase] - released_at
+        >= PHYSICAL_EVIDENCE_INTERVAL_SECONDS - 1e-9
+        for phase, released_at in zip(("FM2", "FM3_3", "FM3_4"), releases)
+    )
     assert [event for event in rig.events if event[0] == "payload-attached"] == [
         ("payload-attached", 3),
         ("payload-attached", 4),
@@ -1949,6 +1978,58 @@ def test_full_mode_emits_eleven_events_and_uses_fm3_home_as_recovery(tmp_path):
         for event in rig.events
         if event[:3] == ("waypoint", 410000000, -810000000)
     ] == [("waypoint", 410000000, -810000000, 260.0)]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ("clock", "deadline", "permission", "evidence_wait"),
+)
+def test_full_fm2_evidence_wait_failure_withholds_complete_and_success(
+    tmp_path, failure
+):
+    """A failed post-release interval cannot certify full-mode FM2."""
+    phases = []
+    runtime, rig, prepared, _config, diagnostics = build_factory_runtime(
+        tmp_path,
+        wm_count=1,
+        phase_observer=lambda phase, state: phases.append((phase, state)),
+    )
+    with timebase.configured(rig.clock):
+        rig.transport.deliver(Packet(FM1, attempt_id=prepared.attempt_id))
+        assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+
+    delegate = runtime.dropper._delegate
+    assert delegate is not None
+    original_drop = delegate.drop
+
+    def fail_after_release():
+        original_drop()
+        if failure == "clock":
+            runtime.owner._clock = lambda: float("nan")
+        elif failure == "deadline":
+            runtime.owner._deadline = (
+                rig.clock.monotonic() + PHYSICAL_EVIDENCE_INTERVAL_SECONDS / 2
+            )
+        elif failure == "permission":
+            runtime.supervisor._permission_check = lambda: (_ for _ in ()).throw(
+                AuthorityLost("test permission lost")
+            )
+        else:
+            rig.clock.sleep = lambda _seconds: (_ for _ in ()).throw(
+                RuntimeError("test evidence sleep failed")
+            )
+
+    delegate.drop = fail_after_release
+    with timebase.configured(rig.clock):
+        rig.transport.deliver(Packet(FM2, attempt_id=prepared.attempt_id))
+        try:
+            result = runtime.owner.process_next(timeout_s=0)
+        except (AuthorityLost, timebase.ClockError):
+            result = "FAILED"
+
+    assert result != "SUCCEEDED"
+    assert ("FM2", "COMPLETE") not in phases
+    assert runtime.supervisor.terminal_result != "SUCCEEDED"
 
 
 @pytest.mark.parametrize(

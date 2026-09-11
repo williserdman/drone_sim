@@ -20,6 +20,7 @@ from types import MappingProxyType
 from typing import Callable, Mapping
 
 from .. import timebase
+from ..auto_attempt import PHYSICAL_EVIDENCE_INTERVAL_SECONDS
 from .attempt_setup import (
     DeploymentProfile,
     PreparedAttempt,
@@ -1197,6 +1198,11 @@ class CommandExecutionOwner:
                     handler_result = handler(envelope)
             if handler_result is not True:
                 raise RuntimeError("command handler must return literal True")
+            if (
+                envelope.command == FM2
+                and self.supervisor.enabled_phases[-1] == FM3
+            ):
+                self.await_physical_evidence()
             self._require_before_deadline()
             if (
                 envelope.command == FM2
@@ -1340,6 +1346,19 @@ class CommandExecutionOwner:
             self._phase_observer(phase, state)
         except BaseException as error:
             raise _PhaseObserverFailure(error) from error
+
+    def await_physical_evidence(self) -> None:
+        """Hold one shared-time interval before certifying payload completion."""
+        if self._mission_start is None or self._deadline is None:
+            raise RuntimeError("physical evidence wait requires an active attempt")
+        with timebase._deadline(self._mission_start, self._attempt_timeout_s):
+            self._require_before_deadline()
+            self.supervisor.check_permission()
+            self._require_before_deadline()
+            timebase.sleep(PHYSICAL_EVIDENCE_INTERVAL_SECONDS)
+            self._require_before_deadline()
+            self.supervisor.check_permission()
+            self._require_before_deadline()
 
     def _recover_once(self) -> None:
         if self._recovery_started:
@@ -2400,6 +2419,7 @@ def _build_live_listener_validated(
                 precision_policy=config.precision_policy,
             ) is not True:
                 return False
+            owner.await_physical_evidence()
             owner.observe_phase(phase, "COMPLETE")
         home = controller.mission_home
         if not isinstance(home, MissionHome):

@@ -210,15 +210,18 @@ supply deployment values.
 `phase_observer(phase, state)` is also optional and must return normally. The
 execution owner emits FM1 and FM2 boundaries. Full-mode FM3 emits separate
 STARTED/COMPLETE boundaries around the WA/marker-3 and WM1/marker-4 payload
-cycles, then emits HOME STARTED before return transit. HOME DISARMED follows
+cycles, then emits HOME STARTED before return transit. Full-mode FM2 and both
+FM3 payload COMPLETE boundaries require the shared simulation-time
+physical-evidence interval after confirmed release; permission and the mission
+deadline remain valid throughout the bounded wait. HOME DISARMED follows
 confirmed disarm. HOME COMPLETE follows a strictly newer landed, disarmed, and
-original-home telemetry interval, which also records `HOME_LANDED` as the
-normal successful terminal recovery outcome. Full mode does not issue a second
+original-home telemetry interval, which also records `HOME_LANDED` as the normal
+successful terminal recovery outcome. Full mode does not issue a second
 return-home operation. Limited final FM2 retains its existing recovery before
 FM2 COMPLETE. Failed, aborted, rejected, replayed, waypoint, and failure-recovery
-work emits no later COMPLETE event. An observer exception preserves terminal
-ACK and queue cleanup, runs at most one recovery, and propagates as an
-infrastructure failure.
+work emits no later COMPLETE event. An observer exception preserves terminal ACK
+and queue cleanup, runs at most one recovery, and propagates as an infrastructure
+failure.
 
 Live cleanup treats telemetry, LiDAR, camera, payload, vehicle-worker, attempt
 descriptor, and diagnostic failures as independent facts. A `BaseException`

@@ -48,6 +48,20 @@ def test_fm3_admission_requires_successful_fm1_and_fm2_in_order() -> None:
         supervisor.admit(phase_envelope(FM3))
 
 
+def test_enabled_phase_error_names_both_supported_configurations() -> None:
+    with pytest.raises(
+        ValueError,
+        match="enabled phases must be FM1/FM2 or FM1/FM2/FM3",
+    ):
+        MissionSupervisor(
+            7,
+            admission_check=lambda _envelope: None,
+            attempt_consumer=lambda _attempt_id: None,
+            permission_check=lambda: None,
+            enabled_phases=(FM1,),
+        )
+
+
 class InertVehicle:
     def __init__(self):
         self.listeners = {}

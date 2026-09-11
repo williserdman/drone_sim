@@ -46,12 +46,14 @@ transient-local depth-100 QoS. Limited mode emits the ordered FM1/FM2 prefix
 with IDs 0 through 3. Full mode continues with `FM3_3 STARTED/COMPLETE`,
 `FM3_4 STARTED/COMPLETE`, and `HOME STARTED/DISARMED/COMPLETE`, ending at ID 10.
 A STARTED event follows command execution admission and the deadline check.
-COMPLETE follows confirmed phase work. Full-mode HOME DISARMED follows confirmed
-disarm, and HOME COMPLETE requires another fresh landed, disarmed, original-home
-telemetry interval. Limited final FM2 still completes only after confirmed
-`HOME_LANDED` recovery. Rejection, replay, failure, abort, waypoint updates, and
-failure recovery do not invent successful events. Publisher failure is terminal
-for the host and is never retried.
+Full-mode FM2 and each FM3 payload COMPLETE follow confirmed phase work plus the
+shared simulation-time physical-evidence interval, with permission and the
+mission deadline checked around that wait. Full-mode HOME DISARMED follows
+confirmed disarm, and HOME COMPLETE requires another fresh landed, disarmed,
+original-home telemetry interval. Limited final FM2 still completes only after
+confirmed `HOME_LANDED` recovery. Rejection, replay, failure, abort, waypoint
+updates, and failure recovery do not invent successful events. Publisher failure
+is terminal for the host and is never retried.
 
 The host requires both required mission-event consumers before opening
 admission: root-namespace `drone_sim_scorekeeper` and the root-namespace

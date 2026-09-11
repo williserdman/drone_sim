@@ -624,7 +624,7 @@ class MissionSupervisor:
         if not isinstance(enabled_phases, tuple):
             raise TypeError("enabled phases must be an immutable tuple")
         if enabled_phases not in (PHASE_COMMANDS[:2], PHASE_COMMANDS):
-            raise ValueError("enabled phases must be the supported FM1/FM2 prefix")
+            raise ValueError("enabled phases must be FM1/FM2 or FM1/FM2/FM3")
 
         self.attempt_id = attempt_id
         self._enabled_phases = enabled_phases
