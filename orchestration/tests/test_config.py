@@ -476,10 +476,13 @@ def test_qgc_snapshot_never_creates_attempt_state_artifacts(tmp_path):
     assert not any("ledger" in name or name.endswith(".lock") for name in names)
 
 
-def test_historical_competition_templates_are_quarantined_without_qgc():
+def test_competition_templates_without_qgc_select_automatic_path():
     for template in (DEFAULT_TEMPLATE, REALTIME_TEMPLATE):
-        with pytest.raises(ValueError, match="comp2026_auto requires QGC"):
-            resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+        resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+        assert resolved.mission == "comp2026_auto"
+        assert resolved.qgc is None
+        assert resolved.competition is not None
 
 
 def test_qgc_sources_reject_non_object_payloads():
@@ -551,15 +554,14 @@ def test_config_schemas_accept_phase3_qgc_bundle(schema_name):
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
-def test_comp2026_schema_requires_qgc_bundle(schema_name):
+def test_comp2026_schema_accepts_automatic_run_without_qgc_bundle(schema_name):
     document = (
         _competition_document()
         if schema_name == "run-template.schema.json"
         else _resolved_document()
     )
 
-    with pytest.raises(ValidationError):
-        _load_validator(schema_name).validate(document)
+    _load_validator(schema_name).validate(document)
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
@@ -1080,11 +1082,13 @@ def test_competition_sources_must_be_regular_non_symlink_files(tmp_path):
         resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
 
 
-def test_resolver_rejects_comp2026_without_qgc_inputs(tmp_path):
+def test_resolver_accepts_comp2026_without_qgc_inputs(tmp_path):
     template = _write_competition_template(tmp_path, include_qgc=False)
 
-    with pytest.raises(ValueError, match="comp2026_auto.*QGC"):
-        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+    assert resolved.mission == "comp2026_auto"
+    assert resolved.qgc is None
 
 
 def test_resolver_rejects_qgc_inputs_outside_phase3(tmp_path):
@@ -1208,11 +1212,15 @@ def test_loader_rejects_qgc_for_non_comp2026_before_source_reads(
     assert source_reads == 0
 
 
-def test_loader_rejects_comp2026_without_qgc_inputs(tmp_path):
+def test_loader_accepts_comp2026_without_qgc_inputs(tmp_path):
     document = _resolved_document()
 
-    with pytest.raises(ValueError, match="comp2026_auto.*QGC"):
-        load_run_config(_write_resolved_competition_document(tmp_path, document))
+    resolved = load_run_config(
+        _write_resolved_competition_document(tmp_path, document)
+    )
+
+    assert resolved.mission == "comp2026_auto"
+    assert resolved.qgc is None
 
 
 def test_loader_rejects_uppercase_uuid_instead_of_normalizing(tmp_path):
@@ -1814,7 +1822,7 @@ def test_write_resolved_config_rejects_invalid_run_id_before_creating_snapshot(
     assert not (tmp_path / "configuration/run.json").exists()
 
 
-@pytest.mark.parametrize("malformation", ["missing-qgc", "phase2-qgc", "common"])
+@pytest.mark.parametrize("malformation", ["phase2-qgc", "common"])
 def test_write_rejects_structural_contract_before_creating_directories(
     tmp_path, monkeypatch, malformation
 ):
@@ -1823,9 +1831,7 @@ def test_write_rejects_structural_contract_before_creating_directories(
     resolved = resolve_run_config(
         _write_qgc_template(source), run_id_factory=lambda: FIXED_RUN_ID
     )
-    if malformation == "missing-qgc":
-        invalid = replace(resolved, qgc=None)
-    elif malformation == "phase2-qgc":
+    if malformation == "phase2-qgc":
         invalid = replace(resolved, runtime_profile="phase2", simulation=None)
     else:
         invalid = replace(resolved, max_wall_seconds=0)

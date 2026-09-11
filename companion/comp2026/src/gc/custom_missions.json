@@ -1,0 +1,119 @@
+{
+    "version": 1,
+    "fileType": "MavlinkActions",
+    "title": "RPi FM TEMPLATE - run prepare_attempt.py",
+    "actions": [
+        {
+            "label": "Trigger FM1",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31000,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Trigger FM2",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31001,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Trigger FM3",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31002,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update WA",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31003,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update WM1",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31004,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update WM2",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31005,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update WM3",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31006,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update WM4",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31007,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update WM5",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31008,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update WM6",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31009,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update L",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31010,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Update Target",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31011,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Clear Pickup Waypoints",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31012,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        },
+        {
+            "label": "Clear All Waypoints",
+            "description": "Template only; attempt ID 0 cannot authorize flight. Load generated attempt actions.",
+            "mavCmd": 31013,
+            "compId": 191,
+            "param1": 0, "param2": 0, "param3": 0, "param4": 0,
+            "param5": 0, "param6": 0, "param7": 0
+        }
+    ]
+}

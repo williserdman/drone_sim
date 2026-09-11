@@ -82,10 +82,20 @@ class BrokenCloseStream(io.BytesIO):
         raise BrokenPipeError("encoder closed pipe")
 
 
-class SlowCloseStream(io.BytesIO):
+class EventGatedCloseStream(io.BytesIO):
+    def __init__(self):
+        super().__init__()
+        self.close_started, self.release_close, self.close_finished = (
+            threading.Event() for _ in range(3)
+        )
+        self.close_thread = None
+
     def close(self):
-        time.sleep(0.10)
+        self.close_thread = threading.current_thread()
+        self.close_started.set()
+        assert self.release_close.wait(5)
         super().close()
+        self.close_finished.set()
 
 
 class ScriptedWriteStream:
@@ -512,18 +522,26 @@ def test_start_passes_exact_anonymous_inode_to_ffmpeg(tmp_path):
 
 def test_finalize_close_cannot_consume_past_caller_deadline(tmp_path):
     process = FakeProcess((0,))
-    process.stdin = SlowCloseStream()
+    stream = EventGatedCloseStream()
+    process.stdin = stream
     recorder = _recorder(tmp_path, process_factory=FakeProcessFactory(process))
     _write_anonymous_output(recorder, b"partial")
-    started = time.monotonic()
 
-    result = recorder.finalize(deadline=started + 0.01, outcome="COMPLETED")
+    try:
+        result = recorder.finalize(
+            deadline=time.monotonic() + 0.01, outcome="COMPLETED"
+        )
 
-    # Scheduling jitter may delay the caller after the 10 ms wait expires, but
-    # finalization must still return before the 100 ms close itself completes.
-    assert time.monotonic() - started < 0.09
-    assert result.published is False
-    assert any("deadline" in item.detail for item in recorder.diagnostics)
+        assert stream.close_started.wait(5)
+        assert not stream.close_finished.is_set()
+        assert result.published is False
+        assert any("deadline" in item.detail for item in recorder.diagnostics)
+    finally:
+        stream.release_close.set()
+        assert stream.close_thread is not None
+        stream.close_thread.join(5)
+        assert stream.close_finished.is_set()
+        assert not stream.close_thread.is_alive()
 
 
 def test_validator_bounds_probe_and_decode_by_remaining_caller_deadline(tmp_path):
@@ -792,28 +810,49 @@ def test_preflight_requires_exact_libx264_encoder_name(tmp_path):
 
 
 def test_start_bounds_hanging_preflight_by_caller_deadline(tmp_path):
-    class SlowRunner(FakeCommandRunner):
+    class EventGatedRunner(FakeCommandRunner):
+        def __init__(self):
+            super().__init__()
+            self.runner_started = threading.Event()
+            self.release_runner = threading.Event()
+            self.runner_finished = threading.Event()
+            self.runner_thread = None
+
         def __call__(self, command, **kwargs):
             if "-encoders" in command:
-                time.sleep(0.10)
+                self.runner_thread = threading.current_thread()
+                self.runner_started.set()
+                try:
+                    assert self.release_runner.wait(5)
+                    return super().__call__(command, **kwargs)
+                finally:
+                    self.runner_finished.set()
             return super().__call__(command, **kwargs)
 
     factory = FakeProcessFactory()
+    runner = EventGatedRunner()
     recorder = VideoStreamRecorder(
         tmp_path,
         run_id=RUN_ID,
         stream="onboard",
-        command_runner=SlowRunner(),
+        command_runner=runner,
         process_factory=factory,
     )
-    started = time.monotonic()
 
-    with pytest.raises(subprocess.TimeoutExpired):
-        recorder.start(deadline=started + 0.01)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            recorder.start(deadline=time.monotonic() + 0.01)
 
-    assert time.monotonic() - started < 0.05
-    assert factory.calls == []
-    assert not recorder.partial_path.exists()
+        assert runner.runner_started.wait(5)
+        assert not runner.runner_finished.is_set()
+        assert factory.calls == []
+        assert not recorder.partial_path.exists()
+    finally:
+        runner.release_runner.set()
+        assert runner.runner_thread is not None
+        runner.runner_thread.join(5)
+        assert runner.runner_finished.is_set()
+        assert not runner.runner_thread.is_alive()
 
 
 def test_start_cancels_and_reaps_process_created_after_spawn_deadline(tmp_path):

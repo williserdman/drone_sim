@@ -16,6 +16,17 @@ from ._adapters.video import VideoStreamRecorder, VideoValidator
 from .recorder_node import VideoRecorderNode
 from .runtime_configuration import resolve_recording_runtime_config
 from .runtime_protocol import RuntimeProtocol, canonical_run_id
+from .runtime_status import (
+    ArtifactFinalRecord,
+    ArtifactsFinalStatus,
+    ArtifactsReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeFrozenStatus,
+    RuntimeStatus,
+    StatusT,
+    TerminalNotifiedStatus,
+    status_document,
+)
 from .structured_log import StructuredEvent, write_event
 from .validation import ValidationStatus
 
@@ -63,8 +74,8 @@ class FinalizationRequestLatch:
 
 
 class _Protocol(Protocol):
-    def write_status(self, name: str, document: Mapping[str, Any]) -> Any: ...
-    def read_status(self, name: str) -> dict[str, Any] | None: ...
+    def write_status(self, status: RuntimeStatus) -> Any: ...
+    def read_status(self, status_type: type[StatusT]) -> StatusT | None: ...
     def read_terminal_committed(self) -> dict[str, Any] | None: ...
     def read_manifest_status(self) -> dict[str, Any]: ...
 
@@ -258,13 +269,9 @@ class AggregateArtifactsRuntime:
         if self._failure_written:
             return
         self.protocol.write_status(
-            "runtime-failure",
-            {
-                "run_id": self.run_id,
-                "module": "artifacts",
-                "reason": reason,
-                "diagnostic_paths": diagnostic_paths,
-            },
+            RuntimeFailureStatus(
+                self.run_id, "artifacts", reason, tuple(diagnostic_paths)
+            )
         )
         self._failure_written = True
 
@@ -360,9 +367,7 @@ class AggregateArtifactsRuntime:
             "manifest_path": "",
         }
         self.publish(document)
-        self.protocol.write_status(
-            "artifacts-ready", {"run_id": self.run_id, "ready": True}
-        )
+        self.protocol.write_status(ArtifactsReadyStatus(self.run_id))
         self.ready = True
         return True
 
@@ -465,22 +470,24 @@ class AggregateArtifactsRuntime:
         return result
 
     @staticmethod
-    def _record(path: str, result: Any, semantic: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "relative_path": path,
-            "status": result.status.value,
-            "detail": result.detail,
-            "size_bytes": result.size_bytes,
-            "sha256": result.sha256,
-            "semantic": semantic,
-        }
+    def _record(
+        path: str, result: Any, semantic: dict[str, Any]
+    ) -> ArtifactFinalRecord:
+        return ArtifactFinalRecord(
+            path,
+            result.status,
+            result.detail,
+            result.size_bytes,
+            result.sha256,
+            semantic,
+        )
 
     def finalize(self, outcome: str, *, deadline: float) -> dict[str, Any] | None:
         if self.final_report is not None:
             return self.final_report
         if self.finalization_blocked:
             return None
-        if self.protocol.read_status("runtime-frozen") is None:
+        if self.protocol.read_status(RuntimeFrozenStatus) is None:
             return None
         self.finalization_started = True
         if not self.bag_recorder.is_alive:
@@ -539,12 +546,9 @@ class AggregateArtifactsRuntime:
             for stream in ("onboard", "observer")
         ]
         records.append(self._record("rosbag", bag_result, self._bag_semantic(bag_result)))
-        report = {
-            "run_id": self.run_id,
-            "complete": all(item["status"] == "valid" for item in records),
-            "records": records,
-        }
-        self.protocol.write_status("artifacts-final", report)
+        status = ArtifactsFinalStatus(self.run_id, tuple(records))
+        report = status_document(status)
+        self.protocol.write_status(status)
         self.final_report = report
         return report
 
@@ -573,9 +577,7 @@ class AggregateArtifactsRuntime:
                 "manifest_path": "manifest.json",
             }
         )
-        self.protocol.write_status(
-            "terminal-notified", {"run_id": self.run_id, "notified": True}
-        )
+        self.protocol.write_status(TerminalNotifiedStatus(self.run_id))
         self._terminal = True
         return True
 

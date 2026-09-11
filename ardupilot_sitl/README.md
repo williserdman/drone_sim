@@ -15,12 +15,14 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
 
 - [pyproject.toml](pyproject.toml) exposes `drone-sim-ardupilot-runtime`.
 - [runtime_node.py](src/drone_sim_ardupilot/runtime_node.py) is the production
-  process wrapper and durable readiness/failure/quiescence boundary.
+  process wrapper and durable readiness/failure/quiescence boundary. It publishes
+  typed values from the shared
+  [runtime status contract](../artifacts/src/artifacts/runtime_status.py) through
+  the [container protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 - [config.py](src/drone_sim_ardupilot/config.py) validates run inputs, resolves
   the Gazebo service once, and constructs the shell-free ArduCopter command.
 - [runtime.py](src/drone_sim_ardupilot/runtime.py) supervises SITL, interprets
   readiness output, writes events, and inventories diagnostics.
-- [state.py](src/drone_sim_ardupilot/state.py) contains the pure lifecycle model.
 - [json_peer.py](src/drone_sim_ardupilot/json_peer.py) is a bounded test peer for
   the upstream UDP protocol; production does not use it.
 - [descent.parm](params/descent.parm) is the image-baked parameter overlay, and
@@ -61,6 +63,14 @@ runtime-policy origin for QGC runs and the fixed diagnostic origin
 `37.4003371,-122.0800351,0,0` for controlled descent, roll AutoTune, and roll
 hover runs. Caller process environment cannot override either value.
 
+The wrapper reads the shared finalize request through `RuntimeProtocol`, which
+rejects malformed, unsafe, or changed control files. Shutdown calls the child
+stop/reap operation once, then attempts private failure evidence, diagnostic
+inventory, terminal logging, and shared failure publication in order even if an
+earlier cleanup step fails. The wrapper preserves the first exception and notes
+later cleanup errors on it. It publishes quiescence only after stop/reap confirms
+that SITL exited, and it always attempts to close the protocol.
+
 ## Constraints worth knowing
 
 - The source build freezes ArduPilot `Copter-4.5.7` at commit
@@ -90,8 +100,16 @@ hover runs. Caller process environment cannot override either value.
 - `FS_THR_ENABLE=0` and `FLTMODE_CH=0` are retained legacy simulator diagnostics.
   They are not an aircraft/QGC failsafe or takeover profile and do not lift the
   `comp2026_auto` quarantine.
+- The overlay is also the single source for the fast, guarded precision-landing
+  profile. `PLND_OPTIONS` retains the normal final descent speed while the
+  companion filters measurements and owns hold/reacquire policy. Do not tune a
+  missed pickup through the scorer or by silently overriding these values at
+  runtime; inspect [descent.parm](params/descent.parm) and its executable
+  assertions in [test_config.py](tests/test_config.py).
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
+- The private `work/failure.json` file remains a child-process diagnostic. It is
+  not a shared runtime status or quiescence record.
 
 ## Focused tests
 

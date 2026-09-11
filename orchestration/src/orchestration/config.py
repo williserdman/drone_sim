@@ -343,8 +343,6 @@ def _validate_common(
         raise ValueError("QGC configuration requires runtime_profile phase3")
     if "qgc" in document and document["mission"] != "comp2026_auto":
         raise ValueError("QGC configuration requires mission comp2026_auto")
-    if document["mission"] == "comp2026_auto" and "qgc" not in document:
-        raise ValueError("comp2026_auto requires QGC configuration")
     if runtime_profile == "phase3":
         if "simulation" not in document:
             raise ValueError("phase3 requires simulation configuration")

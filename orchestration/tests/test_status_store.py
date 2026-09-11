@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,30 @@ import stat
 
 import pytest
 
+from artifacts.protocol_files import ProtocolIOError
+from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.runtime_status import (
+    ArduPilotReadyStatus,
+    ArtifactFinalRecord,
+    ArtifactsFinalStatus,
+    ArtifactsReadyStatus,
+    CompanionReadyStatus,
+    FlightExchange,
+    GazeboReadyStatus,
+    MissionCommandDeliveredStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeFrozenStatus,
+    RuntimeRunningStatus,
+    RuntimeStatusError,
+    ScoreFinishedStatus,
+    SourceFinishedStatus,
+    TerminalNotifiedStatus,
+    status_document,
+)
+from artifacts.validation import ValidationStatus
+import orchestration.status_store as status_store_module
 from orchestration.status_store import (
     OperatorStatus,
     ProtocolFileError,
@@ -16,10 +41,198 @@ from orchestration.status_store import (
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000606"
+DIGEST_A = "a" * 64
+DIGEST_C = "c" * 64
+
+FLIGHT_EXCHANGE = FlightExchange(
+    True,
+    2,
+    2,
+    0,
+    0,
+    2,
+    0,
+    1,
+    40_000_000,
+)
+FINAL_RECORDS = (
+    ArtifactFinalRecord(
+        "video/onboard.mp4",
+        ValidationStatus.VALID,
+        "valid video",
+        10,
+        DIGEST_A,
+        {"codec": "h264"},
+    ),
+    ArtifactFinalRecord(
+        "video/observer.mp4",
+        ValidationStatus.INVALID,
+        "invalid video",
+        None,
+        None,
+        {"codec": "unknown"},
+    ),
+    ArtifactFinalRecord(
+        "rosbag",
+        ValidationStatus.VALID,
+        "valid bag",
+        30,
+        DIGEST_C,
+        {"topics": ["/clock"]},
+    ),
+)
+FINAL_STATUS = ArtifactsFinalStatus(RUN_ID, FINAL_RECORDS)
+FINAL_DOCUMENT = status_document(FINAL_STATUS)
+RUNTIME_STATUSES = (
+    ArtifactsReadyStatus(RUN_ID),
+    GazeboReadyStatus(RUN_ID, FLIGHT_EXCHANGE),
+    ArduPilotReadyStatus(RUN_ID),
+    CompanionReadyStatus(RUN_ID),
+    MissionReadyStatus(RUN_ID),
+    MissionCommandDeliveredStatus(RUN_ID, 50_000_000),
+    RuntimeRunningStatus(RUN_ID, 1),
+    SourceFinishedStatus(RUN_ID, 2),
+    MissionFinishedStatus(RUN_ID, 2),
+    ScoreFinishedStatus(RUN_ID, 2),
+    RuntimeFailureStatus(RUN_ID, "gazebo", "exchange stopped", ("logs/gazebo.log",)),
+    RuntimeFrozenStatus(RUN_ID),
+    FINAL_STATUS,
+    TerminalNotifiedStatus(RUN_ID),
+)
 
 
 def _store(tmp_path: Path) -> StatusStore:
     return StatusStore(tmp_path.resolve())
+
+
+def _fail_directory_fstat(monkeypatch, target: Path) -> list[int]:
+    expected = target.resolve()
+    real_fstat = os.fstat
+    failed: list[int] = []
+
+    def fail_target(descriptor):
+        try:
+            opened_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            return real_fstat(descriptor)
+        if opened_path == expected:
+            failed.append(descriptor)
+            raise OSError("simulated directory fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "fstat", fail_target)
+    return failed
+
+
+def _assert_failed_open_closed(failed: list[int]) -> None:
+    assert len(failed) == 1
+    assert not Path(f"/proc/self/fd/{failed[0]}").exists()
+
+
+def _mutation_relevant_metadata(path: Path) -> tuple[int, ...]:
+    metadata = path.stat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def test_output_root_open_translates_fstat_failure_without_leak(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "runs"
+    output_root.mkdir()
+    store = StatusStore(output_root.resolve())
+    failed = _fail_directory_fstat(monkeypatch, output_root)
+
+    with pytest.raises(ProtocolFileError, match="output root") as raised:
+        store.cleanup(RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
+
+
+@pytest.mark.parametrize("close_before_raising", (False, True))
+def test_output_root_parent_close_failure_closes_owned_child(
+    tmp_path, monkeypatch, close_before_raising
+):
+    output_root = tmp_path / "runs"
+    output_root.mkdir()
+    child_descriptors: list[int] = []
+    intercepted_parent_descriptors: list[int] = []
+    parent_close_pending = False
+    real_open_directory = status_store_module.open_directory
+    real_close = os.close
+
+    def recording_open_directory(path, *, dir_fd=None):
+        nonlocal parent_close_pending
+        descriptor = real_open_directory(path, dir_fd=dir_fd)
+        opened_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        if opened_path == output_root.resolve():
+            child_descriptors.append(descriptor)
+            parent_close_pending = True
+        return descriptor
+
+    def failing_parent_close(descriptor):
+        nonlocal parent_close_pending
+        if parent_close_pending:
+            parent_close_pending = False
+            intercepted_parent_descriptors.append(descriptor)
+            if close_before_raising:
+                real_close(descriptor)
+            raise OSError("simulated parent close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(status_store_module, "open_directory", recording_open_directory)
+    monkeypatch.setattr(status_store_module.os, "close", failing_parent_close)
+
+    try:
+        with pytest.raises(ProtocolFileError, match="output root is unsafe"):
+            StatusStore(output_root.resolve()).cleanup(RUN_ID)
+        assert len(child_descriptors) == 1
+        assert len(intercepted_parent_descriptors) == 1
+    finally:
+        for descriptor in intercepted_parent_descriptors:
+            if Path(f"/proc/self/fd/{descriptor}").exists():
+                real_close(descriptor)
+
+    assert not Path(f"/proc/self/fd/{child_descriptors[0]}").exists()
+    assert not Path(f"/proc/self/fd/{intercepted_parent_descriptors[0]}").exists()
+
+
+def test_run_open_translates_fstat_failure_without_leak(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    failed = _fail_directory_fstat(monkeypatch, run_directory)
+
+    with pytest.raises(
+        ProtocolFileError, match="run directory is unsafe"
+    ) as raised:
+        store.cleanup(RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
+
+
+def test_child_open_translates_fstat_failure_without_leak(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    failed = _fail_directory_fstat(monkeypatch, run_directory / ".status")
+
+    with pytest.raises(
+        ProtocolFileError, match="protocol directory '.status'"
+    ) as raised:
+        store.read_operator_status(RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
 
 
 def test_allocate_exclusively_creates_only_owned_protocol_directories(tmp_path):
@@ -96,6 +309,20 @@ def test_operator_state_is_atomic_valid_json_and_leaves_no_temp_sibling(tmp_path
     assert store.read_operator_status(RUN_ID) == running
 
 
+def test_status_store_translates_shared_io_errors(tmp_path):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    (run_directory / ".status/operator-state.json").write_text(
+        "{", encoding="utf-8"
+    )
+
+    with pytest.raises(ProtocolFileError, match="contains invalid JSON") as raised:
+        store.read_operator_status(RUN_ID)
+
+    assert type(raised.value) is ProtocolFileError
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+
+
 def test_operator_state_replacement_fsyncs_file_then_status_directory(
     tmp_path, monkeypatch
 ):
@@ -153,20 +380,24 @@ def test_runtime_status_read_consumes_cooperative_deadline_callback(tmp_path):
     )
     checks = 0
 
+    timeout = TimeoutError("finalization_deadline")
+
     def deadline_check():
         nonlocal checks
         checks += 1
         if checks == 3:
-            raise TimeoutError("finalization_deadline")
+            raise timeout
 
-    with pytest.raises(TimeoutError, match="finalization_deadline"):
+    with pytest.raises(TimeoutError, match="finalization_deadline") as raised:
         store.read_runtime_status(
             RUN_ID,
-            "artifacts-final",
+            ArtifactsFinalStatus,
             deadline_check=deadline_check,
         )
 
     assert checks == 3
+    assert raised.value is timeout
+
 
 def test_abort_request_is_atomic_idempotent_and_first_cause_wins(tmp_path):
     store = _store(tmp_path)
@@ -204,7 +435,38 @@ def test_finalize_request_refuses_unsafe_preexisting_target(tmp_path):
     assert outside.read_text(encoding="utf-8") == "keep"
 
 
-def test_runtime_status_is_read_only_and_requires_matching_run_id(tmp_path):
+@pytest.mark.parametrize("status", RUNTIME_STATUSES, ids=lambda value: value.name)
+def test_runtime_status_round_trips_canonically_through_both_adapters(tmp_path, status):
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    with RuntimeProtocol(run_directory, RUN_ID) as protocol:
+        target = protocol.write_status(status)
+        expected = (
+            json.dumps(
+                status_document(status),
+                allow_nan=False,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode()
+        assert target.read_bytes() == expected
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        before_reads = _mutation_relevant_metadata(target)
+        runtime_parsed = protocol.read_status(type(status))
+        assert _mutation_relevant_metadata(target) == before_reads
+
+    assert type(runtime_parsed) is type(status)
+    assert runtime_parsed == status
+
+    host_parsed = store.read_runtime_status(RUN_ID, type(status))
+    assert type(host_parsed) is type(status)
+    assert host_parsed == status
+    assert _mutation_relevant_metadata(target) == before_reads
+
+
+def test_runtime_status_read_requires_matching_run_id(tmp_path):
     store = _store(tmp_path)
     run_directory = store.allocate(RUN_ID)
     target = run_directory / ".status/artifacts-ready.json"
@@ -212,19 +474,90 @@ def test_runtime_status_is_read_only_and_requires_matching_run_id(tmp_path):
         json.dumps({"run_id": "00000000-0000-4000-8000-000000000999", "ready": True}),
         encoding="utf-8",
     )
-    before = target.stat()
 
     with pytest.raises(ProtocolFileError, match="run_id"):
-        store.read_runtime_status(RUN_ID, "artifacts-ready")
-    assert target.stat() == before
+        store.read_runtime_status(RUN_ID, ArtifactsReadyStatus)
 
 
-def test_runtime_status_name_is_fixed(tmp_path):
+@pytest.mark.parametrize(
+    ("status_type", "document"),
+    [
+        (
+            SourceFinishedStatus,
+            {"run_id": RUN_ID, "finished": False, "sim_timestamp_ns": 2},
+        ),
+        (RuntimeFrozenStatus, {"run_id": RUN_ID, "frozen": False}),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": [
+                    {
+                        **FINAL_DOCUMENT["records"][0],
+                        "detail": "",
+                    },
+                    *FINAL_DOCUMENT["records"][1:],
+                ],
+            },
+        ),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": [
+                    {
+                        **FINAL_DOCUMENT["records"][0],
+                        "size_bytes": None,
+                        "sha256": None,
+                    },
+                    *FINAL_DOCUMENT["records"][1:],
+                ],
+            },
+        ),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": [
+                    FINAL_DOCUMENT["records"][0],
+                    {
+                        **FINAL_DOCUMENT["records"][1],
+                        "size_bytes": 20,
+                    },
+                    FINAL_DOCUMENT["records"][2],
+                ],
+            },
+        ),
+        (
+            ArtifactsFinalStatus,
+            {
+                **FINAL_DOCUMENT,
+                "records": list(reversed(FINAL_DOCUMENT["records"])),
+            },
+        ),
+    ],
+    ids=(
+        "source-not-finished",
+        "runtime-not-frozen",
+        "empty-artifact-detail",
+        "valid-artifact-without-size-hash",
+        "half-present-size-hash",
+        "reordered-artifacts",
+    ),
+)
+def test_runtime_status_read_rejects_malformed_typed_documents(
+    tmp_path, status_type, document
+):
     store = _store(tmp_path)
-    store.allocate(RUN_ID)
+    run_directory = store.allocate(RUN_ID)
+    (run_directory / f".status/{status_type.name}.json").write_text(
+        json.dumps(document), encoding="utf-8"
+    )
 
-    with pytest.raises(ValueError):
-        store.read_runtime_status(RUN_ID, "../operator-state")
+    with pytest.raises(ProtocolFileError) as raised:
+        store.read_runtime_status(RUN_ID, status_type)
+
+    assert isinstance(raised.value.__cause__, RuntimeStatusError)
 
 
 def test_protocol_json_rejects_nonstandard_nan_numbers(tmp_path):
@@ -237,7 +570,7 @@ def test_protocol_json_rejects_nonstandard_nan_numbers(tmp_path):
     )
 
     with pytest.raises(ProtocolFileError, match="JSON"):
-        store.read_runtime_status(RUN_ID, "artifacts-ready")
+        store.read_runtime_status(RUN_ID, ArtifactsReadyStatus)
 
 
 def test_terminal_commit_is_exclusive_idempotent_and_never_rewrites(tmp_path):
@@ -314,6 +647,105 @@ def test_collect_manifest_validation_rejects_missing_required_inventory_record(t
     manifest.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ProtocolFileError, match="required inventory"):
+        store.validated_manifest_path(RUN_ID)
+
+
+def test_manifest_cross_reader_accepts_the_same_portable_paths(tmp_path):
+    from datetime import datetime, timezone
+
+    from artifacts import ArtifactSession, FinalizationInput
+    from artifacts.manifest import ConfigurationRecord, REQUIRED_ARTIFACT_PATHS
+    from artifacts.runtime_protocol import RuntimeProtocol
+
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    for relative_path in REQUIRED_ARTIFACT_PATHS:
+        target = run_directory / relative_path
+        if relative_path in {"configuration", "gazebo/state", "rosbag"}:
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "content").write_bytes(b"artifact")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"artifact")
+    now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    ArtifactSession(run_directory).finalize(
+        FinalizationInput(
+            RUN_ID,
+            "COMPLETED",
+            "mission_complete",
+            None,
+            None,
+            now,
+            now,
+            (),
+            (),
+            (ConfigurationRecord("configuration/run.json", "a" * 64),),
+            None,
+            None,
+            None,
+            ("scoring/events.jsonl#event-12",),
+        )
+    )
+
+    assert store.validated_manifest_path(RUN_ID) == run_directory / "manifest.json"
+    with RuntimeProtocol(run_directory, RUN_ID) as protocol:
+        assert protocol.read_manifest_status()["complete"] is True
+
+
+def test_manifest_host_reader_rejects_backslash_artifact_path(tmp_path):
+    from datetime import datetime, timezone
+
+    from artifacts import ArtifactSession, FinalizationInput
+    from artifacts.manifest import ConfigurationRecord, REQUIRED_ARTIFACT_PATHS
+
+    store = _store(tmp_path)
+    run_directory = store.allocate(RUN_ID)
+    for relative_path in REQUIRED_ARTIFACT_PATHS:
+        target = run_directory / relative_path
+        if relative_path in {"configuration", "gazebo/state", "rosbag"}:
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "content").write_bytes(b"artifact")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"artifact")
+    now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    ArtifactSession(run_directory).finalize(
+        FinalizationInput(
+            RUN_ID,
+            "COMPLETED",
+            "mission_complete",
+            None,
+            None,
+            now,
+            now,
+            (),
+            (),
+            (ConfigurationRecord("configuration/run.json", "a" * 64),),
+            None,
+            None,
+            None,
+            (),
+        )
+    )
+    bad_path = r"logs/docker/bad\name.log"
+    target = run_directory / bad_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"bad")
+    manifest_path = run_directory / "manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["artifacts"].append(
+        {
+            "relative_path": bad_path,
+            "size_bytes": 3,
+            "sha256": hashlib.sha256(b"bad").hexdigest(),
+            "validation": "valid",
+            "detail": "valid regular file",
+        }
+    )
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProtocolFileError, match="artifact path"):
         store.validated_manifest_path(RUN_ID)
 
 

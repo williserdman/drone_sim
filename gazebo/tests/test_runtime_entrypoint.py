@@ -1,11 +1,10 @@
-from pathlib import Path
 import subprocess
 
 import pytest
 
+from artifacts.runtime_status import FlightExchange
 from drone_sim_gazebo.runtime.entrypoint import (
     FinalizationDeadlineLatch,
-    GazeboReadyStatus,
     GazeboTransport,
     TransportError,
 )
@@ -143,6 +142,13 @@ def test_flight_transport_rejects_a_world_without_the_plugin_status_service():
         transport.assert_ready()
 
 
+def test_passive_world_is_rejected_before_typed_readiness_publication():
+    transport = GazeboTransport(environment={"GZ_PARTITION": "p"})
+
+    with pytest.raises(TransportError, match="requires an ArduPilot flight exchange"):
+        transport.assert_typed_readiness_supported()
+
+
 def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
     """Generic Gazebo endpoints cannot substitute for one real JSON exchange."""
     payload = (
@@ -164,18 +170,9 @@ def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
         environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
     )
 
-    assert transport.flight_exchange_status() == {
-        "online": True,
-        "servo_packets_received": 3,
-        "motor_updates": 2,
-        "duplicate_servo_packets": 1,
-        "servo_frame_gaps": 0,
-        "json_states_sent": 3,
-        "json_send_errors": 0,
-        "last_servo_frame": 2,
-        "last_json_sim_time_ns": 0,
-    }
-    assert transport.ready_flight_exchange() == transport.flight_exchange_status()
+    assert transport.ready_flight_exchange() == FlightExchange(
+        True, 3, 2, 1, 0, 3, 0, 2, 0
+    )
 
 
 @pytest.mark.parametrize(
@@ -240,8 +237,9 @@ def test_flight_exchange_readiness_accepts_stable_bounded_bootstrap_snapshot():
         environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
     )
 
-    assert transport.ready_flight_exchange() == sample
-    assert transport.ready_flight_exchange() == sample
+    expected = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
+    assert transport.ready_flight_exchange() == expected
+    assert transport.ready_flight_exchange() == expected
 
 
 def test_flight_exchange_readiness_rejects_json_sends_without_servo_exchange():
@@ -310,8 +308,8 @@ def test_flight_exchange_readiness_fails_closed_on_incomplete_or_gapped_exchange
         environment={"GZ_PARTITION": "p"}, world_name="vertical_descent", run=run
     )
 
-    assert transport.flight_exchange_ready() is False
-    assert transport.flight_exchange_ready() is False
+    assert transport.ready_flight_exchange() is None
+    assert transport.ready_flight_exchange() is None
 
 
 def test_transport_names_missing_actual_endpoint():
@@ -391,56 +389,3 @@ def test_finalization_control_cannot_change_after_deadline_is_latched():
 
     with pytest.raises(ValueError, match="changed"):
         latch.deadline_for({"requested_terminal": "ABORTED", "reason": "y"})
-
-
-def test_gazebo_ready_status_is_current_run_idempotent_and_conflict_safe(tmp_path):
-    run_directory = tmp_path / "11111111-1111-4111-8111-111111111111"
-    (run_directory / ".status").mkdir(parents=True)
-    status = GazeboReadyStatus(run_directory, run_directory.name)
-
-    first = status.write_gazebo_ready()
-    second = status.write_gazebo_ready()
-
-    assert first == second == run_directory / ".status/gazebo-ready.json"
-    assert first.read_text() == '{"ready":true,"run_id":"11111111-1111-4111-8111-111111111111"}\n'
-
-
-def test_gazebo_ready_status_refuses_conflicting_existing_fact(tmp_path):
-    run_directory = tmp_path / "11111111-1111-4111-8111-111111111111"
-    status_directory = run_directory / ".status"
-    status_directory.mkdir(parents=True)
-    (status_directory / "gazebo-ready.json").write_text("{}\n")
-
-    with pytest.raises(RuntimeError, match="conflicts"):
-        GazeboReadyStatus(run_directory, run_directory.name).write_gazebo_ready()
-
-
-def test_gazebo_ready_fact_preserves_the_latched_flight_exchange_counts(tmp_path):
-    """The current run must retain the counters that justified flight readiness."""
-    run_directory = tmp_path / "11111111-1111-4111-8111-111111111111"
-    (run_directory / ".status").mkdir(parents=True)
-    status = GazeboReadyStatus(run_directory, run_directory.name)
-    status.record_flight_exchange(
-        {
-            "online": True,
-            "servo_packets_received": 1,
-            "motor_updates": 1,
-            "duplicate_servo_packets": 0,
-            "servo_frame_gaps": 0,
-            "json_states_sent": 1,
-            "json_send_errors": 0,
-            "last_servo_frame": 0,
-            "last_json_sim_time_ns": 0,
-        }
-    )
-
-    target = status.write_gazebo_ready()
-
-    assert target.read_text() == (
-        '{"flight_exchange":{"duplicate_servo_packets":0,'
-        '"json_send_errors":0,"json_states_sent":1,'
-        '"last_json_sim_time_ns":0,"last_servo_frame":0,'
-        '"motor_updates":1,"online":true,"servo_frame_gaps":0,'
-        '"servo_packets_received":1},"ready":true,'
-        '"run_id":"11111111-1111-4111-8111-111111111111"}\n'
-    )

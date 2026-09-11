@@ -12,8 +12,10 @@ truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
 ## Guarded `comp2026_auto` host
 
-`comp2026_auto` now composes the nested QGC listener as the sole flight-command
-owner. The parent first projects and validates the immutable deployment profile,
+When a resolved run supplies the complete QGC input set, `comp2026_auto`
+composes the nested QGC listener as the sole flight-command owner. Without that
+set, it retains the tracked automatic mission path. The QGC parent first projects
+and validates the immutable deployment profile,
 listener session, action, runtime policy, course, scenario, and external attempt
 state. Only then may it create ROS or DroneKit resources. The listener receives
 the projection's sealed artifact snapshot; it does not reopen mutable run paths.
@@ -87,9 +89,13 @@ closed.
   PyMAVLink translation boundary.
 - [comp2026_host.py](src/drone_sim_companion/comp2026_host.py) adapts simulation
   clock, images, range, payload calls, waypoints, events, and failure recovery
-  for the separately supplied Comp2026 mission checkout.
+  for the bundled [Comp2026 mission](comp2026/README.md).
 - [lifecycle.py](src/drone_sim_companion/lifecycle.py) owns companion readiness,
   terminal mission evidence, and quiescence publication.
+- The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
+  defines the companion's durable status values. The runtime publishes them
+  through the container-side
+  [protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 
 ## Interfaces
 
@@ -120,40 +126,62 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.
-- `companion/comp2026` is a separate, untracked checkout required for the
-  `comp2026_auto` image. Keep changes there minimal and never push it as part of
-  this repository. Import compatibility and parent composition do not authorize
-  aircraft use.
-- The hosted `drone.auto_attempt` currently imports FM1 and FM2 from `missions/`
-  but imports FM3 from `drone/mock_mission.py`; do not assume
-  `missions/fm3.py` is the deployed implementation.
-- Comp2026 startup separates process readiness from QGC command admission.
-  Matching run state, public clock, live input production, connected-vehicle
-  heartbeat, and armability checks fail closed. Downward range time comes from
-  the ROS source timestamp and is evaluated by the validated nested policy.
+- `companion/comp2026` is tracked in this monorepo and supplies the
+  automatic mission and guarded QGC listener source. Keep changes there focused
+  and preserve its imported history and provenance. The Docker context admits
+  only its explicit import closure.
+- Building the Phase 3 companion image requires
+  `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. Compose
+  leaves the build argument empty when it is not supplied so inactive profiles
+  and noncompanion configuration still resolve; the companion Dockerfile rejects
+  an empty value before package installation or source copies.
+- The automatic `drone.auto_attempt` host imports FM1 and FM2 from `missions/`
+  but imports FM3 from `drone/mock_mission.py`. The guarded QGC host still
+  admits only FM1 and FM2, so `missions/fm3.py` is not an active QGC path.
+- That deployed `mock_mission.py` owns payload-marker acquisition and precision
+  landing recovery. It establishes a five-frame earth-fixed target anchor,
+  rejects stale or inconsistent camera/range observations before MAVLink,
+  holds the current position in GUIDED while reacquiring, and permits one
+  return to the 4.572 m search hover before failing closed. It validates the
+  live flight-controller profile before the first LAND and never disarms or
+  requests attachment without confirmed touchdown. Below the configured
+  `PLND_ALT_MIN` of 0.75 m, LAND continues without requiring marker visibility;
+  this avoids treating the marker's normal near-ground exit from the camera
+  view as a recovery event. The exact flight settings are owned by
+  [descent.parm](../ardupilot_sitl/params/descent.parm).
+- The nested camera API returns the marker vector and source frame timestamp as
+  one observation. `comp2026_host.py` supplies bounded, strictly newer frames;
+  camera silence therefore becomes an unhealthy observation instead of
+  blocking the mission thread.
+- Comp2026 startup separates process readiness from permission to enter the
+  original mission. Sensor, service, heartbeat, and armability predicates are
+  refreshed atomically and fail closed; downward range expires after 0.5
+  simulated seconds. The runtime must assign the initial GUIDED mode and write
+  its durable delivery fact no later than the inclusive 50 ms public-time
+  deadline before the original worker can enter. The executable owners are the
+  [delivery window and lifecycle writer](src/drone_sim_companion/lifecycle.py),
+  [start gate](src/drone_sim_companion/comp2026_host.py), and
+  [runtime composition](src/drone_sim_companion/runtime_node.py); the shared
+  status schema owns the exact
+  [`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
+  fields.
+- Before mission code reads competition inputs, startup verifies the resolved
+  `course.yaml` and `scenario.yaml` copies against their SHA-256 digests in
+  `run.json`.
 - Terminal success and the first fatal callback/mission failure are serialized.
   Quiescence follows worker termination, executor shutdown, and closure of all
-  output producers. Unconfirmed nested cleanup or a surviving producer records
-  failure and withholds durable quiescence.
+  output producers; a teardown timeout records failure instead.
+- The first runtime failure wins across all modules. A later companion failure
+  cannot replace the durable first cause.
 - Matching orchestration `FINALIZING`, a durable finalize request, and an
-  operator signal latch one nested abort and one monitoring stop without
+  operator signal latch one nested QGC abort and one monitoring stop without
   stopping the shared simulation clock. The nested runtime keeps that clock
-  through its single recovery: an approved original-H transit at cruise
-  altitude followed by `LAND`, or its separately approved local-`LAND`
-  fallback. Fatal ROS input or executor failures and the absolute wall deadline
-  may stop the clock; parent finalization never reacquires flight commands or
-  assumes pilot recovery.
-- The QGC simulation payload adapter reports no attachment support because its
-  ROS service response confirms release rather than persistent attachment. It
-  requires a literal-true
-  permission predicate with an atomic actuation hook. That hook encloses the
-  actual ROS `call_async` dispatch, while the bounded confirmation wait remains
-  outside the output transaction. Construction also requires a finite positive
-  wall-time budget for a requested simulation-time release delay, so missing or
-  frozen simulation time fails without dispatch. Rejected, missing, mismatched,
-  stale, or timed out confirmation fails the command. A stale release is not
-  retried because an unknown physical completion cannot safely authorize another
-  release.
+  through its approved recovery. Fatal ROS input or executor failures and the
+  absolute wall deadline may stop the clock.
+- The QGC simulation payload adapter reports no attachment support. It requires
+  a literal-true permission predicate around the exact ROS dispatch and rejects
+  missing, mismatched, stale, or timed-out confirmation. An unknown physical
+  completion cannot authorize a duplicate release.
 
 ## Focused tests
 
@@ -164,5 +192,12 @@ uv run --locked pytest companion/tests -q
 ```
 
 These host tests cover the pure policies, adapters, mission host, and runtime
-composition. They do not supply the nested checkout or prove a live flight; use
+composition. They do not prove a live flight; use
 the [runbook](../docs/runbook.md) for image and end-to-end procedures.
+
+Run the bundled mission tests separately:
+
+```bash
+PYTHONPATH=companion/comp2026/src:companion/comp2026/tests \
+  uv run --locked pytest companion/comp2026/tests -q
+```

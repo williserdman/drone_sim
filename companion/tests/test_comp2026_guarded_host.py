@@ -12,6 +12,7 @@ import textwrap
 from types import SimpleNamespace
 
 import pytest
+from artifacts.runtime_status import status_document, status_name
 
 import drone_sim_companion.runtime_node as runtime_node
 
@@ -35,8 +36,10 @@ class FakeProtocol:
         self.events = events
         self.finalize_requested = threading.Event()
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        self.events.append(("status", name, document))
+    def write_status(self, status: object) -> None:
+        self.events.append(
+            ("status", status_name(type(status)), status_document(status))  # type: ignore[arg-type]
+        )
 
     def write_quiescence(self, module: str) -> None:
         self.events.append(("quiescence", module))
@@ -658,7 +661,7 @@ def test_missing_qgc_rejects_before_any_live_dependency(tmp_path, monkeypatch) -
     protocol = FakeProtocol(events)
     monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
 
-    assert runtime_node._run_comp2026(config(tmp_path, qgc=None)) == 1
+    assert runtime_node._run_comp2026_qgc(config(tmp_path, qgc=None)) == 1
     assert calls == ["offline-validation"]
     assert any(event[:2] == ("status", "runtime-failure") for event in events if isinstance(event, tuple))
 

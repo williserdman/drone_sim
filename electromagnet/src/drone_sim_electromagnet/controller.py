@@ -12,7 +12,7 @@ from typing import Any, Protocol, TextIO
 from artifacts.structured_log import StructuredEvent, write_event
 
 from .scenario import InactiveScenarioEvent, ScenarioPolicy
-from .payload import PayloadAuthority, PayloadDecision, PayloadRequest, PayloadWorld
+from .payload import PayloadAuthority, PayloadRequest, PayloadWorld
 
 
 _PHYSICAL_HISTORY_HORIZON_NS = 500_000_000
@@ -327,7 +327,6 @@ class PayloadGateway:
                 accepted=decision.accepted,
                 code=decision.code,
                 detail=decision.code,
-                cache=decision.code != "COMMAND_IN_PROGRESS",
             )
 
         pending = _PendingResult(request.aruco_id, Event())
@@ -338,12 +337,10 @@ class PayloadGateway:
         except Exception:
             with self._lock:
                 self._pending.pop(request.command_id, None)
-            completed = PayloadDecision(False, "COORDINATOR_PUBLISH_FAILED", None)
-            self._authority.complete(request, completed)
             return self._response(
                 request,
                 accepted=False,
-                code=completed.code,
+                code="COORDINATOR_PUBLISH_FAILED",
                 detail="coordinator command could not be published",
             )
 
@@ -352,12 +349,10 @@ class PayloadGateway:
             self._pending.pop(request.command_id, None)
             physical = pending.value
         if not confirmed or physical is None:
-            completed = PayloadDecision(False, "PHYSICAL_CONFIRMATION_TIMEOUT", None)
-            self._authority.complete(request, completed)
             return self._response(
                 request,
                 accepted=False,
-                code=completed.code,
+                code="PHYSICAL_CONFIRMATION_TIMEOUT",
                 detail="no matching physical confirmation within five wall seconds",
             )
 
@@ -374,8 +369,6 @@ class PayloadGateway:
             if physical.status == "error"
             else "PHYSICAL_CONFIRMATION_MISMATCH"
         )
-        completed = PayloadDecision(accepted, code, None)
-        self._authority.complete(request, completed)
         if not accepted:
             return self._response(
                 request,
@@ -410,13 +403,14 @@ class PayloadGateway:
                 code=physical.code,
             )
             self._event_id += 1
-        self._publish_event(event)
-        return self._response(
+        response = self._response(
             request,
             accepted=True,
             code="OK",
             detail=f"physical payload {physical.state}",
         )
+        self._publish_event(event)
+        return response
 
 
 class QuiescenceProtocol(Protocol):

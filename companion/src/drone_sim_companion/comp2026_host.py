@@ -114,6 +114,13 @@ class SimulationClock:
                 raise StaleSensorError("authoritative simulation clock is unavailable")
             return self._timestamp_ns
 
+    def run_at_current_timestamp(self, operation: Callable[[int], None]) -> bool:
+        with self._condition:
+            if self._timestamp_ns is None:
+                return False
+            operation(self._timestamp_ns)
+            return True
+
     def sleep(self, seconds: float) -> None:
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
             raise TypeError("simulation sleep duration must be numeric")
@@ -840,6 +847,7 @@ class Comp2026StartGate:
         self._process_ready = False
         self._running = False
         self._clock = False
+        self._command_delivered = False
         self._frame_ready = False
         self._range_ready = False
         self._payload_service_ready = False
@@ -864,6 +872,7 @@ class Comp2026StartGate:
                 "process_ready": self._process_ready,
                 "running": self._running,
                 "clock": self._clock,
+                "command_delivered": self._command_delivered,
                 "frame_ready": self._frame_ready,
                 "range_ready": self._range_ready,
                 "payload_service_ready": self._payload_service_ready,
@@ -879,6 +888,9 @@ class Comp2026StartGate:
 
     def accept_clock(self) -> None:
         self._mark("_clock")
+
+    def mark_command_delivered(self) -> None:
+        self._mark("_command_delivered")
 
     def refresh_live_readiness(
         self,
@@ -921,6 +933,7 @@ class Comp2026StartGate:
                 self._process_ready,
                 self._running,
                 self._clock,
+                self._command_delivered,
                 self._frame_ready,
                 self._range_ready,
                 self._payload_service_ready,

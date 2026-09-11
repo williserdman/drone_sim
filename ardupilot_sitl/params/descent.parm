@@ -29,14 +29,19 @@ FLTMODE_CH 0
 LAND_SPEED 50
 PLND_ENABLED 1
 PLND_TYPE 1
-# Keep the requested descent speed during precision landing instead of allowing
-# the precision-landing controller to reduce it near touchdown (bit 2).
-PLND_OPTIONS 4
 # Compensate the measured onboard-frame to MAVLink receipt latency.
 PLND_LAG 0.08
 # The simulator target is stationary and camera measurements are physically accurate;
 # consume each measurement directly instead of the oscillatory Kalman estimate.
 PLND_EST_TYPE 0
+PLND_XY_DIST_MAX 0.50
+PLND_STRICT 2
+PLND_RET_MAX 1
+PLND_TIMEOUT 0.50
+PLND_ALT_MIN 0.75
+PLND_ALT_MAX 8.0
+# Bit 2 keeps the normal final descent speed during precision landing.
+PLND_OPTIONS 4
 LOG_BACKEND_TYPE 1
 LOG_DISARMED 1
 SERIAL0_PROTOCOL 2

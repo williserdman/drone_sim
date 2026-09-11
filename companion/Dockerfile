@@ -3,10 +3,13 @@ FROM ros:jazzy-ros-base@sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f
 ARG SIM_COMP2026_REVISION
 LABEL org.opencontainers.image.comp2026.revision="${SIM_COMP2026_REVISION}"
 
+RUN test -n "${SIM_COMP2026_REVISION}" \
+    || { echo >&2 "SIM_COMP2026_REVISION is required for the Phase 3 companion image"; exit 2; }
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         python3-venv=3.12.3-0ubuntu2.1 \
-        python3.12-venv=3.12.3-1ubuntu0.15 \
+        python3.12-venv=3.12.3-1ubuntu0.17 \
         python3-pip-whl=24.0+dfsg-1ubuntu1.3 \
         python3-setuptools-whl=68.1.2-2ubuntu1.2 \
         python3-wheel=0.42.0-2 \

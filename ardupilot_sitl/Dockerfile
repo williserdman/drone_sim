@@ -26,10 +26,11 @@ COPY --from=source /opt/ardupilot-src/COPYING.txt /opt/ardupilot/COPYING.txt
 COPY --from=source /opt/ardupilot-revision.txt /opt/ardupilot/revision.txt
 COPY --from=source /opt/ardupilot-submodules.txt /opt/ardupilot/submodules.txt
 COPY ardupilot_sitl/src /opt/drone_sim/ardupilot_sitl/src
+COPY artifacts/src /opt/drone_sim/artifacts/src
 COPY ardupilot_sitl/params /opt/drone_sim/ardupilot/params
 COPY ardupilot_sitl/provenance /opt/drone_sim/ardupilot/provenance
 
-ENV PYTHONPATH=/opt/drone_sim/ardupilot_sitl/src
+ENV PYTHONPATH=/opt/drone_sim/ardupilot_sitl/src:/opt/drone_sim/artifacts/src
 LABEL org.opencontainers.image.source="https://github.com/ArduPilot/ardupilot.git" \
       org.opencontainers.image.revision="2a3dc4b7bf2507120f7378a7b2fde73185e0c325" \
       org.opencontainers.image.licenses="GPL-3.0-or-later"

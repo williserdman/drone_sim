@@ -1,5 +1,11 @@
 from pathlib import Path
 
+from artifacts.runtime_status import (
+    FlightExchange,
+    GazeboReadyStatus,
+    RuntimeFailureStatus,
+    SourceFinishedStatus,
+)
 from drone_sim_gazebo.runtime import (
     ActivateOutput,
     BeginFinalization,
@@ -16,26 +22,17 @@ from drone_sim_gazebo.server import NativeArtifactSummary
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
-
-
+FLIGHT_EXCHANGE = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
 class Protocol:
     def __init__(self):
         self.statuses = []
         self.quiescence = []
 
-    def write_status(self, name, document):
-        self.statuses.append((name, document))
+    def write_status(self, status):
+        self.statuses.append(status)
 
     def write_quiescence(self, module):
         self.quiescence.append(module)
-
-
-class Status:
-    def __init__(self):
-        self.ready = []
-
-    def write_gazebo_ready(self):
-        self.ready.append(True)
 
 
 class Transport:
@@ -77,28 +74,30 @@ def _executor(tmp_path, *, activate_output=lambda: None, start_warmup=None):
         0,
         True,
     )
-    protocol, status, transport, children, server = (
-        Protocol(), Status(), Transport(), Children(), Server(summary)
+    protocol, transport, children, server = (
+        Protocol(),
+        Transport(),
+        Children(),
+        Server(summary),
     )
     executor = ActionExecutor(
         run_id=RUN_ID,
         protocol=protocol,
-        status=status,
         transport=transport,
         children=children,
         server=server,
         activate_output=activate_output,
         start_warmup=start_warmup,
     )
-    return executor, protocol, status, transport, children, server, summary
+    return executor, protocol, transport, children, server, summary
 
 
 def test_action_executor_maps_readiness_control_and_durable_facts(tmp_path):
-    executor, protocol, status, transport, *_ = _executor(tmp_path)
+    executor, protocol, transport, *_ = _executor(tmp_path)
 
     followups = executor.apply(
         (
-            PublishGazeboReady(),
+            PublishGazeboReady(FLIGHT_EXCHANGE),
             RequestSteps(1),
             SetPaused(False),
             WriteSourceFinished(2_000_000_000),
@@ -108,17 +107,19 @@ def test_action_executor_maps_readiness_control_and_durable_facts(tmp_path):
     )
 
     assert followups == ()
-    assert status.ready == [True]
     assert transport.calls == [("step", 1), ("pause", False)]
     assert protocol.statuses == [
-        ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000}),
-        ("runtime-failure", {"run_id": RUN_ID, "module": "gazebo", "reason": "broken", "diagnostic_paths": ["gazebo/server.log.partial"]}),
+        GazeboReadyStatus(RUN_ID, FLIGHT_EXCHANGE),
+        SourceFinishedStatus(RUN_ID, 2_000_000_000),
+        RuntimeFailureStatus(
+            RUN_ID, "gazebo", "broken", ("gazebo/server.log.partial",)
+        ),
     ]
 
 
 def test_unpause_does_not_activate_public_output_during_private_warmup(tmp_path):
     ordering = []
-    executor, _protocol, _status, transport, *_ = _executor(
+    executor, _protocol, transport, *_ = _executor(
         tmp_path, activate_output=lambda: ordering.append("activate")
     )
     original = transport.set_paused
@@ -136,7 +137,7 @@ def test_unpause_does_not_activate_public_output_during_private_warmup(tmp_path)
 
 def test_flight_warmup_runs_to_public_epoch_instead_of_unbounded_unpause(tmp_path):
     ordering = []
-    executor, _protocol, _status, transport, *_ = _executor(
+    executor, _protocol, transport, *_ = _executor(
         tmp_path,
         activate_output=lambda: ordering.append("activate"),
         start_warmup=lambda: ordering.append("run_to_epoch"),
@@ -150,7 +151,7 @@ def test_flight_warmup_runs_to_public_epoch_instead_of_unbounded_unpause(tmp_pat
 
 def test_explicit_activate_output_action_does_not_unpause_a_second_time(tmp_path):
     ordering = []
-    executor, _protocol, _status, transport, *_ = _executor(
+    executor, _protocol, transport, *_ = _executor(
         tmp_path, activate_output=lambda: ordering.append("activate")
     )
 
@@ -161,7 +162,9 @@ def test_explicit_activate_output_action_does_not_unpause_a_second_time(tmp_path
 
 
 def test_stop_uses_same_absolute_deadline_for_children_and_server(tmp_path):
-    executor, _protocol, _status, _transport, children, server, summary = _executor(tmp_path)
+    executor, _protocol, _transport, children, server, summary = _executor(
+        tmp_path
+    )
 
     followups = executor.apply((StopServer(123.0),))
 
@@ -172,7 +175,9 @@ def test_stop_uses_same_absolute_deadline_for_children_and_server(tmp_path):
 
 
 def test_stop_still_stops_server_when_child_cleanup_fails(tmp_path):
-    executor, _protocol, _status, _transport, children, server, _summary = _executor(tmp_path)
+    executor, _protocol, _transport, children, server, _summary = _executor(
+        tmp_path
+    )
     children.error = RuntimeError("bridge cleanup failed")
 
     followups = executor.apply((StopServer(123.0),))

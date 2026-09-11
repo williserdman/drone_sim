@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-import fcntl
-import json
 import os
 from pathlib import Path
 import stat
 from typing import Any, Callable, Mapping
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from artifacts import FinalizationResult, validate_regular_file, validate_tree
 from artifacts.manifest import (
@@ -22,39 +20,28 @@ from artifacts.manifest import (
     SimulationTiming,
     SourceRevision,
     WallTiming,
+    is_manifest_relative_path,
     validate_manifest,
 )
+from artifacts.protocol_files import (
+    ProtocolIOError,
+    WritePolicy,
+    open_directory,
+    read_json_object_at,
+    write_json_object_at,
+)
+from artifacts.runtime_status import (
+    RuntimeStatusError,
+    StatusT,
+    parse_status,
+    status_name,
+)
 
 
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-)
-_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-_RUNTIME_STATUS_NAMES = frozenset(
-    {
-        "artifacts-ready",
-        "gazebo-ready",
-        "ardupilot-ready",
-        "companion-ready",
-        "mission-ready",
-        "runtime-running",
-        "source-finished",
-        "mission-finished",
-        "score-finished",
-        "runtime-failure",
-        "runtime-frozen",
-        "artifacts-final",
-        "terminal-notified",
-    }
-)
 _LIFECYCLE_STATES = frozenset(
     {"CREATED", "STARTING", "READY", "RUNNING", "FINALIZING", "COMPLETED", "FAILED", "ABORTED"}
 )
 _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
-_MAX_PROTOCOL_BYTES = 4 * 1024 * 1024
 
 
 class ProtocolFileError(RuntimeError):
@@ -156,33 +143,38 @@ def _canonical_run_id(run_id: str) -> str:
     return canonical
 
 
-def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    document: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in document:
-            raise ValueError(f"duplicate JSON key: {key}")
-        document[key] = value
-    return document
-
-
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-standard JSON constant: {value}")
-
-
-def _canonical_json(document: Mapping[str, Any]) -> bytes:
+def _read_protocol_document_at(
+    directory_fd: int,
+    name: str,
+    deadline_check: Callable[[], None] | None = None,
+) -> dict[str, Any] | None:
     try:
-        return (
-            json.dumps(
-                dict(document),
-                allow_nan=False,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        ).encode("utf-8")
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ProtocolFileError(f"protocol document is not valid JSON: {exc}") from exc
+        return read_json_object_at(
+            directory_fd,
+            name,
+            deadline_check=deadline_check,
+        )
+    except ProtocolIOError as error:
+        raise ProtocolFileError(str(error)) from error
+
+
+def _write_protocol_document_at(
+    directory_fd: int,
+    name: str,
+    document: Mapping[str, Any],
+    *,
+    policy: WritePolicy,
+) -> tuple[dict[str, Any], bool]:
+    try:
+        return write_json_object_at(
+            directory_fd,
+            name,
+            document,
+            mode=0o600,
+            policy=policy,
+        )
+    except ProtocolIOError as error:
+        raise ProtocolFileError(str(error)) from error
 
 
 class StatusStore:
@@ -198,7 +190,7 @@ class StatusStore:
     def _open_output_root(self, *, create: bool) -> int:
         current_fd: int | None = None
         try:
-            current_fd = os.open(self.output_root.anchor, _DIRECTORY_FLAGS)
+            current_fd = open_directory(self.output_root.anchor)
             for part in self.output_root.parts[1:]:
                 try:
                     metadata = os.stat(
@@ -220,21 +212,16 @@ class StatusStore:
                     raise ProtocolFileError(
                         "output root must be a non-symlink directory"
                     )
-                next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=current_fd)
-                opened = os.fstat(next_fd)
-                if (metadata.st_dev, metadata.st_ino) != (
-                    opened.st_dev,
-                    opened.st_ino,
-                ):
-                    os.close(next_fd)
-                    raise ProtocolFileError("output root changed while opening")
-                os.close(current_fd)
-                current_fd = next_fd
+                parent_fd = current_fd
+                current_fd = open_directory(part, dir_fd=parent_fd)
+                os.close(parent_fd)
             descriptor = current_fd
             current_fd = None
             return descriptor
         except ProtocolFileError:
             raise
+        except ProtocolIOError as error:
+            raise ProtocolFileError(f"output root is unsafe: {error}") from error
         except OSError as exc:
             raise ProtocolFileError(f"output root is unsafe: {exc}") from exc
         finally:
@@ -256,11 +243,16 @@ class StatusStore:
             os.mkdir(canonical, 0o755, dir_fd=root_fd)
             os.chmod(canonical, 0o755, dir_fd=root_fd, follow_symlinks=False)
             os.fsync(root_fd)
-            run_fd = os.open(canonical, _DIRECTORY_FLAGS, dir_fd=root_fd)
+            try:
+                run_fd = open_directory(canonical, dir_fd=root_fd)
+            except ProtocolIOError as error:
+                raise ProtocolFileError(
+                    f"run directory is unsafe: {error}"
+                ) from error
             for name in (".control", ".status", "configuration"):
                 os.mkdir(name, 0o755, dir_fd=run_fd)
                 os.chmod(name, 0o755, dir_fd=run_fd, follow_symlinks=False)
-            status_fd = os.open(".status", _DIRECTORY_FLAGS, dir_fd=run_fd)
+            status_fd = self._open_child_directory(run_fd, ".status")
             try:
                 os.mkdir("quiescence", 0o755, dir_fd=status_fd)
                 os.chmod(
@@ -280,185 +272,24 @@ class StatusStore:
         canonical = _canonical_run_id(run_id)
         root_fd = self._open_output_root(create=False)
         try:
-            descriptor = os.open(canonical, _DIRECTORY_FLAGS, dir_fd=root_fd)
-            metadata = os.stat(canonical, dir_fd=root_fd, follow_symlinks=False)
-            opened = os.fstat(descriptor)
-            if not stat.S_ISDIR(metadata.st_mode) or (
-                metadata.st_dev,
-                metadata.st_ino,
-            ) != (opened.st_dev, opened.st_ino):
-                os.close(descriptor)
-                raise ProtocolFileError("run directory is unsafe")
-            return descriptor
-        except FileNotFoundError:
-            raise ProtocolFileError(f"run does not exist: {canonical}") from None
-        except ProtocolFileError:
-            raise
-        except OSError as exc:
-            raise ProtocolFileError(f"run directory is unsafe: {exc}") from exc
+            return open_directory(canonical, dir_fd=root_fd)
+        except ProtocolIOError as error:
+            if isinstance(error.__cause__, FileNotFoundError):
+                raise ProtocolFileError(
+                    f"run does not exist: {canonical}"
+                ) from None
+            raise ProtocolFileError(f"run directory is unsafe: {error}") from error
         finally:
             os.close(root_fd)
 
     @staticmethod
     def _open_child_directory(parent_fd: int, name: str) -> int:
         try:
-            descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
-            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            opened = os.fstat(descriptor)
-            if not stat.S_ISDIR(metadata.st_mode) or (
-                metadata.st_dev,
-                metadata.st_ino,
-            ) != (opened.st_dev, opened.st_ino):
-                raise ProtocolFileError(f"protocol directory {name!r} is unsafe")
-            return descriptor
-        except ProtocolFileError:
-            try:
-                os.close(descriptor)
-            except (OSError, UnboundLocalError):
-                pass
-            raise
-        except OSError as exc:
-            raise ProtocolFileError(f"protocol directory {name!r} is unsafe: {exc}") from exc
-
-    @staticmethod
-    def _inspect_existing(directory_fd: int, name: str) -> os.stat_result | None:
-        try:
-            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            raise ProtocolFileError(f"could not inspect protocol file {name!r}: {exc}") from exc
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise ProtocolFileError(f"protocol file {name!r} must be regular and non-symlink")
-        if metadata.st_nlink != 1:
-            raise ProtocolFileError(f"protocol file {name!r} must have exactly one hard link")
-        return metadata
-
-    @classmethod
-    def _read_document_at(
-        cls,
-        directory_fd: int,
-        name: str,
-        deadline_check: Callable[[], None] | None = None,
-    ) -> dict[str, Any] | None:
-        if deadline_check is not None:
-            deadline_check()
-        before = cls._inspect_existing(directory_fd, name)
-        if before is None:
-            return None
-        descriptor: int | None = None
-        try:
-            descriptor = os.open(name, _FILE_FLAGS, dir_fd=directory_fd)
-            opened = os.fstat(descriptor)
-            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                raise ProtocolFileError(f"protocol file {name!r} changed while opening")
-            if opened.st_size > _MAX_PROTOCOL_BYTES:
-                raise ProtocolFileError(f"protocol file {name!r} is too large")
-            chunks: list[bytes] = []
-            remaining = _MAX_PROTOCOL_BYTES + 1
-            while remaining:
-                if deadline_check is not None:
-                    deadline_check()
-                chunk = os.read(descriptor, min(65536, remaining))
-                if deadline_check is not None:
-                    deadline_check()
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            if remaining == 0 and os.read(descriptor, 1):
-                raise ProtocolFileError(f"protocol file {name!r} is too large")
-            after = os.fstat(descriptor)
-            named_after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            if any(
-                getattr(opened, field) != getattr(after, field)
-                or getattr(after, field) != getattr(named_after, field)
-                for field in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
-            ):
-                raise ProtocolFileError(f"protocol file {name!r} changed while reading")
-            try:
-                if deadline_check is not None:
-                    deadline_check()
-                document = json.loads(
-                    b"".join(chunks).decode("utf-8"),
-                    object_pairs_hook=_reject_duplicate_pairs,
-                    parse_constant=_reject_json_constant,
-                )
-                if deadline_check is not None:
-                    deadline_check()
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
-                raise ProtocolFileError(f"protocol file {name!r} contains invalid JSON: {exc}") from exc
-            if not isinstance(document, dict):
-                raise ProtocolFileError(f"protocol file {name!r} must contain a JSON object")
-            return document
-        except ProtocolFileError:
-            raise
-        except TimeoutError:
-            raise
-        except OSError as exc:
-            raise ProtocolFileError(f"could not read protocol file {name!r}: {exc}") from exc
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-
-    @classmethod
-    def _write_document_at(
-        cls,
-        directory_fd: int,
-        name: str,
-        document: Mapping[str, Any],
-        *,
-        first_wins: bool,
-    ) -> tuple[dict[str, Any], bool]:
-        payload = _canonical_json(document)
-        temporary = f".{name}.{uuid4().hex}.tmp"
-        descriptor: int | None = None
-        fcntl.flock(directory_fd, fcntl.LOCK_EX)
-        try:
-            existing = cls._read_document_at(directory_fd, name)
-            if existing is not None and first_wins:
-                return existing, False
-            if existing is not None:
-                cls._inspect_existing(directory_fd, name)
-            descriptor = os.open(
-                temporary,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-                dir_fd=directory_fd,
-            )
-            written = 0
-            while written < len(payload):
-                count = os.write(descriptor, payload[written:])
-                if count <= 0:
-                    raise OSError("protocol write made no progress")
-                written += count
-            os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = None
-            os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-            os.fsync(directory_fd)
-            return dict(document), True
-        except ProtocolFileError:
-            raise
-        except OSError as exc:
-            raise ProtocolFileError(f"could not persist protocol file {name!r}: {exc}") from exc
-        finally:
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            try:
-                os.unlink(temporary, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-            fcntl.flock(directory_fd, fcntl.LOCK_UN)
+            return open_directory(name, dir_fd=parent_fd)
+        except ProtocolIOError as error:
+            raise ProtocolFileError(
+                f"protocol directory {name!r} is unsafe: {error}"
+            ) from error
 
     def _with_protocol_directory(self, run_id: str, directory_name: str) -> tuple[int, int]:
         run_fd = self._open_run(run_id)
@@ -472,8 +303,11 @@ class StatusStore:
     def write_operator_status(self, status: OperatorStatus) -> Path:
         run_fd, status_fd = self._with_protocol_directory(status.run_id, ".status")
         try:
-            self._write_document_at(
-                status_fd, "operator-state.json", status.to_dict(), first_wins=False
+            _write_protocol_document_at(
+                status_fd,
+                "operator-state.json",
+                status.to_dict(),
+                policy=WritePolicy.REPLACE,
             )
         finally:
             os.close(status_fd)
@@ -483,7 +317,7 @@ class StatusStore:
     def read_operator_status(self, run_id: str) -> OperatorStatus:
         run_fd, status_fd = self._with_protocol_directory(run_id, ".status")
         try:
-            document = self._read_document_at(status_fd, "operator-state.json")
+            document = _read_protocol_document_at(status_fd, "operator-state.json")
         finally:
             os.close(status_fd)
             os.close(run_fd)
@@ -509,8 +343,11 @@ class StatusStore:
         }
         run_fd, control_fd = self._with_protocol_directory(run_id, ".control")
         try:
-            persisted, _created = self._write_document_at(
-                control_fd, "finalize-request.json", document, first_wins=True
+            persisted, _created = _write_protocol_document_at(
+                control_fd,
+                "finalize-request.json",
+                document,
+                policy=WritePolicy.FIRST_WINS,
             )
         finally:
             os.close(control_fd)
@@ -536,7 +373,7 @@ class StatusStore:
     def read_finalize_request(self, run_id: str) -> dict[str, Any] | None:
         run_fd, control_fd = self._with_protocol_directory(run_id, ".control")
         try:
-            document = self._read_document_at(control_fd, "finalize-request.json")
+            document = _read_protocol_document_at(control_fd, "finalize-request.json")
         finally:
             os.close(control_fd)
             os.close(run_fd)
@@ -554,8 +391,11 @@ class StatusStore:
             raise ValueError("terminal commit manifest_path must be manifest.json")
         run_fd, control_fd = self._with_protocol_directory(run_id, ".control")
         try:
-            persisted, created = self._write_document_at(
-                control_fd, "terminal-committed.json", document, first_wins=True
+            persisted, created = _write_protocol_document_at(
+                control_fd,
+                "terminal-committed.json",
+                document,
+                policy=WritePolicy.FIRST_WINS,
             )
         finally:
             os.close(control_fd)
@@ -567,24 +407,34 @@ class StatusStore:
     def read_runtime_status(
         self,
         run_id: str,
-        name: str,
+        status_type: type[StatusT],
         deadline_check: Callable[[], None] | None = None,
-    ) -> dict[str, Any] | None:
-        if name not in _RUNTIME_STATUS_NAMES:
-            raise ValueError("runtime status name is not part of the frozen protocol")
+    ) -> StatusT | None:
+        try:
+            name = status_name(status_type)
+        except RuntimeStatusError as error:
+            raise ProtocolFileError(str(error)) from error
         run_fd, status_fd = self._with_protocol_directory(run_id, ".status")
         try:
-            document = self._read_document_at(
-                status_fd,
-                f"{name}.json",
-                deadline_check,
-            )
+            try:
+                document = read_json_object_at(
+                    status_fd,
+                    f"{name}.json",
+                    deadline_check=deadline_check,
+                )
+            except ProtocolIOError as error:
+                raise ProtocolFileError(str(error)) from error
         finally:
             os.close(status_fd)
             os.close(run_fd)
-        if document is not None and document.get("run_id") != run_id:
-            raise ProtocolFileError(f"runtime status {name!r} has the wrong run_id")
-        return document
+        if document is None:
+            return None
+        try:
+            return parse_status(status_type, document, expected_run_id=run_id)
+        except RuntimeStatusError as error:
+            raise ProtocolFileError(
+                f"runtime status {name!r}: {error}"
+            ) from error
 
     def validated_manifest_result(
         self,
@@ -594,7 +444,7 @@ class StatusStore:
         run_directory = self.run_directory(run_id)
         run_fd = self._open_run(run_id)
         try:
-            document = self._read_document_at(
+            document = _read_protocol_document_at(
                 run_fd, "manifest.json", deadline_check
             )
         finally:
@@ -679,10 +529,7 @@ class StatusStore:
                 raise ProtocolFileError("manifest artifact record is invalid")
             relative_path = record["relative_path"]
             if (
-                not isinstance(relative_path, str)
-                or not relative_path
-                or Path(relative_path).is_absolute()
-                or ".." in Path(relative_path).parts
+                not is_manifest_relative_path(relative_path)
                 or relative_path in paths
             ):
                 raise ProtocolFileError("manifest artifact path is invalid or duplicated")

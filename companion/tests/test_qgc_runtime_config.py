@@ -242,18 +242,13 @@ def test_runtime_environment_rejects_qgc_outside_explicit_phase3(
         )
 
 
-@pytest.mark.parametrize("qgc_value", [None, {}], ids=["missing", "invalid"])
 def test_runtime_rejects_qgc_structure_before_reading_competition_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    qgc_value: object,
 ) -> None:
     expected, _state_root, _ = prepared_config(tmp_path)
     document = _resolved_run_document(expected)
-    if qgc_value is None:
-        document.pop("qgc")
-    else:
-        document["qgc"] = qgc_value
+    document["qgc"] = {}
     config_path = expected.run_directory / "configuration/run.json"
     config_path.write_text(json.dumps(document), encoding="utf-8")
     referenced_reads: list[Path] = []

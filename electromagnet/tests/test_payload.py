@@ -109,24 +109,14 @@ def test_release_requires_requested_marker_and_emits_detach_wire() -> None:
     )
 
 
-def test_completed_identical_request_replays_without_a_second_command() -> None:
+def test_authority_revalidates_reused_command_without_retaining_history() -> None:
     policy = authority()
     request = attach_request()
     assert policy.decide(centered_state(), request).wire_command is not None
-    policy.complete(request, PayloadDecision(True, "OK", None))
-
-    assert policy.decide(centered_state(), request) == PayloadDecision(True, "OK", None)
-
-
-def test_conflicting_command_id_reuse_is_rejected_without_a_command() -> None:
-    policy = authority()
-    first = attach_request()
-    policy.decide(centered_state(), first)
-    policy.complete(first, PayloadDecision(True, "OK", None))
-
-    conflict = replace(first, aruco_id=4)
-    assert policy.decide(centered_state(), conflict) == PayloadDecision(
-        False, "COMMAND_ID_CONFLICT", None
+    assert policy.decide(
+        replace(centered_state(), attached_id=2), request
+    ) == PayloadDecision(
+        False, "CAPACITY_OCCUPIED", None
     )
 
 

@@ -15,9 +15,9 @@ validated run bundle establish what actually happened.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
-**Current caveat:** a physical three-payload flight and return home have been
-verified, but the latest documented verification run failed later in the
-recording window. A score of 150/150 alone does not mean the run passed.
+**Current status:** the latest documented automatic mission run completed its
+600-second window with accepted terminal artifacts and a 150/150 score. The
+guarded QGC path remains limited to FM1/FM2 and has no matching live QGC/SITL run.
 See the [evidence and limitations](docs/handoff.md#verified-behavior-and-limits).
 
 ## First local check
@@ -32,19 +32,17 @@ make test-unit
 
 This checks the host tooling; it does **not** launch a flight or prove ROS/Gazebo
 integration. The [runbook](docs/runbook.md) explains the remaining prerequisites.
-In particular, a fresh clone is not yet self-contained: the separately versioned
-mission at `companion/comp2026` must be supplied before a Phase 3 image build/run.
 
-For a supported local diagnostic after its runtime images are ready, run:
+Once matching runtime images are ready, the automatic competition command is:
 
 ```bash
-uv run --locked drone-sim start --config config/vertical-descent-run.json
+uv run --locked drone-sim start --config config/default-run.json
 ```
 
 It runs in the foreground and does not build images automatically. Do not start
-with a bare `docker compose up`. The checked-in `default-run.json` and
-`realtime-run.json` competition templates are quarantined until an operator
-supplies the required QGC configuration inputs.
+with a bare `docker compose up`. A QGC-selected run requires the complete guarded
+input set described in the runbook; the checked-in default and realtime
+templates omit it and therefore retain the automatic host.
 
 ## How to read this repository
 
@@ -66,12 +64,11 @@ README. For a mission, start with [companion](companion/README.md): define its
 behavior and success/failure conditions, implement and register it through the
 existing selector, add a run template and focused tests, then follow the
 [runbook](docs/runbook.md) to build and verify. Competition mission edits may
-belong to the separate nested checkout; check ownership before editing.
+belong under `companion/comp2026`; read its local documentation before editing.
 
 Update every affected module README and shared guide **in the same change**.
 Report documentation impact (or why none is needed), tests, and any unverified
 runtime behavior when handing off.
 
-## Packaging TODO
-
-- Make `companion/comp2026` a required Git submodule after publishing its pinned integration commit to an accessible remote.
+The Comp2026 mission source and its prior Git history are included in this
+monorepo at `companion/comp2026`.

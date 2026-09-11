@@ -85,7 +85,7 @@ services:
       dockerfile: companion/Dockerfile
       target: runtime
       args:
-        SIM_COMP2026_REVISION: ${SIM_COMP2026_REVISION:-2241d00444db6414a5a1c646c8971c84943849a8}
+        SIM_COMP2026_REVISION: ${SIM_COMP2026_REVISION:-}
     environment:
       <<: *run-environment
       SIM_MODULE: companion

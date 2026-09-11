@@ -2,30 +2,22 @@ import json
 import os
 from pathlib import Path
 import stat
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from artifacts.protocol_files import ProtocolIOError
 from artifacts.runtime_protocol import ProtocolError, RuntimeProtocol
+from artifacts.runtime_status import (
+    ArtifactsReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeRunningStatus,
+    SourceFinishedStatus,
+)
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
-VALID_GAZEBO_READY = {
-    "run_id": RUN_ID,
-    "ready": True,
-    "flight_exchange": {
-        "online": True,
-        "servo_packets_received": 1,
-        "motor_updates": 1,
-        "duplicate_servo_packets": 0,
-        "servo_frame_gaps": 0,
-        "json_states_sent": 1,
-        "json_send_errors": 0,
-        "last_servo_frame": 0,
-        "last_json_sim_time_ns": 0,
-    },
-}
-
-
+OTHER_RUN_ID = "22222222-2222-4222-8222-222222222222"
 @pytest.fixture
 def run_directory(tmp_path: Path) -> Path:
     run = tmp_path / RUN_ID
@@ -35,135 +27,115 @@ def run_directory(tmp_path: Path) -> Path:
     return run
 
 
-def test_runtime_status_schemas_round_trip_and_conflicting_rewrite_is_rejected(run_directory):
+def _fail_directory_fstat(monkeypatch, target: Path) -> list[int]:
+    expected = target.resolve()
+    real_fstat = os.fstat
+    failed: list[int] = []
+
+    def fail_target(descriptor):
+        try:
+            opened_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            return real_fstat(descriptor)
+        if opened_path == expected:
+            failed.append(descriptor)
+            raise OSError("simulated directory fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "fstat", fail_target)
+    return failed
+
+
+def _assert_failed_open_closed(failed: list[int]) -> None:
+    assert len(failed) == 1
+    assert not Path(f"/proc/self/fd/{failed[0]}").exists()
+
+
+def test_constructor_translates_directory_fstat_failure_without_leak(
+    run_directory, monkeypatch
+):
+    failed = _fail_directory_fstat(monkeypatch, run_directory)
+
+    with pytest.raises(ProtocolError, match="run directory is unsafe") as raised:
+        RuntimeProtocol(run_directory, RUN_ID)
+
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+    _assert_failed_open_closed(failed)
+
+
+def test_child_open_translates_directory_fstat_failure_without_leak(
+    run_directory, monkeypatch
+):
     protocol = RuntimeProtocol(run_directory, RUN_ID)
-    documents = {
-        "artifacts-ready": {"run_id": RUN_ID, "ready": True},
-        "gazebo-ready": VALID_GAZEBO_READY,
-        "ardupilot-ready": {
-            "run_id": RUN_ID,
-            "ready": True,
-            "json_exchange": True,
-            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-        },
-        "companion-ready": {
-            "run_id": RUN_ID,
-            "ready": True,
-            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-            "mavlink_transport_connected": True,
-        },
-        "mission-ready": {
-            "run_id": RUN_ID,
-            "ready": True,
-            "heartbeat_observed": True,
-            "prearm_checks_healthy": True,
-        },
-        "mission-command-delivered": {
-            "run_id": RUN_ID,
-            "command": "SET_GUIDED",
-            "sim_timestamp_ns": 0,
-            "delivered": True,
-        },
-        "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
-        "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},
-        "mission-finished": {
-            "run_id": RUN_ID,
-            "finished": True,
-            "sim_timestamp_ns": 1_500_000_000,
-            "outcome": "LANDED",
-        },
-        "score-finished": {
-            "run_id": RUN_ID,
-            "finished": True,
-            "sim_timestamp_ns": 2_000_000_000,
-        },
-        "runtime-failure": {
-            "run_id": RUN_ID,
-            "module": "artifacts",
-            "reason": "observer encoder failed",
-            "diagnostic_paths": ["logs/docker/ffmpeg-observer.log.partial"],
-        },
-        "runtime-frozen": {"run_id": RUN_ID, "frozen": True},
-        "terminal-notified": {"run_id": RUN_ID, "notified": True},
-    }
-    for name, document in documents.items():
-        path = protocol.write_status(name, document)
-        assert json.loads(path.read_text()) == document
-        assert protocol.write_status(name, document) == path
+    failed = _fail_directory_fstat(monkeypatch, run_directory / ".status")
+    try:
+        with pytest.raises(
+            ProtocolError, match="protocol directory '.status'"
+        ) as raised:
+            protocol.read_status(ArtifactsReadyStatus)
+        assert isinstance(raised.value.__cause__, ProtocolIOError)
+        _assert_failed_open_closed(failed)
+    finally:
+        protocol.close()
 
-    changed = {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 1}
+
+def test_identical_status_equal_retry_succeeds_and_different_retry_conflicts(run_directory):
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+    status = RuntimeRunningStatus(RUN_ID, 1)
+    path = protocol.write_status(status)
+    assert protocol.write_status(status) == path
+
     with pytest.raises(ProtocolError, match="conflict"):
-        protocol.write_status("runtime-running", changed)
+        protocol.write_status(RuntimeRunningStatus(RUN_ID, 2))
 
 
-def test_mission_command_delivery_accepts_the_paused_startup_window(run_directory):
-    document = {
-        "run_id": RUN_ID,
-        "command": "SET_GUIDED",
-        "sim_timestamp_ns": 50_000_000,
-        "delivered": True,
-    }
+def test_runtime_status_write_rejects_cross_run_value_before_publication(run_directory):
+    path = run_directory / ".status/artifacts-ready.json"
 
-    path = RuntimeProtocol(run_directory, RUN_ID).write_status(
-        "mission-command-delivered", document
+    with pytest.raises(ProtocolError, match="wrong run_id"):
+        RuntimeProtocol(run_directory, RUN_ID).write_status(
+            ArtifactsReadyStatus(OTHER_RUN_ID)
+        )
+
+    assert not path.exists()
+
+
+def test_runtime_failure_concurrent_distinct_writers_keep_one_valid_winner(run_directory):
+    failures = tuple(
+        RuntimeFailureStatus(RUN_ID, f"module-{index}", f"reason-{index}", ())
+        for index in range(8)
+    )
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+    with ThreadPoolExecutor(max_workers=len(failures)) as executor:
+        paths = tuple(executor.map(protocol.write_status, failures))
+
+    assert len(set(paths)) == 1
+    assert protocol.read_status(RuntimeFailureStatus) in failures
+
+
+def test_runtime_failure_rejects_malformed_persisted_winner_without_changing_it(run_directory):
+    path = run_directory / ".status/runtime-failure.json"
+    malformed = b'{"run_id":"wrong"}\n'
+    path.write_bytes(malformed)
+    path.chmod(0o644)
+
+    with pytest.raises(ProtocolError):
+        RuntimeProtocol(run_directory, RUN_ID).write_status(
+            RuntimeFailureStatus(RUN_ID, "gazebo", "failed", ())
+        )
+
+    assert path.read_bytes() == malformed
+
+
+def test_runtime_status_translates_malformed_document_to_protocol_error(run_directory):
+    (run_directory / ".status/source-finished.json").write_bytes(
+        b'{"finished":false,"run_id":"11111111-1111-4111-8111-111111111111","sim_timestamp_ns":1}\n'
     )
 
-    assert json.loads(path.read_text()) == document
+    with pytest.raises(ProtocolError) as raised:
+        RuntimeProtocol(run_directory, RUN_ID).read_status(SourceFinishedStatus)
 
-
-@pytest.mark.parametrize(
-    ("name", "document"),
-    [
-        ("artifacts-ready", {"run_id": RUN_ID, "ready": 1}),
-        ("gazebo-ready", {"run_id": RUN_ID, "ready": False}),
-        ("ardupilot-ready", {"run_id": RUN_ID, "ready": True, "json_exchange": False, "mavlink_endpoint": "tcp://ardupilot-sitl:5760"}),
-        ("companion-ready", {"run_id": RUN_ID, "ready": True, "mavlink_endpoint": "tcp://ardupilot-sitl:5760", "mavlink_transport_connected": False}),
-        ("mission-ready", {"run_id": RUN_ID, "ready": True, "heartbeat_observed": True, "prearm_checks_healthy": False}),
-        ("mission-command-delivered", {"run_id": RUN_ID, "command": "ARM", "sim_timestamp_ns": 0, "delivered": True}),
-        ("mission-command-delivered", {"run_id": RUN_ID, "command": "SET_GUIDED", "sim_timestamp_ns": 50_000_001, "delivered": True}),
-        ("runtime-running", {"run_id": RUN_ID, "state": "READY", "sim_timestamp_ns": 0}),
-        ("runtime-running", {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": True}),
-        ("source-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": -1}),
-        ("mission-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 1, "outcome": "FAILED"}),
-        ("score-finished", {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": True}),
-        ("runtime-failure", {"run_id": RUN_ID, "module": "", "reason": "bad", "diagnostic_paths": []}),
-        ("runtime-failure", {"run_id": RUN_ID, "module": "x", "reason": "bad", "diagnostic_paths": ["../x"]}),
-        ("runtime-failure", {"run_id": RUN_ID, "module": "x", "reason": "bad", "diagnostic_paths": ["a", "a"]}),
-        ("runtime-frozen", {"run_id": RUN_ID, "frozen": False}),
-        ("terminal-notified", {"run_id": RUN_ID, "notified": True, "extra": 1}),
-    ],
-)
-def test_runtime_status_rejects_wrong_schema(run_directory, name, document):
-    with pytest.raises((ProtocolError, ValueError)):
-        RuntimeProtocol(run_directory, RUN_ID).write_status(name, document)
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda document: document.pop("flight_exchange"),
-        lambda document: document.update(extra=True),
-        lambda document: document.update(ready=False),
-        lambda document: document["flight_exchange"].pop("json_states_sent"),
-        lambda document: document["flight_exchange"].update(extra=0),
-        lambda document: document["flight_exchange"].update(online=1),
-        lambda document: document["flight_exchange"].update(motor_updates=True),
-        lambda document: document["flight_exchange"].update(last_servo_frame=-1),
-        lambda document: document["flight_exchange"].update(servo_packets_received=0),
-        lambda document: document["flight_exchange"].update(motor_updates=0),
-        lambda document: document["flight_exchange"].update(json_states_sent=0),
-        lambda document: document["flight_exchange"].update(servo_frame_gaps=1),
-        lambda document: document["flight_exchange"].update(json_send_errors=1),
-    ],
-)
-def test_gazebo_ready_rejects_malformed_or_unready_flight_exchange(
-    run_directory, mutate
-):
-    document = json.loads(json.dumps(VALID_GAZEBO_READY))
-    mutate(document)
-
-    with pytest.raises(ProtocolError, match="invalid schema"):
-        RuntimeProtocol(run_directory, RUN_ID).write_status("gazebo-ready", document)
+    assert type(raised.value) is ProtocolError
 
 
 def test_host_controls_are_exact_and_first_observation_is_immutable(run_directory):
@@ -215,6 +187,24 @@ def test_manifest_status_is_read_descriptor_safely_after_terminal_commit(run_dir
         "missing": ["rosbag", "video/observer.mp4"],
         "manifest_path": "manifest.json",
     }
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["", ".", "/absolute", "../escape", "a/../escape", r"logs/docker/bad\name.log"],
+)
+def test_manifest_status_rejects_nonportable_relative_path(run_directory, relative_path):
+    manifest = {
+        "schema_version": 1,
+        "run_id": RUN_ID,
+        "terminal_status": "FAILED",
+        "artifacts": [{"relative_path": relative_path, "validation": "invalid"}],
+        "incomplete_paths": [],
+    }
+    (run_directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ProtocolError, match="artifact record"):
+        RuntimeProtocol(run_directory, RUN_ID).read_manifest_status()
 
 
 @pytest.mark.parametrize("kind", ["symlink", "hardlink"])
@@ -288,6 +278,16 @@ def test_protocol_rejects_malformed_or_resource_host_json(run_directory, payload
         RuntimeProtocol(run_directory, RUN_ID).read_finalize_request()
 
 
+def test_runtime_protocol_translates_shared_io_errors(run_directory):
+    (run_directory / ".control/finalize-request.json").write_bytes(b"{")
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+
+    with pytest.raises(ProtocolError, match="contains invalid JSON") as raised:
+        protocol.read_finalize_request()
+    assert type(raised.value) is ProtocolError
+    assert isinstance(raised.value.__cause__, ProtocolIOError)
+
+
 def test_protocol_rejects_oversized_host_file(run_directory):
     (run_directory / ".control/finalize-request.json").write_bytes(b" " * (4 * 1024 * 1024 + 1))
     with pytest.raises(ProtocolError, match="too large"):
@@ -303,9 +303,7 @@ def test_runtime_write_fsyncs_file_and_directory(monkeypatch, run_directory):
         return real_fsync(descriptor)
 
     monkeypatch.setattr(os, "fsync", tracked)
-    RuntimeProtocol(run_directory, RUN_ID).write_status(
-        "artifacts-ready", {"run_id": RUN_ID, "ready": True}
-    )
+    RuntimeProtocol(run_directory, RUN_ID).write_status(ArtifactsReadyStatus(RUN_ID))
     assert len(calls) >= 2
 
 
@@ -313,28 +311,12 @@ def test_runtime_status_is_readable_by_the_non_root_host_controller(run_director
     previous = os.umask(0o077)
     try:
         path = RuntimeProtocol(run_directory, RUN_ID).write_status(
-            "artifacts-ready", {"run_id": RUN_ID, "ready": True}
+            ArtifactsReadyStatus(RUN_ID)
         )
     finally:
         os.umask(previous)
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o644
-
-
-@pytest.mark.parametrize("bad_path", [None, 7, True, {"path": "logs/x"}, ["logs/x"]])
-def test_runtime_failure_rejects_non_string_diagnostic_paths_as_protocol_error(
-    run_directory, bad_path
-):
-    with pytest.raises(ProtocolError, match="invalid schema"):
-        RuntimeProtocol(run_directory, RUN_ID).write_status(
-            "runtime-failure",
-            {
-                "run_id": RUN_ID,
-                "module": "artifacts",
-                "reason": "bad diagnostic path",
-                "diagnostic_paths": [bad_path],
-            },
-        )
 
 
 def test_quiescence_markers_are_exact_descriptor_safe_and_host_readable(run_directory):

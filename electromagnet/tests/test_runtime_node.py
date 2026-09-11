@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import sys
 from threading import Event, Thread
@@ -9,7 +10,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import drone_sim_electromagnet.runtime_node as runtime_node
-from drone_sim_electromagnet.controller import PayloadGateway
+from drone_sim_electromagnet.controller import PayloadGateway, PayloadResponse
 from drone_sim_electromagnet.payload import PayloadRequest
 from drone_sim_electromagnet.runtime_node import (
     RuntimeConfig,
@@ -297,6 +298,49 @@ def test_gateway_returns_only_after_physical_confirmation_and_replays_exactly() 
         "attach",
         "attached",
     )
+
+
+def test_event_publisher_failure_preserves_cached_physical_success_without_retry() -> None:
+    commands: list[tuple[int, str]] = []
+    events: list[object] = []
+    gateway_ref: list[PayloadGateway] = []
+
+    def publish_command(marker: int, wire: str) -> None:
+        commands.append((marker, wire))
+        gateway_ref[0].accept_result(
+            marker,
+            "payload-result-v1|publisher:failure|confirmed|attached|OK",
+        )
+
+    def publish_event(event: object) -> None:
+        events.append(event)
+        raise RuntimeError("event publisher failed")
+
+    gateway = PayloadGateway(
+        RuntimeConfig.competition_defaults(RUN_ID).authority(),
+        publish_command=publish_command,
+        publish_event=publish_event,
+    )
+    gateway_ref.append(gateway)
+    seed_gateway(gateway)
+    request = PayloadRequest(RUN_ID, 3, "attach", "publisher:failure")
+
+    with pytest.raises(RuntimeError, match="event publisher failed"):
+        gateway.execute(request)
+    conflict = gateway.execute(replace(request, aruco_id=4))
+    retry = gateway.execute(request)
+
+    assert (conflict.accepted, conflict.code) == (False, "COMMAND_ID_CONFLICT")
+    assert retry == PayloadResponse(
+        True,
+        "OK",
+        "physical payload attached",
+        "publisher:failure",
+        1,
+    )
+    assert gateway.attached_id == 3
+    assert commands == [(3, "payload-command-v1|publisher:failure|attach")]
+    assert len(events) == 1
 
 
 def test_gateway_timeout_fails_without_event_or_guessed_attachment() -> None:

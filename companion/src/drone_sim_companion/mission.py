@@ -76,6 +76,12 @@ class MissionState:
     landing_observed: bool = False
     failure_reason: str = ""
 
+    def __post_init__(self) -> None:
+        if self.phase is MissionPhase.FAILED and (
+            type(self.failure_reason) is not str or not self.failure_reason
+        ):
+            raise ValueError("failed mission state requires a nonempty failure reason")
+
     @classmethod
     def initial(cls) -> "MissionState":
         return cls(phase=MissionPhase.WAIT_HEARTBEAT)

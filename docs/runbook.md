@@ -15,9 +15,10 @@ no automatic command. QGC admission remains closed until the matching run is
 alive, and the actual connected vehicle has a fresh heartbeat and literal
 armable state. FM3 is disabled.
 
-Repository default configurations do not provide the required QGC input bundle,
-so there is no copy-paste `comp2026_auto` launch command in this runbook. Do not
-invent site, calibration, RC, session, action, policy, or ledger values. Parent
+Repository default configurations omit the QGC input bundle and therefore
+select the automatic `comp2026_auto` host. There is no copy-paste command for
+the guarded QGC path: do not invent site, calibration, RC, session, action,
+policy, or ledger values. Parent
 build source and provenance select official ArduCopter 4.5.7 commit
 `2a3dc4b7bf2507120f7378a7b2fde73185e0c325`, but no parent image or integrated
 run has validated it. Existing local image tags may still contain firmware 4.7.
@@ -33,7 +34,6 @@ operator workflows below are unchanged.
 - Docker Engine and the Compose plugin, with permission to use the daemon.
 - A Linux/container environment able to run the pinned ROS 2 Jazzy, Gazebo
   Harmonic, and ArduPilot images. Image builds need network access and can be slow.
-- The separate mission checkout below for the Phase 3 build/run path.
 - Free disk space for images and `runs/` evidence. Check `df -h .` and
   `docker system df`; this guide does not delete old evidence or images.
 
@@ -49,26 +49,22 @@ docker compose version
 make test-unit
 ```
 
-### The separate mission checkout
+### Comp2026 mission source
 
-`companion/comp2026` is a **separate Git repository**, not currently a submodule
-or tracked source directory of this parent repository. A fresh parent clone
-does not contain it. Obtain the intended checkout and commit from the maintainer
-before building; there is no repository-owned, self-contained bootstrap yet.
-Do not substitute a similarly named upstream branch or silently use the parent
-repository's revision as the mission revision.
+`companion/comp2026` is tracked in this monorepo. A normal clone contains the
+mission source required by the Phase 3 build. Its history before the monorepo
+import remains available through Git.
 
-Once supplied, confirm it is really the nested repository:
+Confirm the source and repository state before building:
 
 ```bash
-git -C companion/comp2026 rev-parse --show-toplevel
-git -C companion/comp2026 rev-parse HEAD
-git -C companion/comp2026 status --short
+test -f companion/comp2026/README.md
+git rev-parse HEAD
+git status --short
 ```
 
-The first command must point to `companion/comp2026`, not the parent root.
 Commit or explicitly account for mission source changes before a reproducible
-build. The Docker label records HEAD, not a hash of all uncommitted source files.
+build. The Docker label records monorepo HEAD, not a hash of uncommitted source files.
 The [Docker context allowlist](../.dockerignore) includes only the explicitly
 admitted QGC runtime import closure; adding a nested module may require updating
 it. It excludes user-generated action files,
@@ -83,14 +79,16 @@ while another run is collecting provenance. Preserve old digests if you intend
 to inspect an old run later.
 
 ```bash
-SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD) \
+SIM_COMP2026_REVISION=$(git rev-parse HEAD) \
   docker compose --profile phase3 build
 ```
 
-The explicit build argument matters: Compose's fallback revision is not a
-reliable match for your checkout. At launch the CLI checks the companion image's
-`org.opencontainers.image.comp2026.revision` label against nested Git HEAD and
-fails closed on a mismatch. Check it without launching:
+`docker compose --profile phase3 build` requires this explicit nested HEAD build
+argument. Compose leaves it empty when omitted so inactive profiles and
+noncompanion configuration still resolve, but the companion build then fails
+before package installation or source copies. At launch the CLI checks the
+companion image's `org.opencontainers.image.comp2026.revision` label against
+monorepo HEAD and fails closed on a mismatch. Check it without launching:
 
 ```bash
 docker image inspect drone-sim-companion-runtime:phase3 \
@@ -121,14 +119,17 @@ These checks prove packaging and inert import behavior only. They do not replace
 a uniquely tagged matching image build, a QGC-to-SITL test, a scored simulation,
 or aircraft acceptance.
 
-## Run and monitor a current diagnostic
+## Run and monitor the automatic competition mission
 
-This example uses the repository-default controlled-descent route. Competition
-templates still omit the required QGC bundle and attempt-state binding.
+The checked-in default template omits QGC inputs and selects the automatic host:
 
 ```bash
-uv run --locked drone-sim start --config config/vertical-descent-run.json
+uv run --locked drone-sim start --config config/default-run.json
 ```
+
+For a shorter controlled-descent diagnostic, use
+`config/vertical-descent-run.json` instead. Neither command selects the guarded
+QGC path.
 
 Keep this foreground process alive. It owns startup, finalization, and teardown.
 Use another terminal for the commands below, replacing `RUN_ID` with the UUID in
@@ -226,6 +227,45 @@ Three distinct questions must be answered: did the vehicle physically perform
 the mission, what points were awarded, and did the full evidence bundle validate?
 Use [the latest documented failure](payload-timestamp-fix.md) as an example of
 150 points coexisting with a failed run.
+
+Precision-landing recovery records one compact JSON object per rejected
+observation and state transition. Inspect it without changing the bundle:
+
+```bash
+RUN_ID=replace-with-run-uuid
+rg -n 'PRECISION_LANDING ' "runs/$RUN_ID/logs"
+```
+
+The records distinguish tracking, GUIDED hold, reacquisition, the single search
+hover retry, touchdown, and deadline failure. During a GUIDED interval there
+must be no accepted landing-target output.
+
+Inspect the image-baked values recorded by the flight controller rather than
+assuming the host parameter file reached the container:
+
+```bash
+BIN="runs/$RUN_ID/ardupilot_sitl/logs/00000001.BIN"
+uv run --locked mavlogdump.py --types PARM --format csv "$BIN" \
+  | rg 'LAND_SPEED|PLND_|ATC_ANG_RLL_P|ATC_RAT_RLL_|ATC_RAT_PIT_|ATC_ACCEL_R_MAX'
+uv run --locked mavlogdump.py --types ATT,PL --format csv "$BIN" \
+  > "/tmp/$RUN_ID-att-pl.csv"
+```
+
+Compare the parameter rows with
+[descent.parm](../ardupilot_sitl/params/descent.parm). Pair each `ATT` sample to
+its nearest `PL` sample and select `TAcq=1`; the guarded-run acceptance limits
+are 5 degrees for desired roll/pitch magnitude and 8 degrees for actual
+roll/pitch magnitude. Keep the CSV as analysis scratch, not as a replacement
+for the original DataFlash log.
+
+Validate the two finalized videos and bag independently when diagnosing an
+otherwise passing score:
+
+```bash
+ffprobe -v error -show_streams -of json "runs/$RUN_ID/video/onboard.mp4"
+ffprobe -v error -show_streams -of json "runs/$RUN_ID/video/observer.mp4"
+ros2 bag info "runs/$RUN_ID/rosbag"
+```
 
 ### Independent competition acceptance
 

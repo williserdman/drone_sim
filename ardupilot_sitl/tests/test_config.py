@@ -57,12 +57,25 @@ def test_descent_parameters_use_each_accurate_stationary_target_measurement() ->
     assert _descent_parameters()["PLND_EST_TYPE"] == "0"
 
 
-def test_descent_parameters_use_verified_competition_roll_rate_gains() -> None:
+def test_descent_parameters_use_promoted_roll_autotune_gains() -> None:
     parameters = _descent_parameters()
 
-    assert parameters["ATC_RAT_RLL_P"] == "0.0675"
-    assert parameters["ATC_RAT_RLL_I"] == "0.0675"
-    assert parameters["ATC_RAT_RLL_D"] == "0.0018"
+    assert {
+        name: parameters[name]
+        for name in (
+            "ATC_ANG_RLL_P",
+            "ATC_RAT_RLL_P",
+            "ATC_RAT_RLL_I",
+            "ATC_RAT_RLL_D",
+            "ATC_ACCEL_R_MAX",
+        )
+    } == {
+        "ATC_ANG_RLL_P": "13.1974",
+        "ATC_RAT_RLL_P": "0.0503722",
+        "ATC_RAT_RLL_I": "0.0503722",
+        "ATC_RAT_RLL_D": "0.000375",
+        "ATC_ACCEL_R_MAX": "254776",
+    }
 
 
 def test_descent_parameters_use_verified_competition_pitch_rate_gains() -> None:
@@ -95,6 +108,47 @@ def test_descent_parameters_preserve_roll_acceleration_in_target_units() -> None
 
 def test_descent_parameters_disable_precision_landing_final_slowdown() -> None:
     assert int(_descent_parameters()["PLND_OPTIONS"]) & 4
+
+
+def test_descent_parameters_use_fast_guarded_precision_landing_profile() -> None:
+    parameters = _descent_parameters()
+
+    assert {
+        name: parameters[name]
+        for name in (
+            "PLND_ENABLED",
+            "PLND_TYPE",
+            "PLND_EST_TYPE",
+            "PLND_STRICT",
+            "PLND_RET_MAX",
+            "PLND_OPTIONS",
+        )
+    } == {
+        "PLND_ENABLED": "1",
+        "PLND_TYPE": "1",
+        "PLND_EST_TYPE": "0",
+        "PLND_STRICT": "2",
+        "PLND_RET_MAX": "1",
+        "PLND_OPTIONS": "4",
+    }
+    assert {
+        name: float(parameters[name])
+        for name in (
+            "PLND_LAG",
+            "PLND_XY_DIST_MAX",
+            "PLND_TIMEOUT",
+            "PLND_ALT_MIN",
+            "PLND_ALT_MAX",
+        )
+    } == pytest.approx(
+        {
+            "PLND_LAG": 0.08,
+            "PLND_XY_DIST_MAX": 0.50,
+            "PLND_TIMEOUT": 0.50,
+            "PLND_ALT_MIN": 0.75,
+            "PLND_ALT_MAX": 8.0,
+        }
+    )
 
 
 def test_descent_parameters_mark_sitl_accelerometers_calibrated() -> None:

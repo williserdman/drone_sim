@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Event, Thread
 import time
 
+from artifacts.runtime_status import FlightExchange, MissionCommandDeliveredStatus
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
 from drone_sim_gazebo.runtime.runtime_node import (
@@ -118,11 +119,12 @@ class FlightTransport:
 
 
 def test_flight_exchange_probe_uses_only_remaining_startup_budget():
-    transport = FlightTransport(result={"online": True})
+    flight_exchange = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
+    transport = FlightTransport(result=flight_exchange)
 
     assert _probe_flight_exchange(
         transport, deadline=10.25, monotonic=lambda: 10.0
-    ) == {"online": True}
+    ) == flight_exchange
     assert transport.timeouts == [pytest.approx(0.25)]
 
 
@@ -192,9 +194,9 @@ def test_public_epoch_rendezvous_steps_to_target_then_waits_for_delivery_ack():
     class Protocol:
         delivered = False
 
-        def read_status(self, name):
-            assert name == "mission-command-delivered"
-            return {"delivered": True} if self.delivered else None
+        def read_status(self, status_type):
+            assert status_type is MissionCommandDeliveredStatus
+            return MissionCommandDeliveredStatus(RUN_ID, 0) if self.delivered else None
 
     protocol = Protocol()
     rendezvous = PublicEpochRendezvous(
@@ -272,9 +274,9 @@ def test_public_epoch_rendezvous_does_not_block_ros_callback_progress_during_unp
             calls.append(("run_to", target_ns))
 
     class Protocol:
-        def read_status(self, name):
-            assert name == "mission-command-delivered"
-            return {"delivered": True}
+        def read_status(self, status_type):
+            assert status_type is MissionCommandDeliveredStatus
+            return MissionCommandDeliveredStatus(RUN_ID, 0)
 
     rendezvous = PublicEpochRendezvous(
         transport=Transport(),
@@ -324,8 +326,9 @@ def test_public_epoch_rendezvous_propagates_unpause_failure_before_epoch():
             return None
 
     class Protocol:
-        def read_status(self, _name):
-            return {"delivered": True}
+        def read_status(self, status_type):
+            assert status_type is MissionCommandDeliveredStatus
+            return MissionCommandDeliveredStatus(RUN_ID, 0)
 
     rendezvous = PublicEpochRendezvous(
         transport=Transport(),
@@ -357,8 +360,9 @@ def test_public_epoch_rendezvous_tolerates_rejected_reply_after_epoch_progress()
             return None
 
     class Protocol:
-        def read_status(self, _name):
-            return {"delivered": True}
+        def read_status(self, status_type):
+            assert status_type is MissionCommandDeliveredStatus
+            return MissionCommandDeliveredStatus(RUN_ID, 0)
 
     rendezvous = PublicEpochRendezvous(
         transport=Transport(),
@@ -394,7 +398,8 @@ def test_public_epoch_rendezvous_waits_for_command_delivery():
             calls.append(("run_to", target_ns))
 
     class Protocol:
-        def read_status(self, _name):
+        def read_status(self, status_type):
+            assert status_type is MissionCommandDeliveredStatus
             return None
 
     rendezvous = PublicEpochRendezvous(

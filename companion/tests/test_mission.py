@@ -136,6 +136,17 @@ def test_acknowledgements_must_match_and_succeed(event: Telemetry, reason: str) 
     assert reason in result.state.failure_reason
 
 
+@pytest.mark.parametrize("failure_reason", ["", None])
+def test_failed_state_requires_a_nonempty_string_reason(
+    failure_reason: object,
+) -> None:
+    with pytest.raises(ValueError, match="nonempty failure reason"):
+        MissionState(
+            MissionPhase.FAILED,
+            failure_reason=failure_reason,  # type: ignore[arg-type]
+        )
+
+
 def test_regressing_timestamp_fails_and_cannot_be_repaired() -> None:
     waiting = advance(
         MissionState.initial(),

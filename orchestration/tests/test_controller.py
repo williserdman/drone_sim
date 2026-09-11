@@ -23,6 +23,26 @@ from artifacts import (
     SourceRevision,
 )
 from artifacts.manifest import REQUIRED_ARTIFACT_PATHS
+from artifacts.runtime_status import (
+    ArduPilotReadyStatus,
+    ArtifactFinalRecord,
+    ArtifactsFinalStatus,
+    ArtifactsReadyStatus,
+    CompanionReadyStatus,
+    FlightExchange,
+    GazeboReadyStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeFrozenStatus,
+    RuntimeRunningStatus,
+    ScoreFinishedStatus,
+    SourceFinishedStatus,
+    TerminalNotifiedStatus,
+    status_document,
+    status_name,
+)
+from artifacts.validation import ValidationStatus
 from orchestration._adapters.compose import ComposeCommandResult, ComposeRuntime
 from orchestration.controller import ControllerError, RunController, RunResult, TerminalCause
 from orchestration.status_store import OperatorStatus, ProtocolFileError, StatusStore
@@ -59,96 +79,7 @@ PHASE3_SERVICES = (
     "electromagnet-runtime",
     "scorekeeper-runtime",
 )
-FLIGHT_EXCHANGE = {
-    "online": True,
-    "servo_packets_received": 1,
-    "motor_updates": 1,
-    "duplicate_servo_packets": 0,
-    "servo_frame_gaps": 0,
-    "json_states_sent": 1,
-    "json_send_errors": 0,
-    "last_servo_frame": 0,
-    "last_json_sim_time_ns": 0,
-}
-
-
-def test_gazebo_ready_accepts_the_exact_live_flight_exchange_evidence():
-    RunController._validate_gazebo_ready(
-        {
-            "run_id": RUN_ID,
-            "ready": True,
-            "flight_exchange": dict(FLIGHT_EXCHANGE),
-        }
-    )
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda value: value.pop("json_states_sent"),
-        lambda value: value.update(unexpected=0),
-        lambda value: value.update(online=1),
-        lambda value: value.update(servo_packets_received=True),
-        lambda value: value.update(last_servo_frame=-1),
-        lambda value: value.update(servo_packets_received=0),
-        lambda value: value.update(motor_updates=0),
-        lambda value: value.update(json_states_sent=0),
-        lambda value: value.update(servo_frame_gaps=1),
-        lambda value: value.update(json_send_errors=1),
-    ],
-)
-def test_gazebo_ready_rejects_malformed_or_unready_flight_exchange(mutate):
-    exchange = dict(FLIGHT_EXCHANGE)
-    mutate(exchange)
-
-    with pytest.raises(ProtocolFileError, match="gazebo-ready status is invalid"):
-        RunController._validate_gazebo_ready(
-            {
-                "run_id": RUN_ID,
-                "ready": True,
-                "flight_exchange": exchange,
-            }
-        )
-
-
-def test_companion_ready_accepts_connected_transport_without_claiming_heartbeat() -> None:
-    RunController._validate_companion_ready(
-        {
-            "run_id": RUN_ID,
-            "ready": True,
-            "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-            "mavlink_transport_connected": True,
-        }
-    )
-
-
-@pytest.mark.parametrize("connected", [False, 1, 0, None])
-def test_companion_ready_rejects_transport_without_truthful_connection(connected) -> None:
-    with pytest.raises(ProtocolFileError, match="companion-ready status is invalid"):
-        RunController._validate_companion_ready(
-            {
-                "run_id": RUN_ID,
-                "ready": True,
-                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-                "mavlink_transport_connected": connected,
-            }
-        )
-
-
-def test_mission_ready_requires_heartbeat_and_healthy_prearm_checks() -> None:
-    valid = {
-        "run_id": RUN_ID,
-        "ready": True,
-        "heartbeat_observed": True,
-        "prearm_checks_healthy": True,
-    }
-    RunController._validate_mission_ready(valid)
-
-    for field in ("heartbeat_observed", "prearm_checks_healthy"):
-        document = dict(valid)
-        document[field] = False
-        with pytest.raises(ProtocolFileError, match="mission-ready status is invalid"):
-            RunController._validate_mission_ready(document)
+FLIGHT_EXCHANGE = FlightExchange(True, 1, 1, 0, 0, 1, 0, 0, 0)
 
 
 def _topology(profile: str):
@@ -237,6 +168,14 @@ def _comp2026_template(tmp_path: Path, **updates) -> Path:
         qgc=qgc_sources,
         **updates,
     )
+
+
+def _automatic_comp2026_template(tmp_path: Path, **updates) -> Path:
+    path = _comp2026_template(tmp_path, **updates)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document.pop("qgc")
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
 
 
 def _write_json(path: Path, document: dict) -> None:
@@ -379,16 +318,16 @@ def _complete_runtime_outputs(
             else {"playable": True, "codec": "h264", "fps": 20, "frame_count": 40}
         )
         records.append(
-            {
-                "relative_path": relative_path,
-                "status": "valid",
-                "detail": "semantic validation passed",
-                "size_bytes": size,
-                "sha256": sha256,
-                "semantic": semantic,
-            }
+            ArtifactFinalRecord(
+                relative_path,
+                ValidationStatus.VALID,
+                "semantic validation passed",
+                size,
+                sha256,
+                semantic,
+            )
         )
-    report = {"run_id": RUN_ID, "complete": True, "records": records}
+    report = status_document(ArtifactsFinalStatus(RUN_ID, tuple(records)))
     if report_mutator is not None:
         report_mutator(report)
     _write_json(run_directory / ".status/artifacts-final.json", report)
@@ -501,23 +440,23 @@ class TraceStore(StatusStore):
         self.trace.append("allocate")
         return super().allocate(run_id)
 
-    def read_runtime_status(self, run_id, name, deadline_check=None):
-        value = super().read_runtime_status(run_id, name, deadline_check)
-        if value is not None and name in {
-            "artifacts-ready",
-            "gazebo-ready",
-            "ardupilot-ready",
-            "companion-ready",
-            "mission-ready",
-            "runtime-running",
-            "source-finished",
-            "mission-finished",
-            "score-finished",
-            "runtime-frozen",
-            "artifacts-final",
-            "terminal-notified",
+    def read_runtime_status(self, run_id, status_type, deadline_check=None):
+        value = super().read_runtime_status(run_id, status_type, deadline_check)
+        if value is not None and status_type in {
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            RuntimeRunningStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            ArtifactsFinalStatus,
+            TerminalNotifiedStatus,
         }:
-            marker = f"wait {name}"
+            marker = f"wait {status_name(status_type)}"
             if marker not in self.trace:
                 self.trace.append(marker)
         return value
@@ -540,12 +479,12 @@ class FakeCompose:
         run_directory: Path,
         trace: list[str],
         *,
-        statuses: tuple[str, ...] = (
-            "artifacts-ready",
-            "runtime-running",
-            "source-finished",
-            "runtime-frozen",
-            "terminal-notified",
+        statuses: tuple[type, ...] = (
+            ArtifactsReadyStatus,
+            RuntimeRunningStatus,
+            SourceFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
         report_mutator=None,
         score_mutator=None,
@@ -578,49 +517,24 @@ class FakeCompose:
         )
         if self.runtime_mutator is not None:
             self.runtime_mutator(self.run_directory)
-        documents = {
-            "artifacts-ready": {"run_id": RUN_ID, "ready": True},
-            "gazebo-ready": {
-                "run_id": RUN_ID,
-                "ready": True,
-                "flight_exchange": dict(FLIGHT_EXCHANGE),
-            },
-            "ardupilot-ready": {
-                "run_id": RUN_ID,
-                "ready": True,
-                "json_exchange": True,
-                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-            },
-            "companion-ready": {
-                "run_id": RUN_ID,
-                "ready": True,
-                "mavlink_endpoint": "tcp://ardupilot-sitl:5760",
-                "mavlink_transport_connected": True,
-            },
-            "mission-ready": {
-                "run_id": RUN_ID,
-                "ready": True,
-                "heartbeat_observed": True,
-                "prearm_checks_healthy": True,
-            },
-            "runtime-running": {"run_id": RUN_ID, "state": "RUNNING", "sim_timestamp_ns": 0},
-            "source-finished": {"run_id": RUN_ID, "finished": True, "sim_timestamp_ns": 2_000_000_000},
-            "mission-finished": {
-                "run_id": RUN_ID,
-                "finished": True,
-                "sim_timestamp_ns": 1_500_000_000,
-                "outcome": "LANDED",
-            },
-            "score-finished": {
-                "run_id": RUN_ID,
-                "finished": True,
-                "sim_timestamp_ns": 2_000_000_000,
-            },
-            "runtime-frozen": {"run_id": RUN_ID, "frozen": True},
-            "terminal-notified": {"run_id": RUN_ID, "notified": True},
+        values = {
+            ArtifactsReadyStatus: ArtifactsReadyStatus(RUN_ID),
+            GazeboReadyStatus: GazeboReadyStatus(RUN_ID, FLIGHT_EXCHANGE),
+            ArduPilotReadyStatus: ArduPilotReadyStatus(RUN_ID),
+            CompanionReadyStatus: CompanionReadyStatus(RUN_ID),
+            MissionReadyStatus: MissionReadyStatus(RUN_ID),
+            RuntimeRunningStatus: RuntimeRunningStatus(RUN_ID, 0),
+            SourceFinishedStatus: SourceFinishedStatus(RUN_ID, 2_000_000_000),
+            MissionFinishedStatus: MissionFinishedStatus(RUN_ID, 1_500_000_000),
+            ScoreFinishedStatus: ScoreFinishedStatus(RUN_ID, 2_000_000_000),
+            RuntimeFrozenStatus: RuntimeFrozenStatus(RUN_ID),
+            TerminalNotifiedStatus: TerminalNotifiedStatus(RUN_ID),
         }
-        for name in self.statuses:
-            _write_json(self.run_directory / f".status/{name}.json", documents[name])
+        for status_type in self.statuses:
+            _write_json(
+                self.run_directory / f".status/{status_name(status_type)}.json",
+                status_document(values[status_type]),
+            )
         return ComposeCommandResult(0, b"started")
 
     def ps(self, timeout):
@@ -1644,17 +1558,17 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
     controller, trace, _clock, holder = _controller(
         tmp_path,
         statuses=(
-            "artifacts-ready",
-            "gazebo-ready",
-            "runtime-running",
-            "ardupilot-ready",
-            "companion-ready",
-            "mission-ready",
-            "source-finished",
-            "mission-finished",
-            "score-finished",
-            "runtime-frozen",
-            "terminal-notified",
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            RuntimeRunningStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
     )
 
@@ -1688,17 +1602,17 @@ def test_comp2026_controller_waits_for_runtime_before_mission_ready(tmp_path):
     controller, trace, _clock, _holder = _controller(
         tmp_path,
         statuses=(
-            "artifacts-ready",
-            "gazebo-ready",
-            "ardupilot-ready",
-            "companion-ready",
-            "runtime-running",
-            "mission-ready",
-            "source-finished",
-            "mission-finished",
-            "score-finished",
-            "runtime-frozen",
-            "terminal-notified",
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            RuntimeRunningStatus,
+            MissionReadyStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
     )
 
@@ -1722,29 +1636,67 @@ def test_comp2026_controller_waits_for_runtime_before_mission_ready(tmp_path):
     assert trace.index("wait mission-ready") < trace.index("wait source-finished")
 
 
+def test_automatic_comp2026_controller_waits_for_mission_ready_before_runtime(
+    tmp_path,
+):
+    controller, trace, _clock, _holder = _controller(
+        tmp_path,
+        statuses=(
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            RuntimeRunningStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
+        ),
+    )
+
+    result = controller.start(
+        _automatic_comp2026_template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        )
+    )
+
+    assert result.state == "COMPLETED"
+    assert trace.index("wait companion-ready") < trace.index("wait mission-ready")
+    assert trace.index("wait mission-ready") < trace.index("wait runtime-running")
+
+
 @pytest.mark.parametrize(
     ("statuses", "reason"),
     [
         (
             (
-                "artifacts-ready",
-                "gazebo-ready",
-                "ardupilot-ready",
-                "companion-ready",
-                "runtime-frozen",
-                "terminal-notified",
+                ArtifactsReadyStatus,
+                GazeboReadyStatus,
+                ArduPilotReadyStatus,
+                CompanionReadyStatus,
+                RuntimeFrozenStatus,
+                TerminalNotifiedStatus,
             ),
             "clock_source_stall",
         ),
         (
             (
-                "artifacts-ready",
-                "gazebo-ready",
-                "ardupilot-ready",
-                "companion-ready",
-                "runtime-running",
-                "runtime-frozen",
-                "terminal-notified",
+                ArtifactsReadyStatus,
+                GazeboReadyStatus,
+                ArduPilotReadyStatus,
+                CompanionReadyStatus,
+                RuntimeRunningStatus,
+                RuntimeFrozenStatus,
+                TerminalNotifiedStatus,
             ),
             "mission_readiness_stall",
         ),
@@ -1783,17 +1735,17 @@ def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
         tmp_path,
         score_mutator=replace_score_run_id,
         statuses=(
-            "artifacts-ready",
-            "gazebo-ready",
-            "runtime-running",
-            "ardupilot-ready",
-            "companion-ready",
-            "mission-ready",
-            "source-finished",
-            "mission-finished",
-            "score-finished",
-            "runtime-frozen",
-            "terminal-notified",
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            RuntimeRunningStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
     )
 
@@ -1823,17 +1775,17 @@ def test_phase3_completed_run_requires_native_state_tlog(tmp_path):
         tmp_path,
         runtime_mutator=remove_native_state,
         statuses=(
-            "artifacts-ready",
-            "gazebo-ready",
-            "runtime-running",
-            "ardupilot-ready",
-            "companion-ready",
-            "mission-ready",
-            "source-finished",
-            "mission-finished",
-            "score-finished",
-            "runtime-frozen",
-            "terminal-notified",
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            RuntimeRunningStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
     )
 
@@ -2024,6 +1976,79 @@ def test_completed_controller_executes_frozen_order_commits_manifest_then_tears_
     )
 
 
+def test_malformed_source_finished_fails_without_trusting_its_timestamp(
+    tmp_path, monkeypatch
+):
+    real_up = FakeCompose.up
+
+    def malformed_source_up(self, timeout):
+        result = real_up(self, timeout)
+        _write_json(
+            self.run_directory / ".status/source-finished.json",
+            {
+                "run_id": RUN_ID,
+                "finished": False,
+                "sim_timestamp_ns": 2_000_000_000,
+            },
+        )
+        return result
+
+    monkeypatch.setattr(FakeCompose, "up", malformed_source_up)
+    controller, _trace, _clock, _holder = _controller(tmp_path)
+
+    result = controller.start(_template(tmp_path))
+
+    manifest = json.loads(
+        (tmp_path / "runs" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert result.state == "FAILED"
+    assert "source-finished" in result.reason
+    assert "invalid schema" in result.reason
+    assert manifest["terminal_status"] == "FAILED"
+    assert manifest["reason"] == result.reason
+    assert manifest["simulation_timing"] == {
+        "start_ns": None,
+        "end_ns": None,
+        "duration_ns": None,
+    }
+
+
+def test_malformed_runtime_frozen_stops_before_log_capture_or_artifact_validation(
+    tmp_path, monkeypatch
+):
+    entered = []
+    real_up = FakeCompose.up
+
+    def malformed_frozen_up(self, timeout):
+        result = real_up(self, timeout)
+        _write_json(
+            self.run_directory / ".status/runtime-frozen.json",
+            {"run_id": RUN_ID, "frozen": False},
+        )
+        return result
+
+    def capture_factory(**_kwargs):
+        entered.append("log capture")
+        raise AssertionError("log capture must not start after malformed runtime-frozen")
+
+    def artifact_validator(*_args, **_kwargs):
+        entered.append("artifact validation")
+        raise AssertionError("artifacts must not be inspected before runtime freezes")
+
+    monkeypatch.setattr(FakeCompose, "up", malformed_frozen_up)
+    monkeypatch.setattr(
+        "orchestration.controller.validate_regular_file", artifact_validator
+    )
+    monkeypatch.setattr("orchestration.controller.validate_tree", artifact_validator)
+    controller, _trace, _clock, _holder = _controller(tmp_path)
+    controller.log_capture_factory = capture_factory
+
+    with pytest.raises(ProtocolFileError, match="runtime-frozen.*invalid schema"):
+        controller.start(_template(tmp_path))
+
+    assert entered == []
+
+
 @pytest.mark.parametrize(
     "score_mutator",
     [
@@ -2054,10 +2079,10 @@ def test_invalid_scoring_provenance_never_changes_requested_failure(tmp_path):
     controller, _trace, _clock, _holder = _controller(
         tmp_path,
         statuses=(
-            "artifacts-ready",
-            "runtime-running",
-            "runtime-frozen",
-            "terminal-notified",
+            ArtifactsReadyStatus,
+            RuntimeRunningStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
         score_mutator=lambda path: path.write_bytes(b"{malformed"),
     )
@@ -2142,7 +2167,7 @@ def test_invalid_runtime_running_signal_fails_closed(tmp_path, bad_document):
 def test_readiness_without_runtime_running_never_infers_simulation_progress(tmp_path):
     controller, _trace, _clock, _holder = _controller(
         tmp_path,
-        statuses=("artifacts-ready", "runtime-frozen", "terminal-notified"),
+        statuses=(ArtifactsReadyStatus, RuntimeFrozenStatus, TerminalNotifiedStatus),
     )
 
     result = controller.start(
@@ -2192,7 +2217,7 @@ def test_abort_requested_immediately_after_running_signal_wins_completion(tmp_pa
 def test_child_exit_race_enters_failed_finalization(tmp_path):
     controller, _trace, _clock, _holder = _controller(
         tmp_path,
-        statuses=("runtime-frozen", "terminal-notified"),
+        statuses=(RuntimeFrozenStatus, TerminalNotifiedStatus),
     )
     original = FakeCompose.ps
 
@@ -2236,7 +2261,12 @@ def test_one_compose_ps_timeout_is_retried_within_the_startup_deadline(tmp_path)
 def test_first_observed_abort_wins_runtime_failure_race_and_later_cause_is_diagnostic(tmp_path):
     controller, _trace, _clock, _holder = _controller(
         tmp_path,
-        statuses=("artifacts-ready", "runtime-running", "runtime-frozen", "terminal-notified"),
+        statuses=(
+            ArtifactsReadyStatus,
+            RuntimeRunningStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
+        ),
     )
     original = FakeCompose.up
 
@@ -2246,7 +2276,9 @@ def test_first_observed_abort_wins_runtime_failure_race_and_later_cause_is_diagn
         store.request_finalization(RUN_ID, "ABORTED", "operator_abort")
         _write_json(
             self.run_directory / ".status/runtime-failure.json",
-            {"run_id": RUN_ID, "module": "artifacts", "reason": "recorder_failed"},
+            status_document(
+                RuntimeFailureStatus(RUN_ID, "artifacts", "recorder_failed", ())
+            ),
         )
         return result
 
@@ -2269,22 +2301,33 @@ def test_first_observed_abort_wins_runtime_failure_race_and_later_cause_is_diagn
 @pytest.mark.parametrize(
     ("case", "statuses", "capture_failure", "expected_reason"),
     [
-        ("startup_deadline", ("runtime-frozen", "terminal-notified"), False, "startup_deadline"),
+        ("startup_deadline", (RuntimeFrozenStatus, TerminalNotifiedStatus), False, "startup_deadline"),
         (
             "clock_stall",
-            ("artifacts-ready", "runtime-running", "runtime-frozen", "terminal-notified"),
+            (ArtifactsReadyStatus, RuntimeRunningStatus, RuntimeFrozenStatus, TerminalNotifiedStatus),
             False,
             "clock_source_stall",
         ),
         (
             "log_capture",
-            ("artifacts-ready", "runtime-running", "source-finished", "runtime-frozen", "terminal-notified"),
+            (
+                ArtifactsReadyStatus,
+                RuntimeRunningStatus,
+                SourceFinishedStatus,
+                RuntimeFrozenStatus,
+                TerminalNotifiedStatus,
+            ),
             True,
             "docker_log_capture_failed",
         ),
         (
             "finalization_deadline",
-            ("artifacts-ready", "runtime-running", "source-finished", "terminal-notified"),
+            (
+                ArtifactsReadyStatus,
+                RuntimeRunningStatus,
+                SourceFinishedStatus,
+                TerminalNotifiedStatus,
+            ),
             False,
             "finalization_deadline",
         ),
@@ -2349,11 +2392,11 @@ def test_missing_artifacts_final_expires_before_log_capture_or_mutable_bag_hashi
     controller, _trace, _clock, holder = _controller(
         tmp_path,
         statuses=(
-            "artifacts-ready",
-            "runtime-running",
-            "source-finished",
-            "runtime-frozen",
-            "terminal-notified",
+            ArtifactsReadyStatus,
+            RuntimeRunningStatus,
+            SourceFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
     )
     controller.log_capture_factory = DeadlineGuardedCapture
@@ -2390,7 +2433,7 @@ def test_ctrl_c_requests_aborted_finalization_and_returns_130_semantics(tmp_path
 
     controller, trace, _clock, _holder = _controller(
         tmp_path,
-        statuses=("runtime-frozen", "terminal-notified"),
+        statuses=(RuntimeFrozenStatus, TerminalNotifiedStatus),
         sleep=interrupting_sleep,
     )
 
@@ -2407,7 +2450,12 @@ def test_ctrl_c_requests_aborted_finalization_and_returns_130_semantics(tmp_path
 def test_recorder_failure_enters_failed_finalization(tmp_path):
     controller, _trace, _clock, _holder = _controller(
         tmp_path,
-        statuses=("artifacts-ready", "runtime-running", "runtime-frozen", "terminal-notified"),
+        statuses=(
+            ArtifactsReadyStatus,
+            RuntimeRunningStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
+        ),
     )
     original = FakeCompose.up
 
@@ -2415,7 +2463,11 @@ def test_recorder_failure_enters_failed_finalization(tmp_path):
         result = original(self, timeout)
         _write_json(
             self.run_directory / ".status/runtime-failure.json",
-            {"run_id": RUN_ID, "module": "artifacts", "reason": "observer_encoder_failed"},
+            status_document(
+                RuntimeFailureStatus(
+                    RUN_ID, "artifacts", "observer_encoder_failed", ()
+                )
+            ),
         )
         return result
 
@@ -2564,10 +2616,10 @@ def test_terminal_commit_write_failure_cannot_override_aborted_manifest(tmp_path
 
 def test_terminal_notification_read_failure_cannot_override_committed_manifest(tmp_path):
     class FailingNotificationStore(TraceStore):
-        def read_runtime_status(self, run_id, name, deadline_check=None):
-            if name == "terminal-notified":
+        def read_runtime_status(self, run_id, status_type, deadline_check=None):
+            if status_type is TerminalNotifiedStatus:
                 raise OSError("status volume became unreadable")
-            return super().read_runtime_status(run_id, name, deadline_check)
+            return super().read_runtime_status(run_id, status_type, deadline_check)
 
     controller, _trace, _clock, _holder = _controller(
         tmp_path, store_type=FailingNotificationStore
@@ -2634,10 +2686,11 @@ def test_wait_rejects_runtime_status_that_crosses_deadline_and_passes_checker():
     received = []
 
     class CrossingStore:
-        def read_runtime_status(self, run_id, name, deadline_check=None):
+        def read_runtime_status(self, run_id, status_type, deadline_check=None):
+            assert status_type is RuntimeFrozenStatus
             received.append(deadline_check)
             clock.value += 10
-            return {"run_id": run_id, "frozen": True}
+            return RuntimeFrozenStatus(run_id)
 
     controller = RunController(
         monotonic=clock.monotonic,
@@ -2652,7 +2705,7 @@ def test_wait_rejects_runtime_status_that_crosses_deadline_and_passes_checker():
         RUN_ID,
         FakeCompose(Path("/tmp/unused"), []),
         _topology("phase2"),
-        "runtime-frozen",
+        RuntimeFrozenStatus,
         deadline,
         TerminalCause("finalization_deadline", "finalization_deadline"),
         observe_causes=False,
@@ -2670,14 +2723,14 @@ def test_terminal_notification_crossing_manifest_deadline_is_diagnostic_only(tmp
     runtime_failure_checks = []
 
     class CrossingNotificationStore(TraceStore):
-        def read_runtime_status(self, run_id, name, deadline_check=None):
-            if name == "terminal-notified":
+        def read_runtime_status(self, run_id, status_type, deadline_check=None):
+            if status_type is TerminalNotifiedStatus:
                 received.append(deadline_check)
                 clock.value += 100
-                return {"run_id": run_id, "notified": True}
-            if name == "runtime-failure":
+                return TerminalNotifiedStatus(run_id)
+            if status_type is RuntimeFailureStatus:
                 runtime_failure_checks.append(deadline_check)
-            return super().read_runtime_status(run_id, name, deadline_check)
+            return super().read_runtime_status(run_id, status_type, deadline_check)
 
     controller, _trace, _clock, holder = _controller(
         tmp_path,
@@ -2858,10 +2911,15 @@ def test_session_deadline_exhaustion_cannot_return_completed(tmp_path):
 @pytest.mark.parametrize(
     ("mutation", "reason_fragment"),
     [
-        (lambda report: report["records"].pop(), "missing"),
         (
             lambda report: report["records"][0].update({"sha256": "b" * 64}),
             "checksum",
+        ),
+        (
+            lambda report: report["records"][0].update(
+                {"size_bytes": report["records"][0]["size_bytes"] + 1}
+            ),
+            "size mismatch",
         ),
         (
             lambda report: (

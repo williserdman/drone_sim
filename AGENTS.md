@@ -52,8 +52,8 @@ and affected documentation agree. Before handing off:
 
 ## Scope and preservation
 
-Keep patches small and reversible. Preserve unrelated work, the independent
-`companion/comp2026` repository, run evidence, and licenses/provenance. Check Git
+Keep patches small and reversible. Preserve unrelated work, the imported
+`companion/comp2026` history, run evidence, and licenses/provenance. Check Git
 status before editing or cleanup; explicitly back up local-only deletion targets.
 Source edits do not rebuild images. Rebuild and record matching provenance when
 testing changed runtime code; do not alter evidence to fit a new checkout.

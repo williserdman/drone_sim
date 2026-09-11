@@ -22,9 +22,13 @@ whether the evidence bundle is complete and valid.
 - [descent.py](src/drone_sim_scorekeeper/descent.py) is the pure descent scorer.
 - [competition_runtime.py](src/drone_sim_scorekeeper/competition_runtime.py) and
   [runtime.py](src/drone_sim_scorekeeper/runtime.py) bind scorers to persistence,
-  publication, failure, and quiescence.
+  publication, failure, and quiescence through the private shared
+  [_finalization.py](src/drone_sim_scorekeeper/_finalization.py) lifecycle.
 - [models.py](src/drone_sim_scorekeeper/models.py) defines result contracts;
   [output.py](src/drone_sim_scorekeeper/output.py) creates no-clobber evidence.
+- The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
+  defines score completion and failure values. Runtime code writes them through
+  the [container protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 - The installed command is defined in [pyproject.toml](pyproject.toml); Compose
   starts it in the [`scorekeeper-runtime` service](../compose.yaml).
 
@@ -46,9 +50,9 @@ The exact scoring data authorities are
 Do not duplicate point allocations, timing windows, or physical thresholds in
 documentation. The persisted schema is defined by
 [ScoreResult](src/drone_sim_scorekeeper/models.py), while creation of
-`scoring/events.jsonl`, `scoring/result.json`, and `score-finished` is implemented
-in [output.py](src/drone_sim_scorekeeper/output.py) and
-[status.py](src/drone_sim_scorekeeper/status.py).
+`scoring/events.jsonl` and `scoring/result.json` is implemented in
+[output.py](src/drone_sim_scorekeeper/output.py). The runtime writes the typed
+`score-finished` status only after it persists score evidence.
 
 ## Constraints worth preserving
 
@@ -66,6 +70,9 @@ in [output.py](src/drone_sim_scorekeeper/output.py) and
 - Evidence is persisted before reliable score-event publication is flushed and
   before `score-finished` is created. Existing score evidence is never replaced.
   Finalization then writes quiescence and produces no further output.
+- Rejected same-run ROS evidence latches incomplete scoring before shutdown.
+  Emergency finalization writes runtime failure and quiescence, never
+  `score-finished`.
 
 ## Focused checks
 

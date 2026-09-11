@@ -9,6 +9,8 @@ import re
 from typing import TypeAlias
 from uuid import UUID
 
+from artifacts.runtime_status import FlightExchange
+
 from ..ros_adapter import AdapterSummary
 from ..server import NativeArtifactSummary
 
@@ -126,7 +128,11 @@ def _child_name(value: object) -> str:
 
 @dataclass(frozen=True)
 class PublishGazeboReady:
-    pass
+    flight_exchange: FlightExchange
+
+    def __post_init__(self) -> None:
+        if type(self.flight_exchange) is not FlightExchange:
+            raise TypeError("flight_exchange must be a FlightExchange")
 
 
 @dataclass(frozen=True)
@@ -220,9 +226,12 @@ class ArtifactsReady:
 @dataclass(frozen=True)
 class GazeboReady:
     run_id: str
+    flight_exchange: FlightExchange
 
     def __post_init__(self) -> None:
         _canonical_run_id(self.run_id)
+        if type(self.flight_exchange) is not FlightExchange:
+            raise TypeError("flight_exchange must be a FlightExchange")
 
 
 @dataclass(frozen=True)
@@ -334,7 +343,7 @@ class RuntimeModel:
             expected_frames, field="expected_frames"
         )
         self._artifacts_ready = False
-        self._gazebo_ready = False
+        self._flight_exchange: FlightExchange | None = None
         self._gazebo_ready_published = False
         self._warmup_started = False
         self._lifecycle_state = "STARTING"
@@ -374,11 +383,11 @@ class RuntimeModel:
     def _ready(self) -> tuple[RuntimeAction, ...]:
         if (
             self._artifacts_ready
-            and self._gazebo_ready
+            and self._flight_exchange is not None
             and not self._gazebo_ready_published
         ):
             self._gazebo_ready_published = True
-            return (PublishGazeboReady(),)
+            return (PublishGazeboReady(self._flight_exchange),)
         return ()
 
     def _native_stop_failure(self, reason: str) -> tuple[RuntimeAction, ...]:
@@ -610,9 +619,9 @@ class RuntimeModel:
             self._artifacts_ready = True
             return self._ready()
         if isinstance(event, GazeboReady):
-            if self._gazebo_ready:
+            if self._flight_exchange is not None:
                 return ()
-            self._gazebo_ready = True
+            self._flight_exchange = event.flight_exchange
             return self._ready()
         assert isinstance(event, AdapterCompleted)
         return self._accept_completion(event)

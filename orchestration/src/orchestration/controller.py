@@ -37,6 +37,23 @@ from artifacts.score_validation import (
     ScoreValidationError,
     validate_descent_score_outputs,
 )
+from artifacts.runtime_status import (
+    ArduPilotReadyStatus,
+    ArtifactFinalRecord,
+    ArtifactsFinalStatus,
+    ArtifactsReadyStatus,
+    CompanionReadyStatus,
+    GazeboReadyStatus,
+    MissionFinishedStatus,
+    MissionReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeFrozenStatus,
+    RuntimeRunningStatus,
+    ScoreFinishedStatus,
+    SourceFinishedStatus,
+    StatusT,
+    TerminalNotifiedStatus,
+)
 from ._adapters.compose import ComposeCommandResult, ComposeRuntime
 from .config import (
     RunConfig,
@@ -54,29 +71,8 @@ from .status_store import (
 
 
 _REPORT_PATHS = ("video/onboard.mp4", "video/observer.mp4", "rosbag")
-_REPORT_KEYS = {
-    "relative_path",
-    "status",
-    "detail",
-    "size_bytes",
-    "sha256",
-    "semantic",
-}
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _COMPOSE_PS_ATTEMPT_SECONDS = 5.0
-_FLIGHT_EXCHANGE_KEYS = frozenset(
-    {
-        "online",
-        "servo_packets_received",
-        "motor_updates",
-        "duplicate_servo_packets",
-        "servo_frame_gaps",
-        "json_states_sent",
-        "json_send_errors",
-        "last_servo_frame",
-        "last_json_sim_time_ns",
-    }
-)
 
 
 class ControllerError(RuntimeError):
@@ -105,103 +101,10 @@ class RunResult:
 
 
 @dataclass(frozen=True)
-class _ArtifactReportRecord:
-    relative_path: str
-    status: ValidationStatus
-    detail: str
-    size_bytes: int | None
-    sha256: str | None
-    semantic: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
 class ArtifactFinalReport:
     run_id: str
     complete: bool
-    records: tuple[_ArtifactReportRecord, ...]
-
-    @classmethod
-    def parse(
-        cls,
-        run_id: str,
-        document: Any,
-        deadline_check: Callable[[], None] | None = None,
-    ) -> "ArtifactFinalReport":
-        if deadline_check is not None:
-            deadline_check()
-        if not isinstance(document, dict) or set(document) != {"run_id", "complete", "records"}:
-            raise ControllerError("artifacts-final report has invalid top-level keys")
-        if document["run_id"] != run_id:
-            raise ControllerError("artifacts-final report has the wrong run_id")
-        if not isinstance(document["complete"], bool):
-            raise ControllerError("artifacts-final report complete must be boolean")
-        values = document["records"]
-        if not isinstance(values, list) or len(values) != len(_REPORT_PATHS):
-            raise ControllerError("artifacts-final report has missing or extra records")
-        records: list[_ArtifactReportRecord] = []
-        seen: set[str] = set()
-        for value in values:
-            if deadline_check is not None:
-                deadline_check()
-            if not isinstance(value, dict) or set(value) != _REPORT_KEYS:
-                raise ControllerError("artifacts-final record has missing or extra keys")
-            relative_path = value["relative_path"]
-            if relative_path not in _REPORT_PATHS or relative_path in seen:
-                raise ControllerError("artifacts-final report has missing, extra, or duplicate paths")
-            seen.add(relative_path)
-            try:
-                status_value = ValidationStatus(value["status"])
-            except (TypeError, ValueError) as exc:
-                raise ControllerError("artifacts-final record status is invalid") from exc
-            detail = value["detail"]
-            if not isinstance(detail, str) or not detail:
-                raise ControllerError("artifacts-final record detail must be nonempty")
-            semantic = value["semantic"]
-            if not isinstance(semantic, dict) or not semantic:
-                raise ControllerError("artifacts-final record semantic must be a nonempty object")
-            size_bytes = value["size_bytes"]
-            sha256 = value["sha256"]
-            if status_value is ValidationStatus.VALID:
-                if (
-                    isinstance(size_bytes, bool)
-                    or not isinstance(size_bytes, int)
-                    or size_bytes < 0
-                    or not isinstance(sha256, str)
-                    or _SHA256_PATTERN.fullmatch(sha256) is None
-                ):
-                    raise ControllerError("valid artifacts-final records require size and checksum")
-            elif (size_bytes is None) != (sha256 is None) or (
-                size_bytes is not None
-                and (
-                    isinstance(size_bytes, bool)
-                    or not isinstance(size_bytes, int)
-                    or size_bytes < 0
-                    or not isinstance(sha256, str)
-                    or _SHA256_PATTERN.fullmatch(sha256) is None
-                )
-            ):
-                raise ControllerError(
-                    "non-valid artifacts-final record size/checksum must both be null or valid"
-                )
-            records.append(
-                _ArtifactReportRecord(
-                    relative_path,
-                    status_value,
-                    detail,
-                    size_bytes,
-                    sha256,
-                    semantic,
-                )
-            )
-        if set(seen) != set(_REPORT_PATHS):
-            raise ControllerError("artifacts-final report has missing records")
-        ordered = tuple(sorted(records, key=lambda item: _REPORT_PATHS.index(item.relative_path)))
-        expected_complete = all(record.status is ValidationStatus.VALID for record in ordered)
-        if document["complete"] != expected_complete:
-            raise ControllerError("artifacts-final aggregate complete disagrees with records")
-        if deadline_check is not None:
-            deadline_check()
-        return cls(run_id, document["complete"], ordered)
+    records: tuple[ArtifactFinalRecord, ...]
 
     def first_failure(self) -> str | None:
         for record in self.records:
@@ -219,7 +122,7 @@ class ArtifactFinalReport:
 
     @staticmethod
     def _validator(
-        record: _ArtifactReportRecord,
+        record: ArtifactFinalRecord,
         deadline_check: Callable[[], None] | None = None,
     ) -> Callable[[Path, str], ValidationResult]:
         def validate(run_directory: Path, relative_path: str) -> ValidationResult:
@@ -471,127 +374,6 @@ class RunController:
         )
 
     @staticmethod
-    def _validate_ready(document: Mapping[str, Any]) -> None:
-        if set(document) != {"run_id", "ready"} or document["ready"] is not True:
-            raise ProtocolFileError("artifacts-ready status is invalid")
-
-    @staticmethod
-    def _validate_gazebo_ready(document: Mapping[str, Any]) -> None:
-        exchange = document.get("flight_exchange")
-        if (
-            set(document) != {"run_id", "ready", "flight_exchange"}
-            or document["ready"] is not True
-            or not isinstance(exchange, dict)
-            or set(exchange) != _FLIGHT_EXCHANGE_KEYS
-            or exchange["online"] is not True
-            or any(
-                type(exchange[key]) is not int or exchange[key] < 0
-                for key in _FLIGHT_EXCHANGE_KEYS - {"online"}
-            )
-            or exchange["servo_packets_received"] < 1
-            or exchange["motor_updates"] < 1
-            or exchange["json_states_sent"] < 1
-            or exchange["servo_frame_gaps"] != 0
-            or exchange["json_send_errors"] != 0
-        ):
-            raise ProtocolFileError("gazebo-ready status is invalid")
-
-    @staticmethod
-    def _validate_ardupilot_ready(document: Mapping[str, Any]) -> None:
-        if (
-            set(document)
-            != {"run_id", "ready", "json_exchange", "mavlink_endpoint"}
-            or document["ready"] is not True
-            or document["json_exchange"] is not True
-            or document["mavlink_endpoint"] != "tcp://ardupilot-sitl:5760"
-        ):
-            raise ProtocolFileError("ardupilot-ready status is invalid")
-
-    @staticmethod
-    def _validate_companion_ready(document: Mapping[str, Any]) -> None:
-        if (
-            set(document)
-            != {
-                "run_id",
-                "ready",
-                "mavlink_endpoint",
-                "mavlink_transport_connected",
-            }
-            or document["ready"] is not True
-            or document["mavlink_endpoint"] != "tcp://ardupilot-sitl:5760"
-            or document["mavlink_transport_connected"] is not True
-        ):
-            raise ProtocolFileError("companion-ready status is invalid")
-
-    @staticmethod
-    def _validate_mission_ready(document: Mapping[str, Any]) -> None:
-        if (
-            set(document)
-            != {
-                "run_id",
-                "ready",
-                "heartbeat_observed",
-                "prearm_checks_healthy",
-            }
-            or document["ready"] is not True
-            or document["heartbeat_observed"] is not True
-            or document["prearm_checks_healthy"] is not True
-        ):
-            raise ProtocolFileError("mission-ready status is invalid")
-
-    @staticmethod
-    def _validate_running(document: Mapping[str, Any]) -> int:
-        if set(document) != {"run_id", "state", "sim_timestamp_ns"}:
-            raise ProtocolFileError("runtime-running status is invalid")
-        stamp = document["sim_timestamp_ns"]
-        if (
-            document["state"] != "RUNNING"
-            or isinstance(stamp, bool)
-            or not isinstance(stamp, int)
-            or stamp < 0
-        ):
-            raise ProtocolFileError("runtime-running status is invalid")
-        return stamp
-
-    @staticmethod
-    def _source_stamp(document: Mapping[str, Any]) -> int | None:
-        stamp = document.get("sim_timestamp_ns")
-        if stamp is None:
-            return None
-        if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0:
-            raise ProtocolFileError("source-finished simulation timestamp is invalid")
-        return stamp
-
-    @staticmethod
-    def _mission_stamp(document: Mapping[str, Any]) -> int:
-        if set(document) != {"run_id", "finished", "sim_timestamp_ns", "outcome"}:
-            raise ProtocolFileError("mission-finished status is invalid")
-        stamp = document["sim_timestamp_ns"]
-        if (
-            document["finished"] is not True
-            or document["outcome"] != "LANDED"
-            or isinstance(stamp, bool)
-            or not isinstance(stamp, int)
-            or stamp < 0
-        ):
-            raise ProtocolFileError("mission-finished status is invalid")
-        return stamp
-
-    @staticmethod
-    def _score_stamp(document: Mapping[str, Any]) -> int:
-        if set(document) != {"run_id", "finished", "sim_timestamp_ns"}:
-            raise ProtocolFileError("score-finished status is invalid")
-        stamp = document["sim_timestamp_ns"]
-        if (
-            document["finished"] is not True
-            or isinstance(stamp, bool)
-            or not isinstance(stamp, int)
-            or stamp < 0
-        ):
-            raise ProtocolFileError("score-finished status is invalid")
-        return stamp
-
-    @staticmethod
     def _ps_cause(
         result: ComposeCommandResult, topology: RuntimeTopology
     ) -> TerminalCause | None:
@@ -644,19 +426,15 @@ class RunController:
         deadline_check()
         failure = store.read_runtime_status(
             run_id,
-            "runtime-failure",
+            RuntimeFailureStatus,
             deadline_check=deadline_check,
         )
         deadline_check()
         if failure is not None:
-            reason = failure.get("reason")
-            module = failure.get("module")
-            if not isinstance(reason, str) or not reason:
-                return TerminalCause("runtime_failure", "invalid_runtime_failure")
             return TerminalCause(
                 "runtime_failure",
-                reason,
-                module if isinstance(module, str) and module else None,
+                failure.reason,
+                failure.module,
             )
         remaining = self._remaining(deadline, self.monotonic)
         try:
@@ -677,13 +455,13 @@ class RunController:
         run_id: str,
         compose: Any,
         topology: RuntimeTopology,
-        name: str,
+        status_type: type[StatusT],
         deadline: float,
         deadline_cause: TerminalCause,
         *,
         observe_causes: bool = True,
         deadline_check: Callable[[], None] | None = None,
-    ) -> tuple[dict[str, Any] | None, TerminalCause | None]:
+    ) -> tuple[StatusT | None, TerminalCause | None]:
         checker = deadline_check or self._deadline_check(deadline)
         while True:
             try:
@@ -702,7 +480,7 @@ class RunController:
                 checker()
                 document = store.read_runtime_status(
                     run_id,
-                    name,
+                    status_type,
                     deadline_check=checker,
                 )
                 checker()
@@ -1019,24 +797,20 @@ class RunController:
                         config.run_id,
                         compose,
                         topology,
-                        "artifacts-ready",
+                        ArtifactsReadyStatus,
                         startup_deadline,
                         TerminalCause("startup_deadline", "startup_deadline"),
                     )
-                    if ready is not None:
-                        self._validate_ready(ready)
                     if primary is None and config.runtime_profile == "phase3":
                         gazebo_ready, primary = self._wait_for(
                             store,
                             config.run_id,
                             compose,
                             topology,
-                            "gazebo-ready",
+                            GazeboReadyStatus,
                             startup_deadline,
                             TerminalCause("startup_deadline", "gazebo_readiness_stall"),
                         )
-                        if gazebo_ready is not None:
-                            self._validate_gazebo_ready(gazebo_ready)
                     if primary is None:
                         lifecycle = lifecycle.apply(LifecycleEvent.MODULES_READY)
                         store.write_operator_status(self._status(lifecycle))
@@ -1047,95 +821,91 @@ class RunController:
                             config.run_id,
                             compose,
                             topology,
-                            "ardupilot-ready",
+                            ArduPilotReadyStatus,
                             startup_deadline,
                             TerminalCause("startup_deadline", "ardupilot_readiness_stall"),
                         )
-                        if ardupilot_ready is not None:
-                            self._validate_ardupilot_ready(ardupilot_ready)
                     if primary is None and config.runtime_profile == "phase3":
                         companion_ready, primary = self._wait_for(
                             store,
                             config.run_id,
                             compose,
                             topology,
-                            "companion-ready",
+                            CompanionReadyStatus,
                             startup_deadline,
                             TerminalCause("startup_deadline", "companion_readiness_stall"),
                         )
-                        if companion_ready is not None:
-                            self._validate_companion_ready(companion_ready)
                     overall_deadline = mono_started + config.max_wall_seconds
                     if (
                         primary is None
                         and config.runtime_profile == "phase3"
-                        and config.mission != "comp2026_auto"
+                        and (
+                            config.mission != "comp2026_auto"
+                            or config.qgc is None
+                        )
                     ):
                         mission_ready, primary = self._wait_for(
                             store,
                             config.run_id,
                             compose,
                             topology,
-                            "mission-ready",
+                            MissionReadyStatus,
                             overall_deadline,
                             TerminalCause("mission_stall", "mission_readiness_stall"),
                         )
-                        if mission_ready is not None:
-                            self._validate_mission_ready(mission_ready)
                     if primary is None:
                         running, primary = self._wait_for(
                             store,
                             config.run_id,
                             compose,
                             topology,
-                            "runtime-running",
+                            RuntimeRunningStatus,
                             overall_deadline,
                             TerminalCause("clock_stall", "clock_source_stall"),
                         )
                         if running is not None:
-                            sim_start_ns = self._validate_running(running)
+                            sim_start_ns = running.sim_timestamp_ns
                             lifecycle = lifecycle.apply(LifecycleEvent.CLOCK_STARTED)
                             store.write_operator_status(self._status(lifecycle))
                     if (
                         primary is None
                         and config.runtime_profile == "phase3"
                         and config.mission == "comp2026_auto"
+                        and config.qgc is not None
                     ):
                         mission_ready, primary = self._wait_for(
                             store,
                             config.run_id,
                             compose,
                             topology,
-                            "mission-ready",
+                            MissionReadyStatus,
                             overall_deadline,
                             TerminalCause("mission_stall", "mission_readiness_stall"),
                         )
-                        if mission_ready is not None:
-                            self._validate_mission_ready(mission_ready)
                     if primary is None:
                         finished, primary = self._wait_for(
                             store,
                             config.run_id,
                             compose,
                             topology,
-                            "source-finished",
+                            SourceFinishedStatus,
                             overall_deadline,
                             TerminalCause("clock_stall", "clock_source_stall"),
                         )
                         if finished is not None:
-                            sim_end_ns = self._source_stamp(finished)
+                            sim_end_ns = finished.sim_timestamp_ns
                     if primary is None and config.runtime_profile == "phase3":
                         mission_finished, primary = self._wait_for(
                             store,
                             config.run_id,
                             compose,
                             topology,
-                            "mission-finished",
+                            MissionFinishedStatus,
                             overall_deadline,
                             TerminalCause("mission_stall", "mission_completion_stall"),
                         )
                         if mission_finished is not None:
-                            mission_stamp = self._mission_stamp(mission_finished)
+                            mission_stamp = mission_finished.sim_timestamp_ns
                             if sim_end_ns is not None and mission_stamp > sim_end_ns:
                                 raise ProtocolFileError(
                                     "mission-finished timestamp exceeds source-finished"
@@ -1146,12 +916,12 @@ class RunController:
                             config.run_id,
                             compose,
                             topology,
-                            "score-finished",
+                            ScoreFinishedStatus,
                             overall_deadline,
                             TerminalCause("score_stall", "score_completion_stall"),
                         )
                         if score_finished is not None:
-                            score_stamp = self._score_stamp(score_finished)
+                            score_stamp = score_finished.sim_timestamp_ns
                             if sim_end_ns is None or score_stamp != sim_end_ns:
                                 raise ProtocolFileError(
                                     "score-finished timestamp must equal source-finished"
@@ -1194,14 +964,14 @@ class RunController:
                 manifest_deadline_check = self._deadline_check(manifest_deadline)
 
                 if compose_started:
-                    for status_name in ("runtime-frozen", "artifacts-final"):
+                    for status_type in (RuntimeFrozenStatus, ArtifactsFinalStatus):
                         try:
                             document, cause = self._wait_for(
                                 store,
                                 config.run_id,
                                 compose,
                                 topology,
-                                status_name,
+                                status_type,
                                 work_deadline,
                                 TerminalCause("finalization_deadline", "finalization_deadline"),
                                 observe_causes=False,
@@ -1276,16 +1046,16 @@ class RunController:
                     work_deadline_check()
                     report_document = store.read_runtime_status(
                         config.run_id,
-                        "artifacts-final",
+                        ArtifactsFinalStatus,
                         deadline_check=work_deadline_check,
                     )
                     work_deadline_check()
                     if report_document is None:
                         raise ControllerError("artifacts-final report is missing")
-                    report = ArtifactFinalReport.parse(
-                        config.run_id,
-                        report_document,
-                        work_deadline_check,
+                    report = ArtifactFinalReport(
+                        report_document.run_id,
+                        report_document.complete,
+                        report_document.records,
                     )
                     validators = report.validators(work_deadline_check)
                     report_failure = report.first_failure() or self._first_invalid(
@@ -1475,7 +1245,7 @@ class RunController:
                                 config.run_id,
                                 compose,
                                 topology,
-                                "terminal-notified",
+                                TerminalNotifiedStatus,
                                 manifest_deadline,
                                 TerminalCause(
                                     "finalization_deadline",
@@ -1507,7 +1277,7 @@ class RunController:
                     manifest_deadline_check()
                     later = store.read_runtime_status(
                         config.run_id,
-                        "runtime-failure",
+                        RuntimeFailureStatus,
                         deadline_check=manifest_deadline_check,
                     )
                     manifest_deadline_check()
@@ -1526,17 +1296,13 @@ class RunController:
                         )
                     )
                 if later is not None:
-                    later_reason = later.get("reason")
-                    if isinstance(later_reason, str) and later_reason:
-                        later_cause = TerminalCause(
-                            "runtime_failure",
-                            later_reason,
-                            later.get("module")
-                            if isinstance(later.get("module"), str)
-                            else None,
-                        )
-                        if later_cause != primary and later_cause not in diagnostics:
-                            diagnostics.append(later_cause)
+                    later_cause = TerminalCause(
+                        "runtime_failure",
+                        later.reason,
+                        later.module,
+                    )
+                    if later_cause != primary and later_cause not in diagnostics:
+                        diagnostics.append(later_cause)
                 final_status = OperatorStatus(
                     config.run_id,
                     effective,

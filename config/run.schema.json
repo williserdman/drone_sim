@@ -58,7 +58,7 @@
     },
     {
       "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
-      "then": {"required": ["competition", "qgc"]}
+      "then": {"required": ["competition"]}
     },
     {
       "if": {"required": ["qgc"]},

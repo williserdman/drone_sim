@@ -27,8 +27,15 @@ validates; it does not infer physical success from a command or log message.
 - [`RunLifecycle`](src/orchestration/lifecycle.py) defines valid state transitions.
   [`runtime_node.py`](src/orchestration/runtime_node.py) publishes runtime lifecycle
   state and aggregates the quiescence barrier.
-- [`StatusStore`](src/orchestration/status_store.py) implements the durable
-  `.control/` and `.status/` protocol used by the host and containers.
+- [`StatusStore`](src/orchestration/status_store.py) owns host allocation and is
+  the host-side adapter for the durable `.control/` and `.status/` protocol.
+  The shared [`runtime_status.py`](../artifacts/src/artifacts/runtime_status.py)
+  contract owns runtime status types, JSON conversion, and write policy;
+  [`artifacts.protocol_files`](../artifacts/src/artifacts/protocol_files.py) owns
+  low-level safe persistence.
+  `StatusStore.validated_manifest_result` accepts paths defined by
+  [`artifacts.manifest.is_manifest_relative_path`](../artifacts/src/artifacts/manifest.py);
+  the [`manifest.json` schema](../artifacts/schemas/manifest.schema.json) is the wire authority.
 
 ## Consumer and producer seams
 
@@ -68,17 +75,20 @@ adapter-owned origin `37.4003371,-122.0800351,0,0`; ambient process environment
 cannot select either origin. The companion and ArduPilot still perform their
 full domain validation. Runs without `qgc` keep the existing Compose files.
 The checked-in default and realtime competition templates omit `qgc` and are
-quarantined historical inputs. Resolution rejects them until an operator adds
-the complete QGC input set.
+resolved through the existing automatic mission host. Supplying the complete
+QGC input set instead selects the guarded FM1/FM2 host.
 
 At runtime, orchestration publishes `/simulation/run_state` using the actual
 [`RunState` schema](../ros_ws/src/simulation_interfaces/msg/RunState.msg), consumes
 aggregate [`ArtifactStatus`](../ros_ws/src/simulation_interfaces/msg/ArtifactStatus.msg),
-and exchanges durable facts through the run directory. Publisher/subscriber setup
-and discovery requirements remain authoritative in
-[`runtime_node.py`](src/orchestration/runtime_node.py); protocol validation remains
-authoritative in [`controller.py`](src/orchestration/controller.py) and
-[`status_store.py`](src/orchestration/status_store.py).
+and exchanges typed durable facts through the run directory.
+Publisher/subscriber setup and discovery requirements remain authoritative in
+[`runtime_node.py`](src/orchestration/runtime_node.py). The shared runtime status
+contract above owns typed wire and schema validation, with
+[`status_store.py`](src/orchestration/status_store.py) as its host-side adapter.
+[`controller.py`](src/orchestration/controller.py) owns orchestration's host
+lifecycle and semantic checks, including deadlines, artifact consistency, and
+run-state/result logic.
 
 The controller produces `configuration/run.json`, operator status, finalization
 requests, captured logs, and `manifest.json`. It consumes module readiness and
@@ -92,6 +102,9 @@ copy or rebuild the bundle.
   Phase 3 run separately requires a landed `mission-finished` fact and a
   `score-finished` fact at the source-completion timestamp. A good score alone is
   not a successful run.
+- Runtime status reads select an exact registered type. Schema failures remain
+  protocol failures; orchestration does not reinterpret a malformed value as a
+  missing or successful status.
 - Every terminal path enters `FINALIZING`. Publishers must become quiescent before
   orchestration writes aggregate `runtime-frozen`; artifacts then drains and
   closes its recorders before the host validates the bundle.

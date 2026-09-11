@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import re
-from threading import RLock
 from typing import Mapping
 
 
@@ -52,7 +51,7 @@ class PayloadWorld:
 
 
 class PayloadAuthority:
-    """Validate one-capacity payload actions and issue coordinator wires once."""
+    """Validate one-capacity payload actions against current physical facts."""
 
     def __init__(
         self,
@@ -71,34 +70,8 @@ class PayloadAuthority:
         self._pickup_zones = dict(pickup_zones)
         self._payload_zones = dict(payload_zones)
         self._max_center_error_m = max_center_error_m
-        self._commands: dict[
-            str, tuple[PayloadRequest, PayloadDecision | None]
-        ] = {}
-        self._lock = RLock()
 
     def decide(self, world: PayloadWorld, request: PayloadRequest) -> PayloadDecision:
-        with self._lock:
-            previous = self._commands.get(request.command_id)
-            if previous is not None:
-                original, completed = previous
-                if original != request:
-                    return PayloadDecision(False, "COMMAND_ID_CONFLICT", None)
-                if completed is None:
-                    return PayloadDecision(False, "COMMAND_IN_PROGRESS", None)
-                return completed
-
-            decision = self._decide_new(world, request)
-            self._commands[request.command_id] = (
-                request,
-                None
-                if decision.accepted and decision.wire_command is not None
-                else decision,
-            )
-            return decision
-
-    def _decide_new(
-        self, world: PayloadWorld, request: PayloadRequest
-    ) -> PayloadDecision:
         if request.run_id != self.run_id:
             return PayloadDecision(False, "STALE_RUN", None)
         if type(request.command_id) is not str or _COMMAND_ID.fullmatch(
@@ -148,19 +121,6 @@ class PayloadAuthority:
             "OK",
             f"payload-command-v1|{request.command_id}|attach",
         )
-
-    def complete(self, request: PayloadRequest, decision: PayloadDecision) -> None:
-        if decision.wire_command is not None:
-            raise ValueError("completed decisions cannot contain a wire command")
-        with self._lock:
-            previous = self._commands.get(request.command_id)
-            if previous is None or previous[0] != request:
-                raise ValueError("request is not the matching active command")
-            if previous[1] is not None:
-                if previous[1] != decision:
-                    raise ValueError("completed command result cannot change")
-                return
-            self._commands[request.command_id] = (request, decision)
 
 
 __all__ = [

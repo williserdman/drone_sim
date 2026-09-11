@@ -8,6 +8,14 @@ import pytest
 import artifacts.runtime_node as runtime_node
 from artifacts._adapters.rosbag import BASE_TOPICS
 from artifacts.runtime_node import AggregateArtifactsRuntime, FaultAwareRecorder
+from artifacts.runtime_status import (
+    ArtifactsFinalStatus,
+    ArtifactsReadyStatus,
+    RuntimeFailureStatus,
+    RuntimeFrozenStatus,
+    TerminalNotifiedStatus,
+    status_document,
+)
 from artifacts.validation import ValidationStatus
 
 
@@ -255,11 +263,11 @@ class FakeProtocol:
         self.terminal = None
         self.manifest_status = None
 
-    def write_status(self, name, document):
-        self.statuses.append((name, document))
+    def write_status(self, status):
+        self.statuses.append(status)
 
-    def read_status(self, name):
-        assert name == "runtime-frozen"
+    def read_status(self, status_type):
+        assert status_type is RuntimeFrozenStatus
         return self.frozen
 
     def read_terminal_committed(self):
@@ -423,7 +431,7 @@ def test_physical_runtime_validates_configured_camera_count(tmp_path):
         video_validators=validators,
     )
     runtime.start(deadline=5.0)
-    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
 
     assert runtime.finalize("COMPLETED", deadline=99.0)["complete"] is True
     assert all(
@@ -448,7 +456,7 @@ def test_startup_claims_ready_only_when_every_recorder_and_graph_endpoint_is_rea
         },
         {"run_id": RUN_ID, "ready": True, "complete": False, "missing": [], "manifest_path": ""}
     ]
-    assert protocol.statuses == [("artifacts-ready", {"run_id": RUN_ID, "ready": True})]
+    assert protocol.statuses == [ArtifactsReadyStatus(RUN_ID)]
 
 
 def test_startup_status_waits_for_rosbag_subscription_before_publication(tmp_path):
@@ -508,17 +516,11 @@ def test_initial_status_delivery_timeout_reports_bounded_startup_failure(tmp_pat
     assert runtime.check_ready("graph") is False
     assert [document["ready"] for document in published] == [False]
     assert protocol.statuses == [
-        (
-            "runtime-failure",
-            {
-                "run_id": RUN_ID,
-                "module": "artifacts",
-                "reason": (
-                    "initial artifact status delivery was not acknowledged "
-                    "before startup deadline"
-                ),
-                "diagnostic_paths": ["logs/docker/rosbag2.log.partial"],
-            },
+        RuntimeFailureStatus(
+            RUN_ID,
+            "artifacts",
+            "initial artifact status delivery was not acknowledged before startup deadline",
+            ("logs/docker/rosbag2.log.partial",),
         )
     ]
 
@@ -579,14 +581,11 @@ def test_partial_startup_reports_failure_without_claiming_ready(tmp_path):
     assert runtime.check_ready("graph") is False
     assert published == []
     assert protocol.statuses == [
-        (
-            "runtime-failure",
-            {
-                "run_id": RUN_ID,
-                "module": "artifacts",
-                "reason": "recorder startup failed: RuntimeError: bag failed",
-                "diagnostic_paths": ["logs/docker/rosbag2.log.partial"],
-            },
+        RuntimeFailureStatus(
+            RUN_ID,
+            "artifacts",
+            "recorder startup failed: RuntimeError: bag failed",
+            ("logs/docker/rosbag2.log.partial",),
         )
     ]
 
@@ -597,7 +596,7 @@ def test_finalization_waits_for_freeze_and_shares_one_deadline_for_all_recorders
     runtime.check_ready("graph")
     runtime.check_ready("graph")
     assert runtime.finalize("COMPLETED", deadline=99.0) is None
-    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
     report = runtime.finalize("COMPLETED", deadline=99.0)
 
     assert bag.finalize_deadlines == [99.0]
@@ -610,7 +609,8 @@ def test_finalization_waits_for_freeze_and_shares_one_deadline_for_all_recorders
         "codec_name", "pix_fmt", "avg_frame_rate", "width", "height", "frame_count", "diagnostics"
     }
     assert set(report["records"][2]["semantic"]) == {"storage_id", "topics"}
-    assert protocol.statuses[-1] == ("artifacts-final", report)
+    assert type(protocol.statuses[-1]) is ArtifactsFinalStatus
+    assert status_document(protocol.statuses[-1]) == report
 
     protocol.terminal = {
         "run_id": RUN_ID,
@@ -648,10 +648,7 @@ def test_finalization_waits_for_freeze_and_shares_one_deadline_for_all_recorders
             "manifest_path": "manifest.json",
         },
     ]
-    assert protocol.statuses[-1] == (
-        "terminal-notified",
-        {"run_id": RUN_ID, "notified": True},
-    )
+    assert protocol.statuses[-1] == TerminalNotifiedStatus(RUN_ID)
 
 
 def test_post_manifest_status_sorts_invalid_paths_and_preserves_readiness(tmp_path):
@@ -692,7 +689,7 @@ def test_invalid_observer_still_produces_exact_three_record_failure_report(tmp_p
         },
     )
     runtime.start(deadline=5.0)
-    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
     report = runtime.finalize("FAILED", deadline=99.0)
     assert report["complete"] is False
     assert [item["status"] for item in report["records"]] == ["valid", "invalid", "valid"]
@@ -777,16 +774,13 @@ def test_premature_ffmpeg_exit_after_readiness_writes_first_wins_runtime_failure
     video.recorders["onboard"].is_ready = False
     assert runtime.check_health() is False
     assert runtime.check_health() is False
-    assert protocol.statuses[-1] == (
-        "runtime-failure",
-        {
-            "run_id": RUN_ID,
-            "module": "artifacts",
-            "reason": "onboard FFmpeg exited after recorder readiness",
-            "diagnostic_paths": ["logs/docker/ffmpeg-onboard.log.partial"],
-        },
+    assert protocol.statuses[-1] == RuntimeFailureStatus(
+        RUN_ID,
+        "artifacts",
+        "onboard FFmpeg exited after recorder readiness",
+        ("logs/docker/ffmpeg-onboard.log.partial",),
     )
-    assert [name for name, _document in protocol.statuses].count("runtime-failure") == 1
+    assert sum(type(status) is RuntimeFailureStatus for status in protocol.statuses) == 1
 
 
 def test_video_diagnostic_writes_durable_failure_before_structured_output(tmp_path):
@@ -799,14 +793,11 @@ def test_video_diagnostic_writes_durable_failure_before_structured_output(tmp_pa
     runtime.report_video_diagnostic(diagnostic, structured=lambda: observed.append("logged"))
     runtime.report_video_diagnostic(diagnostic, structured=lambda: observed.append("duplicate"))
 
-    assert protocol.statuses[0] == (
-        "runtime-failure",
-        {
-            "run_id": RUN_ID,
-            "module": "artifacts",
-            "reason": "observer recorder_callback_failed: broken pipe",
-            "diagnostic_paths": ["logs/docker/ffmpeg-observer.log.partial"],
-        },
+    assert protocol.statuses[0] == RuntimeFailureStatus(
+        RUN_ID,
+        "artifacts",
+        "observer recorder_callback_failed: broken pipe",
+        ("logs/docker/ffmpeg-observer.log.partial",),
     )
     assert observed == ["logged", "duplicate"]
 
@@ -829,7 +820,7 @@ def test_stubborn_rosbag_never_publishes_final_report_or_runs_validators(tmp_pat
         video_validators=video_validators,
     )
     runtime.start(deadline=5.0)
-    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
 
     assert runtime.finalize("FAILED", deadline=99.0) is None
     assert runtime.finalize("FAILED", deadline=99.0) is None
@@ -838,9 +829,9 @@ def test_stubborn_rosbag_never_publishes_final_report_or_runs_validators(tmp_pat
     assert bag.finalize_deadlines == [99.0]
     assert bag_validator.calls == []
     assert all(validator.calls == [] for validator in video_validators.values())
-    assert not any(name == "artifacts-final" for name, _document in protocol.statuses)
-    assert protocol.statuses[-1][0] == "runtime-failure"
-    assert "did not exit" in protocol.statuses[-1][1]["reason"]
+    assert not any(type(status) is ArtifactsFinalStatus for status in protocol.statuses)
+    assert type(protocol.statuses[-1]) is RuntimeFailureStatus
+    assert "did not exit" in protocol.statuses[-1].reason
 
 
 def test_rosbag_death_after_finalizing_before_aggregate_freeze_blocks_success(tmp_path):
@@ -862,17 +853,14 @@ def test_rosbag_death_after_finalizing_before_aggregate_freeze_blocks_success(tm
     # the aggregate freeze. The recorder dies in that exact wait window.
     bag.ready = False
     assert runtime.check_health() is False
-    assert protocol.statuses[-1] == (
-        "runtime-failure",
-        {
-            "run_id": RUN_ID,
-            "module": "artifacts",
-            "reason": "rosbag recorder exited after recorder readiness",
-            "diagnostic_paths": ["logs/docker/rosbag2.log.partial"],
-        },
+    assert protocol.statuses[-1] == RuntimeFailureStatus(
+        RUN_ID,
+        "artifacts",
+        "rosbag recorder exited after recorder readiness",
+        ("logs/docker/rosbag2.log.partial",),
     )
     assert runtime.finalize("COMPLETED", deadline=99.0) is None
-    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
     assert runtime.finalize("COMPLETED", deadline=99.0) is None
 
     assert runtime.finalization_started is True
@@ -881,7 +869,7 @@ def test_rosbag_death_after_finalizing_before_aggregate_freeze_blocks_success(tm
     assert all(stream.finalize_calls == [(99.0, "COMPLETED")] for stream in video.recorders.values())
     assert bag_validator.calls == []
     assert all(validator.calls == [] for validator in video_validators.values())
-    assert not any(name == "artifacts-final" for name, _document in protocol.statuses)
+    assert not any(type(status) is ArtifactsFinalStatus for status in protocol.statuses)
 
 
 def test_rosbag_exit_racing_expected_shutdown_blocks_final_report(tmp_path):
@@ -895,12 +883,12 @@ def test_rosbag_exit_racing_expected_shutdown_blocks_final_report(tmp_path):
         tmp_path, bag=FakeBag(finalization=premature)
     )
     runtime.start(deadline=5.0)
-    protocol.frozen = {"run_id": RUN_ID, "frozen": True}
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
 
     assert runtime.finalize("COMPLETED", deadline=99.0) is None
 
     assert bag.finalize_deadlines == [99.0]
     assert runtime.finalization_blocked is True
-    assert protocol.statuses[-1][0] == "runtime-failure"
-    assert "before shutdown was requested" in protocol.statuses[-1][1]["reason"]
-    assert not any(name == "artifacts-final" for name, _document in protocol.statuses)
+    assert type(protocol.statuses[-1]) is RuntimeFailureStatus
+    assert "before shutdown was requested" in protocol.statuses[-1].reason
+    assert not any(type(status) is ArtifactsFinalStatus for status in protocol.statuses)
