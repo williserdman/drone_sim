@@ -16,7 +16,13 @@
     "config_sha256"
   ],
   "properties": {
-    "run_id": {"type": "string", "format": "uuid"},
+    "run_id": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
     "world": {"type": "string", "minLength": 1},
     "vehicle": {"type": "string", "minLength": 1},
     "mission": {"type": "string", "minLength": 1},
@@ -29,6 +35,7 @@
     "runtime_profile": {"enum": ["phase2", "phase3"]},
     "simulation": {"$ref": "#/$defs/simulation"},
     "competition": {"$ref": "#/$defs/competition"},
+    "qgc": {"$ref": "#/$defs/qgc"},
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [
@@ -51,7 +58,17 @@
     },
     {
       "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
-      "then": {"required": ["competition"]}
+      "then": {"required": ["competition", "qgc"]}
+    },
+    {
+      "if": {"required": ["qgc"]},
+      "then": {
+        "required": ["runtime_profile"],
+        "properties": {
+          "runtime_profile": {"const": "phase3"},
+          "mission": {"const": "comp2026_auto"}
+        }
+      }
     }
   ],
   "$defs": {
@@ -93,6 +110,32 @@
         "scenario": {"const": "scenario.yaml"},
         "course_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "scenario_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "qgc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deployment_profile",
+        "deployment_profile_sha256",
+        "listener_session",
+        "listener_session_sha256",
+        "qgc_actions",
+        "qgc_actions_sha256",
+        "runtime_policy",
+        "runtime_policy_sha256",
+        "attempt_state_id"
+      ],
+      "properties": {
+        "deployment_profile": {"const": "deployment-profile.json"},
+        "deployment_profile_sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+        "listener_session": {"const": "listener-session.json"},
+        "listener_session_sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+        "qgc_actions": {"const": "qgc-actions.json"},
+        "qgc_actions_sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+        "runtime_policy": {"const": "qgc-runtime.json"},
+        "runtime_policy_sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+        "attempt_state_id": {"type": "string", "minLength": 71, "maxLength": 71, "pattern": "^sha256-[0-9a-f]{64}$"}
       }
     },
     "simulation": {

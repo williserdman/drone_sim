@@ -2,6 +2,87 @@
 
 [Start here](../README.md) · [Runbook](runbook.md) · [Current status](handoff.md)
 
+## Current Comp2026 host boundary
+
+The parent `comp2026_auto` entry is a guarded QGC composition for FM1 and FM2.
+It projects all immutable inputs before loading live dependencies, passes the
+sealed listener artifact snapshot to the nested runtime, and makes the nested
+controller the sole flight-command writer. The parent owns ROS simulation input,
+payload marker ID 2, lifecycle evidence, interruption, and bounded producer
+cleanup. It never issues an automatic first command; FM3/camera construction is
+disabled. Parent build source targets official ArduCopter 4.5.7 commit
+`2a3dc4b7bf2507120f7378a7b2fde73185e0c325`, matching the reviewed decoder's
+firmware contract. No parent image or integrated run has validated that source
+alignment. Existing image tags and earlier 4.7 run evidence remain historical.
+
+Parent configuration now has an optional immutable QGC input interface. When a
+template supplies all four source paths, orchestration snapshots the exact
+deployment-profile, listener-session, QGC-action, and runtime-policy bytes under
+canonical names and records their hashes in `run.json`. It derives the attempt
+state identifier from the deployment-profile hash and requires that digest's
+existing canonical ledger directory immediately before Compose launches it. A
+QGC-only Compose overlay binds just that directory read-write into
+`companion-runtime`. It does
+not copy state into a run directory, expose the state root, or let Compose
+create a missing host directory. QGC Docker commands pin the local Unix socket,
+so a remote ambient or saved Docker context cannot resolve the checked path on
+another machine. The same overlay
+passes only `ardupilot-sitl` a canonical launch-origin JSON value parsed from
+the immutable runtime-policy bytes without fallback coordinates. The companion,
+ArduPilot, and nested listener retain full domain validation. Default and
+realtime templates still omit the QGC input set, so their Compose behavior is
+unchanged. This source binding does not establish flight readiness.
+Post-launch diagnostics and teardown do not revalidate mutable attempt state.
+
+The host establishes the ROS subscriptions and executor before the nested
+controller connects. Its explicit `staged_simulation` telemetry mode is valid
+only for the injected `drone-sim-ros-confirmed-v1` FM1/FM2 composition. Before
+listener readiness it installs source-filtered observation, proves the bounded
+telemetry request ACKs and exact firmware version, and leaves cadence collection
+active. The ordinary and physical factory path still completes the entire
+telemetry cadence proof before installing the listener. Mission-ready and QGC admission require a matching
+`RUNNING` state, an accepted public clock, a live executor, an actual connected
+vehicle heartbeat within the tighter of the connection and flight-profile
+freshness bounds, and literal armability. Finalization requests, wall deadline,
+signals, executor failure, or callback failure stop startup before admission or
+request nested abort afterward. Nested cleanup precedes ROS producer teardown;
+only exact `SUCCEEDED` / `HOME_LANDED` / `NOT_REQUIRED` terminal facts publish
+mission success.
+
+The QGC owner reports phase transitions through one optional callback. The
+parent binds it to a single `/simulation/mission_events` publisher with reliable,
+transient-local depth-100 QoS. Only the ordered FM1/FM2 event prefix with IDs
+0 through 3 is possible. COMPLETE requires the supervisor's final SUCCEEDED
+result, and final FM2 COMPLETE follows confirmed original-home recovery. The
+emitter serializes clock reads, publication, failure latching, and shutdown.
+Publication failure blocks a clean host lifecycle result without changing the
+recorded physical flight or recovery outcome. The official scorer remains
+incomplete for this prefix because FM3 and HOME events are absent.
+
+Mission-event admission, publication, and final delivery confirmation require
+both expected durable consumers. The ROS graph must report root-namespace
+`drone_sim_scorekeeper` and `rosbag2_recorder_...` subscription endpoints with
+the exact mission-event type and reliable, transient-local QoS. A raw subscriber
+count or unrelated endpoint cannot satisfy this check.
+The parent maps integer simulation time to `sim_timestamp.sec` and
+`sim_timestamp.nanosec`. Cleanup stops emission, confirms reliable DDS
+acknowledgements within the configured cleanup timeout while the executor and
+publisher remain alive, then destroys the publisher. Only confirmed delivery
+can precede durable mission success.
+
+The first guarded GUIDED mode transport enqueue invokes a typed controller hook.
+The parent then records `mission-command-delivered` at the accepted public clock
+timestamp, which releases paused Gazebo. Before ARM or TAKEOFF, the nested
+controller requires all requested telemetry streams after that gate with
+strictly increasing, nonzero shared simulation timestamps and valid cadence.
+Pre-gate, timestamp-zero, and wrong-source samples do not count. QGC admission
+and failed or non-GUIDED outputs do not publish this fact. The host owns process
+signals and tells the nested runtime not to replace its handlers. Fatal ROS input or executor failures and the absolute wall deadline stop
+the shared simulation clock, waking nested simulation-time waits without
+inventing time. Operator and orchestration finalization retain the clock so the
+single allowed recovery can continue. Repeated abort delivery is latched; a
+later terminal stop ends only passive monitoring.
+
 ## The system in one picture
 
 ```mermaid
@@ -50,6 +131,28 @@ Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
 
+At the companion range boundary, valid samples retain their ROS source time and
+a strictly increasing sequence. Invalid input or cancellation revokes current
+and staged future range evidence under the adapter lock and increments an
+invalidation generation. Consumers can therefore detect an intervening invalid
+event even if they did not read during the invalid interval. A range sample is
+current through an inclusive age of 0.5 simulated seconds.
+
+At the Comp2026 camera boundary, the ROS adapter keeps only the newest strictly
+newer image. It preserves the source timestamp through pixel handoff and clears
+the slot when acquisition stops. The nested camera manager uses the same public
+simulation clock to reject future exposures and exposures older than the
+500,000,000 ns simulator limit. It does not replace missing evidence with a wall
+timestamp.
+
+The selected producer is `competition_sensor_link/downward_camera` in the
+generated competition model, not the older `onboard_camera` sensor in the
+included airframe. Its OpenCV axes map to body FRD as camera right to body right,
+image top to body forward, and optical forward to body down. The resulting
+camera-to-body matrix is `[[0,-1,0],[1,0,0],[0,0,1]]`; the model's z=-0.1 m
+position contributes a +0.1 m down offset. These calibration and mounting facts
+apply only to the fixed simulator scenario.
+
 ## Where to read or change code
 
 Start with the module relevant to your task. Each guide links its executable
@@ -79,6 +182,20 @@ A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and
 conflicting reuse of an ID is rejected. Recurring physical payload state, not a
 service response, establishes actual attachment and lift.
+
+The Comp2026 simulation payload adapter treats an accepted, positively sequenced,
+command-ID-matched response as confirmation of that requested physical transition.
+It creates the ROS request before the output transaction, dispatches `call_async`
+inside the current atomic permission boundary, then waits for the response outside
+that boundary. Permission loss after dispatch cannot recall the physical command;
+the adapter still records its correlated response but grants no further output.
+An explicit finite wall-time budget bounds both waiting for the first simulation
+clock sample and waiting for a requested simulation-time release delay to elapse.
+Simulation time remains the release condition; the wall budget only fails stalled
+infrastructure without dispatching.
+Timeout or `STALE_PHYSICAL_STATE` leaves completion unknown and never triggers an
+automatic release retry. Passive cleanup only closes local request production and
+waits. It does not send a payload command or claim a physical state.
 
 Finalization is a file-backed handshake: a finalize request leads to publisher
 quiescence, a runtime-frozen marker, closed artifacts and an artifacts-final

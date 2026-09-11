@@ -120,6 +120,7 @@ services:
       <<: *run-environment
       SIM_MODULE: ardupilot_sitl
       SIM_GAZEBO_HOST: gazebo-runtime
+      SIM_LAUNCH_ORIGIN_JSON: ${SIM_LAUNCH_ORIGIN_JSON:-}
     expose:
       - "5760/tcp"
       - "9003/udp"

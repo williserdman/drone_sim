@@ -7,4 +7,5 @@ build/
 install/
 log/
 runs/
+/.ledger-private/
 .superpowers/

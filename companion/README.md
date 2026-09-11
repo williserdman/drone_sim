@@ -10,6 +10,71 @@ requests, mission events, and durable mission lifecycle evidence.
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
+## Guarded `comp2026_auto` host
+
+`comp2026_auto` now composes the nested QGC listener as the sole flight-command
+owner. The parent first projects and validates the immutable deployment profile,
+listener session, action, runtime policy, course, scenario, and external attempt
+state. Only then may it create ROS or DroneKit resources. The listener receives
+the projection's sealed artifact snapshot; it does not reopen mutable run paths.
+
+The parent publishes mission-ready and opens QGC command admission only after a
+matching `RUNNING` state, accepted public clock, live ROS input executor, actual
+connected-vehicle heartbeat within the validated freshness bound, and literal
+`is_armable is True`. Its explicit simulator-only telemetry mode installs the
+source-filtered collector, proves interval-command ACKs and firmware metadata,
+and reaches listener readiness without waiting for cadence from paused physics.
+It sends no automatic first command. FM1 uses the nested controller and ROS
+range adapter; FM2 uses payload marker ID 2 and reports no attachment support.
+FM3/camera construction is disabled in this first binding. The admitted FM1's
+first guarded GUIDED transport enqueue is the release signal. The parent
+publishes the durable command-delivery fact at the accepted public clock
+timestamp, after which the controller requires complete post-gate telemetry on
+strictly advancing shared simulation time before ARM or TAKEOFF. Admission
+alone never publishes the fact or permits those commands.
+
+The parent publishes `/simulation/mission_events` with reliable,
+transient-local depth-100 QoS. This FM1/FM2 composition emits only the ordered
+prefix `FM1 STARTED`, `FM1 COMPLETE`, `FM2 STARTED`, `FM2 COMPLETE`, with IDs
+0 through 3 and current accepted simulation timestamps. A STARTED event follows
+command execution admission and the deadline check. COMPLETE follows a
+supervisor-finalized success; final FM2 also follows confirmed `HOME_LANDED`
+recovery. Rejection, replay, failure, abort, waypoint updates, and recovery do
+not invent completion, HOME, or FM3 events. Publisher failure is terminal for
+the host and is never retried.
+
+The host requires both required mission-event consumers before opening
+admission: root-namespace `drone_sim_scorekeeper` and the root-namespace
+`rosbag2_recorder_...` process. ROS graph endpoint metadata must also report the
+exact mission-event type with reliable, transient-local QoS. The host rechecks
+both identities for every publish and final flush. It maps simulation
+nanoseconds to the ROS `builtin_interfaces/Time` `sim_timestamp` seconds and
+nanoseconds fields. Before destroying the publisher, it calls
+`wait_for_all_acked` with the validated cleanup timeout while the executor is
+still active. A missing subscriber, timeout, or unconfirmed acknowledgement
+prevents durable `mission-finished` success.
+
+That four-event prefix can support an 80/150 diagnostic score when the physical
+FM1/FM2 evidence also passes. It cannot complete the official
+`competition_v1` mission, which still requires FM3 and HOME evidence and reports
+`mission_sequence_invalid` for this prefix.
+This source composition is not evidence of an image build, integrated SITL run,
+scored simulation, hardware acceptance, or flight readiness.
+
+## Simulator QGC runtime policy
+
+[qgc_runtime_policy.py](src/drone_sim_companion/qgc_runtime_policy.py) provides
+an offline, inert loader for a caller-supplied FM1/FM2 simulator policy. The
+caller supplies the exact lowercase SHA-256 of a regular, non-symlink UTF-8 JSON
+file. The loader validates the complete simulator-specific policy and returns
+frozen normalized values. It does not open ROS, DroneKit, a transport, or a
+device. An evidence-reference hash does not enforce a recovery corridor.
+
+Runtime policy values still come only from the explicitly supplied immutable
+QGC input set. Repository default configurations omit that set. Aircraft
+deployment, operating-area, independent-safety, and integration gates remain
+closed.
+
 ## Entry points and implementation seams
 
 - [pyproject.toml](pyproject.toml) exposes `drone-sim-companion-runtime`.
@@ -50,22 +115,45 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 
 - Mission decisions use accepted simulation time. Loss of `/clock` prevents new
   simulated decisions; wall time only bounds infrastructure and computation.
+- The first QGC host binding disables FM3 and camera construction. Camera
+  policies and adapters elsewhere in the source do not make FM3 available.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.
 - `companion/comp2026` is a separate, untracked checkout required for the
   `comp2026_auto` image. Keep changes there minimal and never push it as part of
-  this repository. The Docker context admits only its explicit import closure.
+  this repository. Import compatibility and parent composition do not authorize
+  aircraft use.
 - The hosted `drone.auto_attempt` currently imports FM1 and FM2 from `missions/`
   but imports FM3 from `drone/mock_mission.py`; do not assume
   `missions/fm3.py` is the deployed implementation.
-- Comp2026 startup separates process readiness from permission to enter the
-  original mission. Sensor, service, heartbeat, and armability predicates are
-  refreshed atomically and fail closed; downward range expires after 0.5
-  simulated seconds.
+- Comp2026 startup separates process readiness from QGC command admission.
+  Matching run state, public clock, live input production, connected-vehicle
+  heartbeat, and armability checks fail closed. Downward range time comes from
+  the ROS source timestamp and is evaluated by the validated nested policy.
 - Terminal success and the first fatal callback/mission failure are serialized.
   Quiescence follows worker termination, executor shutdown, and closure of all
-  output producers; a teardown timeout records failure instead.
+  output producers. Unconfirmed nested cleanup or a surviving producer records
+  failure and withholds durable quiescence.
+- Matching orchestration `FINALIZING`, a durable finalize request, and an
+  operator signal latch one nested abort and one monitoring stop without
+  stopping the shared simulation clock. The nested runtime keeps that clock
+  through its single recovery: an approved original-H transit at cruise
+  altitude followed by `LAND`, or its separately approved local-`LAND`
+  fallback. Fatal ROS input or executor failures and the absolute wall deadline
+  may stop the clock; parent finalization never reacquires flight commands or
+  assumes pilot recovery.
+- The QGC simulation payload adapter reports no attachment support because its
+  ROS service response confirms release rather than persistent attachment. It
+  requires a literal-true
+  permission predicate with an atomic actuation hook. That hook encloses the
+  actual ROS `call_async` dispatch, while the bounded confirmation wait remains
+  outside the output transaction. Construction also requires a finite positive
+  wall-time budget for a requested simulation-time release delay, so missing or
+  frozen simulation time fails without dispatch. Rejected, missing, mismatched,
+  stale, or timed out confirmation fails the command. A stale release is not
+  retried because an unknown physical completion cannot safely authorize another
+  release.
 
 ## Focused tests
 

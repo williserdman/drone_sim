@@ -1,0 +1,12 @@
+ARG COMPANION_BASE_IMAGE
+FROM ${COMPANION_BASE_IMAGE}
+
+COPY tests/qgc_sitl/listener_probe.py /opt/qgc-sitl/listener_probe.py
+COPY tests/qgc_sitl/listener.parm /opt/qgc-sitl/listener.parm
+
+ENV PYTHONPATH="/opt/drone_sim/ardupilot_sitl/src:${PYTHONPATH}"
+
+LABEL org.opencontainers.image.title="Test-only QGC listener probe" \
+      org.opencontainers.image.revision="2a3dc4b7bf2507120f7378a7b2fde73185e0c325"
+
+CMD ["python3", "/opt/qgc-sitl/listener_probe.py"]

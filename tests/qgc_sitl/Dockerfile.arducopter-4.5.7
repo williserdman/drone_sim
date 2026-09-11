@@ -8,8 +8,10 @@ RUN test "${ARDUPILOT_COMMIT}" = "2a3dc4b7bf2507120f7378a7b2fde73185e0c325" \
     && git fetch --depth=1 origin "${ARDUPILOT_COMMIT}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${ARDUPILOT_COMMIT}" \
-    && grep -Fqx '#define THISFIRMWARE "ArduCopter V4.5.7"' ArduCopter/version.h \
     && grep -Fqx '#define FIRMWARE_VERSION 4,5,7,FIRMWARE_VERSION_TYPE_OFFICIAL' ArduCopter/version.h \
+    && grep -Fq 'GSCALAR(sysid_this_mav, "SYSID_THISMAV",' ArduCopter/Parameters.cpp \
+    && grep -Eq 'AP_GROUPINFO\("0_PROTOCOL",[[:space:]]+11,[[:space:]]+AP_SerialManager,[[:space:]]+state\[0\]\.protocol,[[:space:]]+SerialProtocol_MAVLink2\)' libraries/AP_SerialManager/AP_SerialManager.cpp \
+    && grep -Eq 'AP_GROUPINFO\("1_PROTOCOL",[[:space:]]+1,[[:space:]]+AP_SerialManager,[[:space:]]+state\[1\]\.protocol,[[:space:]]+DEFAULT_SERIAL1_PROTOCOL\)' libraries/AP_SerialManager/AP_SerialManager.cpp \
     && git submodule update --init --recursive \
     && git submodule status --recursive > /opt/ardupilot-submodules.txt \
     && printf '%s\n' "${ARDUPILOT_COMMIT}" > /opt/ardupilot-revision.txt
@@ -25,13 +27,13 @@ COPY --from=build /opt/ardupilot-src/build/sitl/bin/arducopter /opt/ardupilot/bi
 COPY --from=source /opt/ardupilot-src/COPYING.txt /opt/ardupilot/COPYING.txt
 COPY --from=source /opt/ardupilot-revision.txt /opt/ardupilot/revision.txt
 COPY --from=source /opt/ardupilot-submodules.txt /opt/ardupilot/submodules.txt
-COPY ardupilot_sitl/src /opt/drone_sim/ardupilot_sitl/src
-COPY ardupilot_sitl/params /opt/drone_sim/ardupilot/params
-COPY ardupilot_sitl/provenance /opt/drone_sim/ardupilot/provenance
+COPY tests/qgc_sitl/listener.parm /opt/qgc-sitl/listener.parm
 
-ENV PYTHONPATH=/opt/drone_sim/ardupilot_sitl/src
+WORKDIR /result/arducopter
 LABEL org.opencontainers.image.source="https://github.com/ArduPilot/ardupilot.git" \
       org.opencontainers.image.revision="2a3dc4b7bf2507120f7378a7b2fde73185e0c325" \
-      org.opencontainers.image.licenses="GPL-3.0-or-later"
+      org.opencontainers.image.version="Copter-4.5.7" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
+      org.opencontainers.image.title="Test-only QGC listener Copter SITL"
 
-ENTRYPOINT ["python3", "-m", "drone_sim_ardupilot.runtime_node"]
+ENTRYPOINT ["/opt/ardupilot/bin/arducopter"]

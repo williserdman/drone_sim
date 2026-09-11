@@ -1,0 +1,9 @@
+{
+  "origin": "https://github.com/ArduPilot/ardupilot.git",
+  "tag": "Copter-4.5.7",
+  "peeled_commit": "2a3dc4b7bf2507120f7378a7b2fde73185e0c325",
+  "base_image": "ardupilot/ardupilot-dev-base@sha256:576cd622957308469d6e72528befe5de5862457b264e61d60aaa4b8f29de85b6",
+  "license_path": "/opt/ardupilot/COPYING.txt",
+  "build_target": "waf copter",
+  "built_image_id": null
+}

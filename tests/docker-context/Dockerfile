@@ -11,6 +11,16 @@ COPY gazebo /context/gazebo
 COPY ros_ws/src/simulation_interfaces /context/ros_ws/src/simulation_interfaces
 COPY companion/pyproject.toml /context/companion/pyproject.toml
 COPY companion/src /context/companion/src
+COPY companion/comp2026/src/drone/timebase.py /context/companion/comp2026/src/drone/timebase.py
+COPY companion/comp2026/src/gc/prepare_attempt.py /context/companion/comp2026/src/gc/prepare_attempt.py
+COPY companion/comp2026/src/gc/custom_missions.json /context/companion/comp2026/src/gc/custom_missions.json
+COPY companion/comp2026/src/drone/control /context/companion/comp2026/src/drone/control
+COPY companion/comp2026/src/drone/missions /context/companion/comp2026/src/drone/missions
+COPY companion/comp2026/src/drone/sensors/camera /context/companion/comp2026/src/drone/sensors/camera
+COPY companion/comp2026/src/drone/sensors/lidar/__init__.py /context/companion/comp2026/src/drone/sensors/lidar/__init__.py
+COPY companion/comp2026/src/drone/sensors/lidar/lidar.py /context/companion/comp2026/src/drone/sensors/lidar/lidar.py
+COPY companion/comp2026/src/drone/sensors/lidar/clearance.py /context/companion/comp2026/src/drone/sensors/lidar/clearance.py
+COPY companion/comp2026/src/drone/sensors/servo /context/companion/comp2026/src/drone/sensors/servo
 COPY ardupilot_sitl/src /context/ardupilot_sitl/src
 COPY ardupilot_sitl/params /context/ardupilot_sitl/params
 COPY ardupilot_sitl/provenance /context/ardupilot_sitl/provenance

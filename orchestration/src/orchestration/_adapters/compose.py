@@ -1,25 +1,44 @@
-"""Policy-free, shell-free Docker Compose subprocess boundary."""
+"""Shell-free Docker Compose subprocess boundary."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import errno
+import hashlib
+import json
+import math
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import time
 from typing import Any
 from uuid import UUID
 
 from artifacts import DockerLogCommandResult, ImageDigest, SourceRevision
-from orchestration.config import RuntimeTopology
+from orchestration.config import QGCSources, RuntimeTopology
 
 
 _SERVICE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _DIGEST_PATTERN = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
 _COMPANION_IMAGE = "drone-sim-companion-runtime:phase3"
 _COMP2026_REVISION_LABEL = "org.opencontainers.image.comp2026.revision"
+_QGC_STATE_ROOT = Path("/var/lib/drone-sim/comp2026-attempt-state")
+_QGC_STATE_ENV = "SIM_QGC_ATTEMPT_STATE_DIRECTORY"
+_QGC_ORIGIN_ENV = "SIM_LAUNCH_ORIGIN_JSON"
+_LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
+_DOCKER_DAEMON_ENV = frozenset(
+    {
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+    }
+)
+_QGC_STATE_ENTRIES = frozenset({"attempt-ledger.json", "attempt-ledger.json.lock"})
 _AMBIENT_COMPOSE_SELECTORS = frozenset(
     {
         "COMPOSE_FILE",
@@ -31,6 +50,35 @@ _AMBIENT_COMPOSE_SELECTORS = frozenset(
         "COMPOSE_PROJECT_DIRECTORY",
         "COMPOSE_DISABLE_ENV_FILE",
     }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _LaunchOrigin:
+    latitude_deg: float
+    longitude_deg: float
+    amsl_m: float
+    heading_deg: float
+
+    @property
+    def canonical_json(self) -> str:
+        return json.dumps(
+            {
+                "latitude_deg": self.latitude_deg,
+                "longitude_deg": self.longitude_deg,
+                "amsl_m": self.amsl_m,
+                "heading_deg": self.heading_deg,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+_DIAGNOSTIC_LAUNCH_ORIGIN = _LaunchOrigin(
+    latitude_deg=37.4003371,
+    longitude_deg=-122.0800351,
+    amsl_m=0.0,
+    heading_deg=0.0,
 )
 
 
@@ -53,6 +101,124 @@ class ComposeRuntimeError(RuntimeError):
 
 
 Runner = Callable[..., Any]
+
+
+def _canonical_absolute_path(value: Path | str, *, label: str) -> Path:
+    try:
+        raw = os.fspath(value)
+    except TypeError as exc:
+        raise ValueError(f"{label} must be a filesystem path") from exc
+    if not isinstance(raw, str) or "\0" in raw:
+        raise ValueError(f"{label} must be a valid text filesystem path")
+    if raw.startswith("//"):
+        raise ValueError(f"{label} must use a single-slash filesystem anchor")
+    path = Path(raw)
+    try:
+        canonical = Path(os.path.abspath(raw))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label} is malformed") from exc
+    if not path.is_absolute() or path != canonical:
+        raise ValueError(f"{label} must be canonical and absolute")
+    return canonical
+
+
+def _directory_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _open_real_directory(path: Path, *, label: str) -> int:
+    flags = _directory_flags()
+    try:
+        current_fd = os.open("/", flags)
+    except (OSError, ValueError) as exc:  # pragma: no cover - fixed host root
+        raise ValueError("cannot inspect the local filesystem root") from exc
+    try:
+        for component in path.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+    except (OSError, ValueError) as exc:
+        os.close(current_fd)
+        raise ValueError(f"{label} must be an existing real directory") from exc
+    except BaseException:
+        os.close(current_fd)
+        raise
+    return current_fd
+
+
+def _validate_regular_at(directory_fd: int, name: str, *, required: bool) -> None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(name, flags, dir_fd=directory_fd)
+    except OSError as exc:
+        if not required and exc.errno == errno.ENOENT:
+            return
+        raise ValueError(f"attempt state {name} must be a regular non-symlink file") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError(f"attempt state {name} must be a regular non-symlink file")
+    finally:
+        os.close(descriptor)
+
+
+def _validate_qgc_state(root: Path, state_id: str) -> None:
+    root_fd = _open_real_directory(root, label="attempt state root")
+    try:
+        try:
+            state_fd = os.open(state_id, _directory_flags(), dir_fd=root_fd)
+        except (OSError, ValueError) as exc:
+            raise ValueError("attempt state directory must be an existing real directory") from exc
+        try:
+            entries = frozenset(os.listdir(state_fd))
+            if entries - _QGC_STATE_ENTRIES:
+                raise ValueError("attempt state directory contains an unexpected filename")
+            _validate_regular_at(state_fd, "attempt-ledger.json", required=True)
+            _validate_regular_at(state_fd, "attempt-ledger.json.lock", required=True)
+        finally:
+            os.close(state_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _qgc_launch_origin(payload: bytes) -> str:
+    try:
+        policy = json.loads(payload.decode("utf-8"))
+        origin = policy["simulator_launch_origin"]
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError("simulator launch origin is missing or invalid") from exc
+    fields = {"latitude_deg", "longitude_deg", "amsl_m", "heading_deg"}
+    if not isinstance(origin, dict) or set(origin) != fields:
+        raise ValueError("simulator launch origin must contain exactly four fields")
+    normalized: dict[str, float] = {}
+    for name in fields:
+        value = origin[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"simulator launch origin {name} must be a finite JSON number")
+        try:
+            normalized[name] = float(value)
+        except OverflowError as exc:
+            raise ValueError(
+                f"simulator launch origin {name} must be a finite JSON number"
+            ) from exc
+        if not math.isfinite(normalized[name]):
+            raise ValueError(f"simulator launch origin {name} must be a finite JSON number")
+    if not -90 <= normalized["latitude_deg"] <= 90:
+        raise ValueError("simulator launch origin latitude is outside [-90, 90]")
+    if not -180 <= normalized["longitude_deg"] <= 180:
+        raise ValueError("simulator launch origin longitude is outside [-180, 180]")
+    if not 0 <= normalized["heading_deg"] < 360:
+        raise ValueError("simulator launch origin heading is outside [0, 360)")
+    return _LaunchOrigin(**normalized).canonical_json
 
 
 def _production_runner(
@@ -80,9 +246,11 @@ class ComposeRuntime:
         run_directory: Path | str,
         config_path: Path | str,
         topology: RuntimeTopology,
+        qgc: QGCSources | None = None,
         runner: Runner = _production_runner,
         base_environment: Mapping[str, str] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        test_only_qgc_state_root: Path | str | None = None,
     ) -> None:
         if not isinstance(topology, RuntimeTopology):
             raise TypeError("topology must be a RuntimeTopology")
@@ -105,6 +273,8 @@ class ComposeRuntime:
         self.run_id = run_id
         self.project_name = f"drone-sim-{run_id.replace('-', '')}"
         self.topology = topology
+        if qgc is not None and not isinstance(qgc, QGCSources):
+            raise TypeError("qgc must be QGCSources or None")
         self._services = frozenset(service for service, _module in topology.ownership)
         self._runner = runner
         self._monotonic = monotonic
@@ -114,6 +284,11 @@ class ComposeRuntime:
         overlay = environment.pop("SIM_COMPOSE_OVERLAY", "")
         if overlay not in {"", "gpu"}:
             raise ValueError("SIM_COMPOSE_OVERLAY must be empty or 'gpu'")
+        environment.pop(_QGC_ORIGIN_ENV, None)
+        if qgc is not None:
+            environment.pop(_QGC_STATE_ENV, None)
+            for name in _DOCKER_DAEMON_ENV:
+                environment.pop(name, None)
         self.environment = {
             **environment,
             "COMPOSE_DISABLE_ENV_FILE": "1",
@@ -121,17 +296,41 @@ class ComposeRuntime:
             "SIM_RUN_ID": run_id,
             "SIM_RUN_DIRECTORY": str(self.run_directory),
             "SIM_CONFIG_PATH": str(self.config_path),
+            _QGC_ORIGIN_ENV: _DIAGNOSTIC_LAUNCH_ORIGIN.canonical_json,
         }
         if topology.profile == "phase2":
             self.environment["SIM_PHASE2_PROFILE"] = "1"
+        self._qgc_state_root: Path | None = None
+        self._qgc_state_id: str | None = None
+        if qgc is not None:
+            digest = hashlib.sha256(qgc.deployment_profile).hexdigest()
+            self._qgc_state_id = f"sha256-{digest}"
+            self._qgc_state_root = _canonical_absolute_path(
+                _QGC_STATE_ROOT
+                if test_only_qgc_state_root is None
+                else test_only_qgc_state_root,
+                label="attempt state root",
+            )
+            self.environment[_QGC_STATE_ENV] = str(_QGC_STATE_ROOT / self._qgc_state_id)
+            self.environment[_QGC_ORIGIN_ENV] = _qgc_launch_origin(qgc.runtime_policy)
+        self._docker = (
+            ["docker", "--host", _LOCAL_DOCKER_HOST]
+            if qgc is not None
+            else ["docker"]
+        )
         self._base = [
-            "docker",
+            *self._docker,
             "compose",
             "--file",
             str(self.project_directory / "compose.yaml"),
             *(
                 ["--file", str(self.project_directory / "compose.gpu.yaml")]
                 if overlay == "gpu"
+                else []
+            ),
+            *(
+                ["--file", str(self.project_directory / "compose.qgc.yaml")]
+                if qgc is not None
                 else []
             ),
             "--project-directory",
@@ -164,6 +363,8 @@ class ComposeRuntime:
         return self._invoke([*self._base, *arguments], timeout)
 
     def up(self, timeout: float) -> ComposeCommandResult:
+        if self._qgc_state_root is not None and self._qgc_state_id is not None:
+            _validate_qgc_state(self._qgc_state_root, self._qgc_state_id)
         return self._compose(["up", "--detach", "--no-build"], timeout)
 
     def bind_source_revisions(
@@ -181,7 +382,7 @@ class ComposeRuntime:
         self.environment["SIM_COMP2026_REVISION"] = nested
         result = self._invoke(
             [
-                "docker",
+                *self._docker,
                 "image",
                 "inspect",
                 "--format",
@@ -267,7 +468,7 @@ class ComposeRuntime:
         if not images:
             raise ComposeRuntimeError("Compose profile produced no images", config_result)
         inspect = self._invoke(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", *images],
+            [*self._docker, "image", "inspect", "--format", "{{.Id}}", *images],
             max(0.0, deadline - self._monotonic()),
         )
         if inspect.returncode != 0:

@@ -447,6 +447,7 @@ class RunController:
             run_directory=run_directory,
             config_path=run_directory / "configuration/run.json",
             topology=config.topology,
+            qgc=config.qgc,
             monotonic=self.monotonic,
         )
 
@@ -1065,7 +1066,11 @@ class RunController:
                         if companion_ready is not None:
                             self._validate_companion_ready(companion_ready)
                     overall_deadline = mono_started + config.max_wall_seconds
-                    if primary is None and config.runtime_profile == "phase3":
+                    if (
+                        primary is None
+                        and config.runtime_profile == "phase3"
+                        and config.mission != "comp2026_auto"
+                    ):
                         mission_ready, primary = self._wait_for(
                             store,
                             config.run_id,
@@ -1091,6 +1096,22 @@ class RunController:
                             sim_start_ns = self._validate_running(running)
                             lifecycle = lifecycle.apply(LifecycleEvent.CLOCK_STARTED)
                             store.write_operator_status(self._status(lifecycle))
+                    if (
+                        primary is None
+                        and config.runtime_profile == "phase3"
+                        and config.mission == "comp2026_auto"
+                    ):
+                        mission_ready, primary = self._wait_for(
+                            store,
+                            config.run_id,
+                            compose,
+                            topology,
+                            "mission-ready",
+                            overall_deadline,
+                            TerminalCause("mission_stall", "mission_readiness_stall"),
+                        )
+                        if mission_ready is not None:
+                            self._validate_mission_ready(mission_ready)
                     if primary is None:
                         finished, primary = self._wait_for(
                             store,

@@ -1,0 +1,9 @@
+{
+    "camera_to_body_frd": [
+        [0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0]
+    ],
+    "down_offset_m": 0.1,
+    "verified": true
+}

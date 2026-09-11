@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -25,7 +26,7 @@ _TEMPLATE_FIELDS = {
     "recording",
 }
 _RESOLVED_FIELDS = _TEMPLATE_FIELDS | {"run_id", "config_sha256"}
-_OPTIONAL_FIELDS = {"runtime_profile", "simulation", "competition"}
+_OPTIONAL_FIELDS = {"runtime_profile", "simulation", "competition", "qgc"}
 _STRING_FIELDS = ("world", "vehicle", "mission", "scenario", "output_root")
 _DEADLINE_FIELDS = (
     "max_wall_seconds",
@@ -45,6 +46,23 @@ _RESOLVED_COMPETITION_FIELDS = {
     "scenario",
     "course_sha256",
     "scenario_sha256",
+}
+_TEMPLATE_QGC_FIELDS = {
+    "deployment_profile",
+    "listener_session",
+    "qgc_actions",
+    "runtime_policy",
+}
+_QGC_ARTIFACT_NAMES = {
+    "deployment_profile": "deployment-profile.json",
+    "listener_session": "listener-session.json",
+    "qgc_actions": "qgc-actions.json",
+    "runtime_policy": "qgc-runtime.json",
+}
+_RESOLVED_QGC_FIELDS = {
+    *_TEMPLATE_QGC_FIELDS,
+    *(f"{field}_sha256" for field in _TEMPLATE_QGC_FIELDS),
+    "attempt_state_id",
 }
 CAMERA_INTERVAL_NS = 50_000_000
 PUBLIC_EPOCH_DEFAULT_NS = 90_000_000_000
@@ -83,6 +101,32 @@ class CompetitionSources:
     scenario_source: Path
     course_sha256: str
     scenario_sha256: str
+
+
+@dataclass(frozen=True)
+class QGCSources:
+    deployment_profile: bytes
+    listener_session: bytes
+    qgc_actions: bytes
+    runtime_policy: bytes
+
+    def __post_init__(self) -> None:
+        for field, payload in self._payloads():
+            if not isinstance(payload, bytes):
+                raise TypeError(f"QGC {field} payload must be immutable bytes")
+            _validate_json_object(payload, field)
+
+    def _payloads(self) -> tuple[tuple[str, bytes], ...]:
+        return tuple(
+            (field, getattr(self, field)) for field in _QGC_ARTIFACT_NAMES
+        )
+
+    def _digest(self, field: str) -> str:
+        return hashlib.sha256(getattr(self, field)).hexdigest()
+
+    @property
+    def attempt_state_id(self) -> str:
+        return f"sha256-{self._digest('deployment_profile')}"
 
 
 @dataclass(frozen=True)
@@ -131,6 +175,7 @@ class RunTemplate:
     runtime_profile: str
     simulation: SimulationConfig | None
     competition: CompetitionSources | None = None
+    qgc: QGCSources | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +194,7 @@ class RunConfig:
     simulation: SimulationConfig | None
     config_sha256: str
     competition: CompetitionSources | None = None
+    qgc: QGCSources | None = None
 
     @property
     def expected_camera_frames(self) -> int:
@@ -161,11 +207,10 @@ class RunConfig:
         return PHASE3_TOPOLOGY if self.runtime_profile == "phase3" else PHASE2_TOPOLOGY
 
 
-def _read_document(path: str | Path) -> dict[str, Any]:
-    source = Path(path)
+def _read_document_payload(payload: bytes, source: Path) -> dict[str, Any]:
     try:
-        document = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid run configuration: {source}") from exc
     if not isinstance(document, dict):
         raise ValueError("run configuration must be a JSON object")
@@ -294,6 +339,12 @@ def _validate_common(
     runtime_profile = document.get("runtime_profile", "phase2")
     if runtime_profile not in {"phase2", "phase3"}:
         raise ValueError("runtime_profile must be phase2 or phase3")
+    if "qgc" in document and runtime_profile != "phase3":
+        raise ValueError("QGC configuration requires runtime_profile phase3")
+    if "qgc" in document and document["mission"] != "comp2026_auto":
+        raise ValueError("QGC configuration requires mission comp2026_auto")
+    if document["mission"] == "comp2026_auto" and "qgc" not in document:
+        raise ValueError("comp2026_auto requires QGC configuration")
     if runtime_profile == "phase3":
         if "simulation" not in document:
             raise ValueError("phase3 requires simulation configuration")
@@ -466,7 +517,176 @@ def _competition_from_resolved(
     )
 
 
-def _template_from_document(document: dict[str, Any], template_dir: Path) -> RunTemplate:
+def _validate_json_object(payload: bytes, name: str) -> None:
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON number {value}")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        document: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in document:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            document[key] = value
+        return document
+
+    try:
+        document = json.loads(
+            payload.decode("utf-8"),
+            parse_constant=reject_constant,
+            object_pairs_hook=unique_object,
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"QGC {name} source must contain valid UTF-8 JSON") from exc
+    if not isinstance(document, dict):
+        raise ValueError(f"QGC {name} source must contain a JSON object")
+
+
+def _open_directory_nofollow(path: Path, name: str) -> int:
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(absolute.anchor, flags)
+        for part in absolute.parts[1:]:
+            child = os.open(part, flags | nofollow, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise ValueError(f"{name} must be a non-symlink directory") from exc
+
+
+def _read_regular_relative(
+    directory_fd: int, relative: Path, description: str
+) -> tuple[bytes, tuple[int, int]]:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.dup(directory_fd)
+        descriptors.append(current)
+        for part in relative.parts[:-1]:
+            current = os.open(part, directory_flags | nofollow, dir_fd=current)
+            descriptors.append(current)
+        final = os.open(
+            relative.parts[-1],
+            os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=current,
+        )
+        descriptors.append(final)
+        metadata = os.fstat(final)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(
+                f"{description} must be a regular non-symlink file"
+            )
+        with os.fdopen(final, "rb", closefd=False) as stream:
+            payload = stream.read()
+        return payload, (metadata.st_dev, metadata.st_ino)
+    except OSError as exc:
+        raise ValueError(f"{description} must be a regular non-symlink file") from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _qgc_source(
+    template_fd: int, value: Any, name: str
+) -> tuple[bytes, tuple[int, int]]:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"QGC {name} source must be a relative path")
+    relative = Path(value)
+    if (
+        value.startswith("./")
+        or "\x00" in value
+        or "\n" in value
+        or "\r" in value
+        or relative == Path(".")
+        or relative.is_absolute()
+        or ".." in relative.parts
+    ):
+        raise ValueError(f"QGC {name} source must be a safe relative path")
+    payload, identity = _read_regular_relative(
+        template_fd, relative, f"QGC {name} source"
+    )
+    _validate_json_object(payload, name)
+    return payload, identity
+
+
+def _qgc_from_template(document: Any, template_fd: int) -> QGCSources:
+    if document is None:
+        raise ValueError("QGC configuration must be an object")
+    if not isinstance(document, dict) or set(document) != _TEMPLATE_QGC_FIELDS:
+        raise ValueError("QGC configuration has missing or unknown keys")
+    if any(not isinstance(document[field], str) for field in _QGC_ARTIFACT_NAMES):
+        raise ValueError("QGC source paths must be strings")
+    relatives = tuple(Path(document[field]) for field in _QGC_ARTIFACT_NAMES)
+    if len(set(relatives)) != len(_TEMPLATE_QGC_FIELDS):
+        raise ValueError("QGC source paths must be pairwise distinct")
+    payloads = {}
+    identities = set()
+    for field in _QGC_ARTIFACT_NAMES:
+        payload, identity = _qgc_source(template_fd, document[field], field)
+        if identity in identities:
+            raise ValueError("QGC source files must be pairwise distinct")
+        identities.add(identity)
+        payloads[field] = payload
+    return QGCSources(**payloads)
+
+
+def _qgc_document(qgc: QGCSources) -> dict[str, str]:
+    document = {
+        field: artifact_name for field, artifact_name in _QGC_ARTIFACT_NAMES.items()
+    }
+    document.update(
+        {f"{field}_sha256": qgc._digest(field) for field in _QGC_ARTIFACT_NAMES}
+    )
+    document["attempt_state_id"] = qgc.attempt_state_id
+    return document
+
+
+def _sha256(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _qgc_from_resolved(document: Any, configuration_fd: int) -> QGCSources:
+    if document is None:
+        raise ValueError("resolved QGC configuration must be an object")
+    if not isinstance(document, dict) or set(document) != _RESOLVED_QGC_FIELDS:
+        raise ValueError("resolved QGC configuration has missing or unknown keys")
+    payloads = {}
+    identities = set()
+    for field, artifact_name in _QGC_ARTIFACT_NAMES.items():
+        if document[field] != artifact_name:
+            raise ValueError("resolved QGC sources must use canonical artifact names")
+        digest = _sha256(document[f"{field}_sha256"], f"{field}_sha256")
+        payload, identity = _read_regular_relative(
+            configuration_fd, Path(artifact_name), f"QGC {field} source"
+        )
+        if identity in identities:
+            raise ValueError("resolved QGC source files must be pairwise distinct")
+        identities.add(identity)
+        _validate_json_object(payload, field)
+        if hashlib.sha256(payload).hexdigest() != digest:
+            raise ValueError(f"{field}_sha256 does not match the copied configuration")
+        payloads[field] = payload
+    qgc = QGCSources(**payloads)
+    if document["attempt_state_id"] != qgc.attempt_state_id:
+        raise ValueError("attempt_state_id does not match the deployment profile digest")
+    return qgc
+
+
+def _template_from_document(
+    document: dict[str, Any], template_dir: Path, template_fd: int
+) -> RunTemplate:
     recording, runtime_profile, simulation = _validate_common(
         document, _TEMPLATE_FIELDS
     )
@@ -483,6 +703,11 @@ def _template_from_document(document: dict[str, Any], template_dir: Path) -> Run
         runtime_profile=runtime_profile,
         simulation=simulation,
         competition=_competition_from_template(document.get("competition"), template_dir),
+        qgc=(
+            _qgc_from_template(document["qgc"], template_fd)
+            if "qgc" in document
+            else None
+        ),
     )
 
 
@@ -521,6 +746,8 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
             "course_sha256": config.competition.course_sha256,
             "scenario_sha256": config.competition.scenario_sha256,
         }
+    if config.qgc is not None:
+        document["qgc"] = _qgc_document(config.qgc)
     return document
 
 
@@ -533,9 +760,16 @@ def resolve_run_config(
     path: str | Path, run_id_factory: Callable[[], UUID] = uuid4
 ) -> RunConfig:
     """Validate an operator template and bind it to one generated run identity."""
-    source = Path(path).resolve()
-    document = _read_document(source)
-    template = _template_from_document(document, source.parent)
+    source = Path(os.path.abspath(os.fspath(path)))
+    template_fd = _open_directory_nofollow(source.parent, "template directory")
+    try:
+        template_payload, _identity = _read_regular_relative(
+            template_fd, Path(source.name), "run template"
+        )
+        document = _read_document_payload(template_payload, source)
+        template = _template_from_document(document, source.parent, template_fd)
+    finally:
+        os.close(template_fd)
     if template.mission == "comp2026_auto" and template.competition is None:
         raise ValueError("comp2026_auto requires competition source configuration")
     generated = run_id_factory()
@@ -556,6 +790,7 @@ def resolve_run_config(
         simulation=template.simulation,
         config_sha256="",
         competition=template.competition,
+        qgc=template.qgc,
     )
     return replace(
         unresolved,
@@ -565,21 +800,39 @@ def resolve_run_config(
 
 def load_run_config(path: str | Path) -> RunConfig:
     """Load and verify a resolved immutable run configuration snapshot."""
-    source = Path(path).resolve()
-    document = _read_document(source)
-    recording, runtime_profile, simulation = _validate_common(
-        document, _RESOLVED_FIELDS
+    source = Path(os.path.abspath(os.fspath(path)))
+    configuration_fd = _open_directory_nofollow(
+        source.parent, "configuration directory"
     )
     try:
-        run_uuid = UUID(document["run_id"])
-    except (ValueError, AttributeError, TypeError) as exc:
-        raise ValueError("run_id must be a valid UUID") from exc
-    checksum = document["config_sha256"]
-    if not isinstance(checksum, str) or len(checksum) != 64:
-        raise ValueError("config_sha256 must be a SHA-256 digest")
-    without_checksum = {key: value for key, value in document.items() if key != "config_sha256"}
-    if _checksum(without_checksum) != checksum:
-        raise ValueError("config_sha256 does not match the resolved configuration")
+        resolved_payload, _identity = _read_regular_relative(
+            configuration_fd, Path(source.name), "resolved run configuration"
+        )
+        document = _read_document_payload(resolved_payload, source)
+        recording, runtime_profile, simulation = _validate_common(
+            document, _RESOLVED_FIELDS
+        )
+        try:
+            run_uuid = UUID(document["run_id"])
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError("run_id must be a valid UUID") from exc
+        if str(run_uuid) != document["run_id"]:
+            raise ValueError("run_id must be a canonical UUID")
+        checksum = document["config_sha256"]
+        if not isinstance(checksum, str) or len(checksum) != 64:
+            raise ValueError("config_sha256 must be a SHA-256 digest")
+        without_checksum = {
+            key: value for key, value in document.items() if key != "config_sha256"
+        }
+        if _checksum(without_checksum) != checksum:
+            raise ValueError("config_sha256 does not match the resolved configuration")
+        qgc = (
+            _qgc_from_resolved(document["qgc"], configuration_fd)
+            if "qgc" in document
+            else None
+        )
+    finally:
+        os.close(configuration_fd)
     competition = _competition_from_resolved(document.get("competition"), source.parent)
     if document["mission"] == "comp2026_auto" and competition is None:
         raise ValueError("comp2026_auto requires competition source configuration")
@@ -598,60 +851,107 @@ def load_run_config(path: str | Path) -> RunConfig:
         simulation=simulation,
         config_sha256=checksum,
         competition=competition,
+        qgc=qgc,
     )
+
+
+def _destination_exists(directory_fd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _write_exclusive(directory_fd: int, name: str, payload: bytes) -> None:
+    descriptor = os.open(
+        name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o644,
+        dir_fd=directory_fd,
+    )
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
 
 
 def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
     """Durably create the resolved snapshot without overwriting an existing run."""
     configuration_dir = Path(run_dir) / "configuration"
     target = configuration_dir / "run.json"
-    course_target = configuration_dir / "course.yaml"
-    scenario_target = configuration_dir / "scenario.yaml"
-    targets = [target]
+    target_names = ["run.json"]
     if config.competition is not None:
-        targets.extend((course_target, scenario_target))
-    for candidate in targets:
-        if candidate.exists() or candidate.is_symlink():
-            raise FileExistsError(candidate)
+        target_names.extend(("course.yaml", "scenario.yaml"))
+    if config.qgc is not None:
+        target_names.extend(_QGC_ARTIFACT_NAMES.values())
 
     try:
-        UUID(config.run_id)
+        run_uuid = UUID(config.run_id)
     except (ValueError, AttributeError, TypeError) as exc:
         raise ValueError("run_id must be a valid UUID") from exc
+    if str(run_uuid) != config.run_id:
+        raise ValueError("run_id must be a canonical UUID")
     document = _document_without_checksum(config)
     if _checksum(document) != config.config_sha256:
         raise ValueError("config_sha256 does not match the resolved configuration")
     persisted = {**document, "config_sha256": config.config_sha256}
     _validate_common(persisted, _RESOLVED_FIELDS)
 
-    source_payloads: tuple[tuple[Path, bytes], ...] = ()
-    if config.competition is not None:
-        _require_source_file(config.competition.course_source)
-        _require_source_file(config.competition.scenario_source)
-        course_payload = config.competition.course_source.read_bytes()
-        scenario_payload = config.competition.scenario_source.read_bytes()
-        if hashlib.sha256(course_payload).hexdigest() != config.competition.course_sha256:
-            raise ValueError("course source changed after run configuration resolution")
-        if hashlib.sha256(scenario_payload).hexdigest() != config.competition.scenario_sha256:
-            raise ValueError("scenario source changed after run configuration resolution")
-        source_payloads = (
-            (course_target, course_payload),
-            (scenario_target, scenario_payload),
-        )
-
+    if configuration_dir.is_symlink():
+        raise FileExistsError(configuration_dir)
     configuration_dir.mkdir(parents=True, exist_ok=True)
-    for destination, payload in source_payloads:
-        with destination.open("xb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    with target.open("x", encoding="utf-8") as stream:
-        json.dump(persisted, stream, sort_keys=True, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    directory_fd = os.open(configuration_dir, os.O_RDONLY | os.O_DIRECTORY)
+    directory_fd = _open_directory_nofollow(
+        configuration_dir, "configuration directory"
+    )
     try:
+        for name in target_names:
+            if _destination_exists(directory_fd, name):
+                raise FileExistsError(configuration_dir / name)
+
+        source_payloads: tuple[tuple[str, bytes], ...] = ()
+        if config.competition is not None:
+            _require_source_file(config.competition.course_source)
+            _require_source_file(config.competition.scenario_source)
+            course_payload = config.competition.course_source.read_bytes()
+            scenario_payload = config.competition.scenario_source.read_bytes()
+            if (
+                hashlib.sha256(course_payload).hexdigest()
+                != config.competition.course_sha256
+            ):
+                raise ValueError(
+                    "course source changed after run configuration resolution"
+                )
+            if (
+                hashlib.sha256(scenario_payload).hexdigest()
+                != config.competition.scenario_sha256
+            ):
+                raise ValueError(
+                    "scenario source changed after run configuration resolution"
+                )
+            source_payloads = (
+                ("course.yaml", course_payload),
+                ("scenario.yaml", scenario_payload),
+            )
+        if config.qgc is not None:
+            source_payloads += tuple(
+                (_QGC_ARTIFACT_NAMES[field], payload)
+                for field, payload in config.qgc._payloads()
+            )
+
+        for destination, payload in source_payloads:
+            _write_exclusive(directory_fd, destination, payload)
+        run_payload = (
+            json.dumps(persisted, sort_keys=True, indent=2) + "\n"
+        ).encode("utf-8")
+        _write_exclusive(directory_fd, "run.json", run_payload)
         os.fsync(directory_fd)
     finally:
         os.close(directory_fd)

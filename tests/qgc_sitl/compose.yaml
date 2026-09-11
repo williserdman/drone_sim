@@ -1,0 +1,69 @@
+services:
+  arducopter-457:
+    build:
+      context: ../..
+      dockerfile: tests/qgc_sitl/Dockerfile.arducopter-4.5.7
+    image: drone-sim-qgc-listener-arducopter:4.5.7-2a3dc4b7
+    entrypoint: [python3, /opt/qgc-sitl/start_arducopter.py]
+    user: "${QGC_SITL_UID:?set to the numeric result-owner UID}:${QGC_SITL_GID:?set to the numeric result-owner GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [default]
+    volumes:
+      - type: bind
+        source: ${QGC_SITL_RESULT_DIR:?set an absolute result directory}/arducopter
+        target: /result/arducopter
+      - type: bind
+        source: ./start_arducopter.py
+        target: /opt/qgc-sitl/start_arducopter.py
+        read_only: true
+
+  listener-probe:
+    build:
+      context: ../..
+      dockerfile: tests/qgc_sitl/Dockerfile.listener-probe
+      args:
+        COMPANION_BASE_IMAGE: ${QGC_SITL_COMPANION_IMAGE_REF:?set the immutable companion image ID}
+    image: drone-sim-qgc-listener-probe:4.5.7-2a3dc4b7-diag1
+    user: "${QGC_SITL_UID:?set to the numeric result-owner UID}:${QGC_SITL_GID:?set to the numeric result-owner GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [default]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      MAVLINK20: "1"
+      QGC_SITL_RESULT_DIR: /result
+      QGC_SITL_ARDUCOPTER_IMAGE_ID: ${QGC_SITL_ARDUCOPTER_IMAGE_ID:-}
+      QGC_SITL_PROBE_IMAGE_ID: ${QGC_SITL_PROBE_IMAGE_ID:-}
+      QGC_SITL_DEPENDENCY_IMAGE_ID: ${QGC_SITL_DEPENDENCY_IMAGE_ID:?set from the immutable carrier}
+    volumes:
+      - type: bind
+        source: ${QGC_SITL_RESULT_DIR:?set an absolute result directory}
+        target: /result
+      - type: bind
+        source: ../../companion/comp2026/src/drone/control
+        target: /opt/drone_sim/comp2026/src/drone/control
+        read_only: true
+      - type: bind
+        source: ../../companion/comp2026/src/drone/sensors/lidar
+        target: /opt/drone_sim/comp2026/src/drone/sensors/lidar
+        read_only: true
+      - type: bind
+        source: ../../companion/comp2026/src/drone/timebase.py
+        target: /opt/drone_sim/comp2026/src/drone/timebase.py
+        read_only: true
+      - type: bind
+        source: ../../companion/comp2026/src/drone/common_types.py
+        target: /opt/drone_sim/comp2026/src/drone/common_types.py
+        read_only: true
+      - type: bind
+        source: ../../ardupilot_sitl/src/drone_sim_ardupilot
+        target: /opt/drone_sim/ardupilot_sitl/src/drone_sim_ardupilot
+        read_only: true
+
+networks:
+  default:
+    internal: true

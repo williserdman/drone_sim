@@ -35,14 +35,16 @@ integration. The [runbook](docs/runbook.md) explains the remaining prerequisites
 In particular, a fresh clone is not yet self-contained: the separately versioned
 mission at `companion/comp2026` must be supplied before a Phase 3 image build/run.
 
-Once that checkout and the runtime images are ready, the normal flight command is:
+For a supported local diagnostic after its runtime images are ready, run:
 
 ```bash
-uv run --locked drone-sim start --config config/default-run.json
+uv run --locked drone-sim start --config config/vertical-descent-run.json
 ```
 
-It runs in the foreground and can take tens of minutes or longer. It does not
-build images automatically. Do not start with a bare `docker compose up`.
+It runs in the foreground and does not build images automatically. Do not start
+with a bare `docker compose up`. The checked-in `default-run.json` and
+`realtime-run.json` competition templates are quarantined until an operator
+supplies the required QGC configuration inputs.
 
 ## How to read this repository
 
@@ -50,6 +52,9 @@ build images automatically. Do not start with a bare `docker compose up`.
 - Each of the seven modules has a concise README linked from the
   [module map](docs/architecture.md#where-to-read-or-change-code), covering its
   responsibilities, interfaces, entry points, tests, and constraints.
+- The [engineering history](docs/engineering-history/README.md) reconstructs
+  the project chronology and its strongest technical case studies for readers
+  who need the reasoning behind the current design.
 - `runs/<run_id>/` contains local generated evidence and is ignored by Git.
 - Superseded plans and interface documents live in Git history, not the active
   documentation path. Dated verification notes remain evidence, not current specs.
