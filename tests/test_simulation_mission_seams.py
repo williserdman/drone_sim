@@ -1289,8 +1289,8 @@ class InjectedFrameSource:
         self.last_timestamp_ns = 123_000_000
         self.calls = []
 
-    def capture_frame(self, quality=4):
-        self.calls.append(quality)
+    def capture_frame(self, quality=4, deadline_sim_ns=None):
+        self.calls.append((quality, deadline_sim_ns))
         return self.frame
 
 
@@ -1298,7 +1298,7 @@ class UntimestampedFrameSource:
     def __init__(self, frame):
         self.frame = frame
 
-    def capture_frame(self, quality=4):
+    def capture_frame(self, quality=4, deadline_sim_ns=None):
         return self.frame
 
 
@@ -1322,8 +1322,28 @@ def test_injected_camera_frames_do_not_open_hardware_index_zero(monkeypatch, tmp
     actual = manager.capture_frame()
 
     assert actual is expected
-    assert source.calls == [4]
+    assert source.calls == [(4, None)]
     assert manager.last_frame_timestamp == 123_000_000
+
+
+def test_injected_camera_capture_propagates_simulation_deadline(monkeypatch, tmp_path):
+    """A silent ROS camera must be bounded by the mission's simulated deadline."""
+    import cv2
+    import numpy as np
+
+    from drone.sensors.camera._camera_manager import CameraManager
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cv2,
+        "VideoCapture",
+        lambda index: pytest.fail(f"opened hardware camera index {index}"),
+    )
+    source = InjectedFrameSource(np.zeros((480, 640, 3), dtype=np.uint8))
+
+    CameraManager(frame_source=source).capture_frame(deadline_sim_ns=125)
+
+    assert source.calls == [(4, 125)]
 
 
 def test_injected_camera_source_requires_a_real_timestamp(monkeypatch):

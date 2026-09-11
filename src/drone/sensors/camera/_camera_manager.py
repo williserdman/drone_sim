@@ -240,7 +240,7 @@ class CameraManager:
             z = 0
         return np.array([x, y, z])
 
-    def capture_frame(self, quality=4) -> np.ndarray:
+    def capture_frame(self, quality=4, deadline_sim_ns=None) -> np.ndarray:
         """Capture a BGR frame from the camera and downsample by sample_ratio."""
 
         scale = 1
@@ -257,7 +257,9 @@ class CameraManager:
                 raise RuntimeError("Failed to capture frame from webcam index 0")
             self.last_frame_timestamp = time.monotonic_ns()
         else:
-            frame = self.frame_source.capture_frame(quality=quality)
+            frame = self.frame_source.capture_frame(
+                quality=quality, deadline_sim_ns=deadline_sim_ns
+            )
             self.last_frame_timestamp = getattr(
                 self.frame_source,
                 "last_timestamp_ns",

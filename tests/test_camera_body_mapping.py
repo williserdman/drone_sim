@@ -11,8 +11,9 @@ class FixedMarkerPose:
 
     last_frame_timestamp = 170_000_000_000
 
-    def capture_frame(self, quality=4):
+    def capture_frame(self, quality=4, deadline_sim_ns=None):
         assert quality == 4
+        assert deadline_sim_ns is None
         return np.zeros((2, 2, 3), dtype=np.uint8)
 
     def get_coords(self, frame):
@@ -30,3 +31,46 @@ def test_downward_camera_pose_maps_image_top_to_forward_and_right_to_right():
 
     assert update is not None
     assert (update.x, update.y, update.z) == pytest.approx((0.3, 0.2, 4.1))
+
+
+def test_marker_observation_keeps_vector_and_source_timestamp_together():
+    observation = Camera(100, manager=FixedMarkerPose()).observe_marker_3d(3)
+
+    assert observation is not None
+    assert observation.frame_timestamp_ns == 170_000_000_000
+    assert observation.vector is not None
+    assert (observation.vector.x, observation.vector.y, observation.vector.z) == pytest.approx(
+        (0.3, 0.2, 4.1)
+    )
+
+
+class NoMarkerFrame(FixedMarkerPose):
+    last_frame_timestamp = 171_000_000_000
+
+    def get_coords(self, frame):
+        return [], None, []
+
+
+def test_marker_observation_keeps_timestamp_when_target_is_absent():
+    observation = Camera(100, manager=NoMarkerFrame()).observe_marker_3d(3)
+
+    assert observation is not None
+    assert observation.frame_timestamp_ns == 171_000_000_000
+    assert observation.vector is None
+
+
+class DeadlineRecordingMarkerPose(FixedMarkerPose):
+    def __init__(self):
+        self.deadlines = []
+
+    def capture_frame(self, quality=4, deadline_sim_ns=None):
+        self.deadlines.append(deadline_sim_ns)
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+
+def test_marker_observation_propagates_capture_deadline():
+    manager = DeadlineRecordingMarkerPose()
+
+    Camera(100, manager=manager).observe_marker_3d(3, deadline_sim_ns=125)
+
+    assert manager.deadlines == [125]

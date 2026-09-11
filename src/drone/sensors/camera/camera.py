@@ -2,9 +2,16 @@ from ._camera_manager import CameraManager
 from ...common_types import RelativePosition, RelPosComplete
 from typing import Optional
 from collections import deque
+from dataclasses import dataclass
 import threading
 import cv2  # pyright: ignore[reportMissingImports]
 import time
+
+
+@dataclass(frozen=True)
+class MarkerObservation:
+    vector: RelPosComplete | None
+    frame_timestamp_ns: int
 
 
 class Camera:
@@ -78,9 +85,32 @@ class Camera:
     def vec_to_marker_3d(
         self, id: int, lidar_alt: Optional[float] = None, quality: int = 4
     ) -> RelPosComplete | None:
-        f = self.cm.capture_frame(quality=quality)
-        self._buffer_frame(f)
-        corners, ids, rejected = self.cm.get_coords(f)
+        observation = self.observe_marker_3d(id, lidar_alt=lidar_alt, quality=quality)
+        return observation.vector if observation is not None else None
+
+    def observe_marker_3d(
+        self,
+        id: int,
+        lidar_alt: Optional[float] = None,
+        quality: int = 4,
+        deadline_sim_ns: int | None = None,
+    ) -> MarkerObservation | None:
+        frame = self.cm.capture_frame(
+            quality=quality, deadline_sim_ns=deadline_sim_ns
+        )
+        timestamp = self.cm.last_frame_timestamp
+        if timestamp is None:
+            return None
+        self._buffer_frame(frame)
+        return MarkerObservation(
+            vector=self._vector_from_frame_3d(frame, id, lidar_alt),
+            frame_timestamp_ns=int(timestamp),
+        )
+
+    def _vector_from_frame_3d(
+        self, frame, id: int, lidar_alt: Optional[float]
+    ) -> RelPosComplete | None:
+        corners, ids, rejected = self.cm.get_coords(frame)
 
         if ids is not None and len(ids) > 0:
             tvec_mm = self.cm.estimate_pose_3d(id, corners, ids, self.marker_size_mm)
@@ -107,7 +137,6 @@ class Camera:
                     f"forward: {drone_forward:.2f}m, right: {drone_right:.2f}m, down: {drone_down:.2f}m"
                 )
 
-                camera_offset = 0.1  # meters
                 return RelPosComplete(drone_forward, drone_right, drone_down + 0.1)
 
         return None
