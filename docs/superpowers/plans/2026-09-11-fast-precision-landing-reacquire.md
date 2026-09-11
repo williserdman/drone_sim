@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-fast-precision-landing-reacquire-design.md`
 
+**Completed:** 2026-09-11. Fresh run
+`b3dfad75-4630-4233-84e3-836943459903` passed canonical semantic acceptance at
+150/150 with all payloads delivered and Home complete. The run also exposed and
+verified a final-descent refinement: below `PLND_ALT_MIN=0.75`, normal marker
+loss no longer interrupts LAND before touchdown.
+
 ## Global Constraints
 
 - Keep `LAND_SPD_MS=0.50` and `PLND_OPTIONS=4`; do not slow the final descent to mask bad observations.

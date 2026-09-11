@@ -3,10 +3,10 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-11. The fast precision-landing recovery is implemented on the
-isolated `fix/precision-landing-reacquire` parent and nested branches. The
-required fresh full-flight acceptance run has not yet been performed, so this
-section does not claim current physical success or 150/150.
+Audited 2026-09-11. The fast precision-landing recovery is implemented and
+verified on the isolated `fix/precision-landing-reacquire` parent and nested
+branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
+600-second window with accepted terminal artifacts and a 150/150 score.
 
 ## Maintainer start
 
@@ -20,20 +20,33 @@ checkout. Verify its intended revision before a Phase 3 build; a mission log or 
 | --- | --- | --- | --- | --- |
 | [Accepted competition baseline](verification/comp2026-mvp.md), run `3dc895c3-a5aa-4651-a893-d21884fa43f5` | Returned Home and disarmed in the accepted 600-second run | 150/150 | `COMPLETED`; accepted bundle | Historical external evidence; does not prove current source or images |
 | [Payload timestamp verification](payload-timestamp-fix.md), run `259863d9-c558-4102-ae34-fe6c31f5cf94` | Completed all three payloads and Home | 150/150 | `FAILED`; terminal artifacts invalid after a later downward-range timestamp/grid fault | Proves the recorded physical flight, not a full-window pass |
-| Precision-landing recovery implementation, pending fresh run | Not run | Not produced | Not evaluated | Source now holds/reacquires stale or inconsistent target data once while preserving fast descent; historical artifacts do not prove it |
+| Fast precision-landing recovery, run `b3dfad75-4630-4233-84e3-836943459903` | Payload 2 released; payloads 3 and 4 attached, lifted, and released; Home disarmed and completed at 261.15 s | 150/150 | `COMPLETED`; canonical semantic acceptance passed; manifest SHA-256 `9ed6496414746e76d2e146128d5055e95a2a2c219c6ece83d724add9040e85a7` | Machine-local run directory; preserve the complete bundle when transferring |
 
 Run directories and absolute paths in verification notes are ignored, machine-local
 evidence. Transfer a needed bundle with its manifest, checksums, configuration, and provenance intact.
 
 ## Current source verification
 
-Focused verification for the precision-landing branch passed 17 ArduPilot
-configuration tests and 80 nested mission tests. The profile now preserves
+Focused verification for the precision-landing branch passed 171 host companion
+and ArduPilot tests and 81 nested mission tests. The profile now preserves
 `LAND_SPD_MS=0.50`, fast-final-descent precision landing, and the promoted
 AutoTune gains. The nested mission now uses atomic camera observations, validates
 the live profile, fixes a five-frame median anchor, holds and reacquires in
-GUIDED, and retries acquisition once before failing closed. Runtime images have
-not yet been rebuilt and this is not flight evidence.
+GUIDED, and retries acquisition once before failing closed. Below
+`PLND_ALT_MIN=0.75`, it keeps LAND active without requiring marker visibility so
+the normal near-ground loss of the marker cannot interrupt touchdown.
+
+The first fresh attempt, `3db34962-84ad-44cd-bc51-bfbdfc585fba`, exposed that
+near-ground edge case: target 3 left the camera view at about 0.095 m AGL, the
+controller entered GUIDED hold, retried, and failed FM3_3. The solution mirrors
+ArduPilot's precision floor in the companion and is covered by a regression
+test. In the accepted rerun, target 3 and target 4 both logged the handoff below
+0.75 m and physically attached without a recovery retry.
+
+Both accepted videos are H.264, 640x480 at 20 fps, with exactly 12,000 frames
+and 600 seconds duration. DataFlash recorded the exact guarded profile. Across
+471 acquired-target attitude samples, desired roll/pitch stayed within
+0.67/0.31 degrees and actual roll/pitch within 0.77/0.25 degrees.
 
 The earlier cleanup-branch verification below remains historical context:
 
