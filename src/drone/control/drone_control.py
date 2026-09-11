@@ -302,7 +302,17 @@ class DroneControl:
 
     def set_land_mode(self):
         print("Shifting to LAND mode...")
-        self.vehicle.mode = VehicleMode("LAND")
+        for _ in range(10):
+            if getattr(self.vehicle.mode, "name", None) == "LAND":
+                print("[*] Confirmed LAND mode.")
+                return 0
+            self.vehicle.mode = VehicleMode("LAND")
+            time.sleep(1)
+        if getattr(self.vehicle.mode, "name", None) == "LAND":
+            print("[*] Confirmed LAND mode.")
+            return 0
+        print("[!] Failed to set LAND mode after 10 attempts.")
+        return -1
 
     def set_precision_land_mode(self):
         """

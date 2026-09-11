@@ -10,6 +10,7 @@ import pytest
 
 from drone import timebase
 from drone.common_types import GPSCoord, RelPosComplete
+from drone.sensors.camera.camera import MarkerObservation
 
 
 # DroneKit 2.9.2 imports this Python 2 compatibility alias but does not declare
@@ -79,6 +80,172 @@ class LandingController:
 
     def is_landed(self):
         return False
+
+
+class RecoveryLandingCamera:
+    def __init__(self, clock, vectors):
+        self.clock = clock
+        self.vectors = list(vectors)
+        self.calls = 0
+
+    def observe_marker_3d(
+        self, target_id, lidar_alt=None, quality=4, deadline_sim_ns=None
+    ):
+        assert (target_id, quality) == (3, 4)
+        assert deadline_sim_ns is not None
+        vector = self.vectors.pop(0) if self.vectors else None
+        timestamp = int(self.clock.now() * 1_000_000_000)
+        self.calls += 1
+        return MarkerObservation(vector=vector, frame_timestamp_ns=timestamp)
+
+
+class RecoveryLandingController:
+    def __init__(self):
+        self.vehicle = SimpleNamespace(
+            armed=True,
+            attitude=SimpleNamespace(roll=0.0, pitch=0.0, yaw=0.0),
+        )
+        self.mode = "GUIDED"
+        self.events = []
+        self.targets = []
+
+    def set_land_mode(self):
+        self.mode = "LAND"
+        self.events.append(("mode", "LAND"))
+        return 0
+
+    def set_guided_mode(self):
+        self.mode = "GUIDED"
+        self.events.append(("mode", "GUIDED"))
+        return 0
+
+    def get_current_gps(self):
+        return GPSCoord(41.0, -81.0, 3.0)
+
+    def get_location_metres(self, original, north, east):
+        return GPSCoord(
+            original.lat + north / 111_111.0,
+            original.long + east / 84_000.0,
+            original.alt,
+        )
+
+    def send_guided_waypoint(self, waypoint):
+        self.events.append(("hold", self.mode, waypoint))
+        return 0
+
+    def land_send_landing_target(self, update):
+        self.events.append(("target", self.mode, update))
+        self.targets.append(update)
+        return 0
+
+    def is_landed(self):
+        land_modes = [event for event in self.events if event == ("mode", "LAND")]
+        return len(land_modes) >= 2 and bool(self.targets)
+
+
+def test_half_second_without_healthy_target_holds_then_requests_retry():
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = RecoveryLandingController()
+
+    with timebase.configured(clock):
+        result = active.aruco_land_precision(
+            controller,
+            RecoveryLandingCamera(clock, [None] * 200),
+            TimedTouchdownLidar(clock),
+            3,
+            GPSCoord(41.0, -81.0, 0.0),
+            60.0,
+            True,
+        )
+
+    assert result is active.LandingResult.RETRY
+    assert controller.events[0] == ("mode", "LAND")
+    guided_index = controller.events.index(("mode", "GUIDED"))
+    assert all(event[0] != "target" for event in controller.events[guided_index:])
+    holds = [event for event in controller.events if event[0] == "hold"]
+    assert len(holds) >= 20
+    assert all(event[1] == "GUIDED" for event in holds)
+    assert len({(event[2].lat, event[2].long, event[2].alt) for event in holds}) == 1
+
+
+def test_five_consecutive_healthy_hold_frames_resume_land_once():
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = RecoveryLandingController()
+    centered = RelPosComplete(0.0, 0.0, 3.0)
+    vectors = [None] * 12 + [centered] * 6
+
+    with timebase.configured(clock):
+        result = active.aruco_land_precision(
+            controller,
+            RecoveryLandingCamera(clock, vectors),
+            TimedTouchdownLidar(clock),
+            3,
+            GPSCoord(41.0, -81.0, 0.0),
+            60.0,
+            True,
+        )
+
+    assert result is active.LandingResult.TOUCHDOWN
+    assert [event for event in controller.events if event[0] == "mode"] == [
+        ("mode", "LAND"),
+        ("mode", "GUIDED"),
+        ("mode", "LAND"),
+    ]
+    assert all(
+        event[1] == "LAND"
+        for event in controller.events
+        if event[0] == "target"
+    )
+
+
+def test_reacquisition_count_resets_after_one_bad_frame():
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = RecoveryLandingController()
+    centered = RelPosComplete(0.0, 0.0, 3.0)
+    vectors = [None] * 12 + [centered] * 4 + [None] + [centered] * 6
+
+    with timebase.configured(clock):
+        result = active.aruco_land_precision(
+            controller,
+            RecoveryLandingCamera(clock, vectors),
+            TimedTouchdownLidar(clock),
+            3,
+            GPSCoord(41.0, -81.0, 0.0),
+            60.0,
+            True,
+        )
+
+    assert result is active.LandingResult.TOUCHDOWN
+    assert len([event for event in controller.events if event == ("mode", "LAND")]) == 2
+
+
+def test_rejected_observation_is_compact_sorted_json(capsys):
+    active = importlib.import_module("drone.mock_mission")
+    clock = FakeClock()
+    controller = RecoveryLandingController()
+
+    with timebase.configured(clock):
+        active.aruco_land_precision(
+            controller,
+            RecoveryLandingCamera(clock, [RelPosComplete(float("nan"), 0.0, 3.0)]),
+            TimedTouchdownLidar(clock),
+            3,
+            GPSCoord(41.0, -81.0, 0.0),
+            0.1,
+            True,
+        )
+
+    records = [
+        line.removeprefix("PRECISION_LANDING ")
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("PRECISION_LANDING ")
+    ]
+    assert records
+    assert any('"reason":"non_finite"' in record for record in records)
+    assert all(" " not in record for record in records)
 
 
 class AutoDisarmLandingController(LandingController):
@@ -370,6 +537,35 @@ def valid_precision_landing_profile():
 class ParameterVehicle:
     def __init__(self, parameters):
         self.parameters = parameters
+
+
+class ConfirmingModeVehicle:
+    def __init__(self):
+        self._mode = SimpleNamespace(name="GUIDED")
+        self.mode_assignments = 0
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @mode.setter
+    def mode(self, requested):
+        self.mode_assignments += 1
+        if self.mode_assignments >= 2:
+            self._mode = SimpleNamespace(name=requested.name)
+
+
+def test_land_mode_waits_for_vehicle_confirmation():
+    clock = FakeClock()
+    vehicle = ConfirmingModeVehicle()
+    controller = controller_without_connect(vehicle)
+
+    with timebase.configured(clock):
+        assert controller.set_land_mode() == 0
+
+    assert vehicle.mode.name == "LAND"
+    assert vehicle.mode_assignments == 2
+    assert clock.now_value == pytest.approx(2.0)
 
 
 def test_precision_landing_profile_accepts_exact_runtime_values():
@@ -728,6 +924,10 @@ class PickupController:
         self.events.append(("mode", "GUIDED"))
         return 0
 
+    def require_precision_landing_profile(self):
+        self.events.append(("profile", 3))
+        return True
+
     def climb(self, altitude):
         self.events.append(("climb", altitude))
 
@@ -874,6 +1074,104 @@ def test_pickup_requires_five_distinct_centered_results_after_correction(monkeyp
     assert result is True
     assert camera.consumed_timestamps == [1, 2, 3, 4, 5, 6]
     assert events[-3:] == [("landed", 3), ("disarm", 3), ("attach", 3)]
+
+
+def test_pickup_refuses_land_when_runtime_profile_is_wrong(monkeypatch):
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    controller = PickupController(events)
+    controller.require_precision_landing_profile = lambda: False
+    monkeypatch.setattr(
+        active,
+        "aruco_land_precision",
+        lambda *args: pytest.fail("LAND must not start with a mismatched profile"),
+    )
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            controller,
+            AcquisitionCamera(centered_updates([1, 2, 3, 4, 5, 6])),
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert ("disarm", 3) not in events
+    assert ("attach", 3) not in events
+
+
+def test_pickup_reacquires_once_after_hold_timeout(monkeypatch):
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    results = iter((active.LandingResult.RETRY, active.LandingResult.TOUCHDOWN))
+    anchors = []
+
+    def land(*args):
+        anchors.append(args[4])
+        return next(results)
+
+    monkeypatch.setattr(active, "aruco_land_precision", land)
+    camera = AcquisitionCamera(centered_updates(range(1, 13)))
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            camera,
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is True
+    assert len(anchors) == 2
+    assert any(
+        event[0] == "goto" and event[1] == pytest.approx(4.572)
+        for event in events
+    )
+    assert events[-2:] == [("disarm", 3), ("attach", 3)]
+
+
+def test_second_hold_timeout_fails_without_disarm_or_attach(monkeypatch):
+    active = importlib.import_module("drone.mock_mission")
+    events = []
+    landing_calls = []
+
+    def retry(*args):
+        landing_calls.append(args[3])
+        return active.LandingResult.RETRY
+
+    monkeypatch.setattr(active, "aruco_land_precision", retry)
+
+    with timebase.configured(FakeClock()):
+        result = active.pickup_sequence(
+            PickupController(events),
+            AcquisitionCamera(centered_updates(range(1, 13))),
+            PickupLidar(),
+            3,
+            RecordingPayload(attach_result=True, events=events),
+        )
+
+    assert result is False
+    assert landing_calls == [3, 3]
+    assert ("disarm", 3) not in events
+    assert ("attach", 3) not in events
+
+
+def test_acquisition_anchor_uses_coordinate_median_and_rejects_wide_set():
+    active = importlib.import_module("drone.mock_mission")
+    clustered = [
+        GPSCoord(41.0 + north / 111_111.0, -81.0, 0.0)
+        for north in (0.09, -0.04, 0.0, 0.04, -0.09)
+    ]
+    wide = clustered[:-1] + [GPSCoord(41.0 + 0.31 / 111_111.0, -81.0, 0.0)]
+
+    anchor = active._median_anchor(clustered)
+
+    assert anchor is not None
+    assert anchor.lat == pytest.approx(41.0)
+    assert anchor.long == pytest.approx(-81.0)
+    assert active._median_anchor(wide) is None
 
 
 def test_pickup_damps_one_recenter_before_five_later_centered_results(monkeypatch):
