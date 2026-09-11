@@ -1,0 +1,10 @@
+# Direct runtime inputs. Resolve a lock only on the selected onboard
+# operating system and architecture.
+dronekit
+pymavlink
+future
+numpy<2
+opencv-contrib-python==4.6.0.66
+gpiozero
+adafruit-blinka
+adafruit-circuitpython-lidarlite
