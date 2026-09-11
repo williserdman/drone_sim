@@ -54,7 +54,7 @@ def valid_policy() -> dict[str, object]:
         "autopilot_version": {
             "firmware_label": "ArduCopter 4.5.7",
             "flight_sw_version": 0x040507FF,
-            "flight_custom_version": "0123456789abcdef",
+            "flight_custom_version": "3261336463346237",
             "evidence_reference": "5" * 64,
         },
         "clearance_calibration": {
@@ -89,6 +89,45 @@ def valid_policy() -> dict[str, object]:
     }
 
 
+def full_policy() -> dict[str, object]:
+    policy = valid_policy()
+    policy.update(
+        {
+            "purpose": "drone-sim-comp2026-full",
+            "enabled_phases": [31000, 31001, 31002],
+            "vision": {
+                "marker_size_mm": 100,
+                "calibration_path": "gazebo_camera_calibration.json",
+                "mounting_path": "gazebo_camera_mounting.json",
+                "receipt_clock_ns": "shared_monotonic_ns",
+                "max_exposure_age_ns": 500_000_000,
+            },
+            "precision": {
+                "clearance_calibration": "shared",
+                "clock": "shared_monotonic",
+                "max_exposure_age_s": 0.5,
+                "max_image_attitude_skew_s": 0.05,
+                "max_image_location_skew_s": 0.05,
+                "max_attitude_transport_latency_s": 0.05,
+                "max_location_transport_latency_s": 0.05,
+                "acquisition_timeout_s": 5,
+                "frame_timeout_s": 0.5,
+                "observation_period_s": 0.05,
+                "target_hover_height_m": 4.572,
+                "hover_tolerance_m": 0.2,
+                "centered_tolerance_m": 0.075,
+                "correction_gain": 0.5,
+                "cruise_altitude_m": 10,
+                "desired_drop_height_m": 10,
+                "landing_timeout_s": 60,
+                "target_loss_timeout_s": 0.5,
+                "reacquisition_count": 5,
+            },
+        }
+    )
+    return policy
+
+
 def write_policy(path: Path, policy: object) -> str:
     content = json.dumps(policy, separators=(",", ":")).encode()
     path.write_bytes(content)
@@ -118,9 +157,9 @@ def test_loads_exact_policy_as_normalized_frozen_values(tmp_path: Path) -> None:
     assert policy.connection.wait_ready is True
     assert policy.operating_site.operations == ("RETURN", "LOCAL_LAND")
     assert policy.autopilot_version.flight_sw_version == 0x040507FF
-    assert policy.autopilot_version.flight_custom_version == "0123456789abcdef"
+    assert policy.autopilot_version.flight_custom_version == "3261336463346237"
     assert policy.autopilot_version.flight_custom_version_bytes == bytes.fromhex(
-        "0123456789abcdef"
+        "3261336463346237"
     )
     assert policy.clearance_calibration.beam_direction_body_frd == (0.0, 0.0, 1.0)
     assert policy.enabled_phases == (31000, 31001)
@@ -128,6 +167,87 @@ def test_loads_exact_policy_as_normalized_frozen_values(tmp_path: Path) -> None:
     assert policy.enabled_phases == (31000, 31001)
     with pytest.raises(FrozenInstanceError):
         policy.idle_poll_s = 9
+
+
+def test_full_phase_policy_requires_fm1_fm2_fm3_and_precision_fields(
+    tmp_path: Path,
+) -> None:
+    source = full_policy()
+    policy = load(tmp_path / "full-policy.json", source)
+
+    assert policy.purpose == "drone-sim-comp2026-full"
+    assert policy.enabled_phases == (31000, 31001, 31002)
+    assert policy.vision.max_exposure_age_ns == 500_000_000
+    assert policy.precision.frame_timeout_s == 0.5
+    assert policy.precision.cruise_altitude_m == 10.0
+    assert policy.precision.target_hover_height_m == 4.572
+    assert policy.precision.desired_drop_height_m == 10.0
+    assert policy.precision.landing_timeout_s == 60.0
+    assert policy.precision.target_loss_timeout_s == 0.5
+    assert policy.precision.reacquisition_count == 5
+
+    for section, field in (
+        ("vision", "max_exposure_age_ns"),
+        ("precision", "frame_timeout_s"),
+        ("precision", "landing_timeout_s"),
+        ("precision", "target_loss_timeout_s"),
+        ("precision", "reacquisition_count"),
+    ):
+        candidate = full_policy()
+        candidate[section].pop(field)  # type: ignore[union-attr]
+        with pytest.raises(ValueError, match="fields"):
+            load(tmp_path / f"missing-{section}-{field}.json", candidate)
+
+
+def test_limited_policy_retains_exact_fm1_fm2_contract(tmp_path: Path) -> None:
+    policy = load(tmp_path / "limited-policy.json", valid_policy())
+
+    assert policy.purpose == "drone-sim-comp2026-fm1-fm2"
+    assert policy.enabled_phases == (31000, 31001)
+    assert policy.vision is None
+    assert policy.precision is None
+
+    for mutation in (
+        {"enabled_phases": [31000, 31001, 31002]},
+        {"vision": full_policy()["vision"]},
+        {"precision": full_policy()["precision"]},
+    ):
+        candidate = valid_policy()
+        candidate.update(mutation)
+        with pytest.raises(ValueError):
+            load(tmp_path / "invalid-limited.json", candidate)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("enabled_phases", [31000, 31001]),
+        ("enabled_phases", [31000, 31002, 31001]),
+        ("enabled_phases", [31000, 31001, 31002, 31003]),
+        ("vision.max_exposure_age_ns", True),
+        ("precision.frame_timeout_s", math.nan),
+        ("precision.reacquisition_count", True),
+        ("precision.reacquisition_count", 0),
+    ],
+)
+def test_full_policy_rejects_wrong_phases_and_invalid_precision_values(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    candidate = full_policy()
+    set_value(candidate, field, value)
+
+    with pytest.raises(ValueError):
+        load(tmp_path / "invalid-full.json", candidate)
+
+
+def test_full_policy_requires_matching_vision_and_precision_freshness(
+    tmp_path: Path,
+) -> None:
+    candidate = full_policy()
+    set_value(candidate, "precision.max_exposure_age_s", 0.25)
+
+    with pytest.raises(ValueError, match="exposure age limits must match"):
+        load(tmp_path / "mismatched-freshness.json", candidate)
 
 
 @pytest.mark.parametrize(
@@ -174,6 +294,7 @@ def test_rejects_missing_or_unknown_fields_at_every_level(
         ("autopilot_version.flight_sw_version", 0x04050700),
         ("autopilot_version.flight_custom_version", "A" * 16),
         ("autopilot_version.flight_custom_version", "0" * 15),
+        ("autopilot_version.flight_custom_version", "0123456789abcdef"),
         ("autopilot_version.evidence_reference", "pending"),
         ("operating_site.evidence_reference", "unknown"),
         ("operating_site.recovery_corridor_evidence", "tbd"),

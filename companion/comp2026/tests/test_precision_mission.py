@@ -53,6 +53,9 @@ def policy(clock, **changes):
         correction_gain=0.3,
         cruise_altitude_m=10.0,
         desired_drop_height_m=10.0,
+        landing_timeout_s=60.0,
+        target_loss_timeout_s=0.5,
+        reacquisition_count=5,
     )
     values.update(changes)
     return PrecisionMissionPolicy(**values)
@@ -422,8 +425,8 @@ def test_lost_target_holds_then_reacquires_before_resuming_land():
 
     clock = FakeClock()
     controller = TouchdownAfterReacquire(clock)
-    observations = [(index, None) for index in range(1, 13)]
-    observations.extend(centered(index) for index in range(13, 18))
+    observations = [(index, None) for index in range(1, 4)]
+    observations.extend(centered(index) for index in range(4, 7))
 
     with timebase.configured(clock):
         result = aruco_land_precision(
@@ -431,7 +434,11 @@ def test_lost_target_holds_then_reacquires_before_resuming_land():
             ReadyCamera(clock, observations),
             SampleLidar(clock, distances=[1.0] * 40),
             3,
-            policy=policy(clock),
+            policy=policy(
+                clock,
+                target_loss_timeout_s=0.1,
+                reacquisition_count=3,
+            ),
         )
 
     assert result is True
@@ -620,7 +627,7 @@ def test_telemetry_invalidation_generation_change_resets_centered_samples(
     assert not any(event[0] == "land" for event in controller.events)
 
 
-def test_precision_land_uses_elapsed_sixty_second_deadline_and_positive_confirmation():
+def test_precision_land_uses_configured_deadline_and_positive_confirmation():
     from drone.mock_mission import aruco_land_precision
 
     clock = FakeClock()
@@ -633,11 +640,15 @@ def test_precision_land_uses_elapsed_sixty_second_deadline_and_positive_confirma
             camera,
             SampleLidar(clock, distances=[1.0] * 2_000),
             3,
-            policy=policy(clock, observation_period_s=0.1),
+            policy=policy(
+                clock,
+                observation_period_s=0.1,
+                landing_timeout_s=0.6,
+            ),
         )
 
     assert result is True
-    assert clock.now() == pytest.approx(70.0, abs=0.11)
+    assert clock.now() == pytest.approx(10.6, abs=0.11)
     assert controller.events[-1][0] == "confirm_landing"
     assert not any(event[0] == "disarm" for event in controller.events)
 

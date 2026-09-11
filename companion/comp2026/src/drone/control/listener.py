@@ -2071,10 +2071,9 @@ def _build_live_listener_validated(
     if selected_factories.telemetry_startup_mode == "staged_simulation" and (
         not isinstance(config.components, InjectedComponentConfig)
         or selected_factories.backend != "drone-sim-ros-confirmed-v1"
-        or FM3 in config.enabled_phases
     ):
         raise ValueError(
-            "staged telemetry requires the explicit FM1/FM2 simulator composition"
+            "staged telemetry requires the explicit simulator composition"
         )
     report = diagnostics or (lambda _message: None)
     if not callable(report):
@@ -2128,10 +2127,12 @@ def _build_live_listener_validated(
                 with snapshot_lock:
                     required = {"L", "TARGET"}
                     if FM3 in config.enabled_phases:
-                        required.add("WA")
+                        required.update(("WA", "WM1"))
                     missing = required - cached_snapshot.names
                     if missing:
-                        raise CommandRejected(f"required waypoint {sorted(missing)[0]!r} is missing")
+                        raise CommandRejected(
+                            f"required waypoint {sorted(missing)[0]!r} is missing"
+                        )
                     _require_cached_waypoint_ages(cached_snapshot)
                     attempt_snapshot[0] = cached_snapshot
                 home = _mission_home_from_snapshot(ground)
@@ -2219,8 +2220,21 @@ def _build_live_listener_validated(
             install_telemetry_verifier(None, verified=True)
         else:
             telemetry_collector.prepare()
+
+            def verify_staged_after_guided() -> None:
+                telemetry_verification.verify_after_guided()
+                if FM3 not in config.enabled_phases:
+                    return
+                camera = camera_ref[0]
+                prepare = getattr(camera, "prepare_precision_readiness", None)
+                if not callable(prepare):
+                    raise RuntimeError("camera readiness preparation is unavailable")
+                prepared = prepare(timeout_s=config.precision_policy.frame_timeout_s)
+                if getattr(prepared, "ready", None) is not True:
+                    raise RuntimeError("camera readiness preparation is not satisfied")
+
             install_telemetry_verifier(
-                telemetry_verification.verify_after_guided, verified=False
+                verify_staged_after_guided, verified=False
             )
         lidar = selected_factories.lidar_factory(config=config)
         lidar_ref[0] = lidar
@@ -2262,7 +2276,10 @@ def _build_live_listener_validated(
             else None
         )
         camera_ref[0] = camera
-        if camera is not None:
+        if (
+            camera is not None
+            and selected_factories.telemetry_startup_mode == "complete"
+        ):
             prepare = getattr(camera, "prepare_precision_readiness", None)
             if not callable(prepare):
                 raise RuntimeError("camera readiness preparation is unavailable")

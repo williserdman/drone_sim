@@ -29,13 +29,10 @@ if TYPE_CHECKING:
     from .sensors.servo.servo import Dropper
 
 
-PRECISION_LAND_DEADLINE_S = 60.0
 PRECISION_LANDING_MIN_AGL_M = 0.75
-TARGET_HEALTH_TIMEOUT_S = 0.50
 HOLD_TIMEOUT_S = 5.0
 HOLD_COMMAND_PERIOD_S = 0.20
 ANCHOR_DRIFT_LIMIT_M = 0.20
-REACQUIRE_FRAME_COUNT = 5
 REQUIRED_CENTERED_OBSERVATIONS = 5
 MAX_OBSERVATIONS_PER_GRID_CELL = REQUIRED_CENTERED_OBSERVATIONS * 2
 GRID_POSITION_TOLERANCE_M = 0.15
@@ -93,6 +90,9 @@ class PrecisionMissionPolicy:
     correction_gain: float
     cruise_altitude_m: float
     desired_drop_height_m: float
+    landing_timeout_s: float
+    target_loss_timeout_s: float
+    reacquisition_count: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.clearance_calibration, ClearanceCalibration):
@@ -115,12 +115,20 @@ class PrecisionMissionPolicy:
             "centered_tolerance_m",
             "cruise_altitude_m",
             "desired_drop_height_m",
+            "landing_timeout_s",
+            "target_loss_timeout_s",
         ):
             object.__setattr__(self, name, _positive_number(name, getattr(self, name)))
         gain = _positive_number("correction_gain", self.correction_gain)
         if gain > 1:
             raise ValueError("correction_gain must not exceed one")
         object.__setattr__(self, "correction_gain", gain)
+        if (
+            not isinstance(self.reacquisition_count, int)
+            or isinstance(self.reacquisition_count, bool)
+            or self.reacquisition_count <= 0
+        ):
+            raise ValueError("reacquisition_count must be a positive integer")
         if self.frame_timeout_s > self.acquisition_timeout_s:
             raise ValueError("frame_timeout_s must not exceed acquisition_timeout_s")
 
@@ -499,9 +507,9 @@ def aruco_land_precision(
     controller.check_permission()
     _require_zero("LAND mode", controller.set_land_mode())
     deadline = (
-        started_at + PRECISION_LAND_DEADLINE_S
+        started_at + policy.landing_timeout_s
         if deadline is None
-        else min(deadline, started_at + PRECISION_LAND_DEADLINE_S)
+        else min(deadline, started_at + policy.landing_timeout_s)
     )
     last_sequence = 0
     last_healthy_at = started_at
@@ -629,7 +637,7 @@ def aruco_land_precision(
                     controller.land_send_landing_target(evidence.vector),
                 )
                 last_healthy_at = now
-            elif now - last_healthy_at >= TARGET_HEALTH_TIMEOUT_S:
+            elif now - last_healthy_at >= policy.target_loss_timeout_s:
                 controller.check_permission()
                 _require_zero("GUIDED mode", controller.set_guided_mode())
                 snapshot = controller.flight_snapshot()
@@ -658,7 +666,7 @@ def aruco_land_precision(
                 next_hold_command_at = now + HOLD_COMMAND_PERIOD_S
             if rejection is None and evidence is not None:
                 reacquired_frames += 1
-                if reacquired_frames >= REACQUIRE_FRAME_COUNT:
+                if reacquired_frames >= policy.reacquisition_count:
                     controller.check_permission()
                     _require_zero("LAND mode", controller.set_land_mode())
                     state = "TRACKING"
@@ -1025,7 +1033,7 @@ def fm3(
 
     for target_id in sorted(possible_ids):
         controller.check_permission()
-        if mt.time_left() < PRECISION_LAND_DEADLINE_S:
+        if mt.time_left() < policy.landing_timeout_s:
             return False
         _require_zero("pickup waypoint", controller.goto_waypoint(pickup_transit))
         if pickup_sequence(

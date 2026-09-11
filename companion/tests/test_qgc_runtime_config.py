@@ -9,6 +9,7 @@ import stat
 import sys
 import threading
 import time
+import tomllib
 
 import pytest
 
@@ -20,18 +21,24 @@ sys.path.insert(0, str(NESTED_SOURCE))
 sys.path.insert(0, str(NESTED_TESTS))
 sys.path.insert(0, str(ROOT / "companion/tests"))
 
+from drone import timebase
 from drone.control.attempt_setup import initialize_ledger, prepare_attempt
 from drone.control.listener import construct_after_full_validation
-from drone.control.listener_runtime import InjectedComponentConfig
-from drone.control.mission_supervisor import FM1, FM2, MissionSupervisor
+from drone.control.listener_runtime import (
+    InjectedComponentConfig,
+    VisionConfig,
+    shared_monotonic_ns,
+)
+from drone.control.mission_supervisor import FM1, FM2, FM3, MissionSupervisor
 from drone.common_types import GPSCoord, MissionHome
+from drone.mock_mission import PrecisionMissionPolicy
 from test_mission_supervisor import RecoveryController
 from test_prepare_attempt import profile_data
 
 import drone_sim_companion.qgc_runtime_config as qgc_runtime_config
 from drone_sim_companion.qgc_runtime_config import ResolvedQGCInputs
 from drone_sim_companion.runtime_node import RuntimeConfig
-from test_qgc_runtime_policy import valid_policy
+from test_qgc_runtime_policy import full_policy, valid_policy
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -112,6 +119,23 @@ def prepared_config(tmp_path: Path) -> tuple[RuntimeConfig, Path, dict[str, obje
         state_root,
         policy_data,
     )
+
+
+def prepared_full_config(
+    tmp_path: Path,
+) -> tuple[RuntimeConfig, Path, dict[str, object]]:
+    config, state_root, limited = prepared_config(tmp_path)
+    policy = full_policy()
+    policy["bindings"] = limited["bindings"]
+    digest = _write(
+        config.qgc.runtime_policy_path,
+        json.dumps(policy, separators=(",", ":")).encode(),
+    )
+    config = replace(
+        config,
+        qgc=replace(config.qgc, runtime_policy_sha256=digest),
+    )
+    return config, state_root, policy
 
 
 def _resolved_run_document(config: RuntimeConfig) -> dict[str, object]:
@@ -333,6 +357,116 @@ def test_projects_complete_inert_fm1_fm2_runtime(tmp_path: Path) -> None:
         runtime.operating_site.recovery_check("LOCAL_LAND", home, 31.0)
     with pytest.raises(FrozenInstanceError):
         projection.sim_launch_origin_json = "{}"
+
+
+def test_full_projection_freezes_exact_l_target_wa_wm1_waypoints(
+    tmp_path: Path,
+) -> None:
+    config, state_root, _policy = prepared_full_config(tmp_path)
+    epoch = time.time()
+
+    projection = qgc_runtime_config.project_qgc_runtime(
+        config, epoch_seconds=epoch, test_only_state_root=state_root
+    )
+
+    runtime = projection.runtime_configuration
+    assert runtime.enabled_phases == frozenset((31000, 31001, 31002))
+    waypoints = json.loads(runtime.waypoint_path.read_text())
+    assert tuple(sorted(waypoints)) == ("L", "TARGET", "WA", "WM1")
+    expected_coordinates = {
+        "L": (52.0, 13.248665793575334, 10.0),
+        "TARGET": (52.0, 13.247776322625556, 10.0),
+        "WA": (51.99991785805042, 13.249332896787667, 10.0),
+        "WM1": (52.00008214194958, 13.249332896787667, 10.0),
+    }
+    for name, expected in expected_coordinates.items():
+        coords = waypoints[name]["coords"]
+        assert (coords["lat"], coords["long"], coords["alt"]) == pytest.approx(
+            expected
+        )
+        assert waypoints[name]["loaded_at"] == epoch
+
+
+@pytest.mark.parametrize("mutation", ["missing", "reordered"])
+def test_full_projection_rejects_missing_or_reordered_fm3_cycles(
+    tmp_path: Path, mutation: str
+) -> None:
+    import yaml
+
+    config, state_root, policy = prepared_full_config(tmp_path)
+    scenario = yaml.safe_load(config.scenario_path.read_text())
+    cycles = scenario["mission"]["fm3_cycles"]
+    scenario["mission"]["fm3_cycles"] = (
+        cycles[:1] if mutation == "missing" else list(reversed(cycles))
+    )
+    config = _replace_competition_bytes(
+        config,
+        policy,
+        label="scenario",
+        content=yaml.safe_dump(scenario, sort_keys=False).encode(),
+    )
+
+    with pytest.raises(ValueError, match="competition contract"):
+        qgc_runtime_config.project_qgc_runtime(
+            config, epoch_seconds=time.time(), test_only_state_root=state_root
+        )
+
+
+def test_full_projection_builds_version_bound_vision_and_precision_policy(
+    tmp_path: Path,
+) -> None:
+    config, state_root, _policy = prepared_full_config(tmp_path)
+
+    projection = qgc_runtime_config.project_qgc_runtime(
+        config, epoch_seconds=time.time(), test_only_state_root=state_root
+    )
+
+    runtime = projection.runtime_configuration
+    assert isinstance(runtime.vision, VisionConfig)
+    assert isinstance(runtime.precision_policy, PrecisionMissionPolicy)
+    assert runtime.vision.marker_size_mm == 100.0
+    assert runtime.vision.calibration_path.name == "gazebo_camera_calibration.json"
+    assert runtime.vision.mounting_path.name == "gazebo_camera_mounting.json"
+    assert runtime.vision.receipt_clock_ns is shared_monotonic_ns
+    assert runtime.vision.max_exposure_age_ns == 500_000_000
+    assert (
+        runtime.precision_policy.clearance_calibration
+        is runtime.clearance_calibration
+    )
+    assert runtime.precision_policy.clock is timebase.monotonic
+    expected_precision = {
+        "max_exposure_age_s": 0.5,
+        "max_image_attitude_skew_s": 0.05,
+        "max_image_location_skew_s": 0.05,
+        "max_attitude_transport_latency_s": 0.05,
+        "max_location_transport_latency_s": 0.05,
+        "acquisition_timeout_s": 5.0,
+        "frame_timeout_s": 0.5,
+        "observation_period_s": 0.05,
+        "target_hover_height_m": 4.572,
+        "hover_tolerance_m": 0.2,
+        "centered_tolerance_m": 0.075,
+        "correction_gain": 0.5,
+        "cruise_altitude_m": 10.0,
+        "desired_drop_height_m": 10.0,
+        "landing_timeout_s": 60.0,
+        "target_loss_timeout_s": 0.5,
+    }
+    for field, expected in expected_precision.items():
+        assert getattr(runtime.precision_policy, field) == expected
+    assert runtime.precision_policy.reacquisition_count == 5
+    assert runtime.autopilot_version.flight_custom_version == bytes.fromhex(
+        "3261336463346237"
+    )
+
+
+def test_full_projection_camera_resources_are_installed_package_data() -> None:
+    project = tomllib.loads((ROOT / "companion/pyproject.toml").read_text())
+
+    assert set(project["tool"]["setuptools"]["package-data"]["drone_sim_companion"]) >= {
+        "gazebo_camera_calibration.json",
+        "gazebo_camera_mounting.json",
+    }
 
 
 def test_projected_recovery_authorizes_return_and_local_fallback(tmp_path: Path) -> None:

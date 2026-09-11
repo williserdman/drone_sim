@@ -145,13 +145,16 @@ transport or creating output devices. The current contract requires:
 `LiveComponentFactories.telemetry_startup_mode` defaults to `complete`. That
 mode preserves the full configure-and-collect proof before QGC listener
 installation for physical hardware and ordinary injected tests. Only the
-explicit injected `drone-sim-ros-confirmed-v1` FM1/FM2 host may select
-`staged_simulation`. It proves request ACKs and firmware metadata while Gazebo
-is paused, then keeps the source-filtered collector active. The admitted FM1's
-first guarded GUIDED delivery releases Gazebo; ARM and TAKEOFF remain denied
-until complete requested telemetry arrives after that gate on strictly
-advancing shared simulation time. Cleanup closes the collector and startup
-request capability even if QGC sends no command.
+explicit injected `drone-sim-ros-confirmed-v1` backend may select
+`staged_simulation`, for either the exact FM1/FM2 phase set or the exact full
+phase set. It proves request ACKs and firmware metadata while Gazebo is paused,
+then keeps the source-filtered collector active. The admitted FM1's first
+guarded GUIDED delivery releases Gazebo; ARM and TAKEOFF remain denied until
+complete requested telemetry arrives after that gate on strictly advancing
+shared simulation time. A full-phase staged runtime then performs its bounded
+camera preparation; it never waits for a frame during listener installation.
+Cleanup closes the collector and startup request capability even if QGC sends
+no command.
 
 The stable composition interfaces are:
 
@@ -309,19 +312,23 @@ skew, plus continuous stability evidence before payload output.
 
 FM3 builds an earth-fixed target anchor from five fresh centered camera
 observations. During LAND it stops forwarding rejected target measurements. If
-the target stays unhealthy for 0.50 simulated seconds, FM3 confirms GUIDED and
-reissues one fixed hold waypoint every 0.20 simulated seconds. Five consecutive
-healthy observations resume LAND. A 5.0-second hold timeout permits one return
-to the 4.572 m acquisition hover before pickup fails. At or below the configured
+the target stays unhealthy for the configured target-loss timeout (0.50
+simulated seconds in the simulator full policy), FM3 confirms GUIDED and
+reissues one fixed hold waypoint every 0.20 simulated seconds. The configured
+reacquisition count (five in that policy) of consecutive healthy observations
+resumes LAND. A 5.0-second hold timeout permits one return to the 4.572 m
+acquisition hover before pickup fails. At or below the configured
 0.75 m precision-landing floor, FM3 keeps LAND active without requiring another
 camera observation. Before the first LAND command it also checks the connected
 flight controller against `PRECISION_LANDING_PARAMETERS` in
 `drone/control/drone_control.py`.
 
-For enabled FM3, live construction obtains one bounded real camera observation
-before installing QGC callbacks and leaves the latest-frame producer running.
-FM3 admission only inspects current readiness; it does not wait for a frame on
-the receive callback.
+For enabled FM3 in ordinary complete-startup mode, live construction obtains one
+bounded real camera observation before installing QGC callbacks and leaves the
+latest-frame producer running. Staged simulation instead constructs the camera
+without consuming a frame, then prepares it after the first guarded GUIDED
+delivery has opened public simulation progress. FM3 admission always inspects
+current readiness; it does not wait for a frame on the receive callback.
 
 Authority starts as `UNKNOWN`. The companion can acquire authority once per
 attempt from the fresh ground baseline. Every outbound flight or payload boundary

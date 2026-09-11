@@ -636,9 +636,12 @@ def project_qgc_runtime(
         OperatingSitePolicy,
         RuntimeConfiguration,
         TelemetryStartupPolicy,
+        VisionConfig,
+        shared_monotonic_ns,
     )
     from drone.control.mission_info import MAX_WAYPOINT_AGE_SECONDS
-    from drone.control.mission_supervisor import FM1, FM2, RecoveryPolicy
+    from drone.control.mission_supervisor import RecoveryPolicy
+    from drone.mock_mission import PrecisionMissionPolicy
     from drone.control.stability import ReleaseStabilityConfig
     from drone.sensors.lidar.clearance import ClearanceCalibration
 
@@ -666,6 +669,20 @@ def project_qgc_runtime(
         "L": _course_coordinate(origin, waypoints["L"], GPSCoord),
         "TARGET": _course_coordinate(origin, waypoints[fm2_zone], GPSCoord),
     }
+    full_phase = policy.purpose == "drone-sim-comp2026-full"
+    if full_phase:
+        cycles = scenario["mission"]["fm3_cycles"]  # type: ignore[index]
+        if cycles != [
+            {"pickup_zone": "WA", "color": "yellow", "drop_zone": "F2"},
+            {"pickup_zone": "WM", "color": "blue", "drop_zone": "F2"},
+        ]:
+            raise ValueError("full runtime requires both exact ordered FM3 cycles")
+        derived.update(
+            {
+                "WA": _course_coordinate(origin, waypoints["WA"], GPSCoord),
+                "WM1": _course_coordinate(origin, waypoints["WM"], GPSCoord),
+            }
+        )
     site = policy.operating_site
 
     def waypoint_check(name: str, coordinate: Any) -> bool:
@@ -810,8 +827,52 @@ def project_qgc_runtime(
     except BaseException:
         validated_listener_artifacts.close()
         raise
-    evidence = f"course-sha256:{qgc.course_sha256};scenario-sha256:{qgc.scenario_sha256}"
     try:
+        evidence = (
+            f"course-sha256:{qgc.course_sha256};"
+            f"scenario-sha256:{qgc.scenario_sha256}"
+        )
+        clearance_calibration = ClearanceCalibration(
+            **vars(policy.clearance_calibration)
+        )
+        vision = None
+        precision_policy = None
+        if full_phase:
+            if policy.vision is None or policy.precision is None:
+                raise ValueError(
+                    "full runtime policy requires vision and precision configuration"
+                )
+            attempt = course["attempt"]  # type: ignore[index]
+            marker_size_mm = scenario["payload_geometry"][  # type: ignore[index]
+                "marker_size_mm"
+            ]
+            if (
+                policy.vision.marker_size_mm != marker_size_mm
+                or policy.precision.target_hover_height_m
+                != attempt["acquisition_agl_m"]
+                or policy.precision.cruise_altitude_m != attempt["transit_agl_m"]
+                or policy.precision.desired_drop_height_m != attempt["release_agl_m"]
+            ):
+                raise ValueError(
+                    "full runtime precision values do not match the competition contract"
+                )
+            vision = VisionConfig(
+                marker_size_mm=policy.vision.marker_size_mm,
+                calibration_path=Path(__file__).with_name(
+                    policy.vision.calibration_path
+                ),
+                mounting_path=Path(__file__).with_name(policy.vision.mounting_path),
+                receipt_clock_ns=shared_monotonic_ns,
+                max_exposure_age_ns=policy.vision.max_exposure_age_ns,
+            )
+            precision_values = vars(policy.precision).copy()
+            precision_values.pop("clearance_calibration")
+            precision_values.pop("clock")
+            precision_policy = PrecisionMissionPolicy(
+                clearance_calibration=clearance_calibration,
+                clock=timebase.monotonic,
+                **precision_values,
+            )
         runtime = RuntimeConfiguration(
             connection=ConnectionConfig(
                 endpoint=getattr(config, "mavlink_endpoint"),
@@ -838,20 +899,24 @@ def project_qgc_runtime(
                 ),
                 evidence_reference=policy.autopilot_version.evidence_reference,
             ),
-            vision=None,
+            vision=vision,
             components=InjectedComponentConfig(
                 backend=policy.backend, evidence_reference=evidence
             ),
-            clearance_calibration=ClearanceCalibration(
-                **vars(policy.clearance_calibration)
-            ),
+            clearance_calibration=clearance_calibration,
             release_stability=ReleaseStabilityConfig(
                 **vars(policy.release_stability)
             ),
-            enabled_phases=frozenset((FM1, FM2)),
-            precision_policy=None,
-            cruise_altitude_m=10.0,
-            desired_drop_height_m=10.0,
+            enabled_phases=frozenset(policy.enabled_phases),
+            precision_policy=precision_policy,
+            cruise_altitude_m=(
+                10.0 if precision_policy is None else precision_policy.cruise_altitude_m
+            ),
+            desired_drop_height_m=(
+                10.0
+                if precision_policy is None
+                else precision_policy.desired_drop_height_m
+            ),
             fc_home_position_tolerance_m=policy.fc_home_position_tolerance_m,
             fc_home_altitude_tolerance_m=policy.fc_home_altitude_tolerance_m,
             attempt_timeout_s=600.0,

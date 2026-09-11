@@ -36,12 +36,18 @@ host. This source binding does not establish flight readiness.
 Post-launch diagnostics and teardown do not revalidate mutable attempt state.
 
 The host establishes the ROS subscriptions and executor before the nested
-controller connects. Its explicit `staged_simulation` telemetry mode is valid
-only for the injected `drone-sim-ros-confirmed-v1` FM1/FM2 composition. Before
-listener readiness it installs source-filtered observation, proves the bounded
-telemetry request ACKs and exact firmware version, and leaves cadence collection
-active. The ordinary and physical factory path still completes the entire
-telemetry cadence proof before installing the listener. Mission-ready and QGC admission require a matching
+controller connects. The nested listener's explicit `staged_simulation`
+telemetry mode is valid only for the injected
+`drone-sim-ros-confirmed-v1` backend and accepts either its exact FM1/FM2 or
+exact full phase set. Before listener readiness it installs source-filtered
+observation, proves the bounded telemetry request ACKs and exact firmware
+version, and leaves cadence collection active. A full-phase staged composition
+constructs the camera without acquiring a frame; after the first guarded GUIDED
+delivery opens public simulation progress, it completes bounded camera
+preparation before FM3 admission can succeed. The current parent composition
+still selects the limited phase set. The ordinary and physical factory path
+still completes the entire telemetry cadence proof before installing the
+listener. Mission-ready and QGC admission require a matching
 `RUNNING` state, an accepted public clock, a live executor, an actual connected
 vehicle heartbeat within the tighter of the connection and flight-profile
 freshness bounds, and literal armability. Finalization requests, wall deadline,

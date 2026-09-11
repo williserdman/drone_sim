@@ -383,6 +383,8 @@ def test_nonblocking_guided_hold_uses_integer_coordinates_and_pinned_home():
 
 
 def test_precision_landing_profile_requires_every_exact_runtime_parameter():
+    assert drone_control.PRECISION_LANDING_PARAMETERS["LAND_SPEED"] == 50
+    assert "LAND_SPD_MS" not in drone_control.PRECISION_LANDING_PARAMETERS
     controller = object.__new__(drone_control.DroneControl)
     controller.vehicle = SimpleNamespace(
         parameters=dict(drone_control.PRECISION_LANDING_PARAMETERS)

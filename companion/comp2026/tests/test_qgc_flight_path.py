@@ -43,6 +43,7 @@ from drone.control.listener import (
     build_live_listener,
     load_listener_artifacts,
 )
+from drone.control.listener_runtime import InjectedComponentConfig
 from drone.control.mission_info import MissonTracker
 from drone.control.mission_supervisor import (
     AuthorityLost,
@@ -443,6 +444,7 @@ class FactoryRig:
         self.release_invalidation_injected = False
         self.outbound = None
         self.guarded_writer = None
+        self.accepted_simulation_ns = 0
 
     def publish(self, **values):
         self.sequence += 1
@@ -601,7 +603,7 @@ class FactoryRig:
         return controller
 
     def telemetry_collector_factory(self, **_kwargs):
-        def configure_and_collect():
+        def publish_baseline():
             self.publish_rc_health()
             self.publish(
                 heartbeat="fixture",
@@ -620,18 +622,39 @@ class FactoryRig:
                 received_at=self.clock.monotonic(), sequence=self.sequence,
                 source_system=1, source_component=1,
             )
+
+        def configure_and_collect():
+            publish_baseline()
             self.clock.tick_callbacks.append(self.refresh)
             return TelemetryStartupEvidence(MappingProxyType({}), 1.0)
 
-        return SimpleNamespace(configure_and_collect=configure_and_collect)
+        def prepare():
+            publish_baseline()
+            self.clock.tick_callbacks.append(self.refresh)
 
-    def factories(self):
+        def verify_after_guided():
+            assert self.accepted_simulation_ns > 0
+            self.events.append(("telemetry-verified-after-guided", self.accepted_simulation_ns))
+            return TelemetryStartupEvidence(MappingProxyType({}), 1.0)
+
+        return SimpleNamespace(
+            configure_and_collect=configure_and_collect,
+            prepare=prepare,
+            verify_after_guided=verify_after_guided,
+            close=lambda: None,
+        )
+
+    def factories(self, *, staged=False):
         def ack_transport_factory(**_kwargs):
             self.transport = CallbackTransport(wire_protocol="2.0")
             return self.transport
 
         return LiveComponentFactories(
-            backend="test-injected-components-v1",
+            backend=(
+                "drone-sim-ros-confirmed-v1"
+                if staged
+                else "test-injected-components-v1"
+            ),
             controller_factory=self.controller_factory,
             ack_transport_factory=ack_transport_factory,
             telemetry_collector_factory=self.telemetry_collector_factory,
@@ -639,6 +662,7 @@ class FactoryRig:
             dropper_factory=lambda **_kwargs: InertDropper(self.events),
             camera_factory=lambda **_kwargs: InertCamera(self, prepared=False),
             supports_attachment=True,
+            telemetry_startup_mode=("staged_simulation" if staged else "complete"),
         )
 
 
@@ -811,6 +835,9 @@ class FlightPathHarness:
             correction_gain=0.5,
             cruise_altitude_m=10.0,
             desired_drop_height_m=1.5,
+            landing_timeout_s=60.0,
+            target_loss_timeout_s=0.5,
+            reacquisition_count=5,
         )
         self.tracker = tracker
         self.handler_errors = []
@@ -1644,7 +1671,7 @@ def test_failed_real_recovery_stays_unconfirmed_and_does_not_change_mission_fail
     assert harness.recoveries == ["UNCONFIRMED"]
 
 
-def build_factory_runtime(tmp_path, *, wm_count=6):
+def build_factory_runtime(tmp_path, *, wm_count=6, staged=False):
     from test_listener import prepared_startup_files
     from test_listener_runtime import runtime_configuration
 
@@ -1677,6 +1704,13 @@ def build_factory_runtime(tmp_path, *, wm_count=6):
     config = replace(
         config,
         connection=replace(config.connection, wire_protocol="2.0"),
+        components=(
+            InjectedComponentConfig(
+                "drone-sim-ros-confirmed-v1", "test staged simulator binding"
+            )
+            if staged
+            else config.components
+        ),
         precision_policy=replace(
             config.precision_policy,
             target_hover_height_m=1.51,
@@ -1688,10 +1722,37 @@ def build_factory_runtime(tmp_path, *, wm_count=6):
         runtime = build_live_listener(
             artifacts,
             config,
-            factories=rig.factories(),
+            factories=rig.factories(staged=staged),
             diagnostics=diagnostics.append,
         )
     return runtime, rig, prepared, config, diagnostics
+
+
+def test_first_guided_delivery_allows_post_gate_camera_readiness(tmp_path):
+    runtime, rig, prepared, config, diagnostics = build_factory_runtime(
+        tmp_path, wm_count=1, staged=True
+    )
+    assert not any(event[0] == "camera-prepared" for event in rig.events)
+
+    def open_public_simulation():
+        rig.accepted_simulation_ns = 50_000_000
+        rig.events.append(("guided-delivered", rig.accepted_simulation_ns))
+        rig.clock.value += 0.05
+
+    runtime.controller.guided_output_delivery_callback = open_public_simulation
+    runtime.controller._guided_output_delivery_reported = False
+    with timebase.configured(rig.clock):
+        rig.transport.deliver(Packet(FM1, attempt_id=prepared.attempt_id))
+        assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+
+    guided_index = rig.events.index(("guided-delivered", 50_000_000))
+    telemetry_index = rig.events.index(
+        ("telemetry-verified-after-guided", 50_000_000)
+    )
+    camera_index = rig.events.index(
+        ("camera-prepared", config.precision_policy.frame_timeout_s)
+    )
+    assert guided_index < telemetry_index < camera_index
 
 
 def test_public_live_factory_runs_complete_callback_fm1_fm2_fm3_trace(tmp_path):
@@ -1842,18 +1903,18 @@ def test_public_live_factory_runs_complete_callback_fm1_fm2_fm3_trace(tmp_path):
     ]
 
 
-def test_public_live_factory_allows_wa_only_fm3_route(tmp_path):
-    """Break caught: optional WM sites must not reject the required WA circuit."""
+def test_public_live_factory_rejects_wa_only_full_phase_route(tmp_path):
+    """Break caught: a full runtime must freeze both competition FM3 cycles."""
     runtime, rig, prepared, _config, diagnostics = build_factory_runtime(
         tmp_path, wm_count=0
     )
 
     with timebase.configured(rig.clock):
-        for command in (FM1, FM2, FM3):
-            rig.transport.deliver(Packet(command, attempt_id=prepared.attempt_id))
-            assert runtime.owner.process_next(timeout_s=0) == "SUCCEEDED", diagnostics
+        rig.transport.deliver(Packet(FM1, attempt_id=prepared.attempt_id))
 
-    assert [event[1] for event in rig.events if event[0] == "payload-attached"] == [3]
+    assert runtime.owner.process_next(timeout_s=0) is None
+    assert rig.transport.acks[-1].result == ACK_DENIED
+    assert diagnostics == []
 
 
 def test_live_runtime_stale_vitals_become_unknown_and_deny_next_phase(tmp_path):

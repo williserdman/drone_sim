@@ -66,11 +66,16 @@ scored simulation, hardware acceptance, or flight readiness.
 ## Simulator QGC runtime policy
 
 [qgc_runtime_policy.py](src/drone_sim_companion/qgc_runtime_policy.py) provides
-an offline, inert loader for a caller-supplied FM1/FM2 simulator policy. The
-caller supplies the exact lowercase SHA-256 of a regular, non-symlink UTF-8 JSON
-file. The loader validates the complete simulator-specific policy and returns
-frozen normalized values. It does not open ROS, DroneKit, a transport, or a
-device. An evidence-reference hash does not enforce a recovery corridor.
+an offline, inert loader for caller-supplied simulator policy. It accepts either
+the exact `drone-sim-comp2026-fm1-fm2` contract or the exact
+`drone-sim-comp2026-full` contract. The full variant requires ordered FM1, FM2,
+and FM3 command IDs plus explicit vision and precision controls; its projection
+adds exact WA and WM1 pickup waypoints and version-bound packaged calibration
+and mounting resources. The caller supplies the exact lowercase SHA-256 of a
+regular, non-symlink UTF-8 JSON file. The loader validates the complete
+simulator-specific policy and returns frozen normalized values. It does not open
+ROS, DroneKit, a transport, or a device. An evidence-reference hash does not
+enforce a recovery corridor.
 
 Runtime policy values still come only from the explicitly supplied immutable
 QGC input set. Repository default configurations omit that set. Aircraft

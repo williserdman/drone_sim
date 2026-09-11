@@ -170,6 +170,38 @@ class ReleaseStabilityPolicy:
 
 
 @dataclass(frozen=True)
+class VisionPolicy:
+    marker_size_mm: float
+    calibration_path: str
+    mounting_path: str
+    receipt_clock_ns: str
+    max_exposure_age_ns: int
+
+
+@dataclass(frozen=True)
+class PrecisionPolicy:
+    clearance_calibration: str
+    clock: str
+    max_exposure_age_s: float
+    max_image_attitude_skew_s: float
+    max_image_location_skew_s: float
+    max_attitude_transport_latency_s: float
+    max_location_transport_latency_s: float
+    acquisition_timeout_s: float
+    frame_timeout_s: float
+    observation_period_s: float
+    target_hover_height_m: float
+    hover_tolerance_m: float
+    centered_tolerance_m: float
+    correction_gain: float
+    cruise_altitude_m: float
+    desired_drop_height_m: float
+    landing_timeout_s: float
+    target_loss_timeout_s: float
+    reacquisition_count: int
+
+
+@dataclass(frozen=True)
 class QGCRuntimePolicy:
     schema_version: int
     purpose: str
@@ -188,7 +220,9 @@ class QGCRuntimePolicy:
     idle_poll_s: float
     cleanup_timeout_s: float
     payload_delay_wall_timeout_s: float
-    enabled_phases: tuple[int, int]
+    enabled_phases: tuple[int, ...]
+    vision: VisionPolicy | None
+    precision: PrecisionPolicy | None
 
 
 def _parse_bindings(raw: object) -> QGCBindings:
@@ -351,6 +385,11 @@ def _parse_autopilot(raw: object) -> AutopilotVersionPolicy:
     custom = value["flight_custom_version"]
     if not isinstance(custom, str) or _CUSTOM_VERSION.fullmatch(custom) is None:
         raise ValueError("flight_custom_version must be exactly 16 lowercase hex characters")
+    expected_custom = _ARDUPILOT_COMMIT[:8].encode("ascii").hex()
+    if custom != expected_custom:
+        raise ValueError(
+            "flight_custom_version must match the pinned ArduPilot commit prefix"
+        )
     return AutopilotVersionPolicy(
         firmware_label="ArduCopter 4.5.7",
         flight_sw_version=version,
@@ -446,7 +485,95 @@ def _parse_release_stability(raw: object) -> ReleaseStabilityPolicy:
     return ReleaseStabilityPolicy(**normalized)
 
 
-_TOP_LEVEL_FIELDS = {
+def _parse_vision(raw: object) -> VisionPolicy:
+    names = {
+        "marker_size_mm",
+        "calibration_path",
+        "mounting_path",
+        "receipt_clock_ns",
+        "max_exposure_age_ns",
+    }
+    value = _exact_fields(raw, names, "vision")
+    maximum_age = _integer("vision.max_exposure_age_ns", value["max_exposure_age_ns"])
+    if maximum_age <= 0:
+        raise ValueError("vision.max_exposure_age_ns must be positive")
+    return VisionPolicy(
+        marker_size_mm=_positive_number(
+            "vision.marker_size_mm", value["marker_size_mm"]
+        ),
+        calibration_path=_literal(
+            "vision.calibration_path",
+            value["calibration_path"],
+            "gazebo_camera_calibration.json",
+        ),
+        mounting_path=_literal(
+            "vision.mounting_path",
+            value["mounting_path"],
+            "gazebo_camera_mounting.json",
+        ),
+        receipt_clock_ns=_literal(
+            "vision.receipt_clock_ns",
+            value["receipt_clock_ns"],
+            "shared_monotonic_ns",
+        ),
+        max_exposure_age_ns=maximum_age,
+    )
+
+
+def _parse_precision(raw: object) -> PrecisionPolicy:
+    names = {
+        "clearance_calibration",
+        "clock",
+        "max_exposure_age_s",
+        "max_image_attitude_skew_s",
+        "max_image_location_skew_s",
+        "max_attitude_transport_latency_s",
+        "max_location_transport_latency_s",
+        "acquisition_timeout_s",
+        "frame_timeout_s",
+        "observation_period_s",
+        "target_hover_height_m",
+        "hover_tolerance_m",
+        "centered_tolerance_m",
+        "correction_gain",
+        "cruise_altitude_m",
+        "desired_drop_height_m",
+        "landing_timeout_s",
+        "target_loss_timeout_s",
+        "reacquisition_count",
+    }
+    value = _exact_fields(raw, names, "precision")
+    numeric_names = names - {
+        "clearance_calibration",
+        "clock",
+        "reacquisition_count",
+    }
+    normalized = {
+        name: _positive_number(f"precision.{name}", value[name])
+        for name in numeric_names
+    }
+    if normalized["correction_gain"] > 1:
+        raise ValueError("precision.correction_gain must not exceed one")
+    if normalized["frame_timeout_s"] > normalized["acquisition_timeout_s"]:
+        raise ValueError("precision.frame_timeout_s must not exceed acquisition_timeout_s")
+    reacquisition_count = _integer(
+        "precision.reacquisition_count", value["reacquisition_count"]
+    )
+    if reacquisition_count <= 0:
+        raise ValueError("precision.reacquisition_count must be positive")
+    return PrecisionPolicy(
+        clearance_calibration=_literal(
+            "precision.clearance_calibration",
+            value["clearance_calibration"],
+            "shared",
+        ),
+        clock=_literal("precision.clock", value["clock"], "shared_monotonic"),
+        reacquisition_count=reacquisition_count,
+        **normalized,
+    )
+
+
+_LIMITED_TOP_LEVEL_FIELDS = {
     "schema_version",
     "purpose",
     "backend",
@@ -466,24 +593,47 @@ _TOP_LEVEL_FIELDS = {
     "payload_delay_wall_timeout_s",
     "enabled_phases",
 }
+_FULL_TOP_LEVEL_FIELDS = _LIMITED_TOP_LEVEL_FIELDS | {"vision", "precision"}
 
 
 def _parse_policy(raw: object) -> QGCRuntimePolicy:
-    value = _exact_fields(raw, _TOP_LEVEL_FIELDS, "runtime policy")
+    if not isinstance(raw, dict):
+        raise ValueError("runtime policy must be an object")
+    purpose = raw.get("purpose")
+    if purpose == "drone-sim-comp2026-fm1-fm2":
+        expected_fields = _LIMITED_TOP_LEVEL_FIELDS
+        expected_phases = [31000, 31001]
+    elif purpose == "drone-sim-comp2026-full":
+        expected_fields = _FULL_TOP_LEVEL_FIELDS
+        expected_phases = [31000, 31001, 31002]
+    else:
+        raise ValueError("runtime policy purpose is unsupported")
+    value = _exact_fields(raw, expected_fields, "runtime policy")
     _literal("schema_version", value["schema_version"], 1)
-    _literal("purpose", value["purpose"], "drone-sim-comp2026-fm1-fm2")
     _literal("backend", value["backend"], "drone-sim-ros-confirmed-v1")
     enabled_phases = value["enabled_phases"]
     if (
         not isinstance(enabled_phases, list)
-        or len(enabled_phases) != 2
         or any(type(phase) is not int for phase in enabled_phases)
-        or enabled_phases != [31000, 31001]
+        or enabled_phases != expected_phases
     ):
-        raise ValueError("enabled_phases must be exactly [31000, 31001]")
+        raise ValueError(f"enabled_phases must be exactly {expected_phases}")
+    vision = _parse_vision(value["vision"]) if purpose == "drone-sim-comp2026-full" else None
+    precision = (
+        _parse_precision(value["precision"])
+        if purpose == "drone-sim-comp2026-full"
+        else None
+    )
+    if vision is not None and precision is not None and not math.isclose(
+        vision.max_exposure_age_ns / 1_000_000_000,
+        precision.max_exposure_age_s,
+        rel_tol=1e-12,
+        abs_tol=0.0,
+    ):
+        raise ValueError("vision and precision exposure age limits must match")
     return QGCRuntimePolicy(
         schema_version=1,
-        purpose="drone-sim-comp2026-fm1-fm2",
+        purpose=purpose,
         backend="drone-sim-ros-confirmed-v1",
         bindings=_parse_bindings(value["bindings"]),
         simulator_launch_origin=_parse_origin(value["simulator_launch_origin"]),
@@ -507,7 +657,9 @@ def _parse_policy(raw: object) -> QGCRuntimePolicy:
         payload_delay_wall_timeout_s=_positive_number(
             "payload_delay_wall_timeout_s", value["payload_delay_wall_timeout_s"]
         ),
-        enabled_phases=(31000, 31001),
+        enabled_phases=tuple(expected_phases),
+        vision=vision,
+        precision=precision,
     )
 
 

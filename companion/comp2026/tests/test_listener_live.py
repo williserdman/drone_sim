@@ -232,7 +232,7 @@ def test_live_component_factories_reject_placeholder_backend_label():
         replace(fake_factories([]), backend="pending")
 
 
-def test_staged_telemetry_is_limited_to_the_explicit_fm1_fm2_simulator_backend(
+def test_staged_telemetry_accepts_explicit_simulator_backend_limited_policy(
     tmp_path,
 ):
     attempt_dir = tmp_path / "attempt"
@@ -278,7 +278,7 @@ def test_staged_telemetry_is_limited_to_the_explicit_fm1_fm2_simulator_backend(
     ("backend", "enabled_phases"),
     [
         ("test-injected-components-v1", frozenset((FM1, FM2))),
-        ("drone-sim-ros-confirmed-v1", frozenset((FM1, FM2, FM3))),
+        ("test-injected-components-v1", frozenset((FM1, FM2, FM3))),
     ],
 )
 def test_staged_telemetry_rejects_every_other_composition_before_controller(
@@ -554,7 +554,12 @@ def test_live_factory_rejects_fm3_capability_before_any_component(tmp_path):
 
 
 def admissible_fm1_runtime(
-    tmp_path, *, startup_admission_check=None, enabled_phases=None
+    tmp_path,
+    *,
+    startup_admission_check=None,
+    enabled_phases=None,
+    factory_options=None,
+    camera_factory=None,
 ):
     attempt_dir = tmp_path / "attempt"
     attempt_dir.mkdir()
@@ -576,6 +581,13 @@ def admissible_fm1_runtime(
                 None if FM3 not in enabled_phases else config.precision_policy
             ),
         )
+    selected_factory_options = dict(factory_options or {})
+    backend = selected_factory_options.get("backend")
+    if backend is not None:
+        config = replace(
+            config,
+            components=InjectedComponentConfig(backend, "test simulator binding"),
+        )
     loaded_at = timebase.epoch()
     records = {
         name: {
@@ -587,10 +599,17 @@ def admissible_fm1_runtime(
     config.waypoint_path.write_text(json.dumps(records))
     events = []
     captured = {}
+    factories = fake_factories(
+        events,
+        captured=captured,
+        **selected_factory_options,
+    )
+    if camera_factory is not None:
+        factories = replace(factories, camera_factory=camera_factory)
     runtime = build_live_listener(
         artifacts,
         config,
-        factories=fake_factories(events, captured=captured),
+        factories=factories,
         startup_admission_check=startup_admission_check,
     )
     state = runtime.flight_state
@@ -668,6 +687,98 @@ def _advance_past_fm1(runtime, artifacts, prepared):
     runtime.supervisor.begin(FM1)
     runtime.supervisor.finish(FM1, "SUCCEEDED")
     return request
+
+
+def test_staged_full_phase_listener_does_not_wait_for_camera_while_physics_is_paused(
+    tmp_path,
+):
+    class DeferredCamera:
+        prepare_calls = 0
+
+        def prepare_precision_readiness(self, *, timeout_s):
+            self.prepare_calls += 1
+            raise AssertionError("paused startup must not wait for a camera frame")
+
+        def precision_readiness(self):
+            return SimpleNamespace(ready=False, reasons=("no post-gate frame",))
+
+    camera = DeferredCamera()
+    runtime, _artifacts, _prepared, _events, _captured, packet = (
+        admissible_fm1_runtime(
+            tmp_path,
+            enabled_phases=(FM1, FM2, FM3),
+            factory_options={
+                "backend": "drone-sim-ros-confirmed-v1",
+                "telemetry_startup_mode": "staged_simulation",
+            },
+            camera_factory=lambda **_kwargs: camera,
+        )
+    )
+
+    assert runtime.listener._installed is True
+    assert camera.prepare_calls == 0
+    runtime.listener.handle_message(packet)
+    assert runtime.supervisor.status(FM1) == "QUEUED"
+    assert camera.prepare_calls == 0
+
+
+def test_fm3_admission_requires_current_precision_readiness(tmp_path):
+    class MutableReadinessCamera:
+        state = "ready"
+
+        def prepare_precision_readiness(self, *, timeout_s):
+            return SimpleNamespace(ready=True, reasons=())
+
+        def precision_readiness(self):
+            return SimpleNamespace(
+                ready=self.state == "ready",
+                reasons=(() if self.state == "ready" else (self.state,)),
+            )
+
+    camera = MutableReadinessCamera()
+    runtime, _artifacts, prepared, _events, captured, fm1_packet = (
+        admissible_fm1_runtime(
+            tmp_path,
+            enabled_phases=(FM1, FM2, FM3),
+            camera_factory=lambda **_kwargs: camera,
+        )
+    )
+    runtime.listener.handle_message(fm1_packet)
+    fm1_request = runtime.owner.command_queue.get_nowait()
+    runtime.owner.command_queue.task_done()
+    runtime.supervisor.begin(FM1)
+    runtime.supervisor.finish(FM1, "SUCCEEDED")
+
+    def packet(command):
+        return Packet(
+            command=command,
+            params=(
+                float(prepared.attempt_id),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        )
+
+    runtime.listener.handle_message(packet(FM2))
+    fm2_request = runtime.owner.command_queue.get_nowait()
+    runtime.owner.command_queue.task_done()
+    runtime.supervisor.begin(FM2)
+    runtime.supervisor.finish(FM2, "SUCCEEDED")
+    assert (fm1_request.command, fm2_request.command) == (FM1, FM2)
+
+    for unavailable in ("absent", "stale"):
+        camera.state = unavailable
+        runtime.listener.handle_message(packet(FM3))
+        assert captured["transport"].acks[-1].result == ACK_DENIED
+        assert runtime.supervisor.status(FM3) is None
+
+    camera.state = "ready"
+    runtime.listener.handle_message(packet(FM3))
+    assert runtime.supervisor.status(FM3) == "QUEUED"
 
 
 def test_fm1_admission_consumes_then_acquires_pins_home_and_constructs_payload(tmp_path):

@@ -104,6 +104,9 @@ def runtime_configuration(tmp_path):
         correction_gain=0.5,
         cruise_altitude_m=10.0,
         desired_drop_height_m=1.5,
+        landing_timeout_s=60.0,
+        target_loss_timeout_s=0.5,
+        reacquisition_count=5,
     )
     waypoint_check = lambda _name, _coord: True
     home_check = lambda _home: None
@@ -201,6 +204,24 @@ def test_complete_explicit_runtime_configuration_precedes_factory(tmp_path):
     assert config.recovery_policy.check is config.operating_site.recovery_check
     assert config.precision_policy.clock is timebase.monotonic
     assert config.recovery_policy.clock is timebase.monotonic
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("landing_timeout_s", 0),
+        ("target_loss_timeout_s", float("nan")),
+        ("reacquisition_count", True),
+        ("reacquisition_count", 0),
+    ],
+)
+def test_precision_policy_requires_explicit_full_phase_behavior_limits(
+    tmp_path, field, value
+):
+    policy = runtime_configuration(tmp_path).precision_policy
+
+    with pytest.raises(ValueError):
+        replace(policy, **{field: value})
 
 
 def test_full_startup_rejects_mavlink1_before_factory(tmp_path):
