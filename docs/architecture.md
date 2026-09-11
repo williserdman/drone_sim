@@ -112,6 +112,16 @@ that worker. The [companion lifecycle](../companion/src/drone_sim_companion/life
 owns the executable deadline and status write. A missed deadline, mode-setting
 error, or status-write error fails the attempt and leaves the gate closed.
 
+For payload precision landing, the camera boundary returns a marker vector and
+its source timestamp atomically; a side-channel timestamp is not sufficient
+freshness evidence. The hosted mission owns the fixed earth-frame target anchor,
+measurement acceptance, LAND/GUIDED hold transitions, and one bounded return to
+the search hover. ArduPilot owns stabilization and descent execution, but only
+accepted observations reach its `LANDING_TARGET` input. No target messages are
+sent during the GUIDED hold. The parameter overlay remains the durable source
+of flight-controller settings, and the companion reads those live settings
+before entering the first precision LAND.
+
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and
 conflicting reuse of an ID is rejected. A matching physical success is cached

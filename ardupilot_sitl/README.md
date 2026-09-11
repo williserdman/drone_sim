@@ -69,6 +69,12 @@ that SITL exited, and it always attempts to close the protocol.
   replace them with force-arm behavior.
 - Copter 4.7 uses `LAND_SPD_MS`, not legacy `LAND_SPEED`. Parameter edits require
   rebuilding the image because the overlay is copied at build time.
+- The overlay is also the single source for the fast, guarded precision-landing
+  profile. `PLND_OPTIONS` retains the normal final descent speed while the
+  companion filters measurements and owns hold/reacquire policy. Do not tune a
+  missed pickup through the scorer or by silently overriding these values at
+  runtime; inspect [descent.parm](params/descent.parm) and its executable
+  assertions in [test_config.py](tests/test_config.py).
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is

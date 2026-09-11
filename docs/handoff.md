@@ -3,8 +3,10 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-09. Source/test evidence ends at revision
-`cc658db98ebb858b22edfc451c25f3985d71013c`; this documentation-only task cannot use its own later commit as source-test evidence.
+Audited 2026-09-11. The fast precision-landing recovery is implemented on the
+isolated `fix/precision-landing-reacquire` parent and nested branches. The
+required fresh full-flight acceptance run has not yet been performed, so this
+section does not claim current physical success or 150/150.
 
 ## Maintainer start
 
@@ -18,11 +20,22 @@ checkout. Verify its intended revision before a Phase 3 build; a mission log or 
 | --- | --- | --- | --- | --- |
 | [Accepted competition baseline](verification/comp2026-mvp.md), run `3dc895c3-a5aa-4651-a893-d21884fa43f5` | Returned Home and disarmed in the accepted 600-second run | 150/150 | `COMPLETED`; accepted bundle | Historical external evidence; does not prove current source or images |
 | [Payload timestamp verification](payload-timestamp-fix.md), run `259863d9-c558-4102-ae34-fe6c31f5cf94` | Completed all three payloads and Home | 150/150 | `FAILED`; terminal artifacts invalid after a later downward-range timestamp/grid fault | Proves the recorded physical flight, not a full-window pass |
+| Precision-landing recovery implementation, pending fresh run | Not run | Not produced | Not evaluated | Source now holds/reacquires stale or inconsistent target data once while preserving fast descent; historical artifacts do not prove it |
 
 Run directories and absolute paths in verification notes are ignored, machine-local
 evidence. Transfer a needed bundle with its manifest, checksums, configuration, and provenance intact.
 
 ## Current source verification
+
+Focused verification for the precision-landing branch passed 17 ArduPilot
+configuration tests and 80 nested mission tests. The profile now preserves
+`LAND_SPD_MS=0.50`, fast-final-descent precision landing, and the promoted
+AutoTune gains. The nested mission now uses atomic camera observations, validates
+the live profile, fixes a five-frame median anchor, holds and reacquires in
+GUIDED, and retries acquisition once before failing closed. Runtime images have
+not yet been rebuilt and this is not flight evidence.
+
+The earlier cleanup-branch verification below remains historical context:
 
 The checkout-independent command was:
 

@@ -179,6 +179,45 @@ the mission, what points were awarded, and did the full evidence bundle validate
 Use [the latest documented failure](payload-timestamp-fix.md) as an example of
 150 points coexisting with a failed run.
 
+Precision-landing recovery records one compact JSON object per rejected
+observation and state transition. Inspect it without changing the bundle:
+
+```bash
+RUN_ID=replace-with-run-uuid
+rg -n 'PRECISION_LANDING ' "runs/$RUN_ID/logs"
+```
+
+The records distinguish tracking, GUIDED hold, reacquisition, the single search
+hover retry, touchdown, and deadline failure. During a GUIDED interval there
+must be no accepted landing-target output.
+
+Inspect the image-baked values recorded by the flight controller rather than
+assuming the host parameter file reached the container:
+
+```bash
+BIN="runs/$RUN_ID/ardupilot_sitl/logs/00000001.BIN"
+uv run --locked mavlogdump.py --types PARM --format csv "$BIN" \
+  | rg 'LAND_SPD_MS|PLND_|ATC_ANG_RLL_P|ATC_RAT_RLL_|ATC_RAT_PIT_|ATC_ACC_R_MAX'
+uv run --locked mavlogdump.py --types ATT,PL --format csv "$BIN" \
+  > "/tmp/$RUN_ID-att-pl.csv"
+```
+
+Compare the parameter rows with
+[descent.parm](../ardupilot_sitl/params/descent.parm). Pair each `ATT` sample to
+its nearest `PL` sample and select `TAcq=1`; the guarded-run acceptance limits
+are 5 degrees for desired roll/pitch magnitude and 8 degrees for actual
+roll/pitch magnitude. Keep the CSV as analysis scratch, not as a replacement
+for the original DataFlash log.
+
+Validate the two finalized videos and bag independently when diagnosing an
+otherwise passing score:
+
+```bash
+ffprobe -v error -show_streams -of json "runs/$RUN_ID/video/onboard.mp4"
+ffprobe -v error -show_streams -of json "runs/$RUN_ID/video/observer.mp4"
+ros2 bag info "runs/$RUN_ID/rosbag"
+```
+
 ### Independent competition acceptance
 
 ```bash

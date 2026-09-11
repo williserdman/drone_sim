@@ -68,6 +68,18 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - The hosted `drone.auto_attempt` currently imports FM1 and FM2 from `missions/`
   but imports FM3 from `drone/mock_mission.py`; do not assume
   `missions/fm3.py` is the deployed implementation.
+- That deployed `mock_mission.py` owns payload-marker acquisition and precision
+  landing recovery. It establishes a five-frame earth-fixed target anchor,
+  rejects stale or inconsistent camera/range observations before MAVLink,
+  holds the current position in GUIDED while reacquiring, and permits one
+  return to the 4.572 m search hover before failing closed. It validates the
+  live flight-controller profile before the first LAND and never disarms or
+  requests attachment without confirmed touchdown. The exact flight settings
+  are owned by [descent.parm](../ardupilot_sitl/params/descent.parm).
+- The nested camera API returns the marker vector and source frame timestamp as
+  one observation. `comp2026_host.py` supplies bounded, strictly newer frames;
+  camera silence therefore becomes an unhealthy observation instead of
+  blocking the mission thread.
 - Comp2026 startup separates process readiness from permission to enter the
   original mission. Sensor, service, heartbeat, and armability predicates are
   refreshed atomically and fail closed; downward range expires after 0.5
@@ -100,3 +112,9 @@ uv run --locked pytest companion/tests -q
 These host tests cover the pure policies, adapters, mission host, and runtime
 composition. They do not supply the nested checkout or prove a live flight; use
 the [runbook](../docs/runbook.md) for image and end-to-end procedures.
+
+When the separate checkout is present, also run:
+
+```bash
+PYTHONPATH=companion/comp2026/src uv run --locked pytest companion/comp2026/tests -q
+```
