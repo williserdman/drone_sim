@@ -124,7 +124,8 @@
         "qgc_actions_sha256",
         "runtime_policy",
         "runtime_policy_sha256",
-        "attempt_state_id"
+        "attempt_state_id",
+        "attempt_state_root"
       ],
       "properties": {
         "deployment_profile": {"const": "deployment-profile.json"},
@@ -135,8 +136,13 @@
         "qgc_actions_sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
         "runtime_policy": {"const": "qgc-runtime.json"},
         "runtime_policy_sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
-        "attempt_state_id": {"type": "string", "minLength": 71, "maxLength": 71, "pattern": "^sha256-[0-9a-f]{64}$"}
+        "attempt_state_id": {"type": "string", "minLength": 71, "maxLength": 71, "pattern": "^sha256-[0-9a-f]{64}$"},
+        "attempt_state_root": {"$ref": "#/$defs/absolute_canonical_path"}
       }
+    },
+    "absolute_canonical_path": {
+      "type": "string",
+      "pattern": "^/(?!/)(?!.*(?:/\\.\\.?)(?:/|$))(?!.*[\\u0000\\r\\n]).+$"
     },
     "simulation": {
       "type": "object",

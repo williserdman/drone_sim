@@ -33,6 +33,7 @@ class ResolvedQGCInputs:
     runtime_policy_path: Path
     runtime_policy_sha256: str
     attempt_state_id: str
+    attempt_state_root: Path
     course_sha256: str
     scenario_sha256: str
 
@@ -60,6 +61,19 @@ def _digest(value: object, label: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{label} must be a lowercase SHA-256")
     return value
+
+
+def canonical_attempt_state_root(value: object) -> Path:
+    if not isinstance(value, str) or "\0" in value or value.startswith("//"):
+        raise ValueError("attempt state root must be absolute and canonical")
+    path = Path(value)
+    try:
+        canonical = Path(os.path.abspath(value))
+    except (OSError, ValueError) as error:
+        raise ValueError("attempt state root must be absolute and canonical") from error
+    if not path.is_absolute() or path != canonical or path == Path("/"):
+        raise ValueError("attempt state root must be absolute and canonical")
+    return canonical
 
 
 def _read_regular_file(path: Path, *, label: str) -> _ReadRegularFile:
@@ -157,6 +171,7 @@ def resolved_qgc_inputs(
         *(_QGC_NAMES.keys()),
         *(f"{name}_sha256" for name in _QGC_NAMES),
         "attempt_state_id",
+        "attempt_state_root",
     }
     if not isinstance(raw, dict) or set(raw) != expected_fields:
         raise ValueError("resolved QGC configuration has missing or unknown fields")
@@ -183,6 +198,7 @@ def resolved_qgc_inputs(
     return ResolvedQGCInputs(
         **values,
         attempt_state_id=raw["attempt_state_id"],
+        attempt_state_root=canonical_attempt_state_root(raw["attempt_state_root"]),
         course_sha256=_digest(competition.get("course_sha256"), "course_sha256"),
         scenario_sha256=_digest(
             competition.get("scenario_sha256"), "scenario_sha256"

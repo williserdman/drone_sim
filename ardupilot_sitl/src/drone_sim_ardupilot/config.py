@@ -111,6 +111,8 @@ class RuntimeConfig:
             str(self.gazebo_port),
             "--serial0",
             f"tcp:{self.mavlink_port}",
+            "--serial1",
+            "tcp:5762",
             "--defaults",
             str(self.parameter_file),
             "--home",

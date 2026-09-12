@@ -171,8 +171,8 @@ def _write_competition_template(
     (tmp_path / "scenario.yaml").write_text(json.dumps(scenario), encoding="utf-8")
     document = _competition_document()
     if include_qgc:
-        for field, name in QGC_SOURCE_NAMES.items():
-            (tmp_path / name).write_bytes(QGC_PAYLOADS[field])
+        for field, payload in QGC_PAYLOADS.items():
+            (tmp_path / QGC_SOURCE_NAMES[field]).write_bytes(payload)
         document["qgc"] = dict(QGC_SOURCE_NAMES)
     return _write_template(tmp_path, document)
 
@@ -194,12 +194,17 @@ QGC_SOURCE_NAMES = {
     "listener_session": "operator-session.json",
     "qgc_actions": "operator-actions.json",
     "runtime_policy": "operator-policy.json",
+    "attempt_state_root": "/var/lib/drone-sim/operator-attempt-state",
 }
 QGC_ARTIFACT_NAMES = {
     "deployment_profile": "deployment-profile.json",
     "listener_session": "listener-session.json",
     "qgc_actions": "qgc-actions.json",
     "runtime_policy": "qgc-runtime.json",
+}
+QGC_RESOLVED_NAMES = {
+    **QGC_ARTIFACT_NAMES,
+    "attempt_state_root": QGC_SOURCE_NAMES["attempt_state_root"],
 }
 
 
@@ -214,7 +219,7 @@ def _schema_competition_document(schema_name: str) -> dict:
         for field, payload in QGC_PAYLOADS.items()
     }
     document["qgc"] = {
-        **QGC_ARTIFACT_NAMES,
+        **QGC_RESOLVED_NAMES,
         **digests,
         "attempt_state_id": "sha256-" + digests["deployment_profile_sha256"],
     }
@@ -227,8 +232,8 @@ def _write_qgc_template(tmp_path: Path, document: dict | None = None) -> Path:
     (tmp_path / "scenario.yaml").write_text(
         json.dumps(SCENARIO_DOCUMENT), encoding="utf-8"
     )
-    for field, name in QGC_SOURCE_NAMES.items():
-        (tmp_path / name).write_bytes(QGC_PAYLOADS[field])
+    for field, payload in QGC_PAYLOADS.items():
+        (tmp_path / QGC_SOURCE_NAMES[field]).write_bytes(payload)
     document = _competition_document() if document is None else document
     document["qgc"] = dict(QGC_SOURCE_NAMES)
     return _write_template(tmp_path, document)
@@ -243,8 +248,8 @@ def _write_security_qgc_template(
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "course.yaml").write_bytes((CONFIG / "course.yaml").read_bytes())
     (directory / "scenario.yaml").write_bytes((CONFIG / "scenario.yaml").read_bytes())
-    for field, name in QGC_SOURCE_NAMES.items():
-        (directory / name).write_bytes(payloads[field])
+    for field, payload in payloads.items():
+        (directory / QGC_SOURCE_NAMES[field]).write_bytes(payload)
     document = _competition_document()
     if not phase3:
         document.pop("runtime_profile")
@@ -277,11 +282,60 @@ def test_qgc_sources_resolve_to_exact_immutable_bytes_and_canonical_identity(tmp
     ).hexdigest()
 
 
+def test_qgc_attempt_state_root_round_trips_as_canonical_host_provenance(tmp_path):
+    state_root = (tmp_path / "external-attempt-state").resolve()
+    template = _write_qgc_template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    document["qgc"]["attempt_state_root"] = str(state_root)
+    template.write_text(json.dumps(document), encoding="utf-8")
+
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    written = write_resolved_config(tmp_path / "run", resolved)
+    loaded = load_run_config(written)
+    persisted = json.loads(written.read_text(encoding="utf-8"))
+
+    assert resolved.qgc is not None
+    assert resolved.qgc.attempt_state_root == state_root
+    assert loaded.qgc == resolved.qgc
+    assert persisted["qgc"]["attempt_state_root"] == str(state_root)
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["relative/state", "/tmp/../tmp/state", "//tmp/state"]
+)
+def test_qgc_attempt_state_root_rejects_noncanonical_or_nonabsolute_paths(
+    tmp_path, unsafe
+):
+    template = _write_qgc_template(tmp_path)
+    document = json.loads(template.read_text(encoding="utf-8"))
+    document["qgc"]["attempt_state_root"] = unsafe
+    template.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="attempt state root.*canonical and absolute"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_qgc_schemas_require_absolute_attempt_state_root(schema_name):
+    document = _schema_competition_document(schema_name)
+    document["qgc"]["attempt_state_root"] = "/var/lib/drone-sim/operator-attempt-state"
+    if schema_name == "run.schema.json":
+        _rewrite_resolved_checksum(document)
+
+    _load_validator(schema_name).validate(document)
+
+    document["qgc"].pop("attempt_state_root")
+    if schema_name == "run.schema.json":
+        _rewrite_resolved_checksum(document)
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
 def test_qgc_snapshot_uses_bytes_retained_during_template_load(tmp_path):
     template = _write_qgc_template(tmp_path)
     resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
-    for name in QGC_SOURCE_NAMES.values():
-        (tmp_path / name).write_bytes(b'{"changed":true}\n')
+    for field in QGC_PAYLOADS:
+        (tmp_path / QGC_SOURCE_NAMES[field]).write_bytes(b'{"changed":true}\n')
 
     written = write_resolved_config(tmp_path / "run", resolved)
 
@@ -289,14 +343,18 @@ def test_qgc_snapshot_uses_bytes_retained_during_template_load(tmp_path):
         assert (written.parent / QGC_ARTIFACT_NAMES[field]).read_bytes() == payload
 
 
-@pytest.mark.parametrize("unsafe", ["", ".", "../outside.json", "/outside.json"])
+@pytest.mark.parametrize(
+    "unsafe", ["", ".", "../outside.json", "/tmp/../outside.json"]
+)
 def test_qgc_template_rejects_unsafe_source_paths(tmp_path, unsafe):
     template = _write_qgc_template(tmp_path)
     document = json.loads(template.read_text(encoding="utf-8"))
     document["qgc"]["runtime_policy"] = unsafe
     template.write_text(json.dumps(document), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="safe relative path|relative path"):
+    with pytest.raises(
+        ValueError, match="safe relative path|relative path|canonical and absolute"
+    ):
         resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
 
 
@@ -487,11 +545,16 @@ def test_competition_templates_without_qgc_select_automatic_path():
 
 def test_qgc_sources_reject_non_object_payloads():
     with pytest.raises(ValueError, match="JSON object"):
-        QGCSources(b"[]", b"{}", b"{}", b"{}")
+        QGCSources(
+            b"[]", b"{}", b"{}", b"{}", Path("/var/lib/drone-sim/state")
+        )
 
 
 def test_qgc_sources_are_frozen():
-    sources = QGCSources(**QGC_PAYLOADS)
+    sources = QGCSources(
+        **QGC_PAYLOADS,
+        attempt_state_root=Path("/var/lib/drone-sim/state"),
+    )
 
     with pytest.raises(FrozenInstanceError):
         sources.runtime_policy = b"{}"
@@ -543,7 +606,7 @@ def test_config_schemas_accept_phase3_qgc_bundle(schema_name):
             for field, payload in QGC_PAYLOADS.items()
         }
         document["qgc"] = {
-            **QGC_ARTIFACT_NAMES,
+            **QGC_RESOLVED_NAMES,
             **digests,
             "attempt_state_id": "sha256-"
             + digests["deployment_profile_sha256"],
@@ -578,7 +641,7 @@ def test_qgc_schema_requires_explicit_phase3_profile(schema_name):
             run_id=str(FIXED_RUN_ID),
             output_root=str((ROOT / "../runs").resolve()),
             qgc={
-                **QGC_ARTIFACT_NAMES,
+                **QGC_RESOLVED_NAMES,
                 **digests,
                 "attempt_state_id": "sha256-"
                 + digests["deployment_profile_sha256"],
@@ -646,7 +709,7 @@ def test_config_schemas_reject_malformed_qgc_bundle(schema_name, change):
             for field, payload in QGC_PAYLOADS.items()
         }
         qgc = {
-            **QGC_ARTIFACT_NAMES,
+            **QGC_RESOLVED_NAMES,
             **digests,
             "attempt_state_id": "sha256-"
             + digests["deployment_profile_sha256"],
@@ -681,7 +744,7 @@ def test_resolved_schema_rejects_wrong_length_qgc_identities(field, malformation
         for name, payload in QGC_PAYLOADS.items()
     }
     document["qgc"] = {
-        **QGC_ARTIFACT_NAMES,
+        **QGC_RESOLVED_NAMES,
         **digests,
         "attempt_state_id": "sha256-" + digests["deployment_profile_sha256"],
     }
@@ -740,6 +803,7 @@ def test_qgc_json_objects_reject_nonstandard_numbers_and_duplicate_keys(
             QGC_PAYLOADS["listener_session"],
             QGC_PAYLOADS["qgc_actions"],
             payload,
+            Path("/var/lib/drone-sim/state"),
         )
 
 
@@ -1161,7 +1225,7 @@ def _resolved_phase2_qgc_document() -> dict:
         run_id=str(FIXED_RUN_ID),
         output_root=str((ROOT / "../runs").resolve()),
         qgc={
-            **QGC_ARTIFACT_NAMES,
+            **QGC_RESOLVED_NAMES,
             **digests,
             "attempt_state_id": "sha256-" + digests["deployment_profile_sha256"],
         },

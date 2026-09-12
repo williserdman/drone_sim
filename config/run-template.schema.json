@@ -103,17 +103,25 @@
     "qgc": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["deployment_profile", "listener_session", "qgc_actions", "runtime_policy"],
+      "required": ["deployment_profile", "listener_session", "qgc_actions", "runtime_policy", "attempt_state_root"],
       "properties": {
         "deployment_profile": {"$ref": "#/$defs/qgc_source_path"},
         "listener_session": {"$ref": "#/$defs/qgc_source_path"},
         "qgc_actions": {"$ref": "#/$defs/qgc_source_path"},
-        "runtime_policy": {"$ref": "#/$defs/qgc_source_path"}
+        "runtime_policy": {"$ref": "#/$defs/qgc_source_path"},
+        "attempt_state_root": {"$ref": "#/$defs/absolute_canonical_path"}
       }
     },
     "qgc_source_path": {
       "type": "string",
-      "pattern": "^(?!/)(?!\\./)(?!\\.?\\.?$)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\u0000\\r\\n]).+$"
+      "oneOf": [
+        {"pattern": "^(?!/)(?!\\./)(?!\\.?\\.?$)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\u0000\\r\\n]).+$"},
+        {"$ref": "#/$defs/absolute_canonical_path"}
+      ]
+    },
+    "absolute_canonical_path": {
+      "type": "string",
+      "pattern": "^/(?!/)(?!.*(?:/\\.\\.?)(?:/|$))(?!.*[\\u0000\\r\\n]).+$"
     },
     "simulation": {
       "type": "object",

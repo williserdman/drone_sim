@@ -46,8 +46,10 @@ LOG_BACKEND_TYPE 1
 LOG_DISARMED 1
 SERIAL0_PROTOCOL 2
 SERIAL0_BAUD 115
+# Dedicated QGC MAVLink 2 endpoint; the QGC Compose overlay publishes it on loopback.
+SERIAL1_PROTOCOL 2
 # Channel 0 passive pre-RUNNING SYS_STATUS keeps pre-arm readiness observable.
 SR0_EXT_STAT 1
 ATC_ANG_RLL_P 13.1974
-# Copter 4.5.7 stores this physical 2547.76 deg/s/s limit in cdeg/s/s.
-ATC_ACCEL_R_MAX 254776
+# Copter 4.5.7 caps this parameter at 180000 cdeg/s/s (1800 deg/s/s).
+ATC_ACCEL_R_MAX 180000

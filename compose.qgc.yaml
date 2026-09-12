@@ -2,7 +2,7 @@ services:
   companion-runtime:
     volumes:
       - type: bind
-        source: ${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}
+        source: ${SIM_QGC_ATTEMPT_STATE_SOURCE:?QGC host attempt state is required}
         target: ${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}
         read_only: false
         bind:
@@ -10,3 +10,5 @@ services:
   ardupilot-sitl:
     environment:
       SIM_LAUNCH_ORIGIN_JSON: ${SIM_LAUNCH_ORIGIN_JSON:?QGC launch origin is required}
+    ports:
+      - "127.0.0.1:5762:5762/tcp"

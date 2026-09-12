@@ -52,6 +52,7 @@ _TEMPLATE_QGC_FIELDS = {
     "listener_session",
     "qgc_actions",
     "runtime_policy",
+    "attempt_state_root",
 }
 _QGC_ARTIFACT_NAMES = {
     "deployment_profile": "deployment-profile.json",
@@ -61,7 +62,7 @@ _QGC_ARTIFACT_NAMES = {
 }
 _RESOLVED_QGC_FIELDS = {
     *_TEMPLATE_QGC_FIELDS,
-    *(f"{field}_sha256" for field in _TEMPLATE_QGC_FIELDS),
+    *(f"{field}_sha256" for field in _QGC_ARTIFACT_NAMES),
     "attempt_state_id",
 }
 CAMERA_INTERVAL_NS = 50_000_000
@@ -109,12 +110,20 @@ class QGCSources:
     listener_session: bytes
     qgc_actions: bytes
     runtime_policy: bytes
+    attempt_state_root: Path
 
     def __post_init__(self) -> None:
         for field, payload in self._payloads():
             if not isinstance(payload, bytes):
                 raise TypeError(f"QGC {field} payload must be immutable bytes")
             _validate_json_object(payload, field)
+        object.__setattr__(
+            self,
+            "attempt_state_root",
+            _canonical_absolute_path(
+                self.attempt_state_root, label="QGC attempt state root"
+            ),
+        )
 
     def _payloads(self) -> tuple[tuple[str, bytes], ...]:
         return tuple(
@@ -215,6 +224,23 @@ def _read_document_payload(payload: bytes, source: Path) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise ValueError("run configuration must be a JSON object")
     return document
+
+
+def _canonical_absolute_path(value: Path | str, *, label: str) -> Path:
+    try:
+        raw = os.fspath(value)
+    except TypeError as exc:
+        raise ValueError(f"{label} must be canonical and absolute") from exc
+    if not isinstance(raw, str) or "\0" in raw or raw.startswith("//"):
+        raise ValueError(f"{label} must be canonical and absolute")
+    path = Path(raw)
+    try:
+        canonical = Path(os.path.abspath(raw))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label} must be canonical and absolute") from exc
+    if not path.is_absolute() or path != canonical or path == Path("/"):
+        raise ValueError(f"{label} must be canonical and absolute")
+    return canonical
 
 
 def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
@@ -595,7 +621,21 @@ def _qgc_source(
 ) -> tuple[bytes, tuple[int, int]]:
     if not isinstance(value, str) or not value:
         raise ValueError(f"QGC {name} source must be a relative path")
-    relative = Path(value)
+    path = Path(value)
+    if path.is_absolute():
+        absolute = _canonical_absolute_path(path, label=f"QGC {name} source")
+        directory_fd = _open_directory_nofollow(
+            absolute.parent, f"QGC {name} source directory"
+        )
+        try:
+            payload, identity = _read_regular_relative(
+                directory_fd, Path(absolute.name), f"QGC {name} source"
+            )
+        finally:
+            os.close(directory_fd)
+        _validate_json_object(payload, name)
+        return payload, identity
+    relative = path
     if (
         value.startswith("./")
         or "\x00" in value
@@ -621,7 +661,7 @@ def _qgc_from_template(document: Any, template_fd: int) -> QGCSources:
     if any(not isinstance(document[field], str) for field in _QGC_ARTIFACT_NAMES):
         raise ValueError("QGC source paths must be strings")
     relatives = tuple(Path(document[field]) for field in _QGC_ARTIFACT_NAMES)
-    if len(set(relatives)) != len(_TEMPLATE_QGC_FIELDS):
+    if len(set(relatives)) != len(_QGC_ARTIFACT_NAMES):
         raise ValueError("QGC source paths must be pairwise distinct")
     payloads = {}
     identities = set()
@@ -631,7 +671,12 @@ def _qgc_from_template(document: Any, template_fd: int) -> QGCSources:
             raise ValueError("QGC source files must be pairwise distinct")
         identities.add(identity)
         payloads[field] = payload
-    return QGCSources(**payloads)
+    return QGCSources(
+        **payloads,
+        attempt_state_root=_canonical_absolute_path(
+            document["attempt_state_root"], label="QGC attempt state root"
+        ),
+    )
 
 
 def _qgc_document(qgc: QGCSources) -> dict[str, str]:
@@ -642,6 +687,7 @@ def _qgc_document(qgc: QGCSources) -> dict[str, str]:
         {f"{field}_sha256": qgc._digest(field) for field in _QGC_ARTIFACT_NAMES}
     )
     document["attempt_state_id"] = qgc.attempt_state_id
+    document["attempt_state_root"] = str(qgc.attempt_state_root)
     return document
 
 
@@ -676,7 +722,12 @@ def _qgc_from_resolved(document: Any, configuration_fd: int) -> QGCSources:
         if hashlib.sha256(payload).hexdigest() != digest:
             raise ValueError(f"{field}_sha256 does not match the copied configuration")
         payloads[field] = payload
-    qgc = QGCSources(**payloads)
+    qgc = QGCSources(
+        **payloads,
+        attempt_state_root=_canonical_absolute_path(
+            document["attempt_state_root"], label="QGC attempt state root"
+        ),
+    )
     if document["attempt_state_id"] != qgc.attempt_state_id:
         raise ValueError("attempt_state_id does not match the deployment profile digest")
     return qgc

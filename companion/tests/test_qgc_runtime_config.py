@@ -103,6 +103,7 @@ def prepared_config(tmp_path: Path) -> tuple[RuntimeConfig, Path, dict[str, obje
         runtime_policy_path=policy_path,
         runtime_policy_sha256=policy_digest,
         attempt_state_id=f"sha256-{profile_digest}",
+        attempt_state_root=state_root.resolve(),
         course_sha256=course_digest,
         scenario_sha256=scenario_digest,
     )
@@ -171,8 +172,55 @@ def _resolved_run_document(config: RuntimeConfig) -> dict[str, object]:
             "runtime_policy": "qgc-runtime.json",
             "runtime_policy_sha256": qgc.runtime_policy_sha256,
             "attempt_state_id": qgc.attempt_state_id,
+            "attempt_state_root": str(qgc.attempt_state_root),
         },
     }
+
+
+def test_resolved_qgc_records_but_does_not_use_canonical_host_state_root(
+    tmp_path: Path,
+) -> None:
+    config, state_root, _policy = prepared_config(tmp_path)
+    document = _resolved_run_document(config)
+    selected_host_root = (tmp_path / "host-only-state").resolve()
+    document["qgc"]["attempt_state_root"] = str(selected_host_root)  # type: ignore[index]
+    config_path = config.run_directory / "configuration/run.json"
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+    parsed = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": config.run_id,
+            "SIM_RUN_DIRECTORY": str(config.run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+    assert parsed.qgc is not None
+    assert parsed.qgc.attempt_state_root == selected_host_root
+
+    projection = qgc_runtime_config.project_qgc_runtime(
+        parsed,
+        epoch_seconds=time.time(),
+        test_only_state_root=state_root,
+    )
+    assert projection.attempt_state.state_directory.parent == state_root
+
+
+@pytest.mark.parametrize("unsafe", ["relative/state", "/tmp/../tmp/state", "//tmp/state"])
+def test_resolved_qgc_rejects_noncanonical_host_state_root(tmp_path: Path, unsafe: str) -> None:
+    config, _state_root, _policy = prepared_config(tmp_path)
+    document = _resolved_run_document(config)
+    document["qgc"]["attempt_state_root"] = unsafe  # type: ignore[index]
+    config_path = config.run_directory / "configuration/run.json"
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="attempt state root.*absolute and canonical"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": config.run_id,
+                "SIM_RUN_DIRECTORY": str(config.run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
 
 
 def _replace_competition_bytes(

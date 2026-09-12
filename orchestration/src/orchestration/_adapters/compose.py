@@ -27,6 +27,7 @@ _COMPANION_IMAGE = "drone-sim-companion-runtime:phase3"
 _COMP2026_REVISION_LABEL = "org.opencontainers.image.comp2026.revision"
 _QGC_STATE_ROOT = Path("/var/lib/drone-sim/comp2026-attempt-state")
 _QGC_STATE_ENV = "SIM_QGC_ATTEMPT_STATE_DIRECTORY"
+_QGC_STATE_SOURCE_ENV = "SIM_QGC_ATTEMPT_STATE_SOURCE"
 _QGC_ORIGIN_ENV = "SIM_LAUNCH_ORIGIN_JSON"
 _LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
 _DOCKER_DAEMON_ENV = frozenset(
@@ -287,6 +288,7 @@ class ComposeRuntime:
         environment.pop(_QGC_ORIGIN_ENV, None)
         if qgc is not None:
             environment.pop(_QGC_STATE_ENV, None)
+            environment.pop(_QGC_STATE_SOURCE_ENV, None)
             for name in _DOCKER_DAEMON_ENV:
                 environment.pop(name, None)
         self.environment = {
@@ -306,10 +308,13 @@ class ComposeRuntime:
             digest = hashlib.sha256(qgc.deployment_profile).hexdigest()
             self._qgc_state_id = f"sha256-{digest}"
             self._qgc_state_root = _canonical_absolute_path(
-                _QGC_STATE_ROOT
+                qgc.attempt_state_root
                 if test_only_qgc_state_root is None
                 else test_only_qgc_state_root,
                 label="attempt state root",
+            )
+            self.environment[_QGC_STATE_SOURCE_ENV] = str(
+                self._qgc_state_root / self._qgc_state_id
             )
             self.environment[_QGC_STATE_ENV] = str(_QGC_STATE_ROOT / self._qgc_state_id)
             self.environment[_QGC_ORIGIN_ENV] = _qgc_launch_origin(qgc.runtime_policy)

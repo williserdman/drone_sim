@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "purpose": "drone-sim-comp2026-full",
+  "backend": "drone-sim-ros-confirmed-v1",
+  "bindings": {
+    "course_sha256": "03a92d6b91363b5f7e9d607219574657f72f08cbe6d558a5ec4ca9ec65ab0774",
+    "scenario_sha256": "d45a2c605b2574696433fdf86e2d7e1b6928c3bcf86c2e531b5e10f76da1469b",
+    "ardupilot_commit": "2a3dc4b7bf2507120f7378a7b2fde73185e0c325"
+  },
+  "simulator_launch_origin": {
+    "latitude_deg": 37.4003371,
+    "longitude_deg": -122.0800351,
+    "amsl_m": 0,
+    "heading_deg": 0
+  },
+  "connection": {
+    "wait_ready": true,
+    "heartbeat_timeout_s": 12
+  },
+  "operating_site": {
+    "waypoint_tolerance_m": 2,
+    "home_position_tolerance_m": 3,
+    "home_altitude_tolerance_m": 4,
+    "minimum_recovery_agl_m": 5,
+    "maximum_recovery_agl_m": 30,
+    "operations": ["RETURN", "LOCAL_LAND"],
+    "evidence_reference": "03a92d6b91363b5f7e9d607219574657f72f08cbe6d558a5ec4ca9ec65ab0774",
+    "recovery_corridor_evidence": "03a92d6b91363b5f7e9d607219574657f72f08cbe6d558a5ec4ca9ec65ab0774"
+  },
+  "recovery": {
+    "timeout_s": 60,
+    "local_land_reserve_s": 10
+  },
+  "telemetry_startup": {
+    "command_ack_timeout_s": 4,
+    "collection_timeout_s": 8,
+    "home_request_timeout_s": 5,
+    "poll_interval_s": 0.25,
+    "minimum_distinct_samples": 3,
+    "maximum_interval_error_fraction": 0.2
+  },
+  "autopilot_version": {
+    "firmware_label": "ArduCopter 4.5.7",
+    "flight_sw_version": 67438591,
+    "flight_custom_version": "3261336463346237",
+    "evidence_reference": "2a3dc4b7bf2507120f7378a7b2fde73185e0c3252a3dc4b7bf2507120f7378a7"
+  },
+  "clearance_calibration": {
+    "beam_direction_body_frd": [0, 0, 1],
+    "measured_reference_offset_body_frd_m": [0, 0, 0.1],
+    "lidar_mounting_offset_already_applied": true,
+    "max_tilt_rad": 0.6,
+    "max_age_seconds": 0.5,
+    "max_skew_seconds": 0.1,
+    "locally_horizontal_planar_surface": true
+  },
+  "release_stability": {
+    "hold_seconds": 1,
+    "timeout_seconds": 8,
+    "max_horizontal_speed_m_s": 0.3,
+    "max_vertical_speed_m_s": 0.2,
+    "max_roll_rad": 0.4,
+    "max_pitch_rad": 0.4,
+    "horizontal_position_tolerance_m": 0.5,
+    "vertical_position_tolerance_m": 0.5,
+    "max_observation_skew_seconds": 0.1,
+    "max_observation_gap_seconds": 0.2,
+    "poll_interval_seconds": 0.05,
+    "waypoint_reissue_interval_seconds": 1.5
+  },
+  "fc_home_position_tolerance_m": 3,
+  "fc_home_altitude_tolerance_m": 4,
+  "idle_poll_s": 0.1,
+  "cleanup_timeout_s": 5,
+  "payload_delay_wall_timeout_s": 2,
+  "enabled_phases": [31000, 31001, 31002],
+  "vision": {
+    "marker_size_mm": 100,
+    "calibration_path": "gazebo_camera_calibration.json",
+    "mounting_path": "gazebo_camera_mounting.json",
+    "receipt_clock_ns": "shared_monotonic_ns",
+    "max_exposure_age_ns": 500000000
+  },
+  "precision": {
+    "clearance_calibration": "shared",
+    "clock": "shared_monotonic",
+    "max_exposure_age_s": 0.5,
+    "max_image_attitude_skew_s": 0.05,
+    "max_image_location_skew_s": 0.05,
+    "max_attitude_transport_latency_s": 0.05,
+    "max_location_transport_latency_s": 0.05,
+    "acquisition_timeout_s": 5,
+    "frame_timeout_s": 0.5,
+    "observation_period_s": 0.05,
+    "target_hover_height_m": 4.572,
+    "hover_tolerance_m": 0.2,
+    "centered_tolerance_m": 0.075,
+    "correction_gain": 0.5,
+    "cruise_altitude_m": 10,
+    "desired_drop_height_m": 10,
+    "landing_timeout_s": 60,
+    "target_loss_timeout_s": 0.5,
+    "reacquisition_count": 5
+  }
+}

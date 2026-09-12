@@ -93,6 +93,7 @@ def _qgc_sources(
     *,
     deployment_profile: bytes = b'{"profile":"alpha"}',
     origin: object = None,
+    attempt_state_root: Path = Path("/var/lib/drone-sim/operator-attempt-state"),
 ) -> QGCSources:
     if origin is None:
         origin = {
@@ -106,6 +107,7 @@ def _qgc_sources(
         listener_session=b"{}",
         qgc_actions=b"{}",
         runtime_policy=json.dumps({"simulator_launch_origin": origin}).encode(),
+        attempt_state_root=attempt_state_root,
     )
 
 
@@ -152,8 +154,11 @@ def _comp2026_template(tmp_path: Path, **updates) -> Path:
         "listener_session": "listener-session-source.json",
         "qgc_actions": "qgc-actions-source.json",
         "runtime_policy": "qgc-runtime-source.json",
+        "attempt_state_root": str((tmp_path / "attempt-state").resolve()),
     }
     for field, name in qgc_sources.items():
+        if field == "attempt_state_root":
+            continue
         (tmp_path / name).write_text(json.dumps({"fixture": field}), encoding="utf-8")
     return _template(
         tmp_path,
@@ -824,6 +829,7 @@ def test_qgc_compose_uses_owned_overlay_state_and_canonical_origin(tmp_path):
             "DOCKER_TLS": "1",
             "DOCKER_TLS_VERIFY": "1",
             "DOCKER_CERT_PATH": "/hostile/certs",
+            "SIM_QGC_ATTEMPT_STATE_SOURCE": "/tmp/hostile-source",
             "SIM_QGC_ATTEMPT_STATE_DIRECTORY": "/tmp/hostile-state",
             "SIM_LAUNCH_ORIGIN_JSON": '{"latitude_deg":0}',
         },
@@ -865,13 +871,53 @@ def test_qgc_compose_uses_owned_overlay_state_and_canonical_origin(tmp_path):
                     '{"amsl_m":48.25,"heading_deg":123.0,'
                     '"latitude_deg":52.1,"longitude_deg":13.2}'
                 ),
-                "SIM_QGC_ATTEMPT_STATE_DIRECTORY": str(production_state),
+                    "SIM_QGC_ATTEMPT_STATE_DIRECTORY": str(production_state),
+                    "SIM_QGC_ATTEMPT_STATE_SOURCE": str(
+                        state_root / qgc.attempt_state_id
+                    ),
                 "SIM_RUN_DIRECTORY": str(run_directory),
                 "SIM_RUN_ID": RUN_ID,
             },
             4.5,
         )
     ]
+
+
+def test_qgc_compose_binds_selected_host_state_to_fixed_container_state(tmp_path):
+    calls = []
+    state_root = (tmp_path / "selected-state").resolve()
+    qgc = _qgc_sources(attempt_state_root=state_root)
+    state = state_root / qgc.attempt_state_id
+    state.mkdir(parents=True)
+    (state / "attempt-ledger.json").write_bytes(b"{}")
+    (state / "attempt-ledger.json.lock").write_bytes(b"")
+
+    def runner(command, *, env, timeout):
+        calls.append((command, env.copy(), timeout))
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    run_directory = (tmp_path / "runs" / RUN_ID).resolve()
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_path=run_directory / "configuration/run.json",
+        topology=_topology("phase3"),
+        qgc=qgc,
+        runner=runner,
+        base_environment={
+            "SIM_QGC_ATTEMPT_STATE_SOURCE": "/hostile/source",
+            "SIM_QGC_ATTEMPT_STATE_DIRECTORY": "/hostile/target",
+        },
+    )
+
+    runtime.up(2)
+
+    environment = calls[0][1]
+    assert environment["SIM_QGC_ATTEMPT_STATE_SOURCE"] == str(state)
+    assert environment["SIM_QGC_ATTEMPT_STATE_DIRECTORY"] == str(
+        Path("/var/lib/drone-sim/comp2026-attempt-state") / qgc.attempt_state_id
+    )
 
 
 def test_qgc_direct_image_inspect_is_pinned_to_the_local_daemon(tmp_path):
@@ -1233,7 +1279,7 @@ def test_qgc_overlay_gives_state_only_to_companion_and_origin_only_to_sitl():
         "volumes": [
             {
                 "type": "bind",
-                "source": "${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}",
+                "source": "${SIM_QGC_ATTEMPT_STATE_SOURCE:?QGC host attempt state is required}",
                 "target": "${SIM_QGC_ATTEMPT_STATE_DIRECTORY:?QGC attempt state is required}",
                 "read_only": False,
                 "bind": {"create_host_path": False},
@@ -1243,7 +1289,8 @@ def test_qgc_overlay_gives_state_only_to_companion_and_origin_only_to_sitl():
     assert sitl == {
         "environment": {
             "SIM_LAUNCH_ORIGIN_JSON": "${SIM_LAUNCH_ORIGIN_JSON:?QGC launch origin is required}"
-        }
+        },
+        "ports": ["127.0.0.1:5762:5762/tcp"],
     }
 
 

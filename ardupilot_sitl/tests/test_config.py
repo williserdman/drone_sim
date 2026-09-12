@@ -49,6 +49,12 @@ def test_descent_parameters_enable_mavlink_precision_landing() -> None:
     assert parameters["PLND_TYPE"] == "1"
 
 
+def test_descent_parameters_enable_dedicated_qgc_mavlink_port() -> None:
+    parameters = _descent_parameters()
+
+    assert parameters["SERIAL1_PROTOCOL"] == "2"
+
+
 def test_descent_parameters_compensate_measured_simulator_camera_latency() -> None:
     assert float(_descent_parameters()["PLND_LAG"]) == pytest.approx(0.08)
 
@@ -74,7 +80,7 @@ def test_descent_parameters_use_promoted_roll_autotune_gains() -> None:
         "ATC_RAT_RLL_P": "0.0503722",
         "ATC_RAT_RLL_I": "0.0503722",
         "ATC_RAT_RLL_D": "0.000375",
-        "ATC_ACCEL_R_MAX": "254776",
+        "ATC_ACCEL_R_MAX": "180000",
     }
 
 
@@ -95,15 +101,14 @@ def test_descent_parameters_use_faster_final_landing_speed() -> None:
     assert final_descent_speed_mps == pytest.approx(0.50)
 
 
-def test_descent_parameters_preserve_roll_acceleration_in_target_units() -> None:
+def test_descent_parameters_cap_roll_acceleration_at_copter_457_metadata_limit() -> None:
     parameters = _descent_parameters()
 
     assert "ATC_ACC_R_MAX" not in parameters
-    roll_acceleration_degrees_per_second_squared = (
-        float(parameters["ATC_ACCEL_R_MAX"]) / 100.0
-    )
+    configured_centidegrees_per_second_squared = int(parameters["ATC_ACCEL_R_MAX"])
 
-    assert roll_acceleration_degrees_per_second_squared == pytest.approx(2547.76)
+    assert configured_centidegrees_per_second_squared == 180000
+    assert configured_centidegrees_per_second_squared <= 180000
 
 
 def test_descent_parameters_disable_precision_landing_final_slowdown() -> None:
@@ -210,6 +215,8 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "9002",
         "--serial0",
         "tcp:14550",
+        "--serial1",
+        "tcp:5762",
         "--defaults",
         "/opt/drone_sim/ardupilot/params/descent.parm",
         "--home",

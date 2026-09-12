@@ -46,6 +46,7 @@ from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
 from .qgc_runtime_config import (
     ResolvedQGCInputs,
+    canonical_attempt_state_root,
     project_qgc_runtime,
     read_resolved_run_document,
     resolved_qgc_inputs,
@@ -118,6 +119,7 @@ class RuntimeConfig:
             *artifact_names,
             *(f"{field}_sha256" for field in artifact_names),
             "attempt_state_id",
+            "attempt_state_root",
         }
         if not isinstance(raw, dict) or set(raw) != expected_fields:
             raise ValueError("resolved QGC configuration has missing or unknown fields")
@@ -135,6 +137,7 @@ class RuntimeConfig:
             "sha256-" + raw["deployment_profile_sha256"]
         ):
             raise ValueError("attempt_state_id does not match the deployment profile digest")
+        canonical_attempt_state_root(raw["attempt_state_root"])
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "RuntimeConfig":
