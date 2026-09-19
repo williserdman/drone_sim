@@ -71,6 +71,10 @@ class PayloadAuthority:
         self._payload_zones = dict(payload_zones)
         self._max_center_error_m = max_center_error_m
 
+    @property
+    def payload_ids(self) -> frozenset[int]:
+        return frozenset(self._payload_zones)
+
     def decide(self, world: PayloadWorld, request: PayloadRequest) -> PayloadDecision:
         if request.run_id != self.run_id:
             return PayloadDecision(False, "STALE_RUN", None)

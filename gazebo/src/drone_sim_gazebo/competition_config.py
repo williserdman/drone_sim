@@ -23,6 +23,7 @@ WAYPOINT_ROLES = {
     "WM": "manual_pickup",
 }
 PAYLOAD_COLORS = frozenset({"red", "yellow", "blue"})
+PROFILES = frozenset({"competition", "search_delivery"})
 
 
 class CompetitionConfigError(ValueError):
@@ -68,6 +69,12 @@ class RangeSensor:
 
 
 @dataclass(frozen=True)
+class ImageGeometry:
+    width_px: int
+    height_px: int
+
+
+@dataclass(frozen=True)
 class PayloadInteraction:
     pickup_max_center_error_m: float
     settle_position_tolerance_m: float
@@ -97,6 +104,14 @@ class MissionCycle:
 
 
 @dataclass(frozen=True)
+class SearchMission:
+    aruco_id: int
+    pickup_zone: str
+    drop_zone: str
+    search_start_xy: tuple[float, float]
+
+
+@dataclass(frozen=True)
 class ScenarioConfig:
     seed: int
     payload_capacity: int
@@ -105,8 +120,18 @@ class ScenarioConfig:
     interaction: PayloadInteraction
     payload_geometry: PayloadGeometry
     payloads: tuple[Payload, ...]
-    fm2_drop_zone: str
+    fm2_drop_zone: str | None
     fm3_cycles: tuple[MissionCycle, ...]
+    search_mission: SearchMission | None = None
+    observer_camera: ImageGeometry | None = None
+
+
+def _profile(value: object) -> str:
+    if value not in PROFILES:
+        raise CompetitionConfigError(
+            f"profile must be one of {sorted(PROFILES)}"
+        )
+    return str(value)
 
 
 def _read_mapping(path: Path) -> dict[str, Any]:
@@ -153,7 +178,8 @@ def world_xy(course: CourseConfig, name: str) -> tuple[float, float]:
     return point.x_m - home.x_m, point.y_m - home.y_m
 
 
-def load_course(path: Path) -> CourseConfig:
+def load_course(path: Path, *, profile: str = "competition") -> CourseConfig:
+    profile = _profile(profile)
     raw = _read_mapping(path)
     _require_keys(raw, {"schema_version", "units", "origin", "waypoints", "attempt"}, "course")
     if raw["schema_version"] != 1:
@@ -206,18 +232,49 @@ def load_course(path: Path) -> CourseConfig:
         transit_agl_m=_finite(attempt_raw["transit_agl_m"], "transit AGL"),
         release_agl_m=_finite(attempt_raw["release_agl_m"], "release AGL"),
     )
-    if attempt.duration_seconds != 600:
-        raise CompetitionConfigError("attempt duration_seconds must be 600")
+    expected_duration = 240 if profile == "search_delivery" else 600
+    if attempt.duration_seconds != expected_duration:
+        raise CompetitionConfigError(
+            f"attempt duration_seconds must be {expected_duration}"
+        )
     if min(attempt.acquisition_agl_m, attempt.transit_agl_m, attempt.release_agl_m) <= 0:
         raise CompetitionConfigError("attempt AGL values must be positive")
+    if profile == "search_delivery":
+        expected_waypoints = {
+            "H": (0.0, 0.0, 4.572, 4.572),
+            "L": (-8.0, 6.0, 4.572, 4.572),
+            "F2": (6.0, 20.0, 0.9144, 0.9144),
+            "WA": (18.0, 8.0, 6.096, 6.096),
+            "WM": (18.0, -8.0, 6.096, 6.096),
+        }
+        actual_waypoints = {
+            name: (point.x_m, point.y_m, point.width_m, point.height_m)
+            for name, point in waypoints.items()
+        }
+        if actual_waypoints != expected_waypoints:
+            raise CompetitionConfigError(
+                "search_delivery waypoints must match the approved compact course"
+            )
+        if (
+            attempt.acquisition_agl_m,
+            attempt.transit_agl_m,
+            attempt.release_agl_m,
+        ) != (4.572, 10.0, 10.0):
+            raise CompetitionConfigError(
+                "search_delivery attempt heights must match the approved profile"
+            )
     return CourseConfig(MappingProxyType(waypoints), attempt)
 
 
-def load_scenario(path: Path, course: CourseConfig) -> ScenarioConfig:
+def load_scenario(
+    path: Path,
+    course: CourseConfig,
+    *,
+    profile: str = "competition",
+) -> ScenarioConfig:
+    profile = _profile(profile)
     raw = _read_mapping(path)
-    _require_keys(
-        raw,
-        {
+    scenario_keys = {
             "schema_version",
             "seed",
             "vehicle",
@@ -227,9 +284,10 @@ def load_scenario(path: Path, course: CourseConfig) -> ScenarioConfig:
             "payload_geometry",
             "payloads",
             "mission",
-        },
-        "scenario",
-    )
+    }
+    if profile == "search_delivery":
+        scenario_keys.add("observer_camera")
+    _require_keys(raw, scenario_keys, "scenario")
     if raw["schema_version"] != 1:
         raise CompetitionConfigError("scenario schema_version must be 1")
 
@@ -267,6 +325,24 @@ def load_scenario(path: Path, course: CourseConfig) -> ScenarioConfig:
         raise CompetitionConfigError("competition camera must be 640x480 at 20 Hz")
     if not 0 < camera.horizontal_fov_rad < math.pi:
         raise CompetitionConfigError("camera horizontal FOV must be between zero and pi")
+
+    observer_camera: ImageGeometry | None = None
+    if profile == "search_delivery":
+        observer_raw = _mapping(raw["observer_camera"], "observer_camera")
+        _require_keys(observer_raw, {"width_px", "height_px"}, "observer_camera")
+        try:
+            observer_camera = ImageGeometry(
+                int(observer_raw["width_px"]),
+                int(observer_raw["height_px"]),
+            )
+        except (TypeError, ValueError) as error:
+            raise CompetitionConfigError(
+                "observer camera dimensions must be integers"
+            ) from error
+        if observer_camera != ImageGeometry(1280, 960):
+            raise CompetitionConfigError(
+                "search_delivery observer camera must be exactly 1280x960"
+            )
 
     range_raw = _mapping(raw["range_sensor"], "range_sensor")
     _require_keys(range_raw, {"update_rate_hz"}, "range_sensor")
@@ -315,6 +391,26 @@ def load_scenario(path: Path, course: CourseConfig) -> ScenarioConfig:
     )
     if geometry.marker_size_m > min(geometry.size_m[:2]):
         raise CompetitionConfigError("payload marker must fit on the top face")
+    if profile == "search_delivery" and (
+        camera
+        != Camera(
+            width_px=640,
+            height_px=480,
+            update_rate_hz=20.0,
+            horizontal_fov_rad=0.60,
+            body_position_m=(0.0, 0.0, -0.10),
+        )
+        or interaction.pickup_max_center_error_m != 0.075
+        or geometry
+        != PayloadGeometry(
+            size_m=(0.1524, 0.1524, 0.0508),
+            mass_kg=1.133980925,
+            marker_size_m=0.1,
+        )
+    ):
+        raise CompetitionConfigError(
+            "search_delivery sensors and payload must match the approved calibration"
+        )
 
     payload_raw = raw["payloads"]
     if not isinstance(payload_raw, list):
@@ -329,39 +425,76 @@ def load_scenario(path: Path, course: CourseConfig) -> ScenarioConfig:
             raise CompetitionConfigError("payload ArUco ID must be an integer") from error
         payloads.append(Payload(marker_id, str(entry["color"]).lower(), str(entry["initial"])))
     payload_semantics = [(item.aruco_id, item.color, item.initial) for item in payloads]
-    if payload_semantics != [
-        (2, "red", "attached"),
-        (3, "yellow", "WA"),
-        (4, "blue", "WM"),
-    ]:
-        raise CompetitionConfigError("payload inventory must be exact IDs 2, 3, and 4")
+    expected_payloads = (
+        [(3, "yellow", "WA")]
+        if profile == "search_delivery"
+        else [
+            (2, "red", "attached"),
+            (3, "yellow", "WA"),
+            (4, "blue", "WM"),
+        ]
+    )
+    if payload_semantics != expected_payloads:
+        raise CompetitionConfigError(
+            "search_delivery payload inventory must be exact ID 3"
+            if profile == "search_delivery"
+            else "payload inventory must be exact IDs 2, 3, and 4"
+        )
     if any(item.color not in PAYLOAD_COLORS for item in payloads):
         raise CompetitionConfigError("payload color is unsupported")
 
     mission_raw = _mapping(raw["mission"], "mission")
-    _require_keys(mission_raw, {"fm2_drop_zone", "fm3_cycles"}, "mission")
-    fm2_drop_zone = str(mission_raw["fm2_drop_zone"])
-    if fm2_drop_zone != "F2":
-        raise CompetitionConfigError("FM2 drop zone must be F2")
-    cycle_raw = mission_raw["fm3_cycles"]
-    if not isinstance(cycle_raw, list):
-        raise CompetitionConfigError("fm3_cycles must be a list")
     cycles: list[MissionCycle] = []
-    for index, value in enumerate(cycle_raw):
-        entry = _mapping(value, f"FM3 cycle {index}")
-        _require_keys(entry, {"pickup_zone", "color", "drop_zone"}, f"FM3 cycle {index}")
-        pickup = str(entry["pickup_zone"])
-        color = str(entry["color"]).lower()
-        drop = str(entry["drop_zone"])
-        matches = [item for item in payloads if item.initial == pickup and item.color == color]
-        if len(matches) != 1 or drop not in course.waypoints:
-            raise CompetitionConfigError(f"FM3 cycle {index} does not resolve one payload")
-        cycles.append(MissionCycle(pickup, color, matches[0].aruco_id, drop))
-    if [(item.pickup_zone, item.color, item.marker_id, item.drop_zone) for item in cycles] != [
-        ("WA", "yellow", 3, "F2"),
-        ("WM", "blue", 4, "F2"),
-    ]:
-        raise CompetitionConfigError("FM3 cycles must be WA/yellow then WM/blue")
+    search_mission: SearchMission | None = None
+    if profile == "search_delivery":
+        _require_keys(
+            mission_raw,
+            {"aruco_id", "pickup_zone", "drop_zone", "search_start"},
+            "mission",
+        )
+        search_start = _mapping(mission_raw["search_start"], "mission search_start")
+        _require_keys(search_start, {"x", "y"}, "mission search_start")
+        try:
+            mission_aruco_id = int(mission_raw["aruco_id"])
+        except (TypeError, ValueError) as error:
+            raise CompetitionConfigError("mission aruco_id must be an integer") from error
+        search_mission = SearchMission(
+            aruco_id=mission_aruco_id,
+            pickup_zone=str(mission_raw["pickup_zone"]),
+            drop_zone=str(mission_raw["drop_zone"]),
+            search_start_xy=(
+                _finite(search_start["x"], "mission search_start x"),
+                _finite(search_start["y"], "mission search_start y"),
+            ),
+        )
+        if search_mission != SearchMission(3, "WA", "F2", (16.0, 8.0)):
+            raise CompetitionConfigError(
+                "search_delivery mission must target payload 3 from WA to F2"
+            )
+        fm2_drop_zone = None
+    else:
+        _require_keys(mission_raw, {"fm2_drop_zone", "fm3_cycles"}, "mission")
+        fm2_drop_zone = str(mission_raw["fm2_drop_zone"])
+        if fm2_drop_zone != "F2":
+            raise CompetitionConfigError("FM2 drop zone must be F2")
+        cycle_raw = mission_raw["fm3_cycles"]
+        if not isinstance(cycle_raw, list):
+            raise CompetitionConfigError("fm3_cycles must be a list")
+        for index, value in enumerate(cycle_raw):
+            entry = _mapping(value, f"FM3 cycle {index}")
+            _require_keys(entry, {"pickup_zone", "color", "drop_zone"}, f"FM3 cycle {index}")
+            pickup = str(entry["pickup_zone"])
+            color = str(entry["color"]).lower()
+            drop = str(entry["drop_zone"])
+            matches = [item for item in payloads if item.initial == pickup and item.color == color]
+            if len(matches) != 1 or drop not in course.waypoints:
+                raise CompetitionConfigError(f"FM3 cycle {index} does not resolve one payload")
+            cycles.append(MissionCycle(pickup, color, matches[0].aruco_id, drop))
+        if [(item.pickup_zone, item.color, item.marker_id, item.drop_zone) for item in cycles] != [
+            ("WA", "yellow", 3, "F2"),
+            ("WM", "blue", 4, "F2"),
+        ]:
+            raise CompetitionConfigError("FM3 cycles must be WA/yellow then WM/blue")
 
     try:
         seed = int(raw["seed"])
@@ -377,4 +510,6 @@ def load_scenario(path: Path, course: CourseConfig) -> ScenarioConfig:
         payloads=tuple(payloads),
         fm2_drop_zone=fm2_drop_zone,
         fm3_cycles=tuple(cycles),
+        search_mission=search_mission,
+        observer_camera=observer_camera,
     )

@@ -8,6 +8,28 @@ verified on the isolated `fix/precision-landing-reacquire` parent and nested
 branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 600-second window with accepted terminal artifacts and a 150/150 score.
 
+## 2026-09-19 search-and-deliver mission
+
+Added [a 24-step search-and-deliver plan](../config/configured-search-delivery-run.json)
+with its own registered course, scenario, world, and initially empty vehicle.
+Only payload 3 is present. The route exercises turns, altitude changes, an
+approach 2 m west of the marker, camera search/landing, physical pickup, delivery,
+and home landing. Observer recording is 1280×960; onboard calibration remains
+640×480. Both streams use 20 Hz and a 240-second public window after 90 seconds
+of private warmup. See the [mission contract](../companion/README.md#search-and-deliver-contract)
+and [run procedure](runbook.md#search-and-deliver-mission).
+
+Source checks currently pass for companion (130), orchestration (472),
+Gazebo/electromagnet (393, with 14 ROS-dependent skips), and scorekeeper (79).
+An additional container run passed 35 Gazebo adapter/payload/asset tests with
+ROS dependencies available. Artifact checks passed 535 tests with 12 skips;
+the final combined scenario/runtime/acceptance subset passed 101 tests. A
+generator check caught the delivery pad extending beyond the initial ground
+plane; the generated 60 m plane now contains every pad. These checks establish implementation and wiring;
+the new flight and its larger observer recording are not yet verified.
+Build and flight evidence will be retained under
+`runs/builds/search-delivery-20260919-8i8xhceh/`.
+
 ## 2026-09-19 configured competition conversion
 
 The [competition config](../config/configured-competition-run.json) now expresses

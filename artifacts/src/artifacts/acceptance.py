@@ -422,6 +422,13 @@ def _validate_module_logs(
     _validate_production_log_evidence(documents_by_module, ruleset_id=ruleset_id)
 
 
+def _ruleset_id_for_configuration(configuration: Mapping[str, Any]) -> str:
+    scenario = configuration.get("scenario")
+    if scenario in {"competition_v1", "search_delivery_v1"}:
+        return scenario
+    return "descent_v1"
+
+
 def _validate_production_log_evidence(
     documents_by_module: dict[str, list[dict[str, Any]]],
     *,
@@ -521,12 +528,20 @@ def _production_semantic_check(
         raise BundleAcceptanceError(
             f"recording configuration is invalid: {error}"
         ) from error
-    video_validator = VideoValidator(
-        width_px=contract.width_px,
-        height_px=contract.height_px,
-        fps=contract.fps,
-    )
     for stream in ("onboard", "observer"):
+        video_validator = VideoValidator(
+            width_px=(
+                contract.width_px
+                if stream == "onboard"
+                else contract.observer_width_px
+            ),
+            height_px=(
+                contract.height_px
+                if stream == "onboard"
+                else contract.observer_height_px
+            ),
+            fps=contract.fps,
+        )
         result = video_validator.validate(
             run_directory,
             f"video/{stream}.mp4",
@@ -768,11 +783,7 @@ def inspect_phase3_semantics(
     ]:
         raise BundleAcceptanceError("manifest configuration provenance is invalid")
     _validate_manifest_inventory(directory, manifest)
-    ruleset_id = (
-        "competition_v1"
-        if configuration.get("scenario") == "competition_v1"
-        else "descent_v1"
-    )
+    ruleset_id = _ruleset_id_for_configuration(configuration)
     _validate_module_logs(directory, run_id, ruleset_id=ruleset_id)
     physical_evidence = semantic_check(
         directory,

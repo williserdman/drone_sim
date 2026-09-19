@@ -25,6 +25,19 @@ RUN_ID = "00000000-0000-4000-8000-000000000001"
 ROOT = Path(__file__).parents[2]
 
 
+def search_delivery_defaults() -> RuntimeConfig:
+    return RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=Path("/unused"),
+        config_path=Path("/unused/configuration/run.json"),
+        scenario="search_delivery_v1",
+        pickup_zones={"WA": runtime_node.PickupZone(18.0, 8.0, 6.096, 6.096)},
+        payload_zones={3: "WA"},
+        payload_capacity=1,
+        max_center_error_m=0.075,
+    )
+
+
 def test_ros_timestamp_conversion_is_exact() -> None:
     source = SimpleNamespace(sec=12, nanosec=345)
     destination = SimpleNamespace(sec=0, nanosec=0)
@@ -33,8 +46,17 @@ def test_ros_timestamp_conversion_is_exact() -> None:
     assert (destination.sec, destination.nanosec) == (12, 345)
 
 
-def test_competition_exposes_inert_scenario_event_type_for_exact_bag_inventory(
+@pytest.mark.parametrize(
+    ("config", "payload_ids"),
+    [
+        (RuntimeConfig.competition_defaults(RUN_ID), frozenset({2, 3, 4})),
+        (search_delivery_defaults(), frozenset({3})),
+    ],
+)
+def test_active_payload_runtime_uses_scenario_inventory_topics(
     monkeypatch: pytest.MonkeyPatch,
+    config: RuntimeConfig,
+    payload_ids: frozenset[int],
 ) -> None:
     class Publisher:
         def __init__(self) -> None:
@@ -49,13 +71,15 @@ def test_competition_exposes_inert_scenario_event_type_for_exact_bag_inventory(
         def __init__(self, _name: str) -> None:
             Node.last = self
             self.publishers: list[tuple[object, str, object, Publisher]] = []
+            self.subscriptions: list[str] = []
 
         def create_publisher(self, message_type, topic, qos):
             publisher = Publisher()
             self.publishers.append((message_type, topic, qos, publisher))
             return publisher
 
-        def create_subscription(self, *_args, **_kwargs):
+        def create_subscription(self, _message_type, topic, *_args, **_kwargs):
+            self.subscriptions.append(topic)
             return object()
 
         def create_service(self, *_args, **_kwargs):
@@ -152,7 +176,7 @@ def test_competition_exposes_inert_scenario_event_type_for_exact_bag_inventory(
     monkeypatch.setattr(runtime_node, "RuntimeProtocol", Protocol)
     monkeypatch.setattr(runtime_node.signal, "signal", lambda *_args: None)
 
-    assert _competition_main(RuntimeConfig.competition_defaults(RUN_ID)) == 0
+    assert _competition_main(config) == 0
 
     by_topic = {
         topic: (message_type, qos, publisher)
@@ -163,16 +187,29 @@ def test_competition_exposes_inert_scenario_event_type_for_exact_bag_inventory(
     assert qos.reliability == ReliabilityPolicy.RELIABLE
     assert qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
     assert publisher.messages == []
+    assert {
+        int(topic.removeprefix("/gazebo/private/payload_").removesuffix("/command"))
+        for topic in by_topic
+        if topic.endswith("/command")
+    } == payload_ids
+    assert {
+        int(topic.removeprefix("/gazebo/private/payload_").removesuffix("/result"))
+        for topic in Node.last.subscriptions
+        if topic.endswith("/result")
+    } == payload_ids
 
 
 def write_config(run_directory: Path, scenario: str) -> Path:
     configuration = run_directory / "configuration"
     configuration.mkdir(parents=True)
     document: dict[str, object] = {"run_id": RUN_ID, "scenario": scenario}
-    if scenario == "competition_v1":
-        (configuration / "course.yaml").write_bytes((ROOT / "config/course.yaml").read_bytes())
+    if scenario in {"competition_v1", "search_delivery_v1"}:
+        suffix = "-search-delivery" if scenario == "search_delivery_v1" else ""
+        (configuration / "course.yaml").write_bytes(
+            (ROOT / f"config/course{suffix}.yaml").read_bytes()
+        )
         (configuration / "scenario.yaml").write_bytes(
-            (ROOT / "config/scenario.yaml").read_bytes()
+            (ROOT / f"config/scenario{suffix}.yaml").read_bytes()
         )
         document["competition"] = {
             "course": "course.yaml",
@@ -204,6 +241,58 @@ def test_runtime_config_loads_authority_from_current_resolved_competition(
     assert config.pickup_zones["WA"].contains((-45.72, -9.144))
 
 
+def test_runtime_config_loads_only_search_delivery_payload_from_wa(
+    tmp_path: Path,
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_config(run_directory, "search_delivery_v1")
+
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+
+    assert config.scenario == "search_delivery_v1"
+    assert config.payload_zones == {3: "WA"}
+    assert set(config.pickup_zones) == {"WA"}
+    assert config.pickup_zones["WA"].contains((18.0, 8.0))
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("initial: WA", "initial: WM"),
+        (
+            "  - {aruco_id: 3, color: yellow, initial: WA}",
+            "  - {aruco_id: 3, color: yellow, initial: WA}\n"
+            "  - {aruco_id: 4, color: blue, initial: WM}",
+        ),
+    ],
+)
+def test_runtime_config_rejects_search_delivery_payload_contract_changes(
+    tmp_path: Path, old: str, new: str
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_config(run_directory, "search_delivery_v1")
+    scenario_path = config_path.parent / "scenario.yaml"
+    scenario_path.write_text(
+        scenario_path.read_text(encoding="utf-8").replace(old, new),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exact ID 3 at WA"):
+        RuntimeConfig.from_environment(
+            {
+                "SIM_RUN_ID": RUN_ID,
+                "SIM_RUN_DIRECTORY": str(run_directory),
+                "SIM_CONFIG_PATH": str(config_path),
+            }
+        )
+
+
 def test_runtime_config_keeps_descent_without_competition_sources(tmp_path: Path) -> None:
     run_directory = tmp_path / RUN_ID
     config_path = write_config(run_directory, "descent_v1")
@@ -215,6 +304,45 @@ def test_runtime_config_keeps_descent_without_competition_sources(tmp_path: Path
         }
     )
     assert config.scenario == "descent_v1"
+
+
+def test_search_delivery_gateway_uses_one_coherent_correlated_payload() -> None:
+    config = search_delivery_defaults()
+    commands: list[tuple[int, str]] = []
+    events: list[object] = []
+    gateway_ref: list[PayloadGateway] = []
+
+    def publish_command(marker: int, wire: str) -> None:
+        commands.append((marker, wire))
+        _, command_id, action = wire.split("|")
+        state = "attached" if action == "attach" else "detached"
+        gateway_ref[0].accept_result(
+            marker,
+            f"payload-result-v1|{command_id}|confirmed|{state}|OK",
+        )
+
+    gateway = PayloadGateway(
+        config.authority(),
+        publish_command=publish_command,
+        publish_event=events.append,
+    )
+    gateway_ref.append(gateway)
+    gateway.accept_vehicle(RUN_ID, 50_000_000, (18.0, 8.0), True)
+    gateway.accept_payload(RUN_ID, 50_000_000, 3, (18.0, 8.0), True, False)
+
+    assert gateway.ready(result_publishers=frozenset({3}), service_ready=True)
+    attach = gateway.execute(PayloadRequest(RUN_ID, 3, "attach", "search:attach:1"))
+    release = gateway.execute(PayloadRequest(RUN_ID, 3, "release", "search:release:1"))
+
+    assert (attach.accepted, release.accepted) == (True, True)
+    assert commands == [
+        (3, "payload-command-v1|search:attach:1|attach"),
+        (3, "payload-command-v1|search:release:1|detach"),
+    ]
+    assert [(event.command_id, event.state) for event in events] == [
+        ("search:attach:1", "attached"),
+        ("search:release:1", "detached"),
+    ]
 
 
 def test_physical_result_parser_accepts_only_exact_coordinator_wire() -> None:

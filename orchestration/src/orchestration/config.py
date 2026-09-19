@@ -1,7 +1,7 @@
 """Immutable operator-template resolution and run configuration persistence."""
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -40,7 +40,8 @@ _DEADLINE_FIELDS = (
     "startup_wall_seconds",
     "finalization_wall_seconds",
 )
-_RECORDING_FIELDS = {"width_px", "height_px", "fps", "encoding"}
+_RECORDING_REQUIRED_FIELDS = {"width_px", "height_px", "fps", "encoding"}
+_RECORDING_OPTIONAL_FIELDS = {"observer_width_px", "observer_height_px"}
 _SIMULATION_FIELDS = {
     "seed",
     "duration_sim_seconds",
@@ -100,6 +101,19 @@ class RecordingConfig:
     height_px: int
     fps: int
     encoding: str
+    observer_width_px: int | None = None
+    observer_height_px: int | None = None
+    _observer_dimensions_explicit: bool = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        has_width = self.observer_width_px is not None
+        has_height = self.observer_height_px is not None
+        if has_width != has_height:
+            raise ValueError("observer recording dimensions must be supplied together")
+        object.__setattr__(self, "_observer_dimensions_explicit", has_width)
+        if not has_width:
+            object.__setattr__(self, "observer_width_px", self.width_px)
+            object.__setattr__(self, "observer_height_px", self.height_px)
 
 
 @dataclass(frozen=True)
@@ -227,8 +241,16 @@ def _read_document_payload(payload: bytes, source: Path) -> dict[str, Any]:
 
 
 def _validate_recording(document: Any, *, scenario: str) -> RecordingConfig:
-    if not isinstance(document, dict) or set(document) != _RECORDING_FIELDS:
+    if (
+        not isinstance(document, dict)
+        or not _RECORDING_REQUIRED_FIELDS <= set(document)
+        or not set(document) <= _RECORDING_REQUIRED_FIELDS | _RECORDING_OPTIONAL_FIELDS
+    ):
         raise ValueError("recording configuration has missing or unknown keys")
+    has_observer_width = "observer_width_px" in document
+    has_observer_height = "observer_height_px" in document
+    if has_observer_width != has_observer_height:
+        raise ValueError("observer recording dimensions must be supplied together")
     width = document["width_px"]
     height = document["height_px"]
     if (
@@ -237,17 +259,47 @@ def _validate_recording(document: Any, *, scenario: str) -> RecordingConfig:
         or (width, height) not in {(320, 240), (640, 480)}
     ):
         raise ValueError("recording dimensions must be 320x240 or 640x480")
-    required_dimensions = (640, 480) if scenario == "competition_v1" else (320, 240)
+    required_dimensions = (
+        (640, 480)
+        if scenario in {"competition_v1", "search_delivery_v1"}
+        else (320, 240)
+    )
     if (width, height) != required_dimensions:
         raise ValueError(
             f"{scenario} recording dimensions must be exactly "
             f"{required_dimensions[0]}x{required_dimensions[1]}"
         )
+    observer_width = document.get("observer_width_px", width)
+    observer_height = document.get("observer_height_px", height)
+    if (
+        type(observer_width) is not int
+        or type(observer_height) is not int
+        or (observer_width, observer_height)
+        not in {(320, 240), (640, 480), (1280, 960)}
+    ):
+        raise ValueError(
+            "observer recording dimensions must be 320x240, 640x480, or 1280x960"
+        )
+    required_observer_dimensions = (
+        (1280, 960) if scenario == "search_delivery_v1" else required_dimensions
+    )
+    if (observer_width, observer_height) != required_observer_dimensions:
+        raise ValueError(
+            f"{scenario} observer recording dimensions must be exactly "
+            f"{required_observer_dimensions[0]}x{required_observer_dimensions[1]}"
+        )
     if document["fps"] != 20 or isinstance(document["fps"], bool):
         raise ValueError("recording fps must be 20")
     if document["encoding"] != "rgb8":
         raise ValueError("recording encoding must be rgb8")
-    return RecordingConfig(width, height, document["fps"], document["encoding"])
+    return RecordingConfig(
+        width,
+        height,
+        document["fps"],
+        document["encoding"],
+        document.get("observer_width_px"),
+        document.get("observer_height_px"),
+    )
 
 
 def _validate_simulation(document: Any) -> SimulationConfig:
@@ -412,6 +464,21 @@ def _validate_common(
             raise ValueError("competition_v1 requires vehicle iris_competition")
         if "competition" not in document:
             raise ValueError("competition_v1 requires competition source configuration")
+    if document["scenario"] == "search_delivery_v1":
+        if document["mission"] != "configured":
+            raise ValueError("search_delivery_v1 requires mission configured")
+        if runtime_profile != "phase3":
+            raise ValueError("search_delivery_v1 requires runtime_profile phase3")
+        if document["world"] != "search_delivery":
+            raise ValueError("search_delivery_v1 requires world search_delivery")
+        if document["vehicle"] != "iris_search_delivery":
+            raise ValueError(
+                "search_delivery_v1 requires vehicle iris_search_delivery"
+            )
+        if "competition" not in document:
+            raise ValueError(
+                "search_delivery_v1 requires competition source configuration"
+            )
     if document["mission"] == "comp2026_auto" and "qgc" not in document:
         raise ValueError("comp2026_auto requires QGC configuration")
     if document["mission"] == "configured":
@@ -426,6 +493,15 @@ def _validate_common(
         if "simulation" not in document:
             raise ValueError("phase3 requires simulation configuration")
         simulation = _validate_simulation(document["simulation"])
+        if document["scenario"] == "search_delivery_v1" and (
+            simulation.duration_ns != 240_000_000_000
+            or simulation.public_epoch_native_ns != 90_000_000_000
+            or simulation.target_real_time_factor != 1.0
+        ):
+            raise ValueError(
+                "search_delivery_v1 simulation must use 240 seconds, "
+                "90 seconds native warmup, and target real-time factor 1.0"
+            )
     else:
         if "simulation" in document:
             raise ValueError("simulation configuration requires runtime_profile phase3")
@@ -490,6 +566,65 @@ _EXPECTED_SCENARIO = {
         ],
     },
 }
+_EXPECTED_SEARCH_DELIVERY_COURSE = {
+    "schema_version": 1,
+    "units": "meters",
+    "origin": "H",
+    "waypoints": {
+        "H": {"x": 0.0, "y": 0.0, "width": 4.572, "height": 4.572, "role": "home"},
+        "L": {"x": -8.0, "y": 6.0, "width": 4.572, "height": 4.572, "role": "landing"},
+        "F2": {"x": 6.0, "y": 20.0, "width": 0.9144, "height": 0.9144, "role": "fire"},
+        "WA": {"x": 18.0, "y": 8.0, "width": 6.096, "height": 6.096, "role": "autonomous_pickup"},
+        "WM": {"x": 18.0, "y": -8.0, "width": 6.096, "height": 6.096, "role": "manual_pickup"},
+    },
+    "attempt": {
+        "duration_seconds": 240,
+        "acquisition_agl_m": 4.572,
+        "transit_agl_m": 10.0,
+        "release_agl_m": 10.0,
+    },
+}
+_EXPECTED_SEARCH_DELIVERY_SCENARIO = {
+    "schema_version": 1,
+    "seed": 2026,
+    "vehicle": {"payload_capacity": 1},
+    "camera": {
+        "width_px": 640,
+        "height_px": 480,
+        "update_rate_hz": 20,
+        "horizontal_fov_rad": 0.60,
+        "body_position_m": [0.0, 0.0, -0.10],
+    },
+    "observer_camera": {"width_px": 1280, "height_px": 960},
+    "range_sensor": {"update_rate_hz": 20},
+    "payload_interaction": {
+        "pickup_max_center_error_m": 0.075,
+        "settle_position_tolerance_m": 0.01,
+        "settle_time_s": 1.0,
+    },
+    "payload_geometry": {
+        "size_in": [6, 6, 2],
+        "mass_lb": 2.5,
+        "marker_size_mm": 100,
+    },
+    "payloads": [
+        {"aruco_id": 3, "color": "yellow", "initial": "WA"},
+    ],
+    "mission": {
+        "aruco_id": 3,
+        "pickup_zone": "WA",
+        "drop_zone": "F2",
+        "search_start": {"x": 16.0, "y": 8.0},
+    },
+}
+
+_EXPECTED_COMPETITION_INPUTS = {
+    "competition_v1": (_EXPECTED_COURSE, _EXPECTED_SCENARIO),
+    "search_delivery_v1": (
+        _EXPECTED_SEARCH_DELIVERY_COURSE,
+        _EXPECTED_SEARCH_DELIVERY_SCENARIO,
+    ),
+}
 
 
 def _require_source_file(path: Path) -> None:
@@ -535,7 +670,7 @@ def _template_source(template_dir: Path, value: Any, name: str) -> Path:
 
 
 def _competition_from_template(
-    document: Any, template_dir: Path
+    document: Any, template_dir: Path, scenario_name: str
 ) -> CompetitionSources | None:
     if document is None:
         return None
@@ -545,9 +680,12 @@ def _competition_from_template(
     scenario = _template_source(template_dir, document["scenario"], "scenario")
     _require_source_file(course)
     _require_source_file(scenario)
-    course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
+    expected_course, expected_scenario = _EXPECTED_COMPETITION_INPUTS.get(
+        scenario_name, (_EXPECTED_COURSE, _EXPECTED_SCENARIO)
+    )
+    course_payload = _read_validated_source(course, expected_course, "course")
     scenario_payload = _read_validated_source(
-        scenario, _EXPECTED_SCENARIO, "scenario"
+        scenario, expected_scenario, "scenario"
     )
     return CompetitionSources(
         course,
@@ -558,7 +696,7 @@ def _competition_from_template(
 
 
 def _competition_from_resolved(
-    document: Any, configuration_dir: Path
+    document: Any, configuration_dir: Path, scenario_name: str
 ) -> CompetitionSources | None:
     if document is None:
         return None
@@ -578,9 +716,12 @@ def _competition_from_resolved(
     scenario = configuration_dir / "scenario.yaml"
     _require_source_file(course)
     _require_source_file(scenario)
-    course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
+    expected_course, expected_scenario = _EXPECTED_COMPETITION_INPUTS.get(
+        scenario_name, (_EXPECTED_COURSE, _EXPECTED_SCENARIO)
+    )
+    course_payload = _read_validated_source(course, expected_course, "course")
     scenario_payload = _read_validated_source(
-        scenario, _EXPECTED_SCENARIO, "scenario"
+        scenario, expected_scenario, "scenario"
     )
     if hashlib.sha256(course_payload).hexdigest() != document["course_sha256"]:
         raise ValueError("course_sha256 does not match the copied configuration")
@@ -779,7 +920,9 @@ def _template_from_document(
         recording=recording,
         runtime_profile=runtime_profile,
         simulation=simulation,
-        competition=_competition_from_template(document.get("competition"), template_dir),
+        competition=_competition_from_template(
+            document.get("competition"), template_dir, document["scenario"]
+        ),
         qgc=(
             _qgc_from_template(document["qgc"], template_fd)
             if "qgc" in document
@@ -812,6 +955,11 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
         },
         "runtime_profile": config.runtime_profile,
     }
+    if config.recording._observer_dimensions_explicit:
+        document["recording"].update(
+            observer_width_px=config.recording.observer_width_px,
+            observer_height_px=config.recording.observer_height_px,
+        )
     if config.simulation is not None:
         document["simulation"] = {
             "seed": config.simulation.seed,
@@ -857,8 +1005,10 @@ def resolve_run_config(
         template = _template_from_document(document, source.parent, template_fd)
     finally:
         os.close(template_fd)
-    if template.scenario == "competition_v1" and template.competition is None:
-        raise ValueError("competition_v1 requires competition source configuration")
+    if template.scenario in _EXPECTED_COMPETITION_INPUTS and template.competition is None:
+        raise ValueError(
+            f"{template.scenario} requires competition source configuration"
+        )
     generated = run_id_factory()
     if not isinstance(generated, UUID):
         raise ValueError("run_id_factory must return a UUID")
@@ -926,9 +1076,13 @@ def load_run_config(path: str | Path) -> RunConfig:
         )
     finally:
         os.close(configuration_fd)
-    competition = _competition_from_resolved(document.get("competition"), source.parent)
-    if document["scenario"] == "competition_v1" and competition is None:
-        raise ValueError("competition_v1 requires competition source configuration")
+    competition = _competition_from_resolved(
+        document.get("competition"), source.parent, document["scenario"]
+    )
+    if document["scenario"] in _EXPECTED_COMPETITION_INPUTS and competition is None:
+        raise ValueError(
+            f"{document['scenario']} requires competition source configuration"
+        )
     return RunConfig(
         run_id=str(run_uuid),
         world=document["world"],

@@ -77,10 +77,15 @@ class GazeboTransport:
             "phase3_foundation",
             "vertical_descent",
             "competition_mission",
+            "search_delivery",
         }:
             raise ValueError("world_name must identify an approved local world")
         self._environment = dict(environment)
-        self._flight = world_name in {"vertical_descent", "competition_mission"}
+        self._flight = world_name in {
+            "vertical_descent",
+            "competition_mission",
+            "search_delivery",
+        }
         self._topics = gazebo_topics_for_world(world_name)
         self._control_service = f"/world/{world_name}/control"
         self._stats_topic = f"/world/{world_name}/stats"

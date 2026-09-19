@@ -156,7 +156,7 @@ def run_configured(config) -> int:
         node.create_subscription(RunState, "/simulation/run_state", state_callback,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                             durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        if getattr(config, 'scenario', 'descent_v1') == 'competition_v1':
+        if getattr(config, 'scenario', 'descent_v1') in {'competition_v1', 'search_delivery_v1'}:
             import yaml
             from .configured_io import CompetitionIO
             from .configured_competition import CompetitionOperations

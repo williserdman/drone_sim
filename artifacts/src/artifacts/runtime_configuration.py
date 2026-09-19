@@ -17,17 +17,29 @@ class RecordingRuntimeConfig:
     physical_run: bool = False
     width_px: int = 320
     height_px: int = 240
+    observer_width_px: int | None = None
+    observer_height_px: int | None = None
     fps: int = 20
     encoding: str = "rgb8"
     step_bytes: int = 960
     image_payload_bytes: int = 320 * 240 * 3
     ruleset_id: str = "descent_v1"
 
+    def __post_init__(self) -> None:
+        if self.observer_width_px is None:
+            object.__setattr__(self, "observer_width_px", self.width_px)
+        if self.observer_height_px is None:
+            object.__setattr__(self, "observer_height_px", self.height_px)
+
     @property
     def topics(self) -> tuple[str, ...]:
         from ._adapters.rosbag import BASE_TOPICS, COMPETITION_TOPICS
 
-        return COMPETITION_TOPICS if self.ruleset_id == "competition_v1" else BASE_TOPICS
+        return (
+            COMPETITION_TOPICS
+            if self.ruleset_id in {"competition_v1", "search_delivery_v1"}
+            else BASE_TOPICS
+        )
 
 
 def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRuntimeConfig:
@@ -46,10 +58,47 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
             "recording configuration must equal 320x240 or 640x480 rgb8 at 20 FPS"
         )
     width_px, height_px, fps, encoding = geometry
+    observer_width_px = recording.get("observer_width_px", width_px)
+    observer_height_px = recording.get("observer_height_px", height_px)
+    if (observer_width_px, observer_height_px) not in {
+        (320, 240),
+        (640, 480),
+        (1280, 960),
+    }:
+        raise ValueError(
+            "observer recording configuration must equal 320x240, 640x480, "
+            "or 1280x960 rgb8 at 20 FPS"
+        )
     ruleset_id = document.get("scenario", "descent_v1")
-    if ruleset_id == "competition_v1" and (width_px, height_px) != (640, 480):
-        raise ValueError("competition_v1 recording must equal 640x480 rgb8 at 20 FPS")
-    if ruleset_id != "competition_v1":
+    if ruleset_id in {"competition_v1", "search_delivery_v1"} and (
+        width_px,
+        height_px,
+    ) != (640, 480):
+        raise ValueError(f"{ruleset_id} recording must equal 640x480 rgb8 at 20 FPS")
+    if ruleset_id == "search_delivery_v1":
+        expected_selection = {
+            "runtime_profile": "phase3",
+            "world": "search_delivery",
+            "vehicle": "iris_search_delivery",
+            "mission": "configured",
+        }
+        for field, expected in expected_selection.items():
+            if document.get(field) != expected:
+                raise ValueError(f"search_delivery_v1 requires {field}={expected}")
+        if (observer_width_px, observer_height_px) != (1280, 960):
+            raise ValueError(
+                "search_delivery_v1 observer recording must equal 1280x960 rgb8 at 20 FPS"
+            )
+        simulation = document.get("simulation")
+        if not isinstance(simulation, Mapping):
+            raise ValueError("search_delivery_v1 requires simulation configuration")
+        if simulation.get("duration_sim_seconds") != 240:
+            raise ValueError("search_delivery_v1 duration_sim_seconds must equal 240")
+        if simulation.get("public_epoch_native_sim_seconds") != 90:
+            raise ValueError(
+                "search_delivery_v1 public_epoch_native_sim_seconds must equal 90"
+            )
+    if ruleset_id not in {"competition_v1", "search_delivery_v1"}:
         ruleset_id = "descent_v1"
 
     profile = document.get("runtime_profile", "phase2")
@@ -60,6 +109,8 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
             physical_run=False,
             width_px=width_px,
             height_px=height_px,
+            observer_width_px=observer_width_px,
+            observer_height_px=observer_height_px,
             fps=fps,
             encoding=encoding,
             step_bytes=width_px * 3,
@@ -92,6 +143,8 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
         physical_run=True,
         width_px=width_px,
         height_px=height_px,
+        observer_width_px=observer_width_px,
+        observer_height_px=observer_height_px,
         fps=fps,
         encoding=encoding,
         step_bytes=width_px * 3,

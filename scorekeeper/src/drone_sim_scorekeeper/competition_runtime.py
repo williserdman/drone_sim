@@ -16,6 +16,7 @@ from .competition import (
 )
 from .descent import GroundTruthSample
 from .models import ScoreEvent, ScoreResult
+from .search_delivery import SearchDeliveryScorer
 
 
 class CompetitionScorekeeperRuntime:
@@ -24,7 +25,7 @@ class CompetitionScorekeeperRuntime:
     def __init__(
         self,
         run_id: str,
-        scorer: CompetitionScorer,
+        scorer: CompetitionScorer | SearchDeliveryScorer,
         *,
         run_directory: Path | str,
         protocol: _RuntimeProtocol,
@@ -32,18 +33,28 @@ class CompetitionScorekeeperRuntime:
         flush: Callable[[], None],
     ) -> None:
         self.run_id = canonical_run_id(run_id)
-        if not isinstance(scorer, CompetitionScorer) or scorer.run_id != self.run_id:
+        if not isinstance(
+            scorer, (CompetitionScorer, SearchDeliveryScorer)
+        ) or scorer.run_id != self.run_id:
             raise ValueError("scorer must belong to the current run")
         self.scorer = scorer
         self._finalizer = _ScoreFinalizer(
             scorer, run_directory, protocol, publish, flush
         )
         self._ground_truth_timestamp_ns: int | None = None
+        payload_ids = (
+            (2, 3, 4)
+            if isinstance(scorer, CompetitionScorer)
+            else scorer.payload_ids
+        )
         self._payload_timestamps_ns: dict[int, int | None] = {
-            2: None,
-            3: None,
-            4: None,
+            payload_id: None for payload_id in payload_ids
         }
+        self._terminal_payload_event_id = (
+            4
+            if isinstance(scorer, CompetitionScorer)
+            else scorer.terminal_payload_event_id
+        )
         self._last_payload_event_id: int | None = None
         self._last_payload_event_timestamp_ns: int | None = None
         self._home_disarmed_timestamp_ns: int | None = None
@@ -70,7 +81,7 @@ class CompetitionScorekeeperRuntime:
                 for observed in self._payload_timestamps_ns.values()
             )
             and self._last_payload_event_id is not None
-            and self._last_payload_event_id >= 4
+            and self._last_payload_event_id >= self._terminal_payload_event_id
             and self._last_payload_event_timestamp_ns is not None
             and self._last_payload_event_timestamp_ns <= timestamp_ns
             and self._home_disarmed_timestamp_ns is not None

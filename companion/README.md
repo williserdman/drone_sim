@@ -38,10 +38,13 @@ fail before ROS or MAVLink resources are created.
 | `goto_waypoint` | `latitude_deg`, `longitude_deg`, positive `altitude_m`, optional positive `tolerance_m`, default 1; waits for fresh position within horizontal and altitude tolerances. |
 | `hold` | Positive `duration_sim_s`, shorter than the step timeout; leaves the existing GUIDED target in place while waiting. Requires armed GUIDED state throughout. |
 | `land` | Empty arguments; requires command acceptance followed by observed touchdown and disarm. Already landed/disarmed is a successful no-op. |
-| `precision_land` | Integer `aruco_id`; searches for the calibrated marker, centers, supplies landing targets and waits for touchdown/disarm. Requires `competition_v1`. |
-| `attach_payload` | `aruco_id: 3` or `4`; requires landed/disarmed state and confirms physical attachment. Requires `competition_v1`. |
-| `release_payload` | `aruco_id: 2`, `3` or `4`; waits for fresh clearance and stable position, then confirms physical detachment. Requires `competition_v1`. |
-| `mission_event` | `phase` and `state` from the competition event sequence; publishes the next phase boundary. Requires `competition_v1`. |
+| `precision_land` | Integer `aruco_id`; searches for the calibrated marker, centers, supplies landing targets and waits for touchdown/disarm. Requires a payload scenario. |
+| `attach_payload` | `aruco_id: 3` or `4`; requires landed/disarmed state and confirms physical attachment. Requires a payload scenario containing that ID. |
+| `release_payload` | `aruco_id: 2`, `3` or `4`; waits for fresh clearance and stable position, then confirms physical detachment. Requires a payload scenario containing that ID. |
+| `mission_event` | `phase` and `state` from the selected scenario's event sequence; publishes the next phase boundary. Requires a payload scenario. |
+
+Payload scenarios are `competition_v1` and `search_delivery_v1`. Both use the same
+camera, range, precision-landing, and payload operations.
 
 Waypoints use WGS84 latitude/longitude in degrees and altitude in metres above
 ArduPilot home, following
@@ -111,6 +114,25 @@ reliable transient-local delivery, increasing source timestamps, and a final
 bounded DDS acknowledgment check. The
 [competition I/O](src/drone_sim_companion/configured_io.py) preserves image and
 range source times; flight commands remain with the single MAVLink owner.
+
+### Search-and-deliver contract
+
+[configured-search-delivery-run.json](../config/configured-search-delivery-run.json)
+selects `search_delivery_v1`: an empty drone, one yellow payload (ArUco 3), and a
+compact course. Explicit waypoints add turns and altitude changes. The final
+approach stops 2 m west of the marker, outside the initial acquisition view;
+`precision_land(3)` must search, center, and land before attachment. The drone
+then lifts the payload, delivers from a stable 10 m hover, and lands home.
+The observer records at 1280 × 960; the onboard camera retains its calibrated
+640 × 480 geometry.
+
+The ordered events are SEARCH STARTED/COMPLETE, DELIVERY STARTED/COMPLETE,
+then HOME STARTED/DISARMED/COMPLETE. SEARCH completion follows confirmed
+attachment while landed/disarmed; DELIVERY completion follows release and a
+three-second settling hold. Success requires recorded search movement, physical
+pickup/lift, settled delivery, home landing, and valid artifacts. The scorer
+checks these from independent vehicle/payload evidence. The same fixed-sequence
+failure and sensor-observation behavior applies as for the competition plan.
 
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.

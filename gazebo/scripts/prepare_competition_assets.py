@@ -301,7 +301,13 @@ def _add_payload_joints(model: ET.Element, payloads: tuple[Payload, ...]) -> Non
         _text(detachable, "state_publish_period", "0.05")
 
 
-def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfig) -> None:
+def _write_vehicle(
+    source_root: Path,
+    output_root: Path,
+    scenario: ScenarioConfig,
+    *,
+    profile: str,
+) -> None:
     source = source_root / "models/iris_flight/model.sdf"
     try:
         root = ET.parse(source).getroot()
@@ -316,19 +322,26 @@ def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfi
     for control in model.findall("plugin[@name='ArduPilotPlugin']/control"):
         control.find("cmd_max").text = _fmt(PAYLOAD_MOTOR_TORQUE_NM)
         control.find("cmd_min").text = _fmt(-PAYLOAD_MOTOR_TORQUE_NM)
-    model.attrib["name"] = "iris_competition"
+    vehicle_name = (
+        "iris_search_delivery" if profile == "search_delivery" else "iris_competition"
+    )
+    model.attrib["name"] = vehicle_name
     _embed_competition_airframe(source_root, model)
     _add_sensor_link(model, scenario.camera, scenario.range_sensor)
     _add_hardpoint(model)
     _add_payload_joints(model, scenario.payloads)
     _add_pose_publisher(model)
 
-    target = output_root / "models/iris_competition"
+    target = output_root / f"models/{vehicle_name}"
     target.mkdir(parents=True, exist_ok=True)
     _write_xml(root, target / "model.sdf")
     _write_model_config(
         target / "model.config",
-        "Drone Sim Iris Competition",
+        (
+            "Drone Sim Iris Search Delivery"
+            if profile == "search_delivery"
+            else "Drone Sim Iris Competition"
+        ),
         "Validated Iris flight model with Comp2026 sensors and one payload hardpoint.",
     )
 
@@ -450,7 +463,13 @@ def _add_box(
     return node
 
 
-def _add_pad(world: ET.Element, course: CourseConfig, name: str) -> None:
+def _add_pad(
+    world: ET.Element,
+    course: CourseConfig,
+    name: str,
+    *,
+    add_boundary_walls: bool,
+) -> None:
     point = course.waypoints[name]
     x_m, y_m = world_xy(course, name)
     model = ET.SubElement(world, "model", {"name": f"pad_{name.lower()}"})
@@ -471,7 +490,7 @@ def _add_pad(world: ET.Element, course: CourseConfig, name: str) -> None:
         (0, 0, 0),
         ROLE_COLORS[point.role],
     )
-    if name not in {"H", "L"}:
+    if not add_boundary_walls or name not in {"H", "L"}:
         return
     wall_height = 0.3048
     wall_thickness = 0.04
@@ -493,9 +512,17 @@ def _add_pad(world: ET.Element, course: CourseConfig, name: str) -> None:
         )
 
 
-def _add_observer(world: ET.Element) -> None:
+def _add_observer(
+    world: ET.Element,
+    scenario: ScenarioConfig,
+    *,
+    profile: str,
+) -> None:
     model = ET.SubElement(world, "model", {"name": "observer_station"})
-    _text(model, "pose", "-76.2 -100 90 0 0.733 1.570796327")
+    if profile == "search_delivery":
+        _text(model, "pose", "9 10 30 0 1.570796327 0")
+    else:
+        _text(model, "pose", "-76.2 -100 90 0 0.733 1.570796327")
     _text(model, "static", "true")
     link = ET.SubElement(model, "link", {"name": "observer_link"})
     sensor = ET.SubElement(link, "sensor", {"name": "observer_camera", "type": "camera"})
@@ -505,24 +532,57 @@ def _add_observer(world: ET.Element) -> None:
     _text(sensor, "update_rate", "20")
     _text(sensor, "visualize", "false")
     camera = ET.SubElement(sensor, "camera")
-    _text(camera, "horizontal_fov", "1.5")
+    _text(
+        camera,
+        "horizontal_fov",
+        "0.761012754" if profile == "search_delivery" else "1.5",
+    )
     image = ET.SubElement(camera, "image")
-    _text(image, "width", "640")
-    _text(image, "height", "480")
+    observer_geometry = scenario.observer_camera
+    _text(
+        image,
+        "width",
+        observer_geometry.width_px if observer_geometry is not None else 640,
+    )
+    _text(
+        image,
+        "height",
+        observer_geometry.height_px if observer_geometry is not None else 480,
+    )
     _text(image, "format", "R8G8B8")
     clip = ET.SubElement(camera, "clip")
     _text(clip, "near", "0.1")
     _text(clip, "far", "300")
 
 
-def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConfig) -> Path:
+def _write_world(
+    output_root: Path,
+    course: CourseConfig,
+    scenario: ScenarioConfig,
+    *,
+    profile: str,
+) -> Path:
+    world_name = (
+        "search_delivery" if profile == "search_delivery" else "competition_mission"
+    )
+    vehicle_name = (
+        "iris_search_delivery" if profile == "search_delivery" else "iris_competition"
+    )
     root = ET.Element("sdf", {"version": "1.9"})
-    world = ET.SubElement(root, "world", {"name": "competition_mission"})
+    world = ET.SubElement(root, "world", {"name": world_name})
     _text(world, "gravity", "0 0 -9.8")
     physics = ET.SubElement(world, "physics", {"name": "competition_physics", "type": "ode"})
     _text(physics, "max_step_size", "0.001")
-    _text(physics, "real_time_factor", "0.25")
-    _text(physics, "real_time_update_rate", "250")
+    _text(
+        physics,
+        "real_time_factor",
+        "1.0" if profile == "search_delivery" else "0.25",
+    )
+    _text(
+        physics,
+        "real_time_update_rate",
+        "1000" if profile == "search_delivery" else "250",
+    )
     scene = ET.SubElement(world, "scene")
     _text(scene, "ambient", "0.4 0.4 0.4 1")
     _text(scene, "background", "0.7 0.8 0.9 1")
@@ -553,20 +613,26 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
     geometry = ET.SubElement(collision, "geometry")
     plane = ET.SubElement(geometry, "plane")
     _text(plane, "normal", "0 0 1")
-    _text(plane, "size", "400 100")
+    ground_size = "60 60" if profile == "search_delivery" else "400 100"
+    _text(plane, "size", ground_size)
     visual = ET.SubElement(ground_link, "visual", {"name": "ground_visual"})
     visual_geometry = ET.SubElement(visual, "geometry")
     visual_plane = ET.SubElement(visual_geometry, "plane")
     _text(visual_plane, "normal", "0 0 1")
-    _text(visual_plane, "size", "400 100")
+    _text(visual_plane, "size", ground_size)
     material = ET.SubElement(visual, "material")
     _text(material, "ambient", "0.25 0.25 0.25 1")
     _text(material, "diffuse", "0.35 0.35 0.35 1")
     for name in ("H", "L", "F2", "WA", "WM"):
-        _add_pad(world, course, name)
+        _add_pad(
+            world,
+            course,
+            name,
+            add_boundary_walls=profile == "competition",
+        )
 
     iris = ET.SubElement(world, "include")
-    _text(iris, "uri", "model://iris_competition")
+    _text(iris, "uri", f"model://{vehicle_name}")
     _text(iris, "name", "iris")
     _text(iris, "pose", f"0 0 {_fmt(VEHICLE_INITIAL_Z_M)} 0 0 0")
     _text(iris, "static", "false")
@@ -581,7 +647,7 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
     _text(odometry, "dimensions", "3")
     _text(odometry, "odom_publish_frequency", "20")
     _text(odometry, "odom_topic", "/gazebo/private/iris/odometry")
-    _text(odometry, "odom_frame", "competition_mission")
+    _text(odometry, "odom_frame", world_name)
     _text(odometry, "robot_base_frame", "iris")
 
     for payload in sorted(scenario.payloads, key=lambda item: item.aruco_id):
@@ -596,12 +662,13 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
             z_m = PAD_THICKNESS_M + scenario.payload_geometry.size_m[2] / 2
         _text(include, "pose", f"{_fmt(x_m)} {_fmt(y_m)} {_fmt(z_m)} 0 0 0")
 
-    _add_observer(world)
-    world_path = output_root / "worlds/competition_mission.sdf"
+    _add_observer(world, scenario, profile=profile)
+    world_path = output_root / f"worlds/{world_name}.sdf"
     _write_xml(root, world_path)
-    physics.find("real_time_factor").text = "1.0"
-    physics.find("real_time_update_rate").text = "1000"
-    _write_xml(root, output_root / "worlds/competition_mission_1x.sdf")
+    if profile == "competition":
+        physics.find("real_time_factor").text = "1.0"
+        physics.find("real_time_update_rate").text = "1000"
+        _write_xml(root, output_root / "worlds/competition_mission_1x.sdf")
     return world_path
 
 
@@ -611,15 +678,17 @@ def prepare_assets(
     course_path: Path,
     scenario_path: Path,
     *,
+    profile: str = "competition",
     generate_markers: bool = True,
 ) -> Path:
     """Generate only Comp2026-owned outputs from validated source resources."""
-    course = load_course(course_path)
-    scenario = load_scenario(scenario_path, course)
-    _write_vehicle(source_root, output_root, scenario)
-    for payload in sorted(scenario.payloads, key=lambda item: item.aruco_id):
-        _write_payload(output_root, payload, scenario.payload_geometry, generate_markers)
-    return _write_world(output_root, course, scenario)
+    course = load_course(course_path, profile=profile)
+    scenario = load_scenario(scenario_path, course, profile=profile)
+    _write_vehicle(source_root, output_root, scenario, profile=profile)
+    if profile == "competition":
+        for payload in sorted(scenario.payloads, key=lambda item: item.aruco_id):
+            _write_payload(output_root, payload, scenario.payload_geometry, generate_markers)
+    return _write_world(output_root, course, scenario, profile=profile)
 
 
 def main() -> int:
@@ -628,6 +697,11 @@ def main() -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--course", required=True, type=Path)
     parser.add_argument("--scenario", required=True, type=Path)
+    parser.add_argument(
+        "--profile",
+        choices=("competition", "search_delivery"),
+        default="competition",
+    )
     args = parser.parse_args()
     print(
         prepare_assets(
@@ -635,6 +709,7 @@ def main() -> int:
             args.output_root,
             args.course,
             args.scenario,
+            profile=args.profile,
         )
     )
     return 0

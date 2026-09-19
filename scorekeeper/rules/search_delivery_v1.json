@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "ruleset_id": "search_delivery_v1",
+  "sample_interval_ns": 50000000,
+  "search_staging_tolerance_m": 0.30,
+  "search_altitude_min_m": 4.25,
+  "search_altitude_max_m": 4.90,
+  "search_east_progress_m": 0.75,
+  "pickup_center_tolerance_m": 0.075,
+  "pickup_lift_m": 0.25,
+  "release_position_tolerance_m": 0.15,
+  "release_horizontal_speed_mps": 0.10,
+  "release_max_tilt_rad": 0.10,
+  "release_stability_ns": 2000000000,
+  "post_release_hold_ns": 3000000000,
+  "payload_settle_ns": 1000000000,
+  "release_agl_m": 10.0,
+  "deadline_ns": 240000000000,
+  "points": {
+    "search": 25.0,
+    "pickup": 25.0,
+    "delivery": 25.0,
+    "home": 25.0
+  }
+}

@@ -57,3 +57,21 @@ def test_failure_is_structured_before_quiescence() -> None:
     assert '"event":"scenario_failed"' in stream.getvalue()
     assert '"severity":"ERROR"' in stream.getvalue()
     assert protocol.quiescence == ["electromagnet"]
+
+
+def test_search_delivery_readiness_reports_physical_payload_authority() -> None:
+    stream = StringIO()
+    controller = ScenarioController(
+        run_id="00000000-0000-4000-8000-000000000001",
+        policy=None,
+        publish=lambda _event: None,
+        protocol=Protocol(),
+        stream=stream,
+        scenario="search_delivery_v1",
+    )
+
+    controller.mark_ready()
+
+    readiness = stream.getvalue()
+    assert '"scenario":"search_delivery_v1"' in readiness
+    assert '"physical_force":true' in readiness

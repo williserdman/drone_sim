@@ -24,9 +24,12 @@ from .competition_runtime import CompetitionScorekeeperRuntime
 from .descent import DescentScorer, GroundTruthSample, load_descent_rules
 from .models import ScoreEvent, ScoreResult
 from .runtime import ScenarioSample, ScorekeeperRuntime
+from .search_delivery import SearchDeliveryScorer, load_search_delivery_rules
 
 
 _FRAME_INTERVAL_NS = 50_000_000
+_SCENARIOS = {"descent_v1", "competition_v1", "search_delivery_v1"}
+_PHYSICAL_SCENARIOS = {"competition_v1", "search_delivery_v1"}
 
 
 @dataclass(frozen=True)
@@ -45,8 +48,8 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
     if not isinstance(document, dict) or document.get("run_id") != canonical:
         raise ValueError("resolved scorekeeper configuration has the wrong run_id")
     scenario = document.get("scenario")
-    if scenario not in {"descent_v1", "competition_v1"}:
-        raise ValueError("scorekeeper scenario must be descent_v1 or competition_v1")
+    if scenario not in _SCENARIOS:
+        raise ValueError("unsupported scorekeeper scenario")
     recording = document.get("recording")
     simulation = document.get("simulation")
     if (
@@ -76,7 +79,7 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
 
 def rules_path_for_scenario(path: Path | str, scenario: str) -> Path:
     """Resolve the selected ruleset beside either a rules directory or old file path."""
-    if scenario not in {"descent_v1", "competition_v1"}:
+    if scenario not in _SCENARIOS:
         raise ValueError("unsupported scoring scenario")
     configured = Path(path)
     directory = configured.parent if configured.suffix == ".json" else configured
@@ -336,7 +339,7 @@ def _create_ros_boundary(
         ScoreEvent,
     )
 
-    if scenario not in {"descent_v1", "competition_v1"}:
+    if scenario not in _SCENARIOS:
         raise ValueError("unsupported scoring scenario")
 
     node = Node("drone_sim_scorekeeper")
@@ -443,12 +446,12 @@ def _create_ros_boundary(
             depth=10,
             reliability=(
                 ReliabilityPolicy.RELIABLE
-                if scenario == "competition_v1"
+                if scenario in _PHYSICAL_SCENARIOS
                 else ReliabilityPolicy.BEST_EFFORT
             ),
         ),
     )
-    if scenario == "competition_v1":
+    if scenario in _PHYSICAL_SCENARIOS:
         node.create_subscription(
             PayloadState,
             "/simulation/payload_state",
@@ -536,6 +539,16 @@ def main() -> int:
         runtime: ScoreRuntimeProtocol = CompetitionScorekeeperRuntime(
             run_id,
             CompetitionScorer(run_id, rules),
+            run_directory=run_directory,
+            protocol=protocol,
+            publish=boundary.publish,
+            flush=boundary.flush,
+        )
+    elif settings.scenario == "search_delivery_v1":
+        rules = load_search_delivery_rules(rules_path)
+        runtime = CompetitionScorekeeperRuntime(
+            run_id,
+            SearchDeliveryScorer(run_id, rules),
             run_directory=run_directory,
             protocol=protocol,
             publish=boundary.publish,

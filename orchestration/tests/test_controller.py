@@ -157,7 +157,10 @@ def _comp2026_template(tmp_path: Path, **updates) -> Path:
         (tmp_path / name).write_text(json.dumps({"fixture": field}), encoding="utf-8")
     return _template(
         tmp_path,
+        world="competition_mission",
+        vehicle="iris_competition",
         mission="comp2026_auto",
+        scenario="competition_v1",
         recording={
             "width_px": 640,
             "height_px": 480,
@@ -166,6 +169,42 @@ def _comp2026_template(tmp_path: Path, **updates) -> Path:
         },
         competition={"course": "course.yaml", "scenario": "scenario.yaml"},
         qgc=qgc_sources,
+        **updates,
+    )
+
+
+def _search_delivery_template(tmp_path: Path, **updates) -> Path:
+    source_root = Path(__file__).parents[2] / "config"
+    course_name = "course-search-delivery.yaml"
+    scenario_name = "scenario-search-delivery.yaml"
+    (tmp_path / course_name).write_bytes((source_root / course_name).read_bytes())
+    (tmp_path / scenario_name).write_bytes((source_root / scenario_name).read_bytes())
+    return _template(
+        tmp_path,
+        world="search_delivery",
+        vehicle="iris_search_delivery",
+        mission="configured",
+        scenario="search_delivery_v1",
+        recording={
+            "width_px": 640,
+            "height_px": 480,
+            "observer_width_px": 1280,
+            "observer_height_px": 960,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+        runtime_profile="phase3",
+        simulation={
+            "seed": 2026,
+            "duration_sim_seconds": 240.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 1.0,
+        },
+        competition={"course": course_name, "scenario": scenario_name},
+        mission_plan={
+            "schema_version": 1,
+            "steps": [{"tool": "land", "args": {}}],
+        },
         **updates,
     )
 
@@ -1626,6 +1665,36 @@ def test_comp2026_controller_waits_for_runtime_before_mission_ready(tmp_path):
     assert trace.index("wait companion-ready") < trace.index("wait runtime-running")
     assert trace.index("wait runtime-running") < trace.index("wait mission-ready")
     assert trace.index("wait mission-ready") < trace.index("wait source-finished")
+
+
+def test_search_delivery_uses_scenario_score_provenance(tmp_path):
+    def replace_descent_details(path: Path) -> None:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["ruleset_id"] = "search_delivery_v1"
+        document["rule_results"] = []
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        score_mutator=replace_descent_details,
+        statuses=(
+            "artifacts-ready",
+            "gazebo-ready",
+            "ardupilot-ready",
+            "companion-ready",
+            "runtime-running",
+            "mission-ready",
+            "source-finished",
+            "mission-finished",
+            "score-finished",
+            "runtime-frozen",
+            "terminal-notified",
+        ),
+    )
+
+    result = controller.start(_search_delivery_template(tmp_path))
+
+    assert result.state == "COMPLETED"
 
 
 @pytest.mark.parametrize(

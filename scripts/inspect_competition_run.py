@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect one completed local competition run against current provenance."""
+"""Inspect a completed payload mission against its rules and current provenance."""
 
 from __future__ import annotations
 
@@ -83,15 +83,18 @@ def inspect_competition_run(
     runner: Callable[..., Any] = subprocess.run,
     bundle_inspector: Callable[..., Any] = inspect_phase3_bundle,
     expected_image_digests: Mapping[str, str] | None = None,
+    ruleset_id: str = "competition_v1",
 ) -> dict[str, object]:
     """Return the canonical accepted report without modifying run evidence."""
+    if ruleset_id not in {"competition_v1", "search_delivery_v1"}:
+        raise ValueError("unsupported payload mission ruleset")
     sources = (
         _source(runner, "drone_sim", PROJECT_ROOT),
         _source(runner, "comp2026", COMP2026_ROOT),
     )
     report = bundle_inspector(
         Path(run_directory).resolve(),
-        rules_path=RULES_PATH,
+        rules_path=RULES_PATH.with_name(f"{ruleset_id}.json"),
         expected_source_revisions={name: revision for name, revision, _dirty in sources},
         expected_source_dirty={name: dirty for name, _revision, dirty in sources},
         expected_image_digests=(
@@ -108,6 +111,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_directory", type=Path)
     parser.add_argument("--expected-image-digests", type=Path)
+    parser.add_argument("--ruleset", choices=("competition_v1", "search_delivery_v1"), default="competition_v1")
     arguments = parser.parse_args()
     try:
         expected_image_digests = None
@@ -122,6 +126,7 @@ def main() -> int:
         report = inspect_competition_run(
             arguments.run_directory,
             expected_image_digests=expected_image_digests,
+            ruleset_id=arguments.ruleset,
         )
     except Exception as error:
         print(

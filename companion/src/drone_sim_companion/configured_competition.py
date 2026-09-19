@@ -32,7 +32,7 @@ class CompetitionOperations(DroneOperations):
         assert self._active is not None
         if tool == 'mission_event':
             if ((args['phase'] == 'HOME' and args['state'] != 'STARTED')
-                    or (args['phase'] == 'FM1' and args['state'] == 'COMPLETE')):
+                    or (args['phase'] in {'FM1', 'SEARCH'} and args['state'] == 'COMPLETE')):
                 if not self._fresh('landed', 'armed') or not self._values.get('landed') or self._values.get('armed'):
                     raise RuntimeError('landing phase completion requires observed landing and disarm')
             return

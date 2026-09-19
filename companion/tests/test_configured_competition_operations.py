@@ -94,3 +94,14 @@ def test_phase_events_wait_for_distinct_simulation_timestamps():
     assert ops.operation_status(second).state == 'running'
     observe(ops, 50_000_000, armed=False, landed=True)
     assert io.events == [('FM1', 'STARTED', 0), ('FM1', 'COMPLETE', 50_000_000)]
+
+
+@pytest.mark.parametrize('armed,landed,expected', [(True, False, 'failed'), (False, True, 'succeeded')])
+def test_search_completion_requires_observed_landing_and_disarm(armed, landed, expected):
+    from drone_sim_companion.configured_competition import CompetitionOperations
+    io = IO()
+    ops = CompetitionOperations(Vehicle(), io)
+    observe(ops, 0, armed=armed, landed=landed)
+    identifier = ops.start('mission_event', {'phase': 'SEARCH', 'state': 'COMPLETE'})
+    assert ops.operation_status(identifier).state == expected
+    assert len(io.events) == (1 if expected == 'succeeded' else 0)

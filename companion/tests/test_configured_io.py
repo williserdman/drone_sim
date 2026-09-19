@@ -191,13 +191,13 @@ def dependencies():
     )
 
 
-def make_io(monkeypatch):
+def make_io(monkeypatch, *, scenario="competition_v1"):
     monkeypatch.setattr(configured_io, "_load_live_dependencies", dependencies)
     node = FakeNode()
     config = SimpleNamespace(
         run_id=RUN_ID,
         mission="configured",
-        scenario="competition_v1",
+        scenario=scenario,
         scenario_path=Path("/unused/scenario.yaml"),
         finalization_wall_seconds=3.0,
     )
@@ -314,4 +314,23 @@ def test_flush_rejects_incomplete_event_grammar(monkeypatch):
     for timestamp_ns, (phase, state) in enumerate(MISSION_SEQUENCE, start=1):
         bridge.publish_event(phase, state, timestamp_ns)
     bridge.flush()
+    assert node.publisher.ack_timeouts == [3.0]
+
+
+def test_search_delivery_requires_its_seven_events_before_flush(monkeypatch):
+    bridge, node = make_io(monkeypatch, scenario="search_delivery_v1")
+    with pytest.raises(ValueError, match="next mission event"):
+        bridge.publish_event("FM1", "STARTED", 1)
+    sequence = (
+        ("SEARCH", "STARTED"), ("SEARCH", "COMPLETE"),
+        ("DELIVERY", "STARTED"), ("DELIVERY", "COMPLETE"),
+        ("HOME", "STARTED"), ("HOME", "DISARMED"), ("HOME", "COMPLETE"),
+    )
+    for timestamp, event in enumerate(sequence[:-1], start=1):
+        bridge.publish_event(*event, timestamp)
+    with pytest.raises(RuntimeError, match="sequence is incomplete"):
+        bridge.flush()
+    bridge.publish_event(*sequence[-1], 7)
+    bridge.flush()
+    assert [(msg.phase, msg.state) for msg in node.publisher.messages] == list(sequence)
     assert node.publisher.ack_timeouts == [3.0]

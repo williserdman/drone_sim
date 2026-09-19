@@ -28,6 +28,7 @@ SUPPORTED_RECORDING_GEOMETRIES = frozenset(
     {
         (320, 240, 20, "rgb8"),
         (640, 480, 20, "rgb8"),
+        (1280, 960, 20, "rgb8"),
     }
 )
 STREAMS = ("onboard", "observer")
@@ -562,7 +563,8 @@ class VideoStreamRecorder:
             raise ValueError("expected_frame_count must be a positive integer")
         if (width_px, height_px, fps, encoding) not in SUPPORTED_RECORDING_GEOMETRIES:
             raise ValueError(
-                "recording configuration must equal 320x240 or 640x480 rgb8 at 20 FPS"
+                "recording configuration must equal 320x240, 640x480, or 1280x960 "
+                "rgb8 at 20 FPS"
             )
         self.run_directory = Path(run_directory).resolve()
         self.run_id = run_id

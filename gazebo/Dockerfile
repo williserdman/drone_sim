@@ -120,6 +120,7 @@ RUN mkdir -p /opt/drone_sim/gazebo /etc/drone_sim \
     && cp /opt/drone_sim/source/config/bridge.yaml /etc/drone_sim/gazebo-bridge.yaml \
     && cp /opt/drone_sim/source/config/bridge-flight.yaml /etc/drone_sim/gazebo-bridge-flight.yaml \
     && cp /opt/drone_sim/source/config/bridge-competition.yaml /etc/drone_sim/gazebo-bridge-competition.yaml \
+    && cp /opt/drone_sim/source/config/bridge-search-delivery.yaml /etc/drone_sim/gazebo-bridge-search-delivery.yaml \
     && python3 -m venv --system-site-packages /opt/drone_sim/venv \
     && /opt/drone_sim/venv/bin/pip install \
         --no-cache-dir \

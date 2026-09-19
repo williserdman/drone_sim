@@ -784,7 +784,11 @@ class RosbagValidator:
             or any(character not in "0123456789abcdef" for character in config_sha256)
         ):
             raise ValueError("physical_run requires a lowercase config SHA-256")
-        if ruleset_id not in {"descent_v1", "competition_v1"}:
+        if ruleset_id not in {
+            "descent_v1",
+            "competition_v1",
+            "search_delivery_v1",
+        }:
             raise ValueError("ruleset_id is unsupported")
         if (
             type(width_px) is not int
@@ -802,7 +806,7 @@ class RosbagValidator:
         self.height_px = height_px
         self.step_bytes = width_px * 3
         self.image_payload_bytes = width_px * height_px * 3
-        if ruleset_id == "competition_v1":
+        if ruleset_id in {"competition_v1", "search_delivery_v1"}:
             self.topics = COMPETITION_TOPICS
             self.topic_types = COMPETITION_TOPIC_TYPES
         else:
@@ -900,7 +904,7 @@ class RosbagValidator:
                     f"rosbag topic {topic} has wrong type {topic_metadata.message_type!r}",
                 )
             if topic_metadata.message_count <= 0 and not (
-                self.ruleset_id == "competition_v1"
+                self.ruleset_id in {"competition_v1", "search_delivery_v1"}
                 and topic == "/simulation/scenario_events"
             ):
                 return self._result(
@@ -1145,7 +1149,7 @@ class RosbagValidator:
                     "descent.stable_contact",
                     "score.finalized",
                 )
-            else:
+            elif self.ruleset_id == "competition_v1":
                 expected_event_types = (
                     "competition.fm1_landing",
                     "competition.fm1_autonomy",
@@ -1154,6 +1158,20 @@ class RosbagValidator:
                     "competition.payload_3",
                     "competition.fm3_autonomy",
                     "competition.payload_4",
+                    "score.finalized",
+                )
+            else:
+                if scenario_events:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag search delivery must not contain descent scenario events",
+                    )
+                expected_event_types = (
+                    "search_delivery.search",
+                    "search_delivery.pickup",
+                    "search_delivery.delivery",
+                    "search_delivery.home",
                     "score.finalized",
                 )
             if len(score_events) != len(expected_event_types) or any(
@@ -1173,7 +1191,7 @@ class RosbagValidator:
                     "rosbag physical score events are not exactly ordered and contiguous",
                 )
 
-            if self.ruleset_id == "competition_v1":
+            if self.ruleset_id in {"competition_v1", "search_delivery_v1"}:
                 payload_by_timestamp: dict[int, list[int]] = {}
                 for sample in payload_states:
                     payload_by_timestamp.setdefault(sample.sim_timestamp_ns, []).append(
@@ -1183,14 +1201,19 @@ class RosbagValidator:
                 if (
                     sorted(payload_by_timestamp) != expected_grid
                     or any(
-                        sorted(markers) != [2, 3, 4]
+                        sorted(markers)
+                        != (
+                            [2, 3, 4]
+                            if self.ruleset_id == "competition_v1"
+                            else [3]
+                        )
                         for markers in payload_by_timestamp.values()
                     )
                 ):
                     return self._result(
                         filesystem,
                         ValidationStatus.INVALID,
-                        "rosbag competition payload grid must contain IDs 2, 3, and 4",
+                        "rosbag physical payload grid has the wrong marker inventory",
                     )
                 if timestamps["/competition/range/downward"] != expected_grid:
                     return self._result(

@@ -279,6 +279,35 @@ def test_competition_geometry_controls_ffmpeg_and_raw_frame_contract(tmp_path):
     assert factory.process.stdin.getvalue() == frame
 
 
+def test_search_observer_geometry_controls_ffmpeg_and_raw_frame_contract(tmp_path):
+    """The search observer stream must accept its 1280x960 image contract."""
+    factory = FakeProcessFactory()
+    recorder = _recorder(
+        tmp_path,
+        stream="observer",
+        process_factory=factory,
+        width_px=1280,
+        height_px=960,
+        fps=20,
+        encoding="rgb8",
+    )
+    frame = bytes(1280 * 960 * 3)
+
+    assert recorder.command()[10:14] == (
+        "-video_size",
+        "1280x960",
+        "-framerate",
+        "20",
+    )
+
+    recorder.accept_image(
+        _image(50_000_000, width=1280, height=960, step=3_840, data=frame)
+    )
+    recorder.accept_metadata(_metadata(50_000_000, frame_id=0, stream="observer"))
+
+    assert factory.process.stdin.getvalue() == frame
+
+
 def test_competition_geometry_finalizes_with_its_configured_dimensions(tmp_path):
     runner = FakeCommandRunner(
         {

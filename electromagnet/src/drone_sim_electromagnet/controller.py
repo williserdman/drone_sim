@@ -104,6 +104,7 @@ class PayloadGateway:
         if confirmation_timeout_seconds <= 0:
             raise ValueError("confirmation timeout must be positive")
         self._authority = authority
+        self._payload_ids = authority.payload_ids
         self._publish_command = publish_command
         self._publish_event = publish_event
         self._confirmation_timeout_seconds = confirmation_timeout_seconds
@@ -111,7 +112,7 @@ class PayloadGateway:
         self._payloads: dict[int, _PayloadFact] = {}
         self._vehicle_history: dict[int, _VehicleFact] = {}
         self._payload_histories: dict[int, dict[int, _PayloadFact]] = {
-            marker: {} for marker in (2, 3, 4)
+            marker: {} for marker in self._payload_ids
         }
         self._pending: dict[str, _PendingResult] = {}
         self._responses: dict[str, tuple[PayloadRequest, PayloadResponse]] = {}
@@ -159,7 +160,7 @@ class PayloadGateway:
         grounded: bool,
         attached: bool,
     ) -> None:
-        if run_id != self._authority.run_id or aruco_id not in {2, 3, 4}:
+        if run_id != self._authority.run_id or aruco_id not in self._payload_ids:
             return
         with self._lock:
             previous = self._payloads.get(aruco_id)
@@ -211,10 +212,10 @@ class PayloadGateway:
             _, attachment_valid = self._attachment_state_locked()
             return (
                 self._vehicle is not None
-                and set(self._payloads) == {2, 3, 4}
+                and set(self._payloads) == self._payload_ids
                 and len(timestamps) == 1
                 and attachment_valid
-                and result_publishers == frozenset({2, 3, 4})
+                and result_publishers == self._payload_ids
                 and service_ready
             )
 
@@ -244,7 +245,7 @@ class PayloadGateway:
         self, request: PayloadRequest
     ) -> tuple[PayloadWorld | None, str | None]:
         with self._lock:
-            if self._vehicle is None or set(self._payloads) != {2, 3, 4}:
+            if self._vehicle is None or set(self._payloads) != self._payload_ids:
                 return None, "NOT_READY"
             common_timestamps = set(self._vehicle_history)
             for history in self._payload_histories.values():
@@ -469,7 +470,8 @@ class ScenarioController:
                 None,
                 {
                     "scenario": self._scenario,
-                    "physical_force": self._scenario == "competition_v1",
+                    "physical_force": self._scenario
+                    in {"competition_v1", "search_delivery_v1"},
                 },
             )
             self._ready = True

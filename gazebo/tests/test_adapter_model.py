@@ -289,6 +289,24 @@ def test_adapter_rejects_native_geometry_that_disagrees_with_resolved_config():
         model.accept_frame("onboard", native_image_at(320, 240))
 
 
+def test_adapter_validates_search_observer_at_twice_the_onboard_resolution():
+    """Applying one geometry to both streams would reject the 1280x960 observer."""
+    model = AdapterModel(
+        run_id=RUN_ID,
+        expected_frames=1,
+        width_px=640,
+        height_px=480,
+        observer_width_px=1280,
+        observer_height_px=960,
+    )
+
+    onboard = model.accept_frame("onboard", native_image_at(640, 480))
+    observer = model.accept_frame("observer", native_image_at(1280, 960))
+
+    assert (onboard.width, onboard.height) == (640, 480)
+    assert (observer.width, observer.height) == (1280, 960)
+
+
 @pytest.mark.parametrize(
     "samples",
     [

@@ -44,6 +44,15 @@ EXPECTED_IMAGE_DIGESTS = {
 }
 
 
+def test_acceptance_selects_search_delivery_score_and_log_contract():
+    """Search runs must not inherit descent-only companion evidence checks."""
+    from artifacts.acceptance import _ruleset_id_for_configuration
+
+    assert _ruleset_id_for_configuration({"scenario": "search_delivery_v1"}) == (
+        "search_delivery_v1"
+    )
+
+
 def _expected_provenance_kwargs():
     return {
         "expected_source_revision": EXPECTED_SOURCE_REVISION,
@@ -461,6 +470,76 @@ def test_production_semantic_check_uses_configured_competition_video_geometry(
     )
 
     assert result is evidence
+
+
+def test_production_semantic_check_uses_search_geometry_per_video_stream(
+    tmp_path, monkeypatch
+):
+    """Search observer evidence must be checked at 1280x960, independently of onboard."""
+    from artifacts import acceptance
+    from artifacts.validation import ValidationResult, ValidationStatus
+
+    configuration = {
+        "scenario": "search_delivery_v1",
+        "runtime_profile": "phase3",
+        "world": "search_delivery",
+        "vehicle": "iris_search_delivery",
+        "mission": "configured",
+        "recording": {
+            "width_px": 640,
+            "height_px": 480,
+            "observer_width_px": 1280,
+            "observer_height_px": 960,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+        "simulation": {
+            "duration_sim_seconds": 240,
+            "public_epoch_native_sim_seconds": 90,
+        },
+    }
+    config_path = tmp_path / "configuration/run.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(json.dumps(configuration), encoding="utf-8")
+    valid = ValidationResult(ValidationStatus.VALID, 1, "a" * 64, "valid")
+    evidence = object()
+    validations = []
+
+    class GeometryValidator:
+        def __init__(self, *, width_px=320, height_px=240, fps=20):
+            self.geometry = (width_px, height_px, fps)
+
+        def validate(self, _run_directory, relative_path, **_kwargs):
+            validations.append((relative_path, self.geometry))
+            return valid
+
+    class ValidBag:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def validate(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=ValidationStatus.VALID,
+                detail="valid",
+                physical_evidence=evidence,
+            )
+
+    monkeypatch.setattr(acceptance, "VideoValidator", GeometryValidator)
+    monkeypatch.setattr(acceptance, "RosbagValidator", ValidBag)
+    monkeypatch.setattr(acceptance, "validate_gazebo_state", lambda *_args: valid)
+    monkeypatch.setattr(
+        acceptance, "validate_nonempty_regular_file", lambda *_args: valid
+    )
+
+    result = acceptance._production_semantic_check(
+        tmp_path, RUN_ID, 4_800, "b" * 64
+    )
+
+    assert result is evidence
+    assert validations == [
+        ("video/onboard.mp4", (640, 480, 20)),
+        ("video/observer.mp4", (1280, 960, 20)),
+    ]
 
 
 def test_acceptance_inspector_optionally_requires_maximum_score(tmp_path):

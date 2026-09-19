@@ -65,6 +65,19 @@ Competition tools in a configured plan require this scenario. QGC inputs remain
 exclusive to `comp2026_auto`; configured competition runs use the mission plan
 without QGC.
 
+Selecting `scenario: search_delivery_v1` binds the `configured` mission to world
+`search_delivery`, vehicle `iris_search_delivery`, Phase 3, 640x480 RGB8 recording
+at 20 Hz for the onboard stream, 1280x960 for the observer stream, a 240-second
+public attempt, a 90-second native warmup, and target real time factor 1.0. The
+optional `observer_width_px` / `observer_height_px` recording pair defaults to the
+onboard dimensions when omitted, preserving existing templates and snapshots.
+The template continues to use the legacy `competition` envelope to identify the frozen
+[`course-search-delivery.yaml`](../config/course-search-delivery.yaml) and
+[`scenario-search-delivery.yaml`](../config/scenario-search-delivery.yaml) inputs;
+their canonical bytes and checksums are persisted as `course.yaml` and
+`scenario.yaml`. The approved event sequence is `SEARCH STARTED/COMPLETE`,
+`DELIVERY STARTED/COMPLETE`, then `HOME STARTED/DISARMED/COMPLETE`.
+
 The configured descent example requests `set_mode`, `arm`, `takeoff`, `hold`, and
 `land`. The operator example starts with `wait_for_state` for an already armed
 vehicle in `GUIDED`, then runs the same flight sequence. These templates establish

@@ -715,13 +715,21 @@ def main() -> None:
     def recorder_factory(
         run: Path, configured_run_id: str, stream: str, errors: Callable[[Any], None]
     ) -> FaultAwareRecorder:
+        width_px, height_px = (
+            (recording_contract.width_px, recording_contract.height_px)
+            if stream == "onboard"
+            else (
+                recording_contract.observer_width_px,
+                recording_contract.observer_height_px,
+            )
+        )
         delegate = VideoStreamRecorder(
             run,
             run_id=configured_run_id,
             stream=stream,
             expected_frame_count=recording_contract.expected_camera_frames,
-            width_px=recording_contract.width_px,
-            height_px=recording_contract.height_px,
+            width_px=width_px,
+            height_px=height_px,
             fps=recording_contract.fps,
             encoding=recording_contract.encoding,
             diagnostic_sink=errors,
@@ -755,8 +763,16 @@ def main() -> None:
         video_node=video_node,
         video_validators={
             stream: VideoValidator(
-                width_px=recording_contract.width_px,
-                height_px=recording_contract.height_px,
+                width_px=(
+                    recording_contract.width_px
+                    if stream == "onboard"
+                    else recording_contract.observer_width_px
+                ),
+                height_px=(
+                    recording_contract.height_px
+                    if stream == "onboard"
+                    else recording_contract.observer_height_px
+                ),
                 fps=recording_contract.fps,
             )
             for stream in ("onboard", "observer")

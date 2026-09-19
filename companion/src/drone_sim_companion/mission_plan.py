@@ -39,7 +39,7 @@ _ARGUMENTS = {
     "attach_payload": ({"aruco_id": {"type": "integer", "enum": [3, 4]}}, ["aruco_id"]),
     "release_payload": ({"aruco_id": {"type": "integer", "enum": [2, 3, 4]}}, ["aruco_id"]),
     "mission_event": ({
-        "phase": {"type": "string", "enum": ["FM1", "FM2", "FM3_3", "FM3_4", "HOME"]},
+        "phase": {"type": "string", "enum": ["FM1", "FM2", "FM3_3", "FM3_4", "HOME", "SEARCH", "DELIVERY"]},
         "state": {"type": "string", "enum": ["STARTED", "COMPLETE", "DISARMED"]},
     }, ["phase", "state"]),
 }

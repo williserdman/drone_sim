@@ -4,10 +4,10 @@
 [Runbook](../docs/runbook.md)
 
 This module owns payload-request policy and the handoff to Gazebo for physical
-attach/detach operations. In `competition_v1` it validates a request against
-current physical facts, sends one coordinator command, waits for confirmation,
-and publishes a truthful payload event. In `descent_v1` it only publishes the
-deterministic inactive scenario event.
+attach/detach operations. In `competition_v1` and `search_delivery_v1` it
+validates a request against current physical facts, sends one coordinator
+command, waits for confirmation, and publishes a truthful payload event. In
+`descent_v1` it only publishes the deterministic inactive scenario event.
 
 It does **not** fly the aircraft, mutate a pose or joint itself, calculate score,
 or decide whether a whole run succeeded. Mission intent belongs to the companion,
@@ -17,7 +17,7 @@ terminal status to orchestration and the validated manifest.
 ## Code map
 
 - [runtime_node.py](src/drone_sim_electromagnet/runtime_node.py) is the process
-  entry point and selects the resolved `descent_v1` or `competition_v1` path.
+  entry point and selects the resolved inactive or active payload path.
 - [payload.py](src/drone_sim_electromagnet/payload.py) is the stateless ROS-free
   policy for request validation, capacity rules, and pickup eligibility.
 - [controller.py](src/drone_sim_electromagnet/controller.py) joins physical facts,
@@ -45,10 +45,12 @@ Topic names and QoS are authoritative in
 Private coordinator wires are implemented at both ends in
 [controller.py](src/drone_sim_electromagnet/controller.py) and Gazebo's
 [PayloadCommandCoordinator.cc](../gazebo/plugin/PayloadCommandCoordinator.cc).
-Competition inventory, pickup zones, capacity, and tolerances come from the
-resolved run copies of [course.yaml](../config/course.yaml) and
-[scenario.yaml](../config/scenario.yaml); loading and validation live in
-[RuntimeConfig](src/drone_sim_electromagnet/runtime_node.py).
+Payload inventory, pickup zones, capacity, and tolerances come from the resolved
+run copies of the selected course and scenario YAML; loading and validation live
+in [RuntimeConfig](src/drone_sim_electromagnet/runtime_node.py). The frozen
+`competition_v1` inventory is markers 2, 3, and 4. The approved
+`search_delivery_v1` inventory is exactly marker 3 in pickup zone `WA`; runtime
+topics, readiness, and coherent physical snapshots use only that inventory.
 
 ## Constraints worth preserving
 

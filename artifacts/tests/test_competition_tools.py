@@ -33,7 +33,8 @@ def _load(name: str):
     return module
 
 
-def test_competition_inspector_uses_current_parent_nested_and_image_provenance(tmp_path):
+@pytest.mark.parametrize("ruleset_id", ["competition_v1", "search_delivery_v1"])
+def test_competition_inspector_uses_current_parent_nested_and_image_provenance(tmp_path, ruleset_id):
     module = _load("inspect_competition_run")
     commands = []
 
@@ -55,7 +56,7 @@ def test_competition_inspector_uses_current_parent_nested_and_image_provenance(t
         return SimpleNamespace(to_dict=lambda: {"accepted": True, "run_id": RUN_ID})
 
     report = module.inspect_competition_run(
-        tmp_path, runner=runner, bundle_inspector=inspector
+        tmp_path, runner=runner, bundle_inspector=inspector, ruleset_id=ruleset_id
     )
 
     assert report == {"accepted": True, "run_id": RUN_ID}
@@ -69,6 +70,7 @@ def test_competition_inspector_uses_current_parent_nested_and_image_provenance(t
     }
     assert tuple(captured["expected_image_digests"]) == IMAGES
     assert captured["require_maximum_score"] is True
+    assert captured["rules_path"] == ROOT / f"scorekeeper/rules/{ruleset_id}.json"
     assert len(commands) == 11
 
 

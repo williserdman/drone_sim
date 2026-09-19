@@ -185,8 +185,9 @@ def install_ros(monkeypatch, fake_ros):
     fake_ros.run_state = RunState
 
 
-@pytest.mark.parametrize("competition", [False, True])
-def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch, tmp_path, competition):
+@pytest.mark.parametrize("scenario", ["descent_v1", "competition_v1", "search_delivery_v1"])
+def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch, tmp_path, scenario):
+    competition = scenario != "descent_v1"
     protocol = Protocol()
     connection = FakeConnection()
     fake_ros = FakeRos(None)
@@ -234,7 +235,7 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch, 
                 io_calls.append("closed")
 
         monkeypatch.setattr(configured_io, "CompetitionIO", FakeCompetitionIO)
-        config.scenario = "competition_v1"
+        config.scenario = scenario
         config.course_path = tmp_path / "course.yaml"
         config.course_path.write_text("attempt:\n  release_agl_m: 10.0\n")
 

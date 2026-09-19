@@ -1,4 +1,4 @@
-"""ROS 2 process adapter for inactive descent and competition payload authority."""
+"""ROS 2 process adapter for inactive descent and active payload authority."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .payload import PayloadAuthority, PayloadRequest, PickupZone
 from .scenario import InactiveScenarioEvent, ScenarioPolicy
 
 
-PAYLOAD_IDS = (2, 3, 4)
+ACTIVE_PAYLOAD_SCENARIOS = frozenset({"competition_v1", "search_delivery_v1"})
 
 
 @dataclass(frozen=True)
@@ -85,8 +85,11 @@ class RuntimeConfig:
                 0,
                 0.0,
             )
-        if scenario != "competition_v1":
-            raise ValueError("electromagnet scenario must be descent_v1 or competition_v1")
+        if scenario not in ACTIVE_PAYLOAD_SCENARIOS:
+            raise ValueError(
+                "electromagnet scenario must be descent_v1, competition_v1, "
+                "or search_delivery_v1"
+            )
         competition = document.get("competition")
         if not isinstance(competition, dict) or not {"course", "scenario"}.issubset(
             competition
@@ -120,8 +123,13 @@ class RuntimeConfig:
             or not isinstance(vehicle, dict)
         ):
             raise ValueError("resolved competition payload configuration is incomplete")
+        expected_payload_zones = (
+            {3: "WA"}
+            if scenario == "search_delivery_v1"
+            else {2: None, 3: "WA", 4: "WM"}
+        )
         pickup_zones: dict[str, PickupZone] = {}
-        for name in ("WA", "WM"):
+        for name in sorted({zone for zone in expected_payload_zones.values() if zone}):
             waypoint = waypoint_documents.get(name)
             if not isinstance(waypoint, dict):
                 raise ValueError(f"resolved pickup zone {name} is missing")
@@ -140,10 +148,23 @@ class RuntimeConfig:
                 raise ValueError("resolved payload inventory is invalid")
             marker = payload.get("aruco_id")
             initial = payload.get("initial")
-            if type(marker) is not int or marker not in PAYLOAD_IDS:
+            if type(marker) is not int or marker not in expected_payload_zones:
+                if scenario == "search_delivery_v1":
+                    raise ValueError(
+                        "resolved search_delivery_v1 payload inventory must contain "
+                        "exact ID 3 at WA"
+                    )
                 raise ValueError("resolved payload inventory contains an unknown marker")
             payload_zones[marker] = None if initial == "attached" else str(initial)
-        if payload_zones != {2: None, 3: "WA", 4: "WM"}:
+        if (
+            len(payload_documents) != len(expected_payload_zones)
+            or payload_zones != expected_payload_zones
+        ):
+            if scenario == "search_delivery_v1":
+                raise ValueError(
+                    "resolved search_delivery_v1 payload inventory must contain "
+                    "exact ID 3 at WA"
+                )
             raise ValueError("resolved payload inventory must contain exact IDs 2, 3, and 4")
         capacity = vehicle.get("payload_capacity")
         tolerance = interaction.get("pickup_max_center_error_m")
@@ -166,8 +187,10 @@ class RuntimeConfig:
         )
 
     def authority(self) -> PayloadAuthority:
-        if self.scenario != "competition_v1":
-            raise ValueError("payload authority is available only for competition_v1")
+        if self.scenario not in ACTIVE_PAYLOAD_SCENARIOS:
+            raise ValueError(
+                "payload authority is available only for active payload scenarios"
+            )
         return PayloadAuthority(
             run_id=self.run_id,
             pickup_zones=self.pickup_zones,
@@ -304,6 +327,7 @@ def _competition_main(config: RuntimeConfig) -> int:
     rclpy.init()
     node = Node("drone_sim_electromagnet")
     callback_group = ReentrantCallbackGroup()
+    payload_ids = tuple(config.payload_zones)
 
     def qos(depth: int, *, transient: bool = False) -> QoSProfile:
         return QoSProfile(
@@ -326,7 +350,7 @@ def _competition_main(config: RuntimeConfig) -> int:
         marker: node.create_publisher(
             String, f"/gazebo/private/payload_{marker}/command", qos(10)
         )
-        for marker in PAYLOAD_IDS
+        for marker in payload_ids
     }
 
     def publish_command(marker: int, wire: str) -> None:
@@ -357,7 +381,7 @@ def _competition_main(config: RuntimeConfig) -> int:
         publish=lambda _event: None,
         protocol=protocol,
         stream=sys.stdout,
-        scenario="competition_v1",
+        scenario=config.scenario,
     )
     finalizing = False
     requested_stop = False
@@ -440,7 +464,7 @@ def _competition_main(config: RuntimeConfig) -> int:
         qos(100),
         callback_group=callback_group,
     )
-    for marker in PAYLOAD_IDS:
+    for marker in payload_ids:
         node.create_subscription(
             String,
             f"/gazebo/private/payload_{marker}/result",
@@ -472,7 +496,7 @@ def _competition_main(config: RuntimeConfig) -> int:
             if not ready:
                 result_publishers = frozenset(
                     marker
-                    for marker in PAYLOAD_IDS
+                    for marker in payload_ids
                     if node.count_publishers(
                         f"/gazebo/private/payload_{marker}/result"
                     )

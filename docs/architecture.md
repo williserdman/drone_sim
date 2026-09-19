@@ -189,14 +189,22 @@ landing/disarm before companion success; score and artifact validity remain
 independent. Exact tools and current limits are in the
 [companion guide](../companion/README.md#configured-diagnostic-missions).
 
-With `scenario: competition_v1`, the configured runner also loads the frozen
+With `scenario: competition_v1` or `search_delivery_v1`, the configured runner loads the frozen
 course and simulator sensor calibration. Its explicit precision landing and
 payload operations consume public image/range, MAVLink and attachment evidence;
 private physical poses remain outside autonomy. This route retains one MAVLink
 command owner and does not instantiate the guarded QGC listener. Execution waits
 for the payload service and the known scorekeeper/rosbag mission-event consumers.
-The ordered competition events and final delivery acknowledgment precede companion
+The scenario's ordered events and final delivery acknowledgment precede companion
 success. The scorer still independently evaluates the recorded physical attempt.
+
+`search_delivery_v1` binds the `search_delivery` world and `iris_search_delivery`
+vehicle to a single initially detached payload, ArUco 3. Its SEARCH, DELIVERY,
+and HOME boundaries use the existing MissionEvent wire contract. Payload stream
+cardinality follows the registered scenario: one ID for search-and-deliver,
+three for competition. Physics, recording completeness, and scoring must agree
+on that inventory. The mission's local success/failure contract is in the
+[companion guide](../companion/README.md#search-and-deliver-contract).
 
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.
@@ -303,9 +311,12 @@ are not automatically included in the public evidence bag.
 
 Course YAML is not a dynamic world editor. Gazebo uses checked-in generated SDF
 and assets, while mission/policy code reads configuration and validators enforce
-fixed competition values. A geometry change must keep those representations
+the selected registered course values. A geometry change must keep those representations
 aligned; start at [prepare_competition_assets.py](../gazebo/scripts/prepare_competition_assets.py)
 and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py).
+Deferred: a general scenario registry that removes repeated per-scenario
+validation. New physical courses still need explicit generator, runtime, and
+scoring registration; new tool sequences can reuse an existing scenario.
 
 ## Boundaries to preserve
 
@@ -313,7 +324,7 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
   physical outcomes to Gazebo. Do not fix missed pickups by editing the scorer.
 - Electromagnet coordinates payload actions through Gazebo's public interface;
   it does not directly edit the aircraft state.
-- Scorekeeper is read-only. Payload IDs **2, 3, 4** mean the first, second, and
+- Scorekeeper is read-only. In competition, payload IDs **2, 3, 4** mean the first, second, and
   third payloads respectively; marker 4 is not a fourth payload. The first
   payload starts attached in the competition model; the other two require pickup.
 - Preserve run evidence. Do not rewrite a manifest or remove timestamp checks to

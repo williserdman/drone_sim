@@ -23,6 +23,15 @@ _MISSION_SEQUENCE = (
     ("HOME", "DISARMED"),
     ("HOME", "COMPLETE"),
 )
+_SEARCH_DELIVERY_SEQUENCE = (
+    ("SEARCH", "STARTED"),
+    ("SEARCH", "COMPLETE"),
+    ("DELIVERY", "STARTED"),
+    ("DELIVERY", "COMPLETE"),
+    ("HOME", "STARTED"),
+    ("HOME", "DISARMED"),
+    ("HOME", "COMPLETE"),
+)
 _SENSOR_FRESHNESS_NS = 500_000_000
 
 
@@ -98,7 +107,7 @@ class CompetitionIO:
     def __init__(self, config: object, node: object, emit) -> None:
         if (
             getattr(config, "mission", None) != "configured"
-            or getattr(config, "scenario", None) != "competition_v1"
+            or getattr(config, "scenario", None) not in {"competition_v1", "search_delivery_v1"}
         ):
             raise ValueError("competition I/O requires a configured competition mission")
         run_id = getattr(config, "run_id", None)
@@ -111,6 +120,9 @@ class CompetitionIO:
             raise TypeError("competition I/O emit callback must be callable")
 
         self._config = config
+        self._mission_sequence = (
+            _SEARCH_DELIVERY_SEQUENCE if config.scenario == "search_delivery_v1" else _MISSION_SEQUENCE
+        )
         self._node = node
         self._emit = emit
         self._deps = _load_live_dependencies()
@@ -313,9 +325,9 @@ class CompetitionIO:
         with self._lock:
             if self._closed:
                 raise RuntimeError("competition I/O is closed")
-            if self._next_event_id == len(_MISSION_SEQUENCE):
+            if self._next_event_id == len(self._mission_sequence):
                 raise RuntimeError("mission event sequence is complete")
-            expected = _MISSION_SEQUENCE[self._next_event_id]
+            expected = self._mission_sequence[self._next_event_id]
             if (phase, state) != expected:
                 raise ValueError(
                     "next mission event must be "
@@ -349,7 +361,7 @@ class CompetitionIO:
 
     def flush(self) -> None:
         with self._lock:
-            if self._next_event_id != len(_MISSION_SEQUENCE):
+            if self._next_event_id != len(self._mission_sequence):
                 raise RuntimeError("mission event sequence is incomplete")
         if not self._mission_event_consumers_ready():
             raise RuntimeError(

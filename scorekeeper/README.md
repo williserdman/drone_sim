@@ -3,8 +3,9 @@
 [Project README](../README.md) · [Architecture](../docs/architecture.md) · [Runbook](../docs/runbook.md)
 
 This module owns deterministic, run-scoped evaluation of authoritative physical
-evidence for the frozen `descent_v1` and three-payload `competition_v1` policies,
-then persists and publishes their score results.
+evidence for the frozen `descent_v1`, three-payload `competition_v1`, and
+one-payload `search_delivery_v1` policies, then persists and publishes their
+score results.
 
 It is read-only with respect to the simulated system: it does **not** command the
 aircraft, electromagnet, Gazebo, mission phases, or retry behavior. A mission
@@ -19,6 +20,8 @@ whether the evidence bundle is complete and valid.
   driver.
 - [competition.py](src/drone_sim_scorekeeper/competition.py) is the pure competition
   evidence model and scorer.
+- [search_delivery.py](src/drone_sim_scorekeeper/search_delivery.py) is the pure
+  search-and-delivery scorer for payload ID 3.
 - [descent.py](src/drone_sim_scorekeeper/descent.py) is the pure descent scorer.
 - [competition_runtime.py](src/drone_sim_scorekeeper/competition_runtime.py) and
   [runtime.py](src/drone_sim_scorekeeper/runtime.py) bind scorers to persistence,
@@ -45,7 +48,8 @@ Topic selection and QoS live in
 [runtime_node.py](src/drone_sim_scorekeeper/runtime_node.py), not this guide.
 
 The exact scoring data authorities are
-[competition_v1.json](rules/competition_v1.json) and
+[competition_v1.json](rules/competition_v1.json),
+[search_delivery_v1.json](rules/search_delivery_v1.json), and
 [descent_v1.json](rules/descent_v1.json), enforced by their loaders and scorers.
 Do not duplicate point allocations, timing windows, or physical thresholds in
 documentation. The persisted schema is defined by
@@ -62,6 +66,10 @@ documentation. The persisted schema is defined by
   simulation-time grid after mission start. A gap, duplicate, regression,
   conflicting physical order, or missing terminal evidence makes scoring
   incomplete; a later suffix cannot repair it.
+- Search-and-delivery uses the same 20 Hz physical evidence contract with only
+  payload ID 3. Its mission grammar is exactly `SEARCH` start/complete,
+  `DELIVERY` start/complete, and `HOME` start/disarmed/complete; its payload
+  grammar is attach then release.
 - Payload release is evidence, not points by itself. Delivery requires physical
   detachment and settled geometry; Home completion requires physical landing
   truth through distinct ordered `HOME/DISARMED` and `HOME/COMPLETE` events.

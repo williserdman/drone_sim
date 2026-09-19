@@ -802,6 +802,76 @@ def _valid_competition_messages():
     return messages
 
 
+def _valid_search_delivery_messages():
+    messages = [
+        item
+        for item in _valid_competition_messages()
+        if item.topic
+        not in {
+            "/simulation/score_events",
+            "/simulation/payload_state",
+            "/simulation/payload_events",
+            "/simulation/mission_events",
+            "/simulation/scenario_events",
+        }
+    ]
+    for index, rule_id in enumerate(("search", "pickup", "delivery", "home")):
+        messages.append(
+            BagMessage(
+                "/simulation/score_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=index,
+                    event_type=f"search_delivery.{rule_id}",
+                    value=25.0,
+                    evidence_ref=f"scoring/events.jsonl#event-{index}",
+                ),
+                200 + index,
+            )
+        )
+    messages.extend(
+        (
+            BagMessage(
+                "/simulation/score_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=4,
+                    event_type="score.finalized",
+                    value=100.0,
+                    evidence_ref="scoring/events.jsonl#event-4",
+                ),
+                204,
+            ),
+            BagMessage("/simulation/payload_state", _payload_state(50_000_000, 3), 210),
+            BagMessage(
+                "/simulation/payload_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=0,
+                    aruco_id=3,
+                    command_id="attach-3",
+                    action="attach",
+                    state="attached",
+                    code="OK",
+                ),
+                211,
+            ),
+            BagMessage(
+                "/simulation/mission_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=0,
+                    phase="SEARCH",
+                    state="STARTED",
+                    detail="automatic attempt",
+                ),
+                212,
+            ),
+        )
+    )
+    return messages
+
+
 def _competition_metadata_for(messages):
     from artifacts._adapters.rosbag import COMPETITION_TOPIC_TYPES, COMPETITION_TOPICS
 
@@ -1015,6 +1085,57 @@ def test_competition_bag_decodes_three_payloads_events_and_downward_range(tmp_pa
         ),
     )
     assert evidence.downward_ranges == (DownwardRangeEvidence(50_000_000, 10.0),)
+
+
+def test_search_delivery_bag_requires_only_payload_three_and_no_descent_event(tmp_path):
+    """Competition cardinality and descent initialization must not leak into search."""
+    _bag_directory(tmp_path)
+    messages = _valid_search_delivery_messages()
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_competition_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="search_delivery_v1",
+        width_px=640,
+        height_px=480,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+    assert result.physical_evidence is not None
+    assert {row.aruco_id for row in result.physical_evidence.payload_states} == {3}
+
+
+def test_search_delivery_bag_rejects_missing_payload_sample(tmp_path):
+    """A missing payload tick must not leave enough evidence to award delivery."""
+    _bag_directory(tmp_path)
+    messages = [
+        item
+        for item in _valid_search_delivery_messages()
+        if item.topic != "/simulation/payload_state"
+    ]
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_competition_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="search_delivery_v1",
+        width_px=640,
+        height_px=480,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.INVALID
+    assert "payload" in result.detail
 
 
 def test_competition_bag_allows_empty_optional_scenario_event_diagnostics(tmp_path):

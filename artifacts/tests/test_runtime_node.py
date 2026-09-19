@@ -32,12 +32,15 @@ def test_initial_status_delivery_accepts_two_reliable_discovered_consumers():
 
 
 @pytest.mark.parametrize(
-    ("physical_run", "expected_depth", "geometry"),
-    [(True, 100, (640, 480)), (False, 5, (320, 240))],
+    ("physical_run", "expected_depth", "geometries"),
+    [
+        (True, 100, {"onboard": (640, 480), "observer": (1280, 960)}),
+        (False, 5, {"onboard": (320, 240), "observer": (320, 240)}),
+    ],
     ids=["physical-production", "synthetic-phase2"],
 )
 def test_production_runtime_requests_profile_specific_reliable_volatile_camera_qos(
-    monkeypatch, tmp_path, physical_run, expected_depth, geometry
+    monkeypatch, tmp_path, physical_run, expected_depth, geometries
 ):
     reliability = SimpleNamespace(RELIABLE=object())
     durability = SimpleNamespace(TRANSIENT_LOCAL=object(), VOLATILE=object())
@@ -169,8 +172,10 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
                 synthetic_camera_ack=not physical_run,
                 topics=BASE_TOPICS,
                 ruleset_id="descent_v1",
-                width_px=geometry[0],
-                height_px=geometry[1],
+                width_px=geometries["onboard"][0],
+                height_px=geometries["onboard"][1],
+                observer_width_px=geometries["observer"][0],
+                observer_height_px=geometries["observer"][1],
                 fps=20,
                 encoding="rgb8",
             ),
@@ -213,24 +218,35 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
         and subscription.qos_profile.durability is durability.VOLATILE
         for subscription in subscriptions
     )
-    expected_geometry = {
-        "width_px": geometry[0],
-        "height_px": geometry[1],
-        "fps": 20,
-        "encoding": "rgb8",
-    }
     assert [stream for stream, _arguments in stream_recorder_arguments] == [
         "onboard",
         "observer",
     ]
-    assert all(
-        arguments | expected_geometry == arguments
-        for _stream, arguments in stream_recorder_arguments
-    )
+    assert [
+        (
+            stream,
+            arguments["width_px"],
+            arguments["height_px"],
+            arguments["fps"],
+            arguments["encoding"],
+        )
+        for stream, arguments in stream_recorder_arguments
+    ] == [
+        ("onboard", *geometries["onboard"], 20, "rgb8"),
+        ("observer", *geometries["observer"], 20, "rgb8"),
+    ]
     video_validator_arguments = [kwargs for args, kwargs in validator_arguments if not args]
     assert video_validator_arguments == [
-        {"width_px": geometry[0], "height_px": geometry[1], "fps": 20},
-        {"width_px": geometry[0], "height_px": geometry[1], "fps": 20},
+        {
+            "width_px": geometries["onboard"][0],
+            "height_px": geometries["onboard"][1],
+            "fps": 20,
+        },
+        {
+            "width_px": geometries["observer"][0],
+            "height_px": geometries["observer"][1],
+            "fps": 20,
+        },
     ]
 
 

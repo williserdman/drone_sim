@@ -13,7 +13,7 @@ _FRAME_INTERVAL_NS = 50_000_000
 _ENCODING = "rgb8"
 _UNMATCHED_FRAME_CAPACITY = 20
 _PENDING_PAIR_CAPACITY = 20
-_APPROVED_IMAGE_GEOMETRIES = {(320, 240), (640, 480)}
+_APPROVED_IMAGE_GEOMETRIES = {(320, 240), (640, 480), (1280, 960)}
 
 
 class AdapterFault(RuntimeError):
@@ -158,7 +158,9 @@ def _image_geometry(width_px: object, height_px: object) -> tuple[int, int]:
         or type(height_px) is not int
         or (width_px, height_px) not in _APPROVED_IMAGE_GEOMETRIES
     ):
-        raise AdapterFault("image geometry must be exactly 320x240 or 640x480")
+        raise AdapterFault(
+            "image geometry must be exactly 320x240, 640x480, or 1280x960"
+        )
     return width_px, height_px
 
 
@@ -326,6 +328,8 @@ class AdapterModel:
         expected_frames: int,
         width_px: int = 320,
         height_px: int = 240,
+        observer_width_px: int | None = None,
+        observer_height_px: int | None = None,
     ) -> None:
         self._run_id = _canonical_run_id(run_id)
         self._expected_frames = _positive_integer(
@@ -333,13 +337,21 @@ class AdapterModel:
             field="expected_frames",
         )
         width_px, height_px = _image_geometry(width_px, height_px)
+        observer_width_px, observer_height_px = _image_geometry(
+            width_px if observer_width_px is None else observer_width_px,
+            height_px if observer_height_px is None else observer_height_px,
+        )
+        geometries = {
+            "onboard": (width_px, height_px),
+            "observer": (observer_width_px, observer_height_px),
+        }
         self._sequences = {
             stream: CameraSequence(
                 run_id=self._run_id,
                 stream=stream,
                 expected_frames=self._expected_frames,
-                width_px=width_px,
-                height_px=height_px,
+                width_px=geometries[stream][0],
+                height_px=geometries[stream][1],
             )
             for stream in _STREAMS
         }

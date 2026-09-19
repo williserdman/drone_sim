@@ -33,8 +33,9 @@ required evidence is missing or invalid.
   [`RuntimeProtocol`](src/artifacts/runtime_protocol.py) is the container-side
   adapter over the strict, descriptor-safe persistence mechanics in
   [`protocol_files.py`](src/artifacts/protocol_files.py).
-- [`acceptance.py`](src/artifacts/acceptance.py) and
-  [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
+- [`acceptance.py`](src/artifacts/acceptance.py),
+  [`competition_score_validation.py`](src/artifacts/competition_score_validation.py),
+  and [`search_delivery_score_validation.py`](src/artifacts/search_delivery_score_validation.py)
   implement independent semantic acceptance for completed physical runs.
 
 ## Consumer and producer seams
@@ -52,6 +53,13 @@ timestamps, not raw image pixels. Pixel recordings are `video/onboard.mp4` and
 `video/observer.mp4`; losing an MP4 cannot be repaired from the bag. Competition
 runs extend the base bag with their physical/scoring evidence as selected by
 [`RecordingRuntimeConfig.topics`](src/artifacts/runtime_configuration.py).
+`search_delivery_v1` uses that topic inventory with exactly one payload-state
+sample for ID 3 on every physical tick and no descent scenario event. Artifact
+replay independently checks its seven mission events and two payload events.
+
+The search-delivery onboard stream is 640x480 and its observer stream is
+1280x960. Resolved recording configuration carries the observer dimensions
+separately; older scenarios default them to their onboard dimensions.
 
 The deployed private rosbag QoS overrides are
 [`recording-qos.yaml`](recording-qos.yaml), copied into the runtime image by the
@@ -102,4 +110,5 @@ uv run pytest artifacts/tests/test_protocol_files.py \
 uv run pytest artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
 uv run pytest artifacts/tests/test_manifest.py artifacts/tests/test_session.py \
   artifacts/tests/test_acceptance.py -q
+uv run pytest artifacts/tests/test_search_delivery_score_validation.py -q
 ```

@@ -374,13 +374,18 @@ def resolve_world(
             "competition_mission",
             "iris_competition",
         ),
+        WorldConfig("search_delivery", "iris_search_delivery"): (
+            "search_delivery",
+            "iris_search_delivery",
+        ),
     }
     try:
         world_name, vehicle_id = supported_worlds[config]
     except KeyError:
         raise ValueError(
             "Phase 3 supports only phase3_foundation/iris or "
-            "vertical_descent/iris_flight or competition_mission/iris_competition"
+            "vertical_descent/iris_flight or competition_mission/iris_competition "
+            "or search_delivery/iris_search_delivery"
         )
 
     requested_root = (

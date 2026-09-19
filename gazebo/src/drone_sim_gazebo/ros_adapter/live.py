@@ -24,12 +24,16 @@ class LiveAdapter:
         expected_frames: int,
         width_px: int = 320,
         height_px: int = 240,
+        observer_width_px: int | None = None,
+        observer_height_px: int | None = None,
     ) -> None:
         self._adapter = AdapterModel(
             run_id=run_id,
             expected_frames=expected_frames,
             width_px=width_px,
             height_px=height_px,
+            observer_width_px=observer_width_px,
+            observer_height_px=observer_height_px,
         )
         self._truth = PrivateTruthAggregator()
         self._pending_pair_stamps: deque[int] = deque()

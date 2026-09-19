@@ -28,7 +28,8 @@ resources as a substitute for public physical truth.
 - [ros_adapter/node.py](src/drone_sim_gazebo/ros_adapter/node.py) is the sole
   public Gazebo ROS publisher; its pure validation and epoch logic live beside it.
 - [competition_config.py](src/drone_sim_gazebo/competition_config.py) validates
-  the fixed competition geometry shared with mission/scenario configuration.
+  the fixed competition and compact search-delivery geometry shared with
+  mission/scenario configuration.
 - [resources/](resources/) contains the runtime-owned worlds, vehicle models,
   payload models, meshes, and marker textures. Resolution is local and
   fail-closed; remote model fallback is not part of the contract.
@@ -61,6 +62,12 @@ real bidirectional ArduPilot [`FlightExchange`](../artifacts/src/artifacts/runti
 The runtime publishes it through the
 [container protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 
+The `search_delivery` world uses `iris_search_delivery`, starts empty, and
+publishes physical truth only for payload 3. It reuses the checked-in
+`payload_3` marker model. Its flat 60 m square scene and fixed observer camera
+cover the compact H–WA–F2 route. The onboard stream remains calibrated at
+640x480; the search observer records 1280x960. Both publish at 20 Hz.
+
 ## Constraints worth knowing
 
 - Public output is rebased from one configured native epoch. Activation must be
@@ -85,6 +92,17 @@ The runtime publishes it through the
 - `GZ_SIM_RESOURCE_PATH` is replaced with the local models directory. Resource
   and provenance updates must follow the audit/refresh procedure in the
   [runbook](../docs/runbook.md); do not hand-edit generated competition assets.
+
+Regenerate the compact profile from the repository root after its course,
+scenario, or generator changes:
+
+```bash
+uv run --locked python gazebo/scripts/prepare_competition_assets.py \
+  --source-root gazebo/resources --output-root gazebo/resources \
+  --course config/course-search-delivery.yaml \
+  --scenario config/scenario-search-delivery.yaml \
+  --profile search_delivery
+```
 
 ## Focused tests
 

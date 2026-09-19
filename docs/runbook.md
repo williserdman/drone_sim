@@ -173,6 +173,39 @@ independent 150/150 acceptance with valid artifacts. The complete run took
 3,762.64 wall seconds on this machine; target factor 1.0 does not guarantee real
 time performance. See [dated evidence](handoff.md#2026-09-19-configured-competition-conversion).
 
+#### Search-and-deliver mission
+
+Build matching Phase 3 images, then launch:
+
+```bash
+uv run --locked drone-sim start --config config/configured-search-delivery-run.json
+```
+
+The 24-step plan flies a compact route with turns and altitude changes, stops
+2 m west of ArUco 3, searches and lands, picks up, delivers from 10 m, and lands
+home. The drone starts empty. Its separate
+[course](../config/course-search-delivery.yaml),
+[scenario](../config/scenario-search-delivery.yaml), and generated
+[world](../gazebo/resources/worlds/search_delivery.sdf) keep the competition
+baseline intact. The legacy `competition` configuration field binds and freezes
+these physical inputs for either payload scenario.
+
+The observer records at 1280 × 960; onboard vision remains at its calibrated
+640 × 480. Both streams record at 20 FPS. The public window is 240 simulated
+seconds after 90 seconds of private warmup. Target RTF is 1.0; CPU rendering may
+run substantially slower. Actual timing and verified flight status belong in
+[handoff](handoff.md). Search, pickup, delivery, and home each
+carry 25 points; mission completion and valid recordings remain separate checks.
+
+With the ROS/FFmpeg inspection dependencies available, require full independent
+acceptance using the existing inspector's ruleset selector:
+
+```bash
+uv run --locked python scripts/inspect_competition_run.py runs/RUN_ID --ruleset search_delivery_v1
+```
+
+#### Operator arming
+
 To wait for external arming and GUIDED selection, use:
 
 ```bash

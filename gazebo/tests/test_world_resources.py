@@ -29,6 +29,8 @@ EXPECTED_RESOURCE_PATHS = (
     "models/iris_phase3/meshes/iris_prop_cw.dae",
     "models/iris_phase3/model.config",
     "models/iris_phase3/model.sdf",
+    "models/iris_search_delivery/model.config",
+    "models/iris_search_delivery/model.sdf",
     "models/payload_2/materials/textures/marker_2.png",
     "models/payload_2/model.config",
     "models/payload_2/model.sdf",
@@ -41,6 +43,7 @@ EXPECTED_RESOURCE_PATHS = (
     "worlds/competition_mission.sdf",
     "worlds/competition_mission_1x.sdf",
     "worlds/phase3_foundation.sdf",
+    "worlds/search_delivery.sdf",
     "worlds/vertical_descent.sdf",
 )
 

@@ -202,11 +202,11 @@ class RuntimeConfig:
                 raise ValueError("configured mission requires phase3 simulation")
             mission_plan = parse_mission_plan(document.get("mission_plan"))
             if (
-                scenario != "competition_v1"
+                scenario not in {"competition_v1", "search_delivery_v1"}
                 and any(step.tool in COMPETITION_TOOLS for step in mission_plan.steps)
             ):
                 raise ValueError(
-                    "competition mission tools require scenario competition_v1"
+                    "competition mission tools require scenario competition_v1 or search_delivery_v1"
                 )
         elif "mission_plan" in document:
             raise ValueError("mission_plan is only valid for configured missions")
@@ -224,14 +224,14 @@ class RuntimeConfig:
         if mission == "comp2026_auto":
             cls._validate_qgc_structure(document.get("qgc"))
         competition: Mapping[str, object] | None = None
-        if scenario == "competition_v1":
+        if scenario in {"competition_v1", "search_delivery_v1"}:
             competition = document.get("competition")
             if (
                 not isinstance(competition, dict)
                 or competition.get("course") != "course.yaml"
                 or competition.get("scenario") != "scenario.yaml"
             ):
-                raise ValueError("competition_v1 requires resolved competition sources")
+                raise ValueError(f"{scenario} requires resolved competition sources")
             _validate_sha256_digest(
                 competition.get("course_sha256"), "course_sha256"
             )
@@ -244,10 +244,16 @@ class RuntimeConfig:
                 "course_sha256",
                 "scenario_sha256",
             }:
-                raise ValueError("competition_v1 requires resolved competition sources")
-            course_path, scenario_path = validate_resolved_competition(
-                competition, configuration_directory=config_path.parent
-            )
+                raise ValueError(f"{scenario} requires resolved competition sources")
+            if scenario == "search_delivery_v1":
+                if mission != "configured":
+                    raise ValueError("search_delivery_v1 requires mission configured")
+                from .configured_inputs import validate_search_delivery_sources
+                course_path, scenario_path = validate_search_delivery_sources(competition, config_path.parent)
+            else:
+                course_path, scenario_path = validate_resolved_competition(
+                    competition, configuration_directory=config_path.parent
+                )
         if mission == "comp2026_auto":
             if competition is None:
                 raise ValueError("comp2026_auto requires scenario competition_v1")

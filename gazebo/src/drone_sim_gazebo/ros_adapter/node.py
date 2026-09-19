@@ -25,9 +25,9 @@ from .payload import (
     payload_state_message,
 )
 from .topics import (
-    PAYLOAD_IDS,
     camera_topics_for_world,
     contact_topic_for_world,
+    payload_ids_for_world,
     private_command_topics_for_world,
     private_payload_topic,
     readiness_publisher_topics_for_world,
@@ -89,6 +89,8 @@ class GazeboAdapterNode(_node_base()):
         world_name: str = "phase3_foundation",
         width_px: int = 320,
         height_px: int = 240,
+        observer_width_px: int | None = None,
+        observer_height_px: int | None = None,
         require_competition_recorders: bool | None = None,
         on_completed: Callable[[AdapterSummary], None] | None = None,
         on_fault: Callable[[str], None] | None = None,
@@ -102,7 +104,8 @@ class GazeboAdapterNode(_node_base()):
         super().__init__("drone_sim_gazebo_adapter")
         self._run_id = run_id
         self._world_name = world_name
-        self._competition = world_name == "competition_mission"
+        self._payload_ids = payload_ids_for_world(world_name)
+        self._competition = bool(self._payload_ids)
         self._require_competition_recorders = (
             self._competition
             if require_competition_recorders is None
@@ -115,6 +118,8 @@ class GazeboAdapterNode(_node_base()):
             expected_frames=expected_frames,
             width_px=width_px,
             height_px=height_px,
+            observer_width_px=observer_width_px,
+            observer_height_px=observer_height_px,
         )
         self._on_completed = on_completed or (lambda _summary: None)
         self._on_fault = on_fault or (lambda _reason: None)
@@ -175,7 +180,7 @@ class GazeboAdapterNode(_node_base()):
                     aruco_id=aruco_id,
                     interval_ns=50_000_000,
                 )
-                for aruco_id in PAYLOAD_IDS
+                for aruco_id in self._payload_ids
             }
             self._range_sequence = RangeSequence(
                 expected_samples=expected_frames,
@@ -187,7 +192,7 @@ class GazeboAdapterNode(_node_base()):
                 self._accept_range,
                 _qos(10, reliable=False),
             )
-            for aruco_id in PAYLOAD_IDS:
+            for aruco_id in self._payload_ids:
                 self.create_subscription(
                     PoseArray,
                     private_payload_topic(aruco_id, "pose"),
@@ -521,7 +526,7 @@ class GazeboAdapterNode(_node_base()):
         if self._output_active:
             self._publish(output)
             return
-        limit = 14 if self._competition else 6
+        limit = 2 * (4 + len(self._payload_ids)) if self._competition else 6
         if len(self._pre_zero_outputs) + len(output) > limit:
             raise AdapterFault("pre-zero output queue exceeded two public epochs")
         self._pre_zero_outputs.extend(output)

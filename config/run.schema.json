@@ -51,11 +51,12 @@
     {
       "if": {
         "properties": {
-          "scenario": {"const": "competition_v1"}
+          "scenario": {
+            "not": {"enum": ["competition_v1", "search_delivery_v1"]}
+          }
         }
       },
-      "then": {"properties": {"recording": {"$ref": "#/$defs/competition_recording"}}},
-      "else": {"properties": {"recording": {"$ref": "#/$defs/baseline_recording"}}}
+      "then": {"properties": {"recording": {"$ref": "#/$defs/baseline_recording"}}}
     },
     {
       "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
@@ -90,7 +91,22 @@
           "runtime_profile": {"const": "phase3"},
           "world": {"const": "competition_mission"},
           "vehicle": {"const": "iris_competition"},
-          "mission": {"enum": ["configured", "comp2026_auto"]}
+          "mission": {"enum": ["configured", "comp2026_auto"]},
+          "recording": {"$ref": "#/$defs/competition_recording"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"scenario": {"const": "search_delivery_v1"}}},
+      "then": {
+        "required": ["runtime_profile", "competition", "mission_plan"],
+        "properties": {
+          "runtime_profile": {"const": "phase3"},
+          "world": {"const": "search_delivery"},
+          "vehicle": {"const": "iris_search_delivery"},
+          "mission": {"const": "configured"},
+          "recording": {"$ref": "#/$defs/search_delivery_recording"},
+          "simulation": {"$ref": "#/$defs/search_delivery_simulation"}
         }
       }
     }
@@ -103,8 +119,14 @@
       "properties": {
         "width_px": {"enum": [320, 640]},
         "height_px": {"enum": [240, 480]},
+        "observer_width_px": {"enum": [320, 640, 1280]},
+        "observer_height_px": {"enum": [240, 480, 960]},
         "fps": {"const": 20},
         "encoding": {"const": "rgb8"}
+      },
+      "dependentRequired": {
+        "observer_width_px": ["observer_height_px"],
+        "observer_height_px": ["observer_width_px"]
       },
       "oneOf": [
         {"properties": {"width_px": {"const": 320}, "height_px": {"const": 240}}},
@@ -115,14 +137,36 @@
       "type": "object",
       "properties": {
         "width_px": {"const": 640},
-        "height_px": {"const": 480}
+        "height_px": {"const": 480},
+        "observer_width_px": {"const": 640},
+        "observer_height_px": {"const": 480}
       }
     },
     "baseline_recording": {
       "type": "object",
       "properties": {
         "width_px": {"const": 320},
-        "height_px": {"const": 240}
+        "height_px": {"const": 240},
+        "observer_width_px": {"const": 320},
+        "observer_height_px": {"const": 240}
+      }
+    },
+    "search_delivery_recording": {
+      "type": "object",
+      "required": ["observer_width_px", "observer_height_px"],
+      "properties": {
+        "width_px": {"const": 640},
+        "height_px": {"const": 480},
+        "observer_width_px": {"const": 1280},
+        "observer_height_px": {"const": 960}
+      }
+    },
+    "search_delivery_simulation": {
+      "type": "object",
+      "properties": {
+        "duration_sim_seconds": {"const": 240.0},
+        "public_epoch_native_sim_seconds": {"const": 90.0},
+        "target_real_time_factor": {"const": 1.0}
       }
     },
     "competition": {

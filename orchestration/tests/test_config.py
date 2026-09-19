@@ -30,6 +30,8 @@ VERTICAL_DESCENT_TEMPLATE = CONFIG / "vertical-descent-run.json"
 ROLL_AUTOTUNE_TEMPLATE = CONFIG / "autotune-roll-run.json"
 CONFIGURED_DESCENT_TEMPLATE = CONFIG / "configured-descent-run.json"
 CONFIGURED_OPERATOR_TEMPLATE = CONFIG / "configured-operator-run.json"
+SEARCH_DELIVERY_COURSE = CONFIG / "course-search-delivery.yaml"
+SEARCH_DELIVERY_SCENARIO = CONFIG / "scenario-search-delivery.yaml"
 FIXED_RUN_ID = UUID("00000000-0000-4000-8000-000000000222")
 
 
@@ -84,6 +86,56 @@ SCENARIO_DOCUMENT = {
             {"pickup_zone": "WA", "color": "yellow", "drop_zone": "F2"},
             {"pickup_zone": "WM", "color": "blue", "drop_zone": "F2"},
         ],
+    },
+}
+
+SEARCH_DELIVERY_COURSE_DOCUMENT = {
+    "schema_version": 1,
+    "units": "meters",
+    "origin": "H",
+    "waypoints": {
+        "H": {"x": 0.0, "y": 0.0, "width": 4.572, "height": 4.572, "role": "home"},
+        "L": {"x": -8.0, "y": 6.0, "width": 4.572, "height": 4.572, "role": "landing"},
+        "F2": {"x": 6.0, "y": 20.0, "width": 0.9144, "height": 0.9144, "role": "fire"},
+        "WA": {"x": 18.0, "y": 8.0, "width": 6.096, "height": 6.096, "role": "autonomous_pickup"},
+        "WM": {"x": 18.0, "y": -8.0, "width": 6.096, "height": 6.096, "role": "manual_pickup"},
+    },
+    "attempt": {
+        "duration_seconds": 240,
+        "acquisition_agl_m": 4.572,
+        "transit_agl_m": 10.0,
+        "release_agl_m": 10.0,
+    },
+}
+SEARCH_DELIVERY_SCENARIO_DOCUMENT = {
+    "schema_version": 1,
+    "seed": 2026,
+    "vehicle": {"payload_capacity": 1},
+    "camera": {
+        "width_px": 640,
+        "height_px": 480,
+        "update_rate_hz": 20,
+        "horizontal_fov_rad": 0.60,
+        "body_position_m": [0.0, 0.0, -0.10],
+    },
+    "observer_camera": {"width_px": 1280, "height_px": 960},
+    "range_sensor": {"update_rate_hz": 20},
+    "payload_interaction": {
+        "pickup_max_center_error_m": 0.075,
+        "settle_position_tolerance_m": 0.01,
+        "settle_time_s": 1.0,
+    },
+    "payload_geometry": {
+        "size_in": [6, 6, 2],
+        "mass_lb": 2.5,
+        "marker_size_mm": 100,
+    },
+    "payloads": [{"aruco_id": 3, "color": "yellow", "initial": "WA"}],
+    "mission": {
+        "aruco_id": 3,
+        "pickup_zone": "WA",
+        "drop_zone": "F2",
+        "search_start": {"x": 16.0, "y": 8.0},
     },
 }
 
@@ -2117,6 +2169,301 @@ def test_configured_competition_rejects_incompatible_bindings(
         resolve_run_config(
             _write_template(tmp_path, document), run_id_factory=lambda: FIXED_RUN_ID
         )
+
+
+def _search_delivery_document() -> dict:
+    return {
+        "world": "search_delivery",
+        "vehicle": "iris_search_delivery",
+        "mission": "configured",
+        "scenario": "search_delivery_v1",
+        "output_root": "runs",
+        "max_wall_seconds": 1800,
+        "startup_wall_seconds": 180,
+        "finalization_wall_seconds": 300,
+        "recording": {
+            "width_px": 640,
+            "height_px": 480,
+            "observer_width_px": 1280,
+            "observer_height_px": 960,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+        "runtime_profile": "phase3",
+        "simulation": {
+            "seed": 2026,
+            "duration_sim_seconds": 240.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 1.0,
+        },
+        "competition": {
+            "course": SEARCH_DELIVERY_COURSE.name,
+            "scenario": SEARCH_DELIVERY_SCENARIO.name,
+        },
+        "mission_plan": {
+            "schema_version": 1,
+            "steps": [{"tool": "land", "args": {}}],
+        },
+    }
+
+
+def _write_search_delivery_template(tmp_path: Path, document: dict | None = None) -> Path:
+    (tmp_path / SEARCH_DELIVERY_COURSE.name).write_bytes(
+        SEARCH_DELIVERY_COURSE.read_bytes()
+    )
+    (tmp_path / SEARCH_DELIVERY_SCENARIO.name).write_bytes(
+        SEARCH_DELIVERY_SCENARIO.read_bytes()
+    )
+    return _write_template(
+        tmp_path, _search_delivery_document() if document is None else document
+    )
+
+
+def test_authoritative_search_delivery_sources_have_approved_physical_values():
+    assert yaml.safe_load(SEARCH_DELIVERY_COURSE.read_text(encoding="utf-8")) == (
+        SEARCH_DELIVERY_COURSE_DOCUMENT
+    )
+    assert yaml.safe_load(SEARCH_DELIVERY_SCENARIO.read_text(encoding="utf-8")) == (
+        SEARCH_DELIVERY_SCENARIO_DOCUMENT
+    )
+
+
+def test_search_delivery_resolves_and_reloads_frozen_sources(tmp_path):
+    resolved = resolve_run_config(
+        _write_search_delivery_template(tmp_path),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+
+    assert (resolved.world, resolved.vehicle) == (
+        "search_delivery",
+        "iris_search_delivery",
+    )
+    assert (resolved.mission, resolved.scenario) == (
+        "configured",
+        "search_delivery_v1",
+    )
+    assert resolved.recording == RecordingConfig(640, 480, 20, "rgb8", 1280, 960)
+    assert resolved.simulation is not None
+    assert (
+        resolved.simulation.duration_ns,
+        resolved.simulation.public_epoch_native_ns,
+        resolved.simulation.target_real_time_factor,
+    ) == (240_000_000_000, 90_000_000_000, 1.0)
+    assert resolved.competition is not None
+    assert resolved.competition.course_sha256 == hashlib.sha256(
+        SEARCH_DELIVERY_COURSE.read_bytes()
+    ).hexdigest()
+    assert resolved.competition.scenario_sha256 == hashlib.sha256(
+        SEARCH_DELIVERY_SCENARIO.read_bytes()
+    ).hexdigest()
+
+    written = write_resolved_config(tmp_path / "run", resolved)
+    loaded = load_run_config(written)
+
+    assert loaded == replace(
+        resolved,
+        competition=replace(
+            resolved.competition,
+            course_source=written.parent / "course.yaml",
+            scenario_source=written.parent / "scenario.yaml",
+        ),
+    )
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_search_delivery_matches_public_config_schemas(tmp_path, schema_name):
+    if schema_name == "run-template.schema.json":
+        document = _search_delivery_document()
+    else:
+        resolved = resolve_run_config(
+            _write_search_delivery_template(tmp_path),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+        document = json.loads(
+            write_resolved_config(tmp_path / "run", resolved).read_text(encoding="utf-8")
+        )
+
+    _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda value: value.update(world="competition_mission"), id="world"),
+        pytest.param(lambda value: value.update(vehicle="iris_competition"), id="vehicle"),
+        pytest.param(lambda value: value.update(mission="controlled_descent"), id="mission"),
+        pytest.param(lambda value: value.pop("competition"), id="sources"),
+        pytest.param(
+            lambda value: value["recording"].update(width_px=320, height_px=240),
+            id="recording",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update(observer_width_px=640),
+            id="observer-recording",
+        ),
+        pytest.param(
+            lambda value: value["recording"].pop("observer_height_px"),
+            id="partial-observer-recording",
+        ),
+        pytest.param(
+            lambda value: value["simulation"].update(duration_sim_seconds=239.0),
+            id="duration",
+        ),
+        pytest.param(
+            lambda value: value["simulation"].update(
+                public_epoch_native_sim_seconds=89.0
+            ),
+            id="warmup",
+        ),
+        pytest.param(
+            lambda value: value["simulation"].update(target_real_time_factor=0.25),
+            id="real-time-factor",
+        ),
+    ],
+)
+def test_search_delivery_schemas_reject_incompatible_bindings(
+    tmp_path, schema_name, mutate
+):
+    if schema_name == "run-template.schema.json":
+        document = _search_delivery_document()
+    else:
+        resolved = resolve_run_config(
+            _write_search_delivery_template(tmp_path),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+        document = json.loads(
+            write_resolved_config(tmp_path / "run", resolved).read_text(encoding="utf-8")
+        )
+    mutate(document)
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        pytest.param(
+            lambda value: value.update(runtime_profile="phase2")
+            or value.pop("simulation"),
+            "search_delivery_v1.*phase3",
+            id="phase2",
+        ),
+        pytest.param(
+            lambda value: value.update(mission="controlled_descent")
+            or value.pop("mission_plan"),
+            "search_delivery_v1.*mission configured",
+            id="mission",
+        ),
+        pytest.param(
+            lambda value: value.update(world="competition_mission"),
+            "search_delivery_v1.*world search_delivery",
+            id="world",
+        ),
+        pytest.param(
+            lambda value: value.update(vehicle="iris_competition"),
+            "search_delivery_v1.*vehicle iris_search_delivery",
+            id="vehicle",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update(width_px=320, height_px=240),
+            "search_delivery_v1.*640x480",
+            id="recording",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update(
+                observer_width_px=640, observer_height_px=480
+            ),
+            "search_delivery_v1.*observer.*1280x960",
+            id="observer-recording",
+        ),
+        pytest.param(
+            lambda value: value["recording"].pop("observer_height_px"),
+            "observer recording dimensions.*together",
+            id="partial-observer-recording",
+        ),
+        pytest.param(
+            lambda value: value.pop("competition"),
+            "search_delivery_v1.*competition",
+            id="sources",
+        ),
+        pytest.param(
+            lambda value: value["simulation"].update(duration_sim_seconds=239.0),
+            "search_delivery_v1.*240.*90.*1.0",
+            id="duration",
+        ),
+        pytest.param(
+            lambda value: value["simulation"].update(
+                public_epoch_native_sim_seconds=89.0
+            ),
+            "search_delivery_v1.*240.*90.*1.0",
+            id="warmup",
+        ),
+        pytest.param(
+            lambda value: value["simulation"].update(target_real_time_factor=0.25),
+            "search_delivery_v1.*240.*90.*1.0",
+            id="real-time-factor",
+        ),
+    ],
+)
+def test_search_delivery_rejects_incompatible_bindings(tmp_path, mutate, message):
+    document = _search_delivery_document()
+    mutate(document)
+
+    with pytest.raises(ValueError, match=message):
+        resolve_run_config(
+            _write_search_delivery_template(tmp_path, document),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+
+
+def test_search_delivery_rejects_wrong_physical_source_values(tmp_path):
+    template = _write_search_delivery_template(tmp_path)
+    scenario = yaml.safe_load(
+        (tmp_path / SEARCH_DELIVERY_SCENARIO.name).read_text(encoding="utf-8")
+    )
+    scenario["mission"]["aruco_id"] = 4
+    (tmp_path / SEARCH_DELIVERY_SCENARIO.name).write_text(
+        yaml.safe_dump(scenario, sort_keys=False), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="scenario configuration.*approved schema"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_search_delivery_load_rejects_wrong_frozen_physical_source(tmp_path):
+    resolved = resolve_run_config(
+        _write_search_delivery_template(tmp_path),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+    written = write_resolved_config(tmp_path / "run", resolved)
+    scenario = yaml.safe_load(
+        (written.parent / "scenario.yaml").read_text(encoding="utf-8")
+    )
+    scenario["mission"]["search_start"]["x"] = 15.0
+    (written.parent / "scenario.yaml").write_text(
+        yaml.safe_dump(scenario, sort_keys=False), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="scenario configuration.*approved schema"):
+        load_run_config(written)
+
+
+def test_legacy_recording_defaults_observer_dimensions_without_changing_snapshot(tmp_path):
+    resolved = resolve_run_config(
+        VERTICAL_DESCENT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID
+    )
+
+    assert (
+        resolved.recording.observer_width_px,
+        resolved.recording.observer_height_px,
+    ) == (resolved.recording.width_px, resolved.recording.height_px)
+
+    written = write_resolved_config(tmp_path / "run", resolved)
+    recording = json.loads(written.read_text(encoding="utf-8"))["recording"]
+    assert "observer_width_px" not in recording
+    assert "observer_height_px" not in recording
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])

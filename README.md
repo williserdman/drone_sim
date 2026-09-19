@@ -2,7 +2,8 @@
 
 Dockerized drone competition simulation built with ROS 2, Gazebo, ArduPilot SITL, and a companion mission controller.
 
-The mission delivers three payloads, then returns home. Gazebo
+Configured missions include a three-payload competition and a compact
+search-and-deliver course. Gazebo
 provides physical truth; a separate scorer evaluates it; recordings and a
 validated run bundle establish what actually happened.
 
@@ -14,11 +15,6 @@ validated run bundle establish what actually happened.
    running, finding videos, stopping safely, and testing.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
-
-**Current caveat:** a physical three-payload flight and return home have been
-verified, but the latest documented verification run failed later in the
-recording window. A score of 150/150 alone does not mean the run passed.
-See the [evidence and limitations](docs/handoff.md#verified-behavior-and-limits).
 
 ## First local check
 
@@ -83,6 +79,12 @@ For a fixed sequence of flight operations, copy
 `mission_plan.steps`. Use [configured-operator-run.json](config/configured-operator-run.json)
 to wait for external arming and GUIDED selection. The complete competition
 sequence is [configured-competition-run.json](config/configured-competition-run.json). The
+compact search-and-deliver example is
+[configured-search-delivery-run.json](config/configured-search-delivery-run.json):
+turns, altitude changes, an offset marker search, one payload delivery, and home landing.
+Its [course](config/course-search-delivery.yaml) and
+[scenario](config/scenario-search-delivery.yaml) select separate generated world assets.
+The
 [companion guide](companion/README.md#configured-diagnostic-missions) defines the
 tools and limitations; the [runbook](docs/runbook.md#configured-mission-runner)
 covers rebuilding and launching. See [handoff](docs/handoff.md#2026-09-19-configured-mission-runner)
