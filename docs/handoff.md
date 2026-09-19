@@ -72,8 +72,10 @@ source/asset checks matched. It completed in 3,521.23 wall seconds. Its audit is
   incorrectly required a physical sample at time zero. An in-memory correction
   admitting the actual first sample at 50 ms makes the result and all score
   events match exactly. The correction passed 36 focused artifact/replay tests,
-  including rejection of a missing first tick and an interior gap. A rebuilt
-  validator recheck remains pending.
+  including rejection of a missing first tick and an interior gap. Independent
+  semantic acceptance then passed at 100/100 with the rebuilt checker from
+  parent `0c4c3d4`, using the original flight's launch revisions and seven image
+  identities. All 175 installed source/asset hashes matched that checker build.
 - Artifacts: terminal COMPLETED / `mission_complete`, all 25 manifest artifacts
   valid and no incomplete paths. Each H.264 video has 4,800 decoded frames at
   20 fps for 240 s: observer 1280×960, onboard 640×480. The bag has 4,800 samples
@@ -86,6 +88,12 @@ The retry audit contains `vehicle_trajectory.csv`,
 initial replay report remains unchanged beside them. The checker correction and
 revalidation audit is `runs/builds/search-replay-20260919-2xm7nofo/`; flight inputs,
 recordings and published scores are preserved.
+`revalidation.json` records both flight and checker revisions, the checker image
+identity, matching original launch expectations, and empty run-resource inventories.
+Only the replay module changed among runtime sources between the flight and
+that recheck. The flight ran at `179fcfe`; the corrected checker at `0c4c3d4`
+revalidated that preserved flight. Later documentation-only commits do not
+change those evidence identities.
 
 ## 2026-09-19 configured competition conversion
 
