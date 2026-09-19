@@ -25,10 +25,37 @@ An additional container run passed 35 Gazebo adapter/payload/asset tests with
 ROS dependencies available. Artifact checks passed 535 tests with 12 skips;
 the final combined scenario/runtime/acceptance subset passed 101 tests. A
 generator check caught the delivery pad extending beyond the initial ground
-plane; the generated 60 m plane now contains every pad. These checks establish implementation and wiring;
-the new flight and its larger observer recording are not yet verified.
-Build and flight evidence will be retained under
-`runs/builds/search-delivery-20260919-8i8xhceh/`.
+plane; the generated 60 m plane now contains every pad.
+
+First flight `752b97e0-79ce-42d0-ba6e-9078a07bcf20` used parent `658282a`
+and unchanged nested `a89aede`. All seven images were rebuilt; 175 installed
+source/asset hashes matched across the six changed images. Evidence is retained
+under `runs/builds/search-delivery-20260919-8i8xhceh/`.
+
+- Physical outcome: navigation and camera search reached marker 3. Precision
+  landing failed at public 35.6 s with `Camera acquisition worker failed`.
+  Local LAND recovery completed at 41.05 s; raw ground truth confirms stationary
+  contact at the pickup marker. No payload attached or delivery occurred.
+- Score: 0/100. Only SEARCH STARTED was published; the mission did not complete.
+- Artifacts: terminal FAILED with an incomplete rosbag. Both MP4s decode at
+  20 fps: onboard 640×480, 822 frames; observer 1280×960, 821 frames. The partial
+  bag retains 821 vehicle samples and 822 payload samples. This is useful failure
+  evidence, not a valid complete mission bundle.
+
+The log preserved only the outer camera error. A real-component reproduction
+failed 20/20 times when a frame aged beyond the 500 ms simulation freshness
+limit during acquisition. That timing failure is the leading explanation;
+the first flight's discarded exception cause prevents exact confirmation.
+
+The follow-up replaces configured background acquisition with capture from a
+ready, fresh frame under the runtime owner's I/O lock. Stale frames become
+missing targets; the 500 ms limit is unchanged. Direct camera failures still
+stop the mission, and operation results retain explicit exception causes.
+All 571 companion tests passed; a final 81-test I/O, camera, operation and live-loop
+subset also passed. This includes a real-camera test that excludes a
+600 ms clock advance during frame handoff. The retry build and flight audit is
+`runs/builds/search-delivery-retry-20260919-tpz1_zf4/`; flight verification remains
+pending.
 
 ## 2026-09-19 configured competition conversion
 

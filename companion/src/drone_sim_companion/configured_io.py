@@ -133,7 +133,6 @@ class CompetitionIO:
         self._closed = False
         self._next_event_id = 0
         self._last_event_timestamp_ns: int | None = None
-        self._camera_started = False
         self._last_camera_sequence = 0
         self._cached_marker_id: int | None = None
         self._cached_marker_timestamp_ns: int | None = None
@@ -240,16 +239,12 @@ class CompetitionIO:
         with self._lock:
             if self._closed:
                 return None
-            if not self._camera_started:
-                self._camera.cm.start_acquisition(quality=4)
-                self._camera_started = True
-            try:
-                observation = self._camera.cm.latest_observation(
-                    after_sequence=self._last_camera_sequence,
-                    timeout_s=0.001,
-                )
-            except TimeoutError:
+            now_ns = self._clock.timestamp_ns
+            if now_ns is None or not self._frame_source.retain_latest_at_or_after(
+                now_ns - _SENSOR_FRESHNESS_NS
+            ):
                 return self._fresh_cached_marker(aruco_id)
+            observation = self._camera.cm.capture_observation(quality=4)
 
             sequence = observation.metadata.sequence
             timestamp_ns = observation.metadata.exposure_timestamp_ns

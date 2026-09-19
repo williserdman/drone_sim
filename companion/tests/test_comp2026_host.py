@@ -162,6 +162,24 @@ def test_frame_source_hands_over_only_the_newest_available_image() -> None:
     assert source.ready is False
 
 
+def test_frame_source_discards_only_frames_older_than_threshold() -> None:
+    source = RosFrameSource(width_px=640, height_px=480)
+    source.accept_image(rgb_image(500_000_000))
+
+    assert source.retain_latest_at_or_after(500_000_000) is True
+    source.capture_frame()
+    source.accept_image(rgb_image(1_000_000_000))
+
+    assert source.retain_latest_at_or_after(1_000_000_001) is False
+    assert source.ready is False
+    assert source.last_timestamp_ns == 1_000_000_000
+
+    source.accept_image(rgb_image(1_000_000_000))
+    assert source.ready is False
+    source.accept_image(rgb_image(1_000_000_001))
+    assert source.ready is True
+
+
 def test_stopped_frame_source_rejects_queued_and_new_images() -> None:
     source = RosFrameSource(width_px=640, height_px=480)
     source.accept_image(rgb_image(50_000_000))

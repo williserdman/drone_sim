@@ -48,6 +48,14 @@ class IO:
         self.events.append((phase, state, stamp))
 
 
+class CameraFailureIO(IO):
+    def marker(self, aruco_id):
+        try:
+            raise ValueError('image data length does not match its geometry')
+        except ValueError as error:
+            raise RuntimeError('Camera acquisition worker failed') from error
+
+
 def observe(ops, stamp, *, speed=0.0, armed=True, landed=False):
     ops.observe(Telemetry(stamp, heartbeat=True, mode='GUIDED', armed=armed,
                           landed=landed, latitude_deg=37.4, longitude_deg=-122.08,
@@ -81,6 +89,28 @@ def test_attachment_requires_landed_disarmed_state():
     identifier = ops.start('attach_payload', {'aruco_id': 3})
     assert ops.operation_status(identifier).state == 'failed'
     assert io.payloads.calls == []
+
+
+def test_precision_land_preserves_camera_failure_cause_in_terminal_error():
+    from drone_sim_companion.configured_competition import CompetitionOperations
+
+    io = CameraFailureIO()
+    emitted = []
+    ops = CompetitionOperations(Vehicle(), io, emit=lambda *event: emitted.append(event))
+    observe(ops, 0)
+
+    identifier = ops.start('precision_land', {'aruco_id': 3})
+
+    status = ops.operation_status(identifier)
+    assert status.state == 'failed'
+    assert status.error == (
+        'Camera acquisition worker failed; caused by ValueError: '
+        'image data length does not match its geometry'
+    )
+    finished = [event for event in emitted if event[0] == 'operation_finished']
+    assert len(finished) == 1
+    assert finished[0][2]['state'] == 'failed'
+    assert finished[0][2]['error'] == status.error
 
 
 def test_phase_events_wait_for_distinct_simulation_timestamps():

@@ -41,10 +41,45 @@ class FakeFrameSource:
     def __init__(self, *, width_px, height_px):
         assert (width_px, height_px) == (640, 480)
         self.accepted = []
+        self.latest = None
+        self.last_timestamp_ns = None
         self.stopped = False
 
     def accept_image(self, message):
         self.accepted.append(message)
+        timestamp_ns = (
+            message.header.stamp.sec * 1_000_000_000
+            + message.header.stamp.nanosec
+        )
+        if self.last_timestamp_ns is None or timestamp_ns > self.last_timestamp_ns:
+            self.latest = message
+
+    @property
+    def ready(self):
+        return not self.stopped and self.latest is not None
+
+    def retain_latest_at_or_after(self, earliest_timestamp_ns):
+        if self.latest is None:
+            return False
+        timestamp_ns = (
+            self.latest.header.stamp.sec * 1_000_000_000
+            + self.latest.header.stamp.nanosec
+        )
+        if timestamp_ns < earliest_timestamp_ns:
+            self.last_timestamp_ns = timestamp_ns
+            self.latest = None
+            return False
+        return True
+
+    def consume_timestamp(self):
+        assert self.latest is not None
+        timestamp_ns = (
+            self.latest.header.stamp.sec * 1_000_000_000
+            + self.latest.header.stamp.nanosec
+        )
+        self.last_timestamp_ns = timestamp_ns
+        self.latest = None
+        return timestamp_ns
 
     def stop(self, _reason):
         self.stopped = True
@@ -71,12 +106,35 @@ class FakeCameraManager:
 
 
 class FakeCamera:
-    def __init__(self):
+    def __init__(self, frame_source):
+        self.start_calls = 0
+        self.capture_calls = 0
+        self.capture_error = None
+        self.frame_source = frame_source
         self.cm = SimpleNamespace(
-            start_acquisition=lambda **_kwargs: None,
+            start_acquisition=self.start_acquisition,
             latest_observation=lambda **_kwargs: (_ for _ in ()).throw(TimeoutError()),
+            capture_observation=self.capture_observation,
             stop_acquisition=lambda **_kwargs: True,
         )
+
+    def start_acquisition(self, **_kwargs):
+        self.start_calls += 1
+
+    def capture_observation(self, **_kwargs):
+        self.capture_calls += 1
+        if self.capture_error is not None:
+            raise self.capture_error
+        timestamp_ns = self.frame_source.consume_timestamp()
+        return SimpleNamespace(
+            metadata=SimpleNamespace(
+                sequence=self.capture_calls,
+                exposure_timestamp_ns=timestamp_ns,
+            )
+        )
+
+    def vector_from_observation_3d(self, _observation, _aruco_id):
+        return SimpleNamespace(x=0.1, y=-0.2, z=3.0)
 
 
 class FakeRequest:
@@ -176,7 +234,9 @@ def dependencies():
         ClearanceUnavailableError=RuntimeError,
         StaleSensorError=FakeAdapterStaleSensorError,
         project_vertical_clearance=lambda *_args, **_kwargs: None,
-        create_simulator_camera=lambda *_args, **_kwargs: FakeCamera(),
+        create_simulator_camera=lambda _manager, _camera, source, **_kwargs: FakeCamera(
+            source
+        ),
         Image=object,
         LaserScan=object,
         PayloadState=object,
@@ -263,6 +323,57 @@ def test_future_images_are_staged_until_clock_reaches_their_source_time(monkeypa
     assert bridge._frame_source.accepted == [at_15]
     bridge.accept_clock(20)
     assert bridge._frame_source.accepted == [at_15, at_20]
+
+
+def test_marker_discards_stale_ready_frame_without_starting_worker(monkeypatch):
+    bridge, node = make_io(monkeypatch)
+    callback = node.callbacks["/camera/onboard/image_raw"]
+    stale = image(99_999_999)
+    bridge.accept_clock(600_000_000)
+    callback(stale)
+
+    assert bridge.marker(3) is None
+    assert bridge._frame_source.ready is False
+    assert bridge._frame_source.last_timestamp_ns == 99_999_999
+    assert bridge._camera.capture_calls == 0
+
+
+def test_marker_synchronously_captures_frame_at_inclusive_freshness_bound(monkeypatch):
+    bridge, node = make_io(monkeypatch)
+    callback = node.callbacks["/camera/onboard/image_raw"]
+    bridge.accept_clock(600_000_000)
+    callback(image(100_000_000))
+
+    marker = bridge.marker(3)
+
+    assert marker is not None
+    assert (marker.timestamp_ns, marker.sequence, marker.aruco_id) == (
+        100_000_000,
+        1,
+        3,
+    )
+    assert (marker.forward_m, marker.right_m, marker.down_m) == (0.1, -0.2, 3.0)
+    assert bridge._camera.capture_calls == 1
+
+
+def test_marker_without_ready_frame_does_not_start_or_block_on_camera(monkeypatch):
+    bridge, _node = make_io(monkeypatch)
+    bridge.accept_clock(600_000_000)
+
+    assert bridge.marker(3) is None
+    assert bridge._camera.start_calls == 0
+    assert bridge._camera.capture_calls == 0
+
+
+def test_marker_propagates_synchronous_camera_failure(monkeypatch):
+    bridge, node = make_io(monkeypatch)
+    callback = node.callbacks["/camera/onboard/image_raw"]
+    bridge.accept_clock(600_000_000)
+    callback(image(600_000_000))
+    bridge._camera.capture_error = ValueError("malformed camera frame")
+
+    with pytest.raises(ValueError, match="malformed camera frame"):
+        bridge.marker(3)
 
 
 def test_clearance_uses_oldest_actual_vehicle_attitude_timestamp(monkeypatch):

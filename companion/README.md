@@ -114,6 +114,12 @@ reliable transient-local delivery, increasing source timestamps, and a final
 bounded DDS acknowledgment check. The
 [competition I/O](src/drone_sim_companion/configured_io.py) preserves image and
 range source times; flight commands remain with the single MAVLink owner.
+Configured vision consumes an already available frame on that same owner thread.
+It discards exposures older than 500 ms of simulation time; an empty or stale
+frame slot returns no target so precision landing can hold and reacquire.
+Capture and detection share the I/O lock with clock updates, preventing a frame
+from aging during handoff. Malformed frames and other camera errors still fail
+the operation, with chained error causes retained in its result.
 
 ### Search-and-deliver contract
 

@@ -8,6 +8,14 @@ from .mission_plan import COMPETITION_TOOLS
 from .operations import DroneOperations
 
 
+def _format_failure(error: Exception) -> str:
+    message = str(error)
+    cause = error.__cause__
+    if cause is None:
+        return message
+    return f'{message}; caused by {type(cause).__name__}: {_format_failure(cause)}'
+
+
 class CompetitionOperations(DroneOperations):
     def __init__(self, vehicle, io, emit=None, *, release_agl_m=10.0):
         super().__init__(vehicle, emit)
@@ -66,7 +74,7 @@ class CompetitionOperations(DroneOperations):
             try:
                 self._precision.observe_ack(telemetry.ack)
             except Exception as error:
-                self._finish('failed', str(error))
+                self._finish('failed', _format_failure(error))
         super().observe(telemetry)
 
     def _evaluate(self):
@@ -110,7 +118,7 @@ class CompetitionOperations(DroneOperations):
                 if self._payload_dispatched and self.io.payloads.tick(self._clock_ns):
                     self._finish('succeeded')
         except Exception as error:
-            self._finish('failed', str(error))
+            self._finish('failed', _format_failure(error))
 
     def _release_stable(self, state, clearance_m):
         names = ('latitude_deg', 'longitude_deg', 'relative_altitude_m',

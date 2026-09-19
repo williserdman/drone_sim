@@ -167,6 +167,20 @@ class RosFrameSource:
         with self._condition:
             return self._stop_reason is None and self._latest_image is not None
 
+    def retain_latest_at_or_after(self, earliest_timestamp_ns: int) -> bool:
+        """Drop an older queued frame and report whether a usable frame remains."""
+
+        with self._condition:
+            if self._stop_reason is not None or self._latest_image is None:
+                return False
+            assert self._latest_timestamp_ns is not None
+            if self._latest_timestamp_ns < earliest_timestamp_ns:
+                self.last_timestamp_ns = self._latest_timestamp_ns
+                self._latest_timestamp_ns = None
+                self._latest_image = None
+                return False
+            return True
+
     def accept_image(self, message: object) -> None:
         timestamp_ns = _stamp_ns(message.header.stamp)  # type: ignore[attr-defined]
         if getattr(message.header, "frame_id", None) != "camera/onboard":  # type: ignore[attr-defined]

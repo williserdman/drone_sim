@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 import drone_sim_companion.runtime_node as runtime_node
+from drone_sim_companion.configured_io import CompetitionIO
 from drone_sim_companion.comp2026_host import RosFrameSource, SimulationClock
 
 
@@ -138,6 +139,74 @@ def test_simulator_camera_records_bounded_source_exposure_age(
     assert observation.metadata.receipt_timestamp_ns == 1_500_000_000
     assert observation.metadata.exposure_age_ns == 500_000_000
     assert observation.metadata.exposure_age_bounded is True
+
+
+def test_configured_camera_capture_excludes_late_clock_advance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    CameraManager, Camera = _nested_camera_types(monkeypatch)
+    clock = SimulationClock()
+    clock.accept(1_000_000_000)
+    source = RosFrameSource(width_px=640, height_px=480)
+    pixels_requested = threading.Event()
+    release_pixels = threading.Event()
+
+    class DeferredPixels:
+        def __bytes__(self) -> bytes:
+            pixels_requested.set()
+            assert release_pixels.wait(1.0)
+            return bytes((10, 20, 30)) * (640 * 480)
+
+    message = _image(1_000_000_000)
+    message.data = DeferredPixels()
+    source.accept_image(message)
+    camera = runtime_node._create_simulator_camera(
+        CameraManager,
+        Camera,
+        frame_source=source,
+        clock=clock,
+        scenario_path=SCENARIO_PATH,
+    )
+    bridge = object.__new__(CompetitionIO)
+    bridge._lock = threading.RLock()
+    bridge._closed = False
+    bridge._clock = clock
+    bridge._frame_source = source
+    bridge._camera = camera
+    bridge._last_camera_sequence = 0
+    bridge._cached_marker_id = None
+    bridge._cached_marker_timestamp_ns = None
+    bridge._cached_marker = None
+    marker_result: list[object] = []
+    clock_advance_requested = threading.Event()
+    clock_advanced = threading.Event()
+
+    def read_marker() -> None:
+        marker_result.append(bridge.marker(3))
+
+    def advance_clock() -> None:
+        assert pixels_requested.wait(1.0)
+        clock_advance_requested.set()
+        with bridge._lock:
+            clock.accept(1_600_000_000)
+            clock_advanced.set()
+
+    reader = threading.Thread(target=read_marker)
+    advancer = threading.Thread(target=advance_clock)
+    reader.start()
+    advancer.start()
+    assert pixels_requested.wait(1.0)
+    assert clock_advance_requested.wait(1.0)
+    advance_was_excluded = not clock_advanced.wait(0.05)
+    release_pixels.set()
+    reader.join(1.0)
+    advancer.join(1.0)
+
+    assert advance_was_excluded
+    assert marker_result == [None]
+    assert bridge._last_camera_sequence == 1
+    assert camera.cm._acquisition_thread is None
+    assert clock_advanced.is_set()
 
 
 def test_bounded_simulator_camera_shutdown_cannot_return_the_last_observation(

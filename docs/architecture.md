@@ -145,6 +145,14 @@ simulation clock to reject future exposures and exposures older than the
 500,000,000 ns simulator limit. It does not replace missing evidence with a wall
 timestamp.
 
+Configured missions capture and detect from the ready image slot on the runtime
+owner thread, under the same I/O lock used for accepted clock updates. The
+source discards exposures older than the 500 ms limit before capture, retaining
+the discarded timestamp for monotonic admission. Missing/stale images yield no
+target; other capture errors fail the active operation. This avoids a background
+camera worker handing off a frame after the owner has advanced simulation time.
+Future executor changes must preserve that serialization.
+
 The selected producer is `competition_sensor_link/downward_camera` in the
 generated competition model, not the older `onboard_camera` sensor in the
 included airframe. Its OpenCV axes map to body FRD as camera right to body right,
