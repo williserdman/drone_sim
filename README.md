@@ -58,9 +58,10 @@ the registered `precision_land`, `attach_payload`, `release_payload`, and
 [mission tool contract](companion/src/drone_sim_companion/mission_plan.py) and is
 validated by the [run-template schema](config/run-template.schema.json). Its
 recorders run for the complete 420-second public window even if the mission
-finishes earlier. This template has no current integrated flight, score, and
-artifact-validity result; follow the [operator procedure](docs/runbook.md#configured-competition-plan)
-before treating it as current success evidence.
+finishes earlier. Run `89fffa9f-6b10-403a-a8b0-0c29684d30d3` completed all 42 steps,
+delivered all three payloads, returned home and passed independent 150/150
+acceptance on 2026-09-19. See the [dated evidence](docs/handoff.md#2026-09-19-configured-competition-conversion)
+and [operator procedure](docs/runbook.md#configured-competition-plan).
 
 ## How to read this repository
 

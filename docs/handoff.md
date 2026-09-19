@@ -24,8 +24,44 @@ configuration, artifacts configuration, electromagnet runtime and Phase 3
 contracts. This includes real PyMAVLink messages with fake ROS, range/attitude
 timestamp integration, asynchronous payload confirmation and precision target
 reacquisition. All 122 checked local links in the changed guides resolve.
-Matching image build and integrated flight verification are pending. Standalone
-sensor tools, an agent endpoint and configurable branching remain deferred.
+Two subsequent missing/stale range cases passed in the 10-test range/release
+subset. Real ROS, camera acquisition and range projection also passed a
+container dependency check. All seven Phase 3 images were rebuilt from parent
+`8a0dda398270d8590cb3eaffce2615a3f1b996cc` on `feat/configured-missions` with nested
+`a89aede424036410dc98312b58d197230f0265d4` unchanged. Installed source verification
+matched 23 companion files and orchestration configuration to the launch source.
+
+Run `89fffa9f-6b10-403a-a8b0-0c29684d30d3` used the competition template unchanged
+and completed in 3,762.64 wall seconds. Evidence is local under `runs/<run_id>/`:
+
+- **Physical outcome:** all 42 operations succeeded. Camera precision landings
+  on markers 3 and 4 completed at public times 108.1 and 174.1 seconds; both
+  payloads then attached and lifted. Payloads 2, 3 and 4 settled inside F2 at
+  74.9, 140.6 and 206.65 seconds. HOME completed at 250.15 seconds with observed
+  landing/disarm; independent ground truth confirms home contact and zero speed.
+- **Score:** `competition_v1` awarded 150/150. Independent replay through the
+  installed artifact acceptance module also accepted 150/150 with matching
+  launch revisions, dirty flags and all seven image identities.
+- **Artifacts:** `collect-results` reports `COMPLETED` / `mission_complete`;
+  all 25 manifest entries are valid with no incomplete paths. Both H.264 MP4s
+  have 8,400 frames, 640×480, 20 fps and 420 seconds. The rosbag contains 8,400
+  vehicle samples, 25,200 payload-state samples and the exact 11 mission events.
+  Normal teardown left no run containers, networks or volumes.
+
+Watch `video/observer.mp4` or `video/onboard.mp4`; tool arguments and outcomes
+are in `logs/companion.jsonl`. Build, installed-source, physical and semantic
+verification are retained in `runs/builds/configured-competition-20260919-_qwxb7up/`.
+That directory also contains `trajectory.csv` and `physical-audit.json` derived
+from the finalized bag. Acceptance was recorded before the documentation-only
+follow-up commit; rerunning an inspector against a different HEAD can reject
+the same evidence on provenance alone. The parent dirty flag reflects the
+independent untracked `companion/comp2026/` directory; tracked launch source was
+committed and its hashes matched exactly.
+
+This proves one complete automatic simulation on the fixed course. Operator
+waiting, failure recovery and precision target-loss branches were not exercised
+in this flight. Standalone sensor tools, an agent endpoint, named waypoints,
+configurable branching and exclusive compute scheduling remain deferred.
 
 ## 2026-09-19 configured mission runner
 
@@ -72,9 +108,10 @@ and completed in 1,806 wall seconds. Evidence is local under `runs/<run_id>/`:
 This verifies one automatic descent in the Gazebo `vertical_descent` world.
 Operator-wait plans, waypoint flight, and failure recovery have source-test
 coverage but were not flown in this run. QGC integration and physical aircraft
-remain outside this evidence. Precision landing, camera/LiDAR tools, agent
-transport, named waypoints, branches/retries, and exclusive compute scheduling
-remain deferred. Operator-wait mode does not provision a new QGC connection.
+remain outside this evidence. Precision landing is covered by the separate
+competition run above. Standalone camera/LiDAR tools, agent transport, named
+waypoints, branches/retries and exclusive compute scheduling remain deferred.
+Operator-wait mode does not provision a new QGC connection.
 
 ## 2026-09-07 QGC flight-safety software checkpoint
 

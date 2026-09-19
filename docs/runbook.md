@@ -167,9 +167,11 @@ scenario inputs and does not supply QGC inputs.
 
 The public recording window is 420 simulated seconds after a 90-second native
 warmup, with target real-time factor 1.0. Recording and scoring continue through
-the full 420-second window even if the mission reaches HOME earlier. No current
-integrated flight, scored result, or validated artifact bundle exists for this
-template yet; inspect those three outcomes separately after the run.
+the full 420-second window even if the mission reaches HOME earlier. The
+2026-09-19 run completed the mission at public time 250.15 seconds and passed
+independent 150/150 acceptance with valid artifacts. The complete run took
+3,762.64 wall seconds on this machine; target factor 1.0 does not guarantee real
+time performance. See [dated evidence](handoff.md#2026-09-19-configured-competition-conversion).
 
 To wait for external arming and GUIDED selection, use:
 
@@ -235,7 +237,7 @@ mission logs alone as a stopped process.
 
 | Template | Purpose | Public duration / warmup / target RTF |
 | --- | --- | --- |
-| [configured-competition-run.json](../config/configured-competition-run.json) | Current configured three-payload plan; integrated result pending | 420 s / 90 s / 1.0 |
+| [configured-competition-run.json](../config/configured-competition-run.json) | Configured three-payload plan; 150/150 accepted on 2026-09-19 | 420 s / 90 s / 1.0 |
 | [default-run.json](../config/default-run.json) | Quarantined competition default, historical timing only | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
 | [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |
