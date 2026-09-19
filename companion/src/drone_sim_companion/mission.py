@@ -52,6 +52,10 @@ class Telemetry:
     prearm_checks_healthy: bool | None = None
     latitude_deg: float | None = None
     longitude_deg: float | None = None
+    horizontal_speed_m_s: float | None = None
+    roll_rad: float | None = None
+    pitch_rad: float | None = None
+    yaw_rad: float | None = None
 
 
 @dataclass(frozen=True)

@@ -142,7 +142,8 @@ class DroneOperations:
             self._values["heartbeat"] = True
             self._observed["heartbeat"] = (self._clock_ns, self._sequence)
         for name in ("mode", "armed", "landed", "relative_altitude_m", "latitude_deg",
-                     "longitude_deg", "vertical_speed_m_s", "prearm_checks_healthy"):
+                     "longitude_deg", "vertical_speed_m_s", "prearm_checks_healthy",
+                     "horizontal_speed_m_s", "roll_rad", "pitch_rad", "yaw_rad"):
             value = getattr(telemetry, name)
             if value is None:
                 continue

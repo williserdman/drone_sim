@@ -226,7 +226,7 @@ def _read_document_payload(payload: bytes, source: Path) -> dict[str, Any]:
     return document
 
 
-def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
+def _validate_recording(document: Any, *, scenario: str) -> RecordingConfig:
     if not isinstance(document, dict) or set(document) != _RECORDING_FIELDS:
         raise ValueError("recording configuration has missing or unknown keys")
     width = document["width_px"]
@@ -237,14 +237,10 @@ def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
         or (width, height) not in {(320, 240), (640, 480)}
     ):
         raise ValueError("recording dimensions must be 320x240 or 640x480")
-    required_dimensions = (
-        (640, 480)
-        if mission == "comp2026_auto"
-        else (320, 240)
-    )
+    required_dimensions = (640, 480) if scenario == "competition_v1" else (320, 240)
     if (width, height) != required_dimensions:
         raise ValueError(
-            f"{mission} recording dimensions must be exactly "
+            f"{scenario} recording dimensions must be exactly "
             f"{required_dimensions[0]}x{required_dimensions[1]}"
         )
     if document["fps"] != 20 or isinstance(document["fps"], bool):
@@ -398,6 +394,24 @@ def _validate_common(
         raise ValueError("QGC configuration requires runtime_profile phase3")
     if "qgc" in document and document["mission"] != "comp2026_auto":
         raise ValueError("QGC configuration requires mission comp2026_auto")
+    if (
+        document["mission"] == "comp2026_auto"
+        and document["scenario"] != "competition_v1"
+    ):
+        raise ValueError("comp2026_auto requires scenario competition_v1")
+    if document["scenario"] == "competition_v1":
+        if document["mission"] not in {"configured", "comp2026_auto"}:
+            raise ValueError(
+                "competition_v1 requires mission configured or comp2026_auto"
+            )
+        if runtime_profile != "phase3":
+            raise ValueError("competition_v1 requires runtime_profile phase3")
+        if document["world"] != "competition_mission":
+            raise ValueError("competition_v1 requires world competition_mission")
+        if document["vehicle"] != "iris_competition":
+            raise ValueError("competition_v1 requires vehicle iris_competition")
+        if "competition" not in document:
+            raise ValueError("competition_v1 requires competition source configuration")
     if document["mission"] == "comp2026_auto" and "qgc" not in document:
         raise ValueError("comp2026_auto requires QGC configuration")
     if document["mission"] == "configured":
@@ -417,7 +431,7 @@ def _validate_common(
             raise ValueError("simulation configuration requires runtime_profile phase3")
         simulation = None
     return (
-        _validate_recording(document["recording"], mission=document["mission"]),
+        _validate_recording(document["recording"], scenario=document["scenario"]),
         runtime_profile,
         simulation,
     )
@@ -843,8 +857,8 @@ def resolve_run_config(
         template = _template_from_document(document, source.parent, template_fd)
     finally:
         os.close(template_fd)
-    if template.mission == "comp2026_auto" and template.competition is None:
-        raise ValueError("comp2026_auto requires competition source configuration")
+    if template.scenario == "competition_v1" and template.competition is None:
+        raise ValueError("competition_v1 requires competition source configuration")
     generated = run_id_factory()
     if not isinstance(generated, UUID):
         raise ValueError("run_id_factory must return a UUID")
@@ -913,8 +927,8 @@ def load_run_config(path: str | Path) -> RunConfig:
     finally:
         os.close(configuration_fd)
     competition = _competition_from_resolved(document.get("competition"), source.parent)
-    if document["mission"] == "comp2026_auto" and competition is None:
-        raise ValueError("comp2026_auto requires competition source configuration")
+    if document["scenario"] == "competition_v1" and competition is None:
+        raise ValueError("competition_v1 requires competition source configuration")
     return RunConfig(
         run_id=str(run_uuid),
         world=document["world"],

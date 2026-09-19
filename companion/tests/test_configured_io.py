@@ -1,0 +1,317 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from drone_sim_companion import configured_io
+
+
+RUN_ID = "00000000-0000-0000-0000-000000000001"
+MISSION_SEQUENCE = (
+    ("FM1", "STARTED"),
+    ("FM1", "COMPLETE"),
+    ("FM2", "STARTED"),
+    ("FM2", "COMPLETE"),
+    ("FM3_3", "STARTED"),
+    ("FM3_3", "COMPLETE"),
+    ("FM3_4", "STARTED"),
+    ("FM3_4", "COMPLETE"),
+    ("HOME", "STARTED"),
+    ("HOME", "DISARMED"),
+    ("HOME", "COMPLETE"),
+)
+
+
+class FakeClock:
+    def __init__(self):
+        self.timestamp_ns = None
+
+    def accept(self, timestamp_ns):
+        if self.timestamp_ns is not None and timestamp_ns < self.timestamp_ns:
+            raise ValueError("clock regressed")
+        self.timestamp_ns = timestamp_ns
+
+    def read_timestamp_ns(self):
+        if self.timestamp_ns is None:
+            raise RuntimeError("clock unavailable")
+        return self.timestamp_ns
+
+
+class FakeFrameSource:
+    def __init__(self, *, width_px, height_px):
+        assert (width_px, height_px) == (640, 480)
+        self.accepted = []
+        self.stopped = False
+
+    def accept_image(self, message):
+        self.accepted.append(message)
+
+    def stop(self, _reason):
+        self.stopped = True
+
+
+class FakeLidar:
+    def __init__(self, _clock, *, sample_factory):
+        self.sample_factory = sample_factory
+        self.sample = SimpleNamespace(sampled_at=0.0)
+
+    def accept(self, _message, _timestamp_ns):
+        return None
+
+    def get_sample(self):
+        return self.sample
+
+
+class FakeAdapterStaleSensorError(RuntimeError):
+    pass
+
+
+class FakeCameraManager:
+    pass
+
+
+class FakeCamera:
+    def __init__(self):
+        self.cm = SimpleNamespace(
+            start_acquisition=lambda **_kwargs: None,
+            latest_observation=lambda **_kwargs: (_ for _ in ()).throw(TimeoutError()),
+            stop_acquisition=lambda **_kwargs: True,
+        )
+
+
+class FakeRequest:
+    ATTACH = 1
+    RELEASE = 2
+
+
+class FakePayloadCommand:
+    Request = FakeRequest
+
+
+class FakeClient:
+    def service_is_ready(self):
+        return True
+
+    def call_async(self, _request):
+        raise AssertionError("payload service should not be called")
+
+
+class FakePublisher:
+    def __init__(self):
+        self.messages = []
+        self.ack_timeouts = []
+
+    def publish(self, message):
+        self.messages.append(message)
+
+    def wait_for_all_acked(self, *, timeout):
+        self.ack_timeouts.append(timeout)
+        return True
+
+
+class FakeMissionEvent:
+    def __init__(self):
+        self.sim_timestamp = SimpleNamespace(sec=0, nanosec=0)
+
+
+class FakeQoSProfile:
+    def __init__(self, *, depth, reliability, durability="volatile"):
+        self.depth = depth
+        self.reliability = reliability
+        self.durability = durability
+
+
+class FakeNode:
+    def __init__(self):
+        self.callbacks = {}
+        self.publisher = FakePublisher()
+        qos = SimpleNamespace(reliability="reliable", durability="transient")
+        self.endpoints = [
+            SimpleNamespace(
+                node_name="drone_sim_scorekeeper",
+                node_namespace="/",
+                topic_type="simulation_interfaces/msg/MissionEvent",
+                qos_profile=qos,
+            ),
+            SimpleNamespace(
+                node_name="rosbag2_recorder_run",
+                node_namespace="/",
+                topic_type="simulation_interfaces/msg/MissionEvent",
+                qos_profile=qos,
+            ),
+        ]
+
+    def create_client(self, _service_type, topic):
+        assert topic == "/simulation/payload_command"
+        return FakeClient()
+
+    def create_subscription(self, _message_type, topic, callback, _qos):
+        self.callbacks[topic] = callback
+        return object()
+
+    def create_publisher(self, _message_type, topic, qos):
+        assert topic == "/simulation/mission_events"
+        assert (qos.depth, qos.reliability, qos.durability) == (
+            100,
+            "reliable",
+            "transient",
+        )
+        return self.publisher
+
+    def get_subscriptions_info_by_topic(self, topic):
+        assert topic == "/simulation/mission_events"
+        return self.endpoints
+
+
+def dependencies():
+    return SimpleNamespace(
+        SimulationClock=FakeClock,
+        RosFrameSource=FakeFrameSource,
+        RosLidar=FakeLidar,
+        CameraManager=FakeCameraManager,
+        Camera=FakeCamera,
+        LidarSample=lambda *values: values,
+        AttitudeSample=lambda **values: SimpleNamespace(**values),
+        ClearanceCalibration=lambda **values: SimpleNamespace(**values),
+        ClearanceUnavailableError=RuntimeError,
+        StaleSensorError=FakeAdapterStaleSensorError,
+        project_vertical_clearance=lambda *_args, **_kwargs: None,
+        create_simulator_camera=lambda *_args, **_kwargs: FakeCamera(),
+        Image=object,
+        LaserScan=object,
+        PayloadState=object,
+        PayloadCommand=FakePayloadCommand,
+        MissionEvent=FakeMissionEvent,
+        QoSProfile=FakeQoSProfile,
+        ReliabilityPolicy=SimpleNamespace(RELIABLE="reliable"),
+        DurabilityPolicy=SimpleNamespace(
+            VOLATILE="volatile", TRANSIENT_LOCAL="transient"
+        ),
+        Duration=lambda *, seconds: seconds,
+    )
+
+
+def make_io(monkeypatch):
+    monkeypatch.setattr(configured_io, "_load_live_dependencies", dependencies)
+    node = FakeNode()
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission="configured",
+        scenario="competition_v1",
+        scenario_path=Path("/unused/scenario.yaml"),
+        finalization_wall_seconds=3.0,
+    )
+    return configured_io.CompetitionIO(config, node, lambda *_args: None), node
+
+
+def image(timestamp_ns):
+    seconds, nanoseconds = divmod(timestamp_ns, 1_000_000_000)
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(sec=seconds, nanosec=nanoseconds)
+        )
+    )
+
+
+def test_publish_event_enforces_full_competition_grammar(monkeypatch):
+    bridge, node = make_io(monkeypatch)
+
+    assert bridge.ready is True
+    with pytest.raises(ValueError, match="next mission event"):
+        bridge.publish_event("FM2", "STARTED", 1)
+
+    for timestamp_ns, (phase, state) in enumerate(MISSION_SEQUENCE, start=1):
+        bridge.publish_event(phase, state, timestamp_ns)
+
+    assert [
+        (message.event_id, message.phase, message.state)
+        for message in node.publisher.messages
+    ] == [
+        (event_id, phase, state)
+        for event_id, (phase, state) in enumerate(MISSION_SEQUENCE)
+    ]
+    assert all(message.run_id == RUN_ID for message in node.publisher.messages)
+    assert [message.sim_timestamp.nanosec for message in node.publisher.messages] == list(
+        range(1, 12)
+    )
+    with pytest.raises(RuntimeError, match="sequence is complete"):
+        bridge.publish_event("HOME", "COMPLETE", 12)
+
+
+def test_publish_event_requires_strictly_new_clock_time(monkeypatch):
+    bridge, _node = make_io(monkeypatch)
+    bridge.publish_event("FM1", "STARTED", 10)
+
+    with pytest.raises(ValueError, match="timestamp must increase"):
+        bridge.publish_event("FM1", "COMPLETE", 10)
+
+
+def test_future_images_are_staged_until_clock_reaches_their_source_time(monkeypatch):
+    bridge, node = make_io(monkeypatch)
+    callback = node.callbacks["/camera/onboard/image_raw"]
+    at_15 = image(15)
+    at_20 = image(20)
+
+    bridge.accept_clock(10)
+    callback(at_20)
+    callback(at_15)
+    assert bridge._frame_source.accepted == []
+
+    bridge.accept_clock(15)
+    assert bridge._frame_source.accepted == [at_15]
+    bridge.accept_clock(19)
+    assert bridge._frame_source.accepted == [at_15]
+    bridge.accept_clock(20)
+    assert bridge._frame_source.accepted == [at_15, at_20]
+
+
+def test_clearance_uses_oldest_actual_vehicle_attitude_timestamp(monkeypatch):
+    from drone_sim_companion.mission import Telemetry
+    from drone_sim_companion.operations import DroneOperations
+
+    bridge, _node = make_io(monkeypatch)
+    operations = DroneOperations(SimpleNamespace())
+    operations.observe(Telemetry(100, heartbeat=True, roll_rad=0.01))
+    operations.observe(Telemetry(120, heartbeat=True, pitch_rad=0.02))
+    operations.observe(Telemetry(140, heartbeat=True, yaw_rad=0.03))
+    state = operations.read_vehicle_state()
+    bridge._lidar.sample = SimpleNamespace(sampled_at=190 / 1_000_000_000)
+    observed_attitudes = []
+
+    def project(sample, attitude, _calibration, *, now):
+        observed_attitudes.append((attitude, now))
+        return SimpleNamespace(projected_clearance_m=10.1, range_sample=sample)
+
+    bridge._deps.project_vertical_clearance = project
+
+    assert bridge.clearance(state, 200) == (10.1, 100)
+    assert observed_attitudes[0][0].sampled_at == 100 / 1_000_000_000
+
+
+@pytest.mark.parametrize("detail", ["downward range is not ready", "range is stale"])
+def test_clearance_returns_none_for_adapter_range_unavailability(monkeypatch, detail):
+    bridge, _node = make_io(monkeypatch)
+    bridge._lidar.get_sample = lambda: (_ for _ in ()).throw(
+        FakeAdapterStaleSensorError(detail)
+    )
+    state = {
+        "roll_rad": 0.0,
+        "pitch_rad": 0.0,
+        "yaw_rad": 0.0,
+        "observed_at_ns": {"roll_rad": 1, "pitch_rad": 1, "yaw_rad": 1},
+    }
+
+    assert bridge.clearance(state, 1) is None
+
+
+def test_flush_rejects_incomplete_event_grammar(monkeypatch):
+    bridge, node = make_io(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="mission event sequence is incomplete"):
+        bridge.flush()
+    assert node.publisher.ack_timeouts == []
+
+    for timestamp_ns, (phase, state) in enumerate(MISSION_SEQUENCE, start=1):
+        bridge.publish_event(phase, state, timestamp_ns)
+    bridge.flush()
+    assert node.publisher.ack_timeouts == [3.0]

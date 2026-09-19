@@ -28,6 +28,8 @@ QGC/aircraft failsafe or takeover profile.
 Preserve previous run artifacts as historical evidence, not proof that current
 source is runnable or flight-ready. The controlled-descent, AutoTune, and hover
 operator workflows below are unchanged.
+The configured competition plan below is a separate mission runner and does not
+change these `comp2026_auto` admission requirements.
 
 ## Prerequisites
 
@@ -146,6 +148,29 @@ plus 60 recorded seconds take at least 25 wall minutes, excluding startup.
 `timeout_sim_s` bounds each step, default 60. The simulation recording duration
 must accommodate the whole sequence, including any operator wait and landing.
 
+#### Configured competition plan
+
+Launch the fixed three-payload sequence with matching rebuilt Phase 3 images:
+
+```bash
+uv run --locked drone-sim start --config config/configured-competition-run.json
+```
+
+This template selects `mission: configured` and `scenario: competition_v1`. Its
+42 explicit steps run FM1, FM2, both FM3 payload cycles, and HOME. The configured
+runner exposes `precision_land`, `attach_payload`, `release_payload`, and
+`mission_event` for this sequence; use the
+[mission tool contract](../companion/src/drone_sim_companion/mission_plan.py) for
+arguments and the [run-template schema](../config/run-template.schema.json) for
+the configuration envelope. The plan uses the frozen repository course and
+scenario inputs and does not supply QGC inputs.
+
+The public recording window is 420 simulated seconds after a 90-second native
+warmup, with target real-time factor 1.0. Recording and scoring continue through
+the full 420-second window even if the mission reaches HOME earlier. No current
+integrated flight, scored result, or validated artifact bundle exists for this
+template yet; inspect those three outcomes separately after the run.
+
 To wait for external arming and GUIDED selection, use:
 
 ```bash
@@ -165,8 +190,9 @@ check physical outcome, score, and artifact validity separately.
 
 ### Existing descent diagnostic
 
-This example uses the repository-default controlled-descent route. Competition
-templates still omit the required QGC bundle and attempt-state binding.
+This example uses the repository-default controlled-descent route. The guarded
+`default-run.json` and `realtime-run.json` templates still omit the required QGC
+bundle and attempt-state binding.
 
 ```bash
 uv run --locked drone-sim start --config config/vertical-descent-run.json
@@ -197,7 +223,7 @@ status until terminal. Avoid killing containers or deleting the run directory;
 recorders need finalization to publish their files. `start` exits 0 for
 `COMPLETED`, 1 for `FAILED`, 130 for `ABORTED`; CLI/config errors use exit 2.
 
-### Historical competition timing
+### Recording windows and historical competition timing
 
 The historical competition default specified a 90-second **native simulation**
 warmup followed by a 600-second **public simulation** window. Its target
@@ -209,6 +235,7 @@ mission logs alone as a stopped process.
 
 | Template | Purpose | Public duration / warmup / target RTF |
 | --- | --- | --- |
+| [configured-competition-run.json](../config/configured-competition-run.json) | Current configured three-payload plan; integrated result pending | 420 s / 90 s / 1.0 |
 | [default-run.json](../config/default-run.json) | Quarantined competition default, historical timing only | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
 | [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |

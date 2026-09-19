@@ -17,6 +17,7 @@ def _number(*, minimum=0, maximum=None, exclusive=False):
 
 _POSITIVE = _number(exclusive=True)
 _GUIDED = {"type": "string", "enum": ["GUIDED"]}
+COMPETITION_TOOLS = frozenset({"precision_land", "attach_payload", "release_payload", "mission_event"})
 _ARGUMENTS = {
     "set_mode": ({"mode": _GUIDED}, ["mode"]),
     "arm": ({}, []),
@@ -34,6 +35,13 @@ _ARGUMENTS = {
     }, ["latitude_deg", "longitude_deg", "altitude_m"]),
     "hold": ({"duration_sim_s": _POSITIVE}, ["duration_sim_s"]),
     "land": ({}, []),
+    "precision_land": ({"aruco_id": {"type": "integer", "minimum": 0, "maximum": 249}}, ["aruco_id"]),
+    "attach_payload": ({"aruco_id": {"type": "integer", "enum": [3, 4]}}, ["aruco_id"]),
+    "release_payload": ({"aruco_id": {"type": "integer", "enum": [2, 3, 4]}}, ["aruco_id"]),
+    "mission_event": ({
+        "phase": {"type": "string", "enum": ["FM1", "FM2", "FM3_3", "FM3_4", "HOME"]},
+        "state": {"type": "string", "enum": ["STARTED", "COMPLETE", "DISARMED"]},
+    }, ["phase", "state"]),
 }
 
 
@@ -68,12 +76,13 @@ def validate_arguments(tool: object, args: object) -> dict:
         schema = properties[name]
         valid = {
             "number": type(value) in (int, float),
+            "integer": type(value) is int,
             "boolean": type(value) is bool,
             "string": isinstance(value, str) and bool(value),
         }[schema["type"]]
         if not valid:
             raise ValueError(f"{tool}.{name} must be a {schema['type']}")
-        if schema["type"] == "number":
+        if schema["type"] in {"number", "integer"}:
             if not math.isfinite(value):
                 raise ValueError(f"{tool}.{name} must be finite")
             for key, invalid in (

@@ -1,0 +1,78 @@
+{
+  "world": "competition_mission",
+  "vehicle": "iris_competition",
+  "mission": "configured",
+  "mission_plan": {
+    "schema_version": 1,
+    "steps": [
+      {"tool": "mission_event", "args": {"phase": "FM1", "state": "STARTED"}, "timeout_sim_s": 60},
+      {"tool": "set_mode", "args": {"mode": "GUIDED"}, "timeout_sim_s": 60},
+      {"tool": "arm", "args": {}, "timeout_sim_s": 60},
+      {"tool": "takeoff", "args": {"altitude_m": 10.0}, "timeout_sim_s": 60},
+      {"tool": "goto_waypoint", "args": {"latitude_deg": 37.4003371, "longitude_deg": -122.08106909807805, "altitude_m": 10.0, "tolerance_m": 0.05}, "timeout_sim_s": 90},
+      {"tool": "land", "args": {}, "timeout_sim_s": 60},
+      {"tool": "mission_event", "args": {"phase": "FM1", "state": "COMPLETE"}, "timeout_sim_s": 60},
+
+      {"tool": "mission_event", "args": {"phase": "FM2", "state": "STARTED"}, "timeout_sim_s": 60},
+      {"tool": "set_mode", "args": {"mode": "GUIDED"}, "timeout_sim_s": 60},
+      {"tool": "arm", "args": {}, "timeout_sim_s": 60},
+      {"tool": "takeoff", "args": {"altitude_m": 10.0}, "timeout_sim_s": 60},
+      {"tool": "goto_waypoint", "args": {"latitude_deg": 37.4003371, "longitude_deg": -122.08175843013008, "altitude_m": 10.0, "tolerance_m": 0.05}, "timeout_sim_s": 90},
+      {"tool": "release_payload", "args": {"aruco_id": 2}, "timeout_sim_s": 60},
+      {"tool": "hold", "args": {"duration_sim_s": 3.0}, "timeout_sim_s": 60},
+      {"tool": "mission_event", "args": {"phase": "FM2", "state": "COMPLETE"}, "timeout_sim_s": 60},
+
+      {"tool": "mission_event", "args": {"phase": "FM3_3", "state": "STARTED"}, "timeout_sim_s": 60},
+      {"tool": "goto_waypoint", "args": {"latitude_deg": 37.400254958050425, "longitude_deg": -122.08055209903902, "altitude_m": 10.0, "tolerance_m": 0.05}, "timeout_sim_s": 90},
+      {"tool": "precision_land", "args": {"aruco_id": 3}, "timeout_sim_s": 150},
+      {"tool": "attach_payload", "args": {"aruco_id": 3}, "timeout_sim_s": 60},
+      {"tool": "set_mode", "args": {"mode": "GUIDED"}, "timeout_sim_s": 60},
+      {"tool": "arm", "args": {}, "timeout_sim_s": 60},
+      {"tool": "takeoff", "args": {"altitude_m": 10.0}, "timeout_sim_s": 60},
+      {"tool": "goto_waypoint", "args": {"latitude_deg": 37.4003371, "longitude_deg": -122.08175843013008, "altitude_m": 10.0, "tolerance_m": 0.05}, "timeout_sim_s": 90},
+      {"tool": "release_payload", "args": {"aruco_id": 3}, "timeout_sim_s": 60},
+      {"tool": "hold", "args": {"duration_sim_s": 3.0}, "timeout_sim_s": 60},
+      {"tool": "mission_event", "args": {"phase": "FM3_3", "state": "COMPLETE"}, "timeout_sim_s": 60},
+
+      {"tool": "mission_event", "args": {"phase": "FM3_4", "state": "STARTED"}, "timeout_sim_s": 60},
+      {"tool": "goto_waypoint", "args": {"latitude_deg": 37.40041924194958, "longitude_deg": -122.08055209903902, "altitude_m": 10.0, "tolerance_m": 0.05}, "timeout_sim_s": 90},
+      {"tool": "precision_land", "args": {"aruco_id": 4}, "timeout_sim_s": 150},
+      {"tool": "attach_payload", "args": {"aruco_id": 4}, "timeout_sim_s": 60},
+      {"tool": "set_mode", "args": {"mode": "GUIDED"}, "timeout_sim_s": 60},
+      {"tool": "arm", "args": {}, "timeout_sim_s": 60},
+      {"tool": "takeoff", "args": {"altitude_m": 10.0}, "timeout_sim_s": 60},
+      {"tool": "goto_waypoint", "args": {"latitude_deg": 37.4003371, "longitude_deg": -122.08175843013008, "altitude_m": 10.0, "tolerance_m": 0.05}, "timeout_sim_s": 90},
+      {"tool": "release_payload", "args": {"aruco_id": 4}, "timeout_sim_s": 60},
+      {"tool": "hold", "args": {"duration_sim_s": 3.0}, "timeout_sim_s": 60},
+      {"tool": "mission_event", "args": {"phase": "FM3_4", "state": "COMPLETE"}, "timeout_sim_s": 60},
+
+      {"tool": "mission_event", "args": {"phase": "HOME", "state": "STARTED"}, "timeout_sim_s": 60},
+      {"tool": "goto_waypoint", "args": {"latitude_deg": 37.4003371, "longitude_deg": -122.0800351, "altitude_m": 10.0, "tolerance_m": 0.05}, "timeout_sim_s": 90},
+      {"tool": "land", "args": {}, "timeout_sim_s": 60},
+      {"tool": "mission_event", "args": {"phase": "HOME", "state": "DISARMED"}, "timeout_sim_s": 60},
+      {"tool": "mission_event", "args": {"phase": "HOME", "state": "COMPLETE"}, "timeout_sim_s": 60}
+    ]
+  },
+  "scenario": "competition_v1",
+  "output_root": "runs",
+  "max_wall_seconds": 14400,
+  "startup_wall_seconds": 1800,
+  "finalization_wall_seconds": 900,
+  "recording": {
+    "width_px": 640,
+    "height_px": 480,
+    "fps": 20,
+    "encoding": "rgb8"
+  },
+  "runtime_profile": "phase3",
+  "simulation": {
+    "seed": 2026,
+    "duration_sim_seconds": 420.0,
+    "public_epoch_native_sim_seconds": 90.0,
+    "target_real_time_factor": 1.0
+  },
+  "competition": {
+    "course": "course.yaml",
+    "scenario": "scenario.yaml"
+  }
+}

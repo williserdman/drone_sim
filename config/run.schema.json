@@ -51,7 +51,7 @@
     {
       "if": {
         "properties": {
-          "mission": {"const": "comp2026_auto"}
+          "scenario": {"const": "competition_v1"}
         }
       },
       "then": {"properties": {"recording": {"$ref": "#/$defs/competition_recording"}}},
@@ -59,7 +59,10 @@
     },
     {
       "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
-      "then": {"required": ["competition", "qgc"]}
+      "then": {
+        "required": ["competition", "qgc"],
+        "properties": {"scenario": {"const": "competition_v1"}}
+      }
     },
     {
       "if": {"required": ["qgc"]},
@@ -78,6 +81,18 @@
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
       "else": {"not": {"required": ["mission_plan"]}}
+    },
+    {
+      "if": {"properties": {"scenario": {"const": "competition_v1"}}},
+      "then": {
+        "required": ["runtime_profile", "competition"],
+        "properties": {
+          "runtime_profile": {"const": "phase3"},
+          "world": {"const": "competition_mission"},
+          "vehicle": {"const": "iris_competition"},
+          "mission": {"enum": ["configured", "comp2026_auto"]}
+        }
+      }
     }
   ],
   "$defs": {

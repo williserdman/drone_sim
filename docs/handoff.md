@@ -8,6 +8,25 @@ verified on the isolated `fix/precision-landing-reacquire` parent and nested
 branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 600-second window with accepted terminal artifacts and a 150/150 score.
 
+## 2026-09-19 configured competition conversion
+
+The [competition config](../config/configured-competition-run.json) now expresses
+the full FM1, FM2, FM3_3, FM3_4 and HOME attempt as 42 sequential tool calls.
+The configured host adds calibrated camera precision landing, asynchronous
+physically confirmed payload commands and ordered competition events while
+retaining one MAVLink command owner. The guarded QGC route and independent
+Comp2026 checkout remain unchanged. See the
+[contract](../companion/README.md#configured-competition-contract) and
+[launch command](runbook.md#configured-competition-plan).
+
+Focused source verification passed **825 tests** across companion, orchestration
+configuration, artifacts configuration, electromagnet runtime and Phase 3
+contracts. This includes real PyMAVLink messages with fake ROS, range/attitude
+timestamp integration, asynchronous payload confirmation and precision target
+reacquisition. All 122 checked local links in the changed guides resolve.
+Matching image build and integrated flight verification are pending. Standalone
+sensor tools, an agent endpoint and configurable branching remain deferred.
+
 ## 2026-09-19 configured mission runner
 
 Added `mission: configured` with a checksum-bound inline plan, explicit mode and

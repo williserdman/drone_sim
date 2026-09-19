@@ -121,3 +121,37 @@ def test_low_takeoff_target_cannot_succeed_at_ground_altitude():
     host.observe(Telemetry(100_000_000, ack=Ack(CommandKind.TAKEOFF, True, 0)))
     host.observe(Telemetry(200_000_000, relative_altitude_m=0.0))
     assert host.operations.operation_status(operation_id).state == "running"
+
+
+def test_additional_execution_readiness_precedes_start_gate():
+    protocol = Protocol()
+    lifecycle = CompanionLifecycle(run_id=RUN_ID, protocol=protocol, stream=StringIO())
+    ready = [False]
+    host = ConfiguredHost(parse_mission_plan({'schema_version': 1, 'steps': [
+        {'tool': 'land', 'args': {}},
+    ]}), Vehicle(), lifecycle, protocol, RUN_ID, execution_ready=lambda: ready[0])
+    host.observe(Telemetry(0, heartbeat=True, mode='GUIDED', armed=False,
+                           landed=True, prearm_checks_healthy=True))
+    host.tick(0, mission_running=True)
+    assert 'mission-execution-ready' not in protocol.statuses
+    ready[0] = True
+    host.tick(0, mission_running=True)
+    assert 'mission-execution-ready' in protocol.statuses
+
+
+def test_final_delivery_confirmation_precedes_mission_finished():
+    protocol = Protocol()
+    lifecycle = CompanionLifecycle(run_id=RUN_ID, protocol=protocol, stream=StringIO())
+    confirmations = []
+    def confirm():
+        assert 'mission-finished' not in protocol.statuses
+        confirmations.append(True)
+    host = ConfiguredHost(parse_mission_plan({'schema_version': 1, 'steps': [
+        {'tool': 'land', 'args': {}},
+    ]}), Vehicle(), lifecycle, protocol, RUN_ID, confirm_complete=confirm)
+    host.observe(Telemetry(0, heartbeat=True, mode='GUIDED', armed=False,
+                           landed=True, prearm_checks_healthy=True))
+    host.tick(0, mission_running=True)
+    host.tick(50_000_000, mission_running=True)
+    assert confirmations == [True]
+    assert 'mission-finished' in protocol.statuses

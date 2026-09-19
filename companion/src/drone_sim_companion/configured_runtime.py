@@ -16,8 +16,11 @@ from .operations import DroneOperations
 
 
 class ConfiguredHost:
-    def __init__(self, plan, vehicle, lifecycle, protocol, run_id) -> None:
-        self.operations = DroneOperations(vehicle, lifecycle.emit)
+    def __init__(self, plan, vehicle, lifecycle, protocol, run_id, *, operations=None,
+                 execution_ready=None, confirm_complete=None) -> None:
+        self.operations = operations if operations is not None else DroneOperations(vehicle, lifecycle.emit)
+        self._execution_ready = execution_ready or (lambda: True)
+        self._confirm_complete = confirm_complete or (lambda: None)
         self.mission = ConfiguredMission(plan, self.operations)
         self.lifecycle = lifecycle
         self.protocol = protocol
@@ -45,7 +48,7 @@ class ConfiguredHost:
         if self.error is not None:
             return
         if not self.started:
-            if not mission_running or not self.operations.mission_ready:
+            if not mission_running or not self.operations.mission_ready or not self._execution_ready():
                 return
             self.protocol.write_status(
                 MissionExecutionReadyStatus(self.run_id, timestamp_ns)
@@ -59,6 +62,7 @@ class ConfiguredHost:
             if state.get("landed") is not True or state.get("armed") is not False:
                 self.fail("configured plan ended without observed landing and disarm")
                 return
+            self._confirm_complete()
             self.lifecycle.observe_terminal(MissionState(MissionPhase.LANDED, last_timestamp_ns=timestamp_ns))
             self._success_reported = True
 
@@ -107,6 +111,7 @@ def run_configured(config) -> int:
     connection = None
     node = None
     host = None
+    competition_io = None
     initialized = False
     latest_clock_ns = None
     mission_running = False
@@ -143,7 +148,6 @@ def run_configured(config) -> int:
                                     deadline=min(started + config.startup_timeout_seconds, overall_deadline))
         vehicle = MavlinkAdapter(connection, mavutil)
         lifecycle.mark_transport_ready()
-        host = ConfiguredHost(config.mission_plan, vehicle, lifecycle, protocol, config.run_id)
         rclpy.init()
         initialized = True
         node = Node("drone_sim_companion", parameter_overrides=[])
@@ -152,11 +156,26 @@ def run_configured(config) -> int:
         node.create_subscription(RunState, "/simulation/run_state", state_callback,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                             durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        if getattr(config, 'scenario', 'descent_v1') == 'competition_v1':
+            import yaml
+            from .configured_io import CompetitionIO
+            from .configured_competition import CompetitionOperations
+            competition_io = CompetitionIO(config, node, lifecycle.emit)
+            course = yaml.safe_load(config.course_path.read_text(encoding='utf-8'))
+            operations = CompetitionOperations(vehicle, competition_io, lifecycle.emit,
+                                               release_agl_m=float(course['attempt']['release_agl_m']))
+            host = ConfiguredHost(config.mission_plan, vehicle, lifecycle, protocol, config.run_id,
+                                  operations=operations, execution_ready=lambda: competition_io.ready,
+                                  confirm_complete=competition_io.flush)
+        else:
+            host = ConfiguredHost(config.mission_plan, vehicle, lifecycle, protocol, config.run_id)
         for signum in (signal.SIGTERM, signal.SIGINT):
             previous_handlers[signum] = signal.signal(signum, stop)
         telemetry_requested = False
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.02)
+            if competition_io is not None and latest_clock_ns is not None:
+                competition_io.accept_clock(latest_clock_ns)
             for _ in range(100):
                 telemetry = vehicle.poll(latest_clock_ns if latest_clock_ns is not None else 0)
                 if telemetry is None:
@@ -204,6 +223,12 @@ def run_configured(config) -> int:
     finally:
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
+        if competition_io is not None:
+            try:
+                competition_io.close()
+            except Exception as error:
+                if host is not None:
+                    host.fail(f'competition input cleanup failed: {error}', attempt_recovery=False)
         if node is not None:
             node.destroy_node()
         if connection is not None:

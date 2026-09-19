@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 import signal
 import sys
 
+import pytest
 from pymavlink import mavutil
 
 from artifacts.runtime_status import RuntimeStatus, status_document, status_name
@@ -184,7 +185,8 @@ def install_ros(monkeypatch, fake_ros):
     fake_ros.run_state = RunState
 
 
-def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
+@pytest.mark.parametrize("competition", [False, True])
+def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch, tmp_path, competition):
     protocol = Protocol()
     connection = FakeConnection()
     fake_ros = FakeRos(None)
@@ -209,6 +211,32 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
         max_wall_seconds=10.0,
         finalization_wall_seconds=1.0,
     )
+    io_calls = []
+    if competition:
+        from drone_sim_companion import configured_io
+
+        class FakeCompetitionIO:
+            ready = True
+
+            def __init__(self, received_config, node, emit):
+                assert received_config is config and node is fake_ros.node
+                io_calls.append("created")
+
+            def accept_clock(self, timestamp_ns):
+                io_calls.append(timestamp_ns)
+
+            def flush(self):
+                assert "mission-finished" not in protocol.statuses
+                io_calls.append("flushed")
+
+            def close(self):
+                assert not fake_ros.node.destroyed
+                io_calls.append("closed")
+
+        monkeypatch.setattr(configured_io, "CompetitionIO", FakeCompetitionIO)
+        config.scenario = "competition_v1"
+        config.course_path = tmp_path / "course.yaml"
+        config.course_path.write_text("attempt:\n  release_agl_m: 10.0\n")
 
     assert run_configured(config) == 0
 
@@ -227,3 +255,6 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
     assert fake_ros.node.destroyed and fake_ros.node.callbacks == {}
     assert fake_ros.initialized is False and not connection.messages
     assert {item: signal.getsignal(item) for item in previous_handlers} == previous_handlers
+    if competition:
+        assert io_calls == ["created", *FakeRos.clock_values[:-1], "flushed",
+                            FakeRos.clock_values[-1], "closed"]

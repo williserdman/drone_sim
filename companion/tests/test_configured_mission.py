@@ -33,7 +33,7 @@ def plan(*steps):
 
 
 @pytest.mark.parametrize("bad", [
-    {"tool": "precision_land", "args": {"aruco_id": 7}},
+    {"tool": "read_camera", "args": {}},
     {"tool": "arm", "args": {"force": True}},
     {"tool": "takeoff", "args": {"altitude_m": True}},
     {"tool": "takeoff", "args": {"altitude_m": float("nan")}},

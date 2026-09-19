@@ -38,6 +38,10 @@ fail before ROS or MAVLink resources are created.
 | `goto_waypoint` | `latitude_deg`, `longitude_deg`, positive `altitude_m`, optional positive `tolerance_m`, default 1; waits for fresh position within horizontal and altitude tolerances. |
 | `hold` | Positive `duration_sim_s`, shorter than the step timeout; leaves the existing GUIDED target in place while waiting. Requires armed GUIDED state throughout. |
 | `land` | Empty arguments; requires command acceptance followed by observed touchdown and disarm. Already landed/disarmed is a successful no-op. |
+| `precision_land` | Integer `aruco_id`; searches for the calibrated marker, centers, supplies landing targets and waits for touchdown/disarm. Requires `competition_v1`. |
+| `attach_payload` | `aruco_id: 3` or `4`; requires landed/disarmed state and confirms physical attachment. Requires `competition_v1`. |
+| `release_payload` | `aruco_id: 2`, `3` or `4`; waits for fresh clearance and stable position, then confirms physical detachment. Requires `competition_v1`. |
+| `mission_event` | `phase` and `state` from the competition event sequence; publishes the next phase boundary. Requires `competition_v1`. |
 
 Waypoints use WGS84 latitude/longitude in degrees and altitude in metres above
 ArduPilot home, following
@@ -67,12 +71,46 @@ LAND when a fresh heartbeat still reports armed GUIDED/LAND. It does not overrid
 another observed mode. Recovery is bounded by the configured finalization wall
 budget and the overall wall deadline, and never changes the failed mission result.
 
-Deferred work: precision landing, camera/LiDAR tools, agent transport, named
-waypoints, branching, retries, and resource-exclusive actions. Unsupported tools
+Deferred work: standalone camera/LiDAR tools, agent transport, named
+waypoints, branching, runner-level retries, and resource-exclusive actions. Unsupported tools
 are rejected before flight. Camera/FM3 remains disabled in the existing QGC
 composition; this runner does not change the independent Comp2026 checkout.
 Host tests exercise source behavior; current container/flight verification is
 recorded separately in [handoff](../docs/handoff.md).
+
+### Configured competition contract
+
+The [configured competition template](../config/configured-competition-run.json)
+selects `scenario: competition_v1` with frozen course and scenario inputs.
+Its sequence preserves FM1, FM2, FM3 marker 3, FM3 marker
+4, and HOME. Mode selection, arming, takeoff, navigation, landing, attachment,
+and release remain explicit steps. `precision_land` owns camera-guided search,
+centering and descent to one ArUco marker, and completes after landing/disarm.
+It consumes public onboard images, downward range and MAVLink state. Payload
+poses and Gazebo private truth never guide flight.
+The precision policy retains the original grid search, five-frame centering,
+target-loss hold and one landing retry in
+[configured_precision.py](src/drone_sim_companion/configured_precision.py).
+
+`attach_payload` requires a correlated physical transition response and newer
+attached-state observation. `release_payload` requires fresh downward clearance
+at the course release height and continuously stable flight before dispatch,
+then a correlated response and newer detached-state observation. A subsequent
+hold lets the released payload settle before the phase-complete event. Rejection
+or missing confirmation fails the sequence; a response alone cannot prove lift
+or a scored delivery.
+
+`mission_event` emits the ordered competition phase boundaries only after prior
+steps succeed. The scorer independently checks vehicle and payload evidence.
+Full completion requires every phase, physical return home, landing/disarm,
+confirmed mission-event delivery, and independently valid artifacts. The guarded
+QGC host remains a separate entry point.
+The configured host waits for the payload service and known scorekeeper and
+rosbag event subscribers before opening its execution gate. Mission events use
+reliable transient-local delivery, increasing source timestamps, and a final
+bounded DDS acknowledgment check. The
+[competition I/O](src/drone_sim_companion/configured_io.py) preserves image and
+range source times; flight commands remain with the single MAVLink owner.
 
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.

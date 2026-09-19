@@ -57,6 +57,14 @@ writes the decoded plan into `configuration/run.json`, so the existing
 `config_sha256` binds the complete sequence and arguments. Orchestration validates
 this envelope and leaves exact tool names and arguments to the companion.
 
+Selecting `scenario: competition_v1` binds either `configured` or
+`comp2026_auto` to the Phase 3 competition environment: world
+`competition_mission`, vehicle `iris_competition`, 640x480 recording, and frozen
+`course.yaml` and `scenario.yaml` inputs copied into the run configuration.
+Competition tools in a configured plan require this scenario. QGC inputs remain
+exclusive to `comp2026_auto`; configured competition runs use the mission plan
+without QGC.
+
 The configured descent example requests `set_mode`, `arm`, `takeoff`, `hold`, and
 `land`. The operator example starts with `wait_for_state` for an already armed
 vehicle in `GUIDED`, then runs the same flight sequence. These templates establish

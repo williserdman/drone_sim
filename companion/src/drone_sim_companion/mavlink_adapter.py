@@ -22,7 +22,7 @@ class MavlinkAdapter:
         if command is CommandKind.SET_GUIDED:
             command_id = mavlink.MAV_CMD_DO_SET_MODE
             parameters[0] = mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
-            parameters[1] = 4  # Copter GUIDED custom mode, frozen for Copter-4.7.0.
+            parameters[1] = 4  # Copter GUIDED custom mode.
         elif command is CommandKind.ARM:
             command_id = mavlink.MAV_CMD_COMPONENT_ARM_DISARM
             parameters[0] = 1
@@ -86,6 +86,16 @@ class MavlinkAdapter:
             0.0,
             0.0,
             0.0,
+        )
+
+    def send_landing_target(self, forward_m: float, right_m: float, down_m: float) -> None:
+        if not all(math.isfinite(value) for value in (forward_m, right_m, down_m)) or down_m <= 0:
+            raise ValueError("landing target must be finite and below the vehicle")
+        # AP 4.5.7 reconstructs body direction as (-tan(angle_y), tan(angle_x), 1).
+        self._connection.mav.landing_target_send(
+            0, 0, self._mavutil.mavlink.MAV_FRAME_BODY_FRD,
+            math.atan2(right_m, down_m), math.atan2(-forward_m, down_m),
+            math.sqrt(forward_m ** 2 + right_m ** 2 + down_m ** 2), 0.0, 0.0,
         )
 
     def request_telemetry(self, *, rate_hz: int = 10) -> None:
@@ -154,6 +164,7 @@ class MavlinkAdapter:
         if kind == "GLOBAL_POSITION_INT":
             latitude = getattr(message, "lat", None)
             longitude = getattr(message, "lon", None)
+            vx, vy = getattr(message, "vx", None), getattr(message, "vy", None)
             return Telemetry(
                 timestamp_ns,
                 mode=self._mode,
@@ -163,7 +174,11 @@ class MavlinkAdapter:
                 vertical_speed_m_s=-float(message.vz) / 100.0,
                 latitude_deg=float(latitude) / 1e7 if latitude is not None else None,
                 longitude_deg=float(longitude) / 1e7 if longitude is not None else None,
+                horizontal_speed_m_s=math.hypot(vx, vy) / 100.0 if vx is not None and vy is not None else None,
             )
+        if kind == "ATTITUDE":
+            return Telemetry(timestamp_ns, roll_rad=float(message.roll),
+                             pitch_rad=float(message.pitch), yaw_rad=float(message.yaw))
         if kind == "EXTENDED_SYS_STATE":
             self._landed = int(message.landed_state) == mavlink.MAV_LANDED_STATE_ON_GROUND
             return Telemetry(

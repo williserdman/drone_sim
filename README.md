@@ -44,6 +44,24 @@ with a bare `docker compose up`. The checked-in `default-run.json` and
 `realtime-run.json` competition templates are quarantined until an operator
 supplies the required QGC configuration inputs.
 
+After rebuilding matching Phase 3 images, launch the implemented configured
+three-payload plan with:
+
+```bash
+uv run --locked drone-sim start --config config/configured-competition-run.json
+```
+
+This selects `mission: configured` with `scenario: competition_v1`; it does not
+enable or relax the guarded `comp2026_auto` QGC workflow. The 42-step plan uses
+the registered `precision_land`, `attach_payload`, `release_payload`, and
+`mission_event` tools defined by the
+[mission tool contract](companion/src/drone_sim_companion/mission_plan.py) and is
+validated by the [run-template schema](config/run-template.schema.json). Its
+recorders run for the complete 420-second public window even if the mission
+finishes earlier. This template has no current integrated flight, score, and
+artifact-validity result; follow the [operator procedure](docs/runbook.md#configured-competition-plan)
+before treating it as current success evidence.
+
 ## How to read this repository
 
 - `config/` selects a run; `compose.yaml` connects its seven runtime services.
@@ -62,7 +80,8 @@ supplies the required QGC configuration inputs.
 For a fixed sequence of flight operations, copy
 [configured-descent-run.json](config/configured-descent-run.json) and edit its
 `mission_plan.steps`. Use [configured-operator-run.json](config/configured-operator-run.json)
-to wait for external arming and GUIDED selection. The
+to wait for external arming and GUIDED selection. The complete competition
+sequence is [configured-competition-run.json](config/configured-competition-run.json). The
 [companion guide](companion/README.md#configured-diagnostic-missions) defines the
 tools and limitations; the [runbook](docs/runbook.md#configured-mission-runner)
 covers rebuilding and launching. See [handoff](docs/handoff.md#2026-09-19-configured-mission-runner)

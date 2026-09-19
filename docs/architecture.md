@@ -170,7 +170,7 @@ interfaces, implementation entry points, tests, and important constraints.
 
 ## Shared communication guarantees
 
-Configured diagnostic missions use a separate execution-ready start fact. The
+Configured missions use a separate execution-ready start fact. The
 companion validates every tool call, establishes transport and passive readiness,
 then publishes `mission-execution-ready` only after matching RUNNING and accepted
 public clock. Gazebo selects this fact only for `mission: configured`; existing
@@ -188,6 +188,15 @@ recovery remains a separate outcome. A completed sequence still requires observe
 landing/disarm before companion success; score and artifact validity remain
 independent. Exact tools and current limits are in the
 [companion guide](../companion/README.md#configured-diagnostic-missions).
+
+With `scenario: competition_v1`, the configured runner also loads the frozen
+course and simulator sensor calibration. Its explicit precision landing and
+payload operations consume public image/range, MAVLink and attachment evidence;
+private physical poses remain outside autonomy. This route retains one MAVLink
+command owner and does not instantiate the guarded QGC listener. Execution waits
+for the payload service and the known scorekeeper/rosbag mission-event consumers.
+The ordered competition events and final delivery acknowledgment precede companion
+success. The scorer still independently evaluates the recorded physical attempt.
 
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.

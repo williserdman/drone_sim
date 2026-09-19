@@ -150,6 +150,27 @@ def _configured_document() -> dict:
     return document
 
 
+def _configured_competition_document() -> dict:
+    document = _competition_document()
+    document["mission"] = "configured"
+    document["mission_plan"] = _configured_document()["mission_plan"]
+    return document
+
+
+def _configured_competition_schema_document(schema_name: str) -> dict:
+    document = _configured_competition_document()
+    if schema_name == "run.schema.json":
+        document.update(run_id=str(FIXED_RUN_ID), config_sha256="a" * 64)
+        document["output_root"] = str((ROOT / "../runs").resolve())
+        document["competition"].update(
+            course_sha256="a" * 64,
+            scenario_sha256="b" * 64,
+        )
+        for step in document["mission_plan"]["steps"]:
+            step["timeout_sim_s"] = 60
+    return document
+
+
 def _competition_document() -> dict:
     document = _phase2_document()
     document.update(
@@ -1970,6 +1991,132 @@ def test_configured_operator_plan_keeps_manual_state_wait_as_first_step():
         "args": {"armed": True, "mode": "GUIDED"},
         "timeout_sim_s": 60,
     }
+
+
+def test_configured_competition_resolves_frozen_sources_without_qgc(tmp_path):
+    (tmp_path / "course.yaml").write_text(
+        json.dumps(COURSE_DOCUMENT), encoding="utf-8"
+    )
+    (tmp_path / "scenario.yaml").write_text(
+        json.dumps(SCENARIO_DOCUMENT), encoding="utf-8"
+    )
+    resolved = resolve_run_config(
+        _write_template(tmp_path, _configured_competition_document()),
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+
+    assert (resolved.mission, resolved.scenario) == ("configured", "competition_v1")
+    assert (resolved.world, resolved.vehicle) == (
+        "competition_mission",
+        "iris_competition",
+    )
+    assert resolved.runtime_profile == "phase3"
+    assert resolved.recording == RecordingConfig(640, 480, 20, "rgb8")
+    assert resolved.competition is not None
+    assert resolved.competition.course_sha256 == hashlib.sha256(
+        (tmp_path / "course.yaml").read_bytes()
+    ).hexdigest()
+    assert resolved.competition.scenario_sha256 == hashlib.sha256(
+        (tmp_path / "scenario.yaml").read_bytes()
+    ).hexdigest()
+    assert resolved.qgc is None
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_configured_competition_matches_public_config_schemas(schema_name):
+    _load_validator(schema_name).validate(
+        _configured_competition_schema_document(schema_name)
+    )
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda value: value.update(runtime_profile="phase2")
+            or value.pop("simulation"),
+            id="phase2",
+        ),
+        pytest.param(
+            lambda value: value.update(mission="controlled_descent")
+            or value.pop("mission_plan"),
+            id="mission",
+        ),
+        pytest.param(
+            lambda value: value.update(world="competition"), id="world"
+        ),
+        pytest.param(lambda value: value.update(vehicle="iris"), id="vehicle"),
+        pytest.param(
+            lambda value: value["recording"].update(width_px=320, height_px=240),
+            id="recording",
+        ),
+        pytest.param(lambda value: value.pop("competition"), id="sources"),
+    ],
+)
+def test_configured_competition_schemas_reject_incompatible_bindings(
+    schema_name, mutate
+):
+    document = _configured_competition_schema_document(schema_name)
+    mutate(document)
+
+    with pytest.raises(ValidationError):
+        _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        pytest.param(
+            lambda value: value.update(runtime_profile="phase2")
+            or value.pop("simulation"),
+            "competition_v1.*phase3",
+            id="phase2",
+        ),
+        pytest.param(
+            lambda value: value.update(mission="controlled_descent")
+            or value.pop("mission_plan"),
+            "competition_v1.*mission",
+            id="mission",
+        ),
+        pytest.param(
+            lambda value: value.update(world="competition"),
+            "competition_v1.*world",
+            id="world",
+        ),
+        pytest.param(
+            lambda value: value.update(vehicle="iris"),
+            "competition_v1.*vehicle",
+            id="vehicle",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update(width_px=320, height_px=240),
+            "competition_v1.*640x480",
+            id="recording",
+        ),
+        pytest.param(
+            lambda value: value.pop("competition"),
+            "competition_v1.*competition",
+            id="sources",
+        ),
+    ],
+)
+def test_configured_competition_rejects_incompatible_bindings(
+    tmp_path, mutate, message
+):
+    (tmp_path / "course.yaml").write_text(
+        json.dumps(COURSE_DOCUMENT), encoding="utf-8"
+    )
+    (tmp_path / "scenario.yaml").write_text(
+        json.dumps(SCENARIO_DOCUMENT), encoding="utf-8"
+    )
+    document = _configured_competition_document()
+    mutate(document)
+
+    with pytest.raises(ValueError, match=message):
+        resolve_run_config(
+            _write_template(tmp_path, document), run_id_factory=lambda: FIXED_RUN_ID
+        )
 
 
 @pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
