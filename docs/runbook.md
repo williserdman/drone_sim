@@ -19,8 +19,10 @@ Repository default configurations do not provide the required QGC input bundle,
 so there is no copy-paste `comp2026_auto` launch command in this runbook. Do not
 invent site, calibration, RC, session, action, policy, or ledger values. Parent
 build source and provenance select official ArduCopter 4.5.7 commit
-`2a3dc4b7bf2507120f7378a7b2fde73185e0c325`, but no parent image or integrated
-run has validated it. Existing local image tags may still contain firmware 4.7.
+`2a3dc4b7bf2507120f7378a7b2fde73185e0c325`. Matching Phase 3 images were rebuilt
+for the configured diagnostic on 2026-09-19; QGC integration remains unverified.
+See [handoff](handoff.md#2026-09-19-configured-mission-runner) for that separate
+diagnostic's evidence. Check image provenance before trusting mutable local tags.
 `FS_THR_ENABLE=0` and `FLTMODE_CH=0` remain legacy diagnostic settings, not a
 QGC/aircraft failsafe or takeover profile.
 Preserve previous run artifacts as historical evidence, not proof that current
@@ -118,6 +120,50 @@ a uniquely tagged matching image build, a QGC-to-SITL test, a scored simulation,
 or aircraft acceptance.
 
 ## Run and monitor a current diagnostic
+
+### Configured mission runner
+
+The configured runner accepts automatic and operator-wait plans. See
+[handoff](handoff.md#2026-09-19-configured-mission-runner) for dated verification.
+Build matching runtime images before using either template, with the nested
+revision argument described in [Build runtime images](#build-runtime-images):
+
+```bash
+SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD) \
+  docker compose --profile phase3 build
+uv run --locked drone-sim start --config config/configured-descent-run.json
+```
+
+The automatic example selects GUIDED, arms, takes off to 1.5 m, holds for two
+simulation seconds, and lands. Edit its `mission_plan.steps` to add a regression
+case; tool arguments and outcome checks are in the
+[companion guide](../companion/README.md#configured-diagnostic-missions).
+`world` selects the Gazebo environment: this example uses
+[`vertical_descent`](../gazebo/resources/worlds/vertical_descent.sdf), a flat
+ground plane with a yellow landing circle, the Iris drone, and an observer camera.
+The template runs at one-tenth real time: 90 simulated seconds of private warmup
+plus 60 recorded seconds take at least 25 wall minutes, excluding startup.
+`timeout_sim_s` bounds each step, default 60. The simulation recording duration
+must accommodate the whole sequence, including any operator wait and landing.
+
+To wait for external arming and GUIDED selection, use:
+
+```bash
+uv run --locked drone-sim start --config config/configured-operator-run.json
+```
+
+That plan sends neither ARM nor GUIDED. It starts TAKEOFF only after observing
+both states. It does not set up a new operator/QGC connection; use an existing
+verified connection to this simulator. The present Compose stack does not expose
+an additional operator control port through this change.
+
+The companion log records operation IDs, arguments, simulation timestamps, and
+terminal results. The exact normalized plan is in the run's
+`configuration/run.json`. Failure stops later steps; a local LAND recovery does
+not make that regression pass. Use the status/abort/collect commands below and
+check physical outcome, score, and artifact validity separately.
+
+### Existing descent diagnostic
 
 This example uses the repository-default controlled-descent route. Competition
 templates still omit the required QGC bundle and attempt-state binding.

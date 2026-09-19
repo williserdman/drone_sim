@@ -40,11 +40,29 @@ validates; it does not infer physical success from a command or log message.
 ## Consumer and producer seams
 
 The CLI consumes templates such as
-[`config/vertical-descent-run.json`](../config/vertical-descent-run.json).
+[`config/vertical-descent-run.json`](../config/vertical-descent-run.json),
+[`config/configured-descent-run.json`](../config/configured-descent-run.json), and
+[`config/configured-operator-run.json`](../config/configured-operator-run.json).
 The resolved configuration selects one immutable service ownership topology; the
 actual service definitions and container commands live in [`compose.yaml`](../compose.yaml).
 GPU operation is an optional deployment workflow documented in the
 [runbook](../docs/runbook.md#optional-nvidia-path).
+
+The `configured` selector is Phase 3 only and requires an inline `mission_plan`.
+Each plan has `schema_version: 1` and a nonempty ordered `steps` array. Every step
+names a tool, supplies an argument object, and may set a positive finite
+`timeout_sim_s`; resolution fills an omitted timeout with 60 seconds. The
+resolver stores one canonical JSON string in the frozen run configuration, then
+writes the decoded plan into `configuration/run.json`, so the existing
+`config_sha256` binds the complete sequence and arguments. Orchestration validates
+this envelope and leaves exact tool names and arguments to the companion.
+
+The configured descent example requests `set_mode`, `arm`, `takeoff`, `hold`, and
+`land`. The operator example starts with `wait_for_state` for an already armed
+vehicle in `GUIDED`, then runs the same flight sequence. These templates establish
+the immutable configuration contract; companion execution and the Gazebo
+public-epoch release status must also support `configured` before either template
+is a runnable flight.
 
 An operator template may name a complete `qgc` input set: deployment profile,
 listener session, QGC actions, and runtime policy. Orchestration reads each

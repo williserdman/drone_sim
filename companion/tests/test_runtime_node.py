@@ -381,485 +381,6 @@ def test_comp2026_concurrent_failure_prevents_guided_transaction() -> None:
     assert failures == ["competition image input failed: bad frame"]
 
 
-def install_comp2026_runtime_fakes(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    timestamp_ns: int,
-    command_write_started: threading.Event,
-    allow_command_write: threading.Event,
-    mission_entered: threading.Event,
-    input_failure_started: threading.Event | None = None,
-    allow_input_failure: threading.Event | None = None,
-    runtime_callbacks: dict[str, object] | None = None,
-    installed_signal_handlers: dict[int, object] | None = None,
-) -> tuple[list[object], InitialCommandVehicle]:
-    statuses: list[object] = []
-    terminal = threading.Event()
-    executor_stopped = threading.Event()
-    subscriptions: dict[str, object] = {}
-    vehicle = InitialCommandVehicle()
-    vehicle.last_heartbeat = 0.0  # type: ignore[attr-defined]
-    vehicle.is_armable = True  # type: ignore[attr-defined]
-    vehicle.close = lambda: None  # type: ignore[attr-defined]
-
-    def ns_stamp(value: int) -> object:
-        return SimpleNamespace(
-            sec=value // 1_000_000_000,
-            nanosec=value % 1_000_000_000,
-        )
-
-    class Protocol:
-        def __init__(self, _config: RuntimeConfig) -> None:
-            pass
-
-        def write_status(self, status: object) -> None:
-            statuses.append(status)
-            if isinstance(status, MissionCommandDeliveredStatus):
-                command_write_started.set()
-                assert allow_command_write.wait(1.0)
-            if isinstance(status, (RuntimeFailureStatus, runtime_node.MissionFinishedStatus)):
-                terminal.set()
-
-        def read_finalize_request(self) -> object | None:
-            return object() if terminal.is_set() else None
-
-        def write_quiescence(self, _module: str) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
-
-    class Node:
-        def __init__(self, _name: str) -> None:
-            pass
-
-        def create_publisher(self, *_args: object, **_kwargs: object):
-            return SimpleNamespace(publish=lambda _message: None)
-
-        def create_client(self, *_args: object, **_kwargs: object):
-            return SimpleNamespace(service_is_ready=lambda: True)
-
-        def create_subscription(
-            self, _type: object, topic: str, callback: object, *_args: object, **_kwargs: object
-        ) -> object:
-            subscriptions[topic] = callback
-            if runtime_callbacks is not None:
-                runtime_callbacks[topic] = callback
-            return object()
-
-        def destroy_subscription(self, _subscription: object) -> None:
-            pass
-
-        def destroy_node(self) -> None:
-            pass
-
-    class Executor:
-        def __init__(self, *, num_threads: int) -> None:
-            assert num_threads == 4
-
-        def add_node(self, _node: object) -> None:
-            pass
-
-        def spin(self) -> None:
-            subscriptions["/simulation/run_state"](
-                SimpleNamespace(run_id=RUN_ID, state=RunState.RUNNING)
-            )
-            subscriptions["/clock"](SimpleNamespace(clock=ns_stamp(timestamp_ns)))
-            if input_failure_started is not None:
-                assert allow_input_failure is not None
-
-                class PausingInputError(ValueError):
-                    def __str__(self) -> str:
-                        input_failure_started.set()
-                        assert allow_input_failure.wait(1.0)
-                        return "bad image"
-
-                class BadImage:
-                    @property
-                    def header(self) -> object:
-                        raise PausingInputError
-
-                subscriptions["/camera/onboard/image_raw"](BadImage())
-                executor_stopped.wait()
-                return
-            subscriptions["/camera/onboard/image_raw"](
-                SimpleNamespace(
-                    header=SimpleNamespace(
-                        stamp=ns_stamp(timestamp_ns), frame_id="camera/onboard"
-                    ),
-                    width=640,
-                    height=480,
-                    encoding="rgb8",
-                    is_bigendian=False,
-                    step=640 * 3,
-                    data=b"",
-                )
-            )
-            subscriptions["/competition/range/downward"](
-                SimpleNamespace(
-                    header=SimpleNamespace(stamp=ns_stamp(timestamp_ns)),
-                    ranges=[4.572],
-                    range_min=0.1,
-                    range_max=30.0,
-                )
-            )
-            executor_stopped.wait()
-
-        def shutdown(self, *, timeout_sec: float) -> bool:
-            assert timeout_sec == 1.0
-            executor_stopped.set()
-            return True
-
-    class DroneControl:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self.vehicle = vehicle
-
-        def get_current_gps(self) -> object:
-            return SimpleNamespace(lat=1.0, long=2.0)
-
-        def rtl(self) -> None:
-            pass
-
-        def simple_land(self) -> None:
-            pass
-
-        def disarm(self) -> None:
-            pass
-
-    class RunState:
-        RUNNING = 1
-        FINALIZING = 2
-
-    class MissionEvent:
-        def __init__(self) -> None:
-            self.sim_timestamp = SimpleNamespace(sec=0, nanosec=0)
-
-    class PayloadCommand:
-        class Request:
-            pass
-
-    def module(name: str, **members: object) -> ModuleType:
-        result = ModuleType(name)
-        for member_name, member in members.items():
-            setattr(result, member_name, member)
-        monkeypatch.setitem(sys.modules, name, result)
-        return result
-
-    timebase = module("drone.timebase", configured=lambda _clock: nullcontext())
-    drone = module("drone", timebase=timebase)
-    del drone
-    module(
-        "drone.auto_attempt",
-        run_auto_attempt=lambda **kwargs: (
-            mission_entered.set(),
-            kwargs["emit"]("HOME", "COMPLETE"),
-        ),
-    )
-    module("drone.control.drone_control", DroneControl=DroneControl)
-    module("drone.control.mission_info", MissonTracker=lambda _seconds: object())
-    module("drone.sensors.camera._camera_manager", CameraManager=lambda **_kwargs: object())
-    module("drone.sensors.camera.camera", Camera=lambda *_args, **_kwargs: object())
-    module("dronekit", VehicleMode=InitialCommandMode)
-    rclpy = module(
-        "rclpy",
-        init=lambda: None,
-        ok=lambda: True,
-        shutdown=lambda: None,
-    )
-    del rclpy
-    module("rclpy.callback_groups", MutuallyExclusiveCallbackGroup=lambda: object())
-    module("rclpy.executors", MultiThreadedExecutor=Executor)
-    module("rclpy.node", Node=Node)
-    module(
-        "rclpy.qos",
-        DurabilityPolicy=SimpleNamespace(TRANSIENT_LOCAL=1, VOLATILE=2),
-        QoSProfile=lambda **kwargs: kwargs,
-        ReliabilityPolicy=SimpleNamespace(RELIABLE=1),
-    )
-    module("rosgraph_msgs.msg", Clock=object)
-    module("sensor_msgs.msg", Image=object, LaserScan=object)
-    module("simulation_interfaces.msg", MissionEvent=MissionEvent, RunState=RunState)
-    module("simulation_interfaces.srv", PayloadCommand=PayloadCommand)
-    for package in (
-        "drone.control",
-        "drone.sensors",
-        "drone.sensors.camera",
-        "rclpy",
-        "rosgraph_msgs",
-        "sensor_msgs",
-        "simulation_interfaces",
-    ):
-        if package not in sys.modules:
-            module(package)
-
-    monkeypatch.setattr(runtime_node, "_ProductionProtocol", Protocol)
-    monkeypatch.setattr(runtime_node, "load_course_waypoints", lambda *_args: {})
-    def install_signal_handler(signum: int, handler: object) -> None:
-        if installed_signal_handlers is not None:
-            installed_signal_handlers[signum] = handler
-
-    monkeypatch.setattr(runtime_node.signal, "signal", install_signal_handler)
-    return statuses, vehicle
-
-
-def test_run_comp2026_keeps_worker_blocked_until_command_status_is_durable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    write_started = threading.Event()
-    allow_write = threading.Event()
-    mission_entered = threading.Event()
-    statuses, vehicle = install_comp2026_runtime_fakes(
-        monkeypatch,
-        timestamp_ns=50_000_000,
-        command_write_started=write_started,
-        allow_command_write=allow_write,
-        mission_entered=mission_entered,
-    )
-    config = RuntimeConfig(
-        run_id=RUN_ID,
-        run_directory=tmp_path,
-        mission="comp2026_auto",
-        course_path=tmp_path / "course.yaml",
-        scenario_path=tmp_path / "scenario.yaml",
-        max_wall_seconds=10,
-        finalization_wall_seconds=1,
-    )
-    result: list[int] = []
-    runtime = threading.Thread(target=lambda: result.append(runtime_node._run_comp2026(config)))
-    runtime.start()
-    try:
-        assert write_started.wait(1.0)
-        assert not mission_entered.wait(0.05)
-        allow_write.set()
-        runtime.join(timeout=2.0)
-    finally:
-        allow_write.set()
-        runtime.join(timeout=2.0)
-
-    assert result == [0]
-    assert mission_entered.is_set()
-    assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
-    assert MissionCommandDeliveredStatus(RUN_ID, 50_000_000) in statuses
-
-
-def test_run_comp2026_rejects_late_clock_before_guided_or_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    allow_write = threading.Event()
-    allow_write.set()
-    statuses, vehicle = install_comp2026_runtime_fakes(
-        monkeypatch,
-        timestamp_ns=50_000_001,
-        command_write_started=threading.Event(),
-        allow_command_write=allow_write,
-        mission_entered=threading.Event(),
-    )
-    config = RuntimeConfig(
-        run_id=RUN_ID,
-        run_directory=tmp_path,
-        mission="comp2026_auto",
-        course_path=tmp_path / "course.yaml",
-        scenario_path=tmp_path / "scenario.yaml",
-        max_wall_seconds=10,
-        finalization_wall_seconds=1,
-    )
-
-    assert runtime_node._run_comp2026(config) == 1
-    assert vehicle.assigned_modes == []
-    assert not any(isinstance(status, MissionCommandDeliveredStatus) for status in statuses)
-    failures = [status for status in statuses if isinstance(status, RuntimeFailureStatus)]
-    assert [status.reason for status in failures] == [
-        "initial GUIDED command missed the 50 ms delivery window"
-    ]
-
-
-def test_run_comp2026_concurrent_input_failure_prevents_guided_and_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    input_failure_started = threading.Event()
-    allow_input_failure = threading.Event()
-    allow_write = threading.Event()
-    allow_write.set()
-    statuses, vehicle = install_comp2026_runtime_fakes(
-        monkeypatch,
-        timestamp_ns=50_000_000,
-        command_write_started=threading.Event(),
-        allow_command_write=allow_write,
-        mission_entered=threading.Event(),
-        input_failure_started=input_failure_started,
-        allow_input_failure=allow_input_failure,
-    )
-    config = RuntimeConfig(
-        run_id=RUN_ID,
-        run_directory=tmp_path,
-        mission="comp2026_auto",
-        course_path=tmp_path / "course.yaml",
-        scenario_path=tmp_path / "scenario.yaml",
-        max_wall_seconds=10,
-        finalization_wall_seconds=1,
-    )
-    result: list[int] = []
-    runtime = threading.Thread(target=lambda: result.append(runtime_node._run_comp2026(config)))
-    runtime.start()
-    try:
-        assert input_failure_started.wait(1.0)
-        assert vehicle.assigned_modes == []
-        assert not any(
-            isinstance(status, MissionCommandDeliveredStatus) for status in statuses
-        )
-        allow_input_failure.set()
-        runtime.join(timeout=2.0)
-    finally:
-        allow_input_failure.set()
-        runtime.join(timeout=2.0)
-
-    assert result == [1]
-    assert vehicle.assigned_modes == []
-    assert not any(isinstance(status, MissionCommandDeliveredStatus) for status in statuses)
-    failures = [status for status in statuses if isinstance(status, RuntimeFailureStatus)]
-    assert [status.reason for status in failures] == [
-        "competition image input failed: bad image"
-    ]
-
-
-@pytest.mark.parametrize("shutdown_source", ["finalizing", "signal"])
-def test_run_comp2026_rechecks_shutdown_after_outer_loop_admission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    shutdown_source: str,
-) -> None:
-    admitted = threading.Event()
-    allow_delivery = threading.Event()
-    callbacks: dict[str, object] = {}
-    handlers: dict[int, object] = {}
-    mission_entered = threading.Event()
-    local_latch_marked = threading.Event()
-    created_gates: list[runtime_node.Comp2026StartGate] = []
-    allow_write = threading.Event()
-    allow_write.set()
-    statuses, vehicle = install_comp2026_runtime_fakes(
-        monkeypatch,
-        timestamp_ns=50_000_000,
-        command_write_started=threading.Event(),
-        allow_command_write=allow_write,
-        mission_entered=mission_entered,
-        runtime_callbacks=callbacks,
-        installed_signal_handlers=handlers,
-    )
-    original_poll = runtime_node.comp2026_start_gate_poll_required
-    pause_once = True
-
-    def pause_after_admission(**options: object) -> bool:
-        nonlocal pause_once
-        result = original_poll(**options)  # type: ignore[arg-type]
-        if result and pause_once:
-            pause_once = False
-            admitted.set()
-            assert allow_delivery.wait(1.0)
-        return result
-
-    monkeypatch.setattr(
-        runtime_node,
-        "comp2026_start_gate_poll_required",
-        pause_after_admission,
-    )
-    original_gate_type = runtime_node.Comp2026StartGate
-    original_deliver = runtime_node._deliver_comp2026_initial_command
-
-    def capture_gate() -> runtime_node.Comp2026StartGate:
-        gate = original_gate_type()
-        created_gates.append(gate)
-        return gate
-
-    def capture_local_latch(**options: object) -> bool:
-        mark_delivered = options["mark_delivered"]
-
-        def mark_and_record() -> None:
-            local_latch_marked.set()
-            mark_delivered()  # type: ignore[operator]
-
-        options["mark_delivered"] = mark_and_record
-        return original_deliver(**options)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(runtime_node, "Comp2026StartGate", capture_gate)
-    monkeypatch.setattr(
-        runtime_node,
-        "_deliver_comp2026_initial_command",
-        capture_local_latch,
-    )
-    config = RuntimeConfig(
-        run_id=RUN_ID,
-        run_directory=tmp_path,
-        mission="comp2026_auto",
-        course_path=tmp_path / "course.yaml",
-        scenario_path=tmp_path / "scenario.yaml",
-        max_wall_seconds=10,
-        finalization_wall_seconds=1,
-    )
-    result: list[int] = []
-    runtime = threading.Thread(
-        target=lambda: result.append(runtime_node._run_comp2026(config))
-    )
-    runtime.start()
-    try:
-        assert admitted.wait(1.0)
-        if shutdown_source == "finalizing":
-            callbacks["/simulation/run_state"](
-                SimpleNamespace(run_id=RUN_ID, state=2)
-            )
-        else:
-            handlers[runtime_node.signal.SIGTERM](runtime_node.signal.SIGTERM, None)
-        allow_delivery.set()
-        runtime.join(timeout=2.0)
-    finally:
-        allow_delivery.set()
-        runtime.join(timeout=2.0)
-
-    assert result == [0]
-    assert vehicle.assigned_modes == []
-    assert not any(isinstance(status, MissionCommandDeliveredStatus) for status in statuses)
-    assert not any(isinstance(status, RuntimeFailureStatus) for status in statuses)
-    assert not mission_entered.is_set()
-    assert created_gates[0].readiness["command_delivered"] is False
-    assert not local_latch_marked.is_set()
-
-
-def test_comp2026_polls_start_inputs_until_complete_gate_is_ready() -> None:
-    assert runtime_node.comp2026_start_gate_poll_required(
-        mission_running=True,
-        mission_start_ready=False,
-        failed=False,
-    )
-    assert not runtime_node.comp2026_start_gate_poll_required(
-        mission_running=True,
-        mission_start_ready=True,
-        failed=False,
-    )
-    assert not runtime_node.comp2026_start_gate_poll_required(
-        mission_running=True,
-        mission_start_ready=False,
-        failed=True,
-    )
-    assert not runtime_node.comp2026_start_gate_poll_required(
-        mission_running=False,
-        mission_start_ready=False,
-        failed=False,
-    )
-
-
-def test_comp2026_stops_sensor_inputs_after_attempt_finishes() -> None:
-    assert runtime_node.comp2026_sensor_inputs_required(
-        mission_running=True,
-        mission_worker_alive=True,
-    )
-    assert not runtime_node.comp2026_sensor_inputs_required(
-        mission_running=True,
-        mission_worker_alive=False,
-    )
-    assert runtime_node.comp2026_sensor_inputs_required(
-        mission_running=False,
-        mission_worker_alive=True,
-    )
 
 
 @pytest.mark.parametrize(
@@ -910,6 +431,7 @@ def write_resolved_config(
     startup_wall_seconds: object = 120,
     max_wall_seconds: object = 3600,
     mission: str = "controlled_descent",
+    include_qgc: bool = True,
 ) -> Path:
     config_path = run_directory / "configuration/run.json"
     config_path.parent.mkdir(parents=True)
@@ -921,8 +443,9 @@ def write_resolved_config(
         "mission": mission,
     }
     if mission == "comp2026_auto":
-        course_payload = b"waypoints: {}\n"
-        scenario_payload = b"payloads: []\n"
+        repository = Path(__file__).parents[2]
+        course_payload = (repository / "config/course.yaml").read_bytes()
+        scenario_payload = (repository / "config/scenario.yaml").read_bytes()
         (config_path.parent / "course.yaml").write_bytes(course_payload)
         (config_path.parent / "scenario.yaml").write_bytes(scenario_payload)
         document["competition"] = {
@@ -931,6 +454,26 @@ def write_resolved_config(
             "course_sha256": hashlib.sha256(course_payload).hexdigest(),
             "scenario_sha256": hashlib.sha256(scenario_payload).hexdigest(),
         }
+        if include_qgc:
+            document["qgc"] = {
+                "deployment_profile": "deployment-profile.json",
+                "deployment_profile_sha256": "2" * 64,
+                "listener_session": "listener-session.json",
+                "listener_session_sha256": "3" * 64,
+                "qgc_actions": "qgc-actions.json",
+                "qgc_actions_sha256": "4" * 64,
+                "runtime_policy": "qgc-runtime.json",
+                "runtime_policy_sha256": "5" * 64,
+                "attempt_state_id": "sha256-" + "2" * 64,
+            }
+            document["runtime_profile"] = "phase3"
+            document["simulation"] = {
+                "seed": 2026,
+                "duration_sim_seconds": 600.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.25,
+            }
+            document["output_root"] = str(run_directory / "outputs")
     config_path.write_text(
         json.dumps(document),
         encoding="utf-8",
@@ -1013,7 +556,9 @@ def test_non_comp2026_runtime_rejects_qgc_configuration(tmp_path: Path) -> None:
 def test_comp2026_runtime_config_requires_resolved_qgc_object(tmp_path: Path) -> None:
     run_directory = tmp_path / RUN_ID
     configuration = run_directory / "configuration"
-    config_path = write_resolved_config(run_directory, mission="comp2026_auto")
+    config_path = write_resolved_config(
+        run_directory, mission="comp2026_auto", include_qgc=False
+    )
     repository = Path(__file__).parents[2]
     (configuration / "course.yaml").write_bytes(
         (repository / "config/course.yaml").read_bytes()

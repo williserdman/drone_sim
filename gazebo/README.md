@@ -66,6 +66,9 @@ The runtime publishes it through the
 - Public output is rebased from one configured native epoch. Activation must be
   armed before the exact target; late activation or a skipped target faults
   closed. Public zero precedes buffered output, and the server is not reset.
+  The `configured` mission releases the paused epoch on the durable
+  `mission-execution-ready` status. Other missions still wait for
+  `mission-command-delivered`.
 - Camera and aligned physical-truth samples advance at the configured 20 Hz.
   Invalid, duplicate, regressing, misaligned, or excess samples latch the first
   adapter fault; later input cannot repair it.

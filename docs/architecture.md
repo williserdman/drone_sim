@@ -170,6 +170,25 @@ interfaces, implementation entry points, tests, and important constraints.
 
 ## Shared communication guarantees
 
+Configured diagnostic missions use a separate execution-ready start fact. The
+companion validates every tool call, establishes transport and passive readiness,
+then publishes `mission-execution-ready` only after matching RUNNING and accepted
+public clock. Gazebo selects this fact only for `mission: configured`; existing
+missions retain `mission-command-delivered`. Execution readiness makes no claim
+that a flight command was sent. This distinction lets an operator-wait step run
+while physics and telemetry advance.
+
+The configured runner and future agent callers share the companion's
+[drone operations](../companion/src/drone_sim_companion/operations.py). The run
+configuration includes the entire immutable plan under its existing checksum.
+One operation owns flight output at a time; the fixed-sequence runner advances
+only after observed success. Arming records the mission-start timestamp without
+imposing the competition deadline. Failure ends the sequence, and any local LAND
+recovery remains a separate outcome. A completed sequence still requires observed
+landing/disarm before companion success; score and artifact validity remain
+independent. Exact tools and current limits are in the
+[companion guide](../companion/README.md#configured-diagnostic-missions).
+
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.
 Gazebo rebases native timestamps onto the public epoch; the first 20 Hz camera

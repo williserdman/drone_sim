@@ -7,6 +7,8 @@ Artifacts owns the evidence bundle for each run: ROS 2 recording, onboard and
 observer video encoding, structured and Docker logs, Gazebo native evidence,
 score outputs, validation, checksums, and atomic manifest publication. Its runtime
 also reports aggregate recorder readiness and recorder-local finalization facts.
+The shared durable protocol accepts `mission-execution-ready` with exact fields
+`run_id`, `ready: true`, and a nonnegative integer `sim_timestamp_ns`.
 
 It does **not** produce camera images or physical truth, fly the mission, calculate
 the competition score, or choose a mission outcome. Orchestration requests a

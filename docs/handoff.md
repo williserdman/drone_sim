@@ -8,6 +8,55 @@ verified on the isolated `fix/precision-landing-reacquire` parent and nested
 branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 600-second window with accepted terminal artifacts and a 150/150 score.
 
+## 2026-09-19 configured mission runner
+
+Added `mission: configured` with a checksum-bound inline plan, explicit mode and
+arm operations, passive operator waiting, takeoff, numeric GPS waypoint flight,
+hold, and land. The sequential caller uses reusable operation IDs/status and
+stops on failure. A distinct execution-ready fact releases paused simulation
+without inventing a GUIDED command. A bounded local LAND recovery preserves the
+failed mission result. See the [tool contract](../companion/README.md#configured-diagnostic-missions)
+and [launch procedure](runbook.md#configured-mission-runner).
+
+Verification covers the working tree based on parent `2cece17`. The independent
+Comp2026 checkout remained clean at `a89aede`. Focused source checks cover all
+companion tests, orchestration configuration, runtime status validation, Gazebo
+startup, and Phase 3 Compose contracts. The configured live-loop test uses real
+PyMAVLink messages with fake ROS and transport; it proves wiring and cleanup,
+not vehicle dynamics. The focused suite passed **823 tests**, with no failures or
+skips. Both templates and all seven exported tool schemas validate,
+and 176 local links across the affected guides resolve.
+
+All seven Phase 3 images were rebuilt for the automatic template, including
+pinned ArduCopter 4.5.7. The companion build initially failed because Ubuntu no
+longer offered `python3.12-venv=3.12.3-1ubuntu0.15`; advancing that pin to the
+available `3.12.3-1ubuntu0.17` produced a successful build. Other images reused
+cached package layers; clean-cache availability of their package pins was not
+checked. Build logs, launch source hashes, image identities, and verification
+outputs are retained locally in `runs/builds/configured-20260919-03v6x7jv/`.
+Seven installed companion source files matched their launch hashes exactly.
+
+Run `36293c5d-2cc6-4d13-bb4a-5713746a1dff` used
+[configured-descent-run.json](../config/configured-descent-run.json) unchanged
+and completed in 1,806 wall seconds. Evidence is local under `runs/<run_id>/`:
+
+- **Physical outcome:** GUIDED, arm, takeoff to 1.5 m, hold for two simulation
+  seconds, and LAND all succeeded. Landing/disarm was observed at public time
+  13.05 s. Independent reading of all 1,200 ground-truth samples found a 1.544 m
+  rise above the initial pose and final ground contact with zero linear speed.
+- **Score:** `descent_v1` awarded 100/100; all four rules passed.
+- **Artifacts:** `collect-results` reports `COMPLETED` / `mission_complete`, with
+  no incomplete paths. Both MP4s independently probe as H.264, 320×240, 20 fps,
+  1,200 frames, 60 seconds. The rosbag is readable; `logs/companion.jsonl` records
+  operation arguments and results. Run containers were removed by normal teardown.
+
+This verifies one automatic descent in the Gazebo `vertical_descent` world.
+Operator-wait plans, waypoint flight, and failure recovery have source-test
+coverage but were not flown in this run. QGC integration and physical aircraft
+remain outside this evidence. Precision landing, camera/LiDAR tools, agent
+transport, named waypoints, branches/retries, and exclusive compute scheduling
+remain deferred. Operator-wait mode does not provision a new QGC connection.
+
 ## 2026-09-07 QGC flight-safety software checkpoint
 
 The guarded parent QGC host and nested FM1/FM2 safety implementation are

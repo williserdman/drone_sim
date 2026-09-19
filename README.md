@@ -59,6 +59,15 @@ supplies the required QGC configuration inputs.
 
 ## Contributing or adding a mission
 
+For a fixed sequence of flight operations, copy
+[configured-descent-run.json](config/configured-descent-run.json) and edit its
+`mission_plan.steps`. Use [configured-operator-run.json](config/configured-operator-run.json)
+to wait for external arming and GUIDED selection. The
+[companion guide](companion/README.md#configured-diagnostic-missions) defines the
+tools and limitations; the [runbook](docs/runbook.md#configured-mission-runner)
+covers rebuilding and launching. See [handoff](docs/handoff.md#2026-09-19-configured-mission-runner)
+for dated source and container verification.
+
 Read [AGENTS.md](AGENTS.md) for contribution rules, then the affected module
 README. For a mission, start with [companion](companion/README.md): define its
 behavior and success/failure conditions, implement and register it through the

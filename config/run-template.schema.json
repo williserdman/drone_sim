@@ -26,7 +26,8 @@
     "runtime_profile": {"enum": ["phase2", "phase3"]},
     "simulation": {"$ref": "#/$defs/simulation"},
     "competition": {"$ref": "#/$defs/competition"},
-    "qgc": {"$ref": "#/$defs/qgc"}
+    "qgc": {"$ref": "#/$defs/qgc"},
+    "mission_plan": {"$ref": "#/$defs/mission_plan"}
   },
   "allOf": [
     {
@@ -59,6 +60,14 @@
           "mission": {"const": "comp2026_auto"}
         }
       }
+    },
+    {
+      "if": {"properties": {"mission": {"const": "configured"}}},
+      "then": {
+        "required": ["runtime_profile", "mission_plan"],
+        "properties": {"runtime_profile": {"const": "phase3"}}
+      },
+      "else": {"not": {"required": ["mission_plan"]}}
     }
   ],
   "$defs": {
@@ -114,6 +123,29 @@
     "qgc_source_path": {
       "type": "string",
       "pattern": "^(?!/)(?!\\./)(?!\\.?\\.?$)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\u0000\\r\\n]).+$"
+    },
+    "mission_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "steps"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/mission_step"}
+        }
+      }
+    },
+    "mission_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "args"],
+      "properties": {
+        "tool": {"type": "string", "minLength": 1},
+        "args": {"type": "object"},
+        "timeout_sim_s": {"type": "number", "exclusiveMinimum": 0, "default": 60}
+      }
     },
     "simulation": {
       "type": "object",

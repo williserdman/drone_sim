@@ -1,4 +1,4 @@
-"""Select and host the resolved controlled-descent or Comp2026 mission."""
+"""Select and host the resolved diagnostic, configured, or Comp2026 mission."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from artifacts.runtime_protocol import RuntimeProtocol
 from artifacts.runtime_status import (
     CompanionReadyStatus,
     MissionCommandDeliveredStatus,
+    MissionExecutionReadyStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
     RuntimeFailureStatus,
@@ -44,6 +45,7 @@ from .controller import MissionController, mission_policy_active, process_teleme
 from .lifecycle import CompanionLifecycle, INITIAL_COMMAND_WINDOW_NS
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
+from .mission_plan import MissionPlan, parse_mission_plan
 from .qgc_runtime_config import (
     ResolvedQGCInputs,
     project_qgc_runtime,
@@ -103,6 +105,7 @@ class RuntimeConfig:
     scenario_path: Path | None = None
     qgc: ResolvedQGCInputs | None = None
     output_root: Path | None = None
+    mission_plan: MissionPlan | None = None
 
     @staticmethod
     def _validate_qgc_structure(raw: object) -> None:
@@ -184,8 +187,16 @@ class RuntimeConfig:
             "comp2026_auto",
             "autotune_roll",
             "hover_roll",
+            "configured",
         }:
             raise ValueError("resolved mission must select an approved companion host")
+        mission_plan = None
+        if mission == "configured":
+            if document.get("runtime_profile") != "phase3" or not isinstance(document.get("simulation"), dict):
+                raise ValueError("configured mission requires phase3 simulation")
+            mission_plan = parse_mission_plan(document.get("mission_plan"))
+        elif "mission_plan" in document:
+            raise ValueError("mission_plan is only valid for configured missions")
         course_path: Path | None = None
         scenario_path: Path | None = None
         qgc: ResolvedQGCInputs | None = None
@@ -204,9 +215,20 @@ class RuntimeConfig:
                 not isinstance(competition, dict)
                 or competition.get("course") != "course.yaml"
                 or competition.get("scenario") != "scenario.yaml"
-                or set(competition)
-                != {"course", "scenario", "course_sha256", "scenario_sha256"}
             ):
+                raise ValueError("comp2026_auto requires resolved competition sources")
+            _validate_sha256_digest(
+                competition.get("course_sha256"), "course_sha256"
+            )
+            _validate_sha256_digest(
+                competition.get("scenario_sha256"), "scenario_sha256"
+            )
+            if set(competition) != {
+                "course",
+                "scenario",
+                "course_sha256",
+                "scenario_sha256",
+            }:
                 raise ValueError("comp2026_auto requires resolved competition sources")
             course_path, scenario_path = validate_resolved_competition(
                 competition, configuration_directory=config_path.parent
@@ -241,6 +263,7 @@ class RuntimeConfig:
             scenario_path=scenario_path,
             qgc=qgc,
             output_root=output_root,
+            mission_plan=mission_plan,
         )
 
 
@@ -441,6 +464,7 @@ class _ProductionProtocol:
             CompanionReadyStatus,
             MissionReadyStatus,
             MissionCommandDeliveredStatus,
+            MissionExecutionReadyStatus,
             MissionFinishedStatus,
             RuntimeFailureStatus,
         }:
@@ -2064,6 +2088,10 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     return 0 if primary_error is None else 1
 def main() -> int:
     config = RuntimeConfig.from_environment(os.environ)
+    if config.mission == "configured":
+        from .configured_runtime import run_configured
+
+        return run_configured(config)
     if config.mission == "controlled_descent":
         return _run_controlled_descent(config)
     if config.mission in {"autotune_roll", "hover_roll"}:

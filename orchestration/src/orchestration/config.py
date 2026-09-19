@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -26,7 +27,13 @@ _TEMPLATE_FIELDS = {
     "recording",
 }
 _RESOLVED_FIELDS = _TEMPLATE_FIELDS | {"run_id", "config_sha256"}
-_OPTIONAL_FIELDS = {"runtime_profile", "simulation", "competition", "qgc"}
+_OPTIONAL_FIELDS = {
+    "runtime_profile",
+    "simulation",
+    "competition",
+    "qgc",
+    "mission_plan",
+}
 _STRING_FIELDS = ("world", "vehicle", "mission", "scenario", "output_root")
 _DEADLINE_FIELDS = (
     "max_wall_seconds",
@@ -176,6 +183,7 @@ class RunTemplate:
     simulation: SimulationConfig | None
     competition: CompetitionSources | None = None
     qgc: QGCSources | None = None
+    mission_plan_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +203,7 @@ class RunConfig:
     config_sha256: str
     competition: CompetitionSources | None = None
     qgc: QGCSources | None = None
+    mission_plan_json: str | None = None
 
     @property
     def expected_camera_frames(self) -> int:
@@ -314,6 +323,52 @@ def _validate_simulation(document: Any) -> SimulationConfig:
     )
 
 
+def _validate_mission_plan(document: Any) -> str:
+    if not isinstance(document, dict) or set(document) != {"schema_version", "steps"}:
+        raise ValueError("mission_plan must contain exactly schema_version and steps")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise ValueError("mission_plan schema_version must be 1")
+    steps = document["steps"]
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("mission_plan steps must be a nonempty array")
+    normalized_steps: list[dict[str, Any]] = []
+    for step in steps:
+        if not isinstance(step, dict) or not set(step) <= {
+            "tool",
+            "args",
+            "timeout_sim_s",
+        } or not {"tool", "args"} <= set(step):
+            raise ValueError("mission_plan step has missing or unknown keys")
+        tool = step["tool"]
+        if not isinstance(tool, str) or not tool:
+            raise ValueError("mission_plan step tool must be a nonempty string")
+        args = step["args"]
+        if not isinstance(args, dict):
+            raise ValueError("mission_plan step args must be an object")
+        timeout = step.get("timeout_sim_s", 60)
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError("mission_plan step timeout_sim_s must be positive and finite")
+        normalized_steps.append(
+            {"tool": tool, "args": args, "timeout_sim_s": timeout}
+        )
+    normalized = {"schema_version": 1, "steps": normalized_steps}
+    try:
+        return json.dumps(
+            normalized,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise ValueError("mission_plan args must contain valid JSON values") from exc
+
+
 def _duration_seconds(duration_ns: int) -> int | float:
     seconds, remainder_ns = divmod(duration_ns, 1_000_000_000)
     if remainder_ns == 0:
@@ -345,6 +400,14 @@ def _validate_common(
         raise ValueError("QGC configuration requires mission comp2026_auto")
     if document["mission"] == "comp2026_auto" and "qgc" not in document:
         raise ValueError("comp2026_auto requires QGC configuration")
+    if document["mission"] == "configured":
+        if runtime_profile != "phase3":
+            raise ValueError("configured mission requires runtime_profile phase3")
+        if "mission_plan" not in document:
+            raise ValueError("configured mission requires mission_plan")
+        _validate_mission_plan(document["mission_plan"])
+    elif "mission_plan" in document:
+        raise ValueError("mission_plan is only valid for the configured mission")
     if runtime_profile == "phase3":
         if "simulation" not in document:
             raise ValueError("phase3 requires simulation configuration")
@@ -708,6 +771,11 @@ def _template_from_document(
             if "qgc" in document
             else None
         ),
+        mission_plan_json=(
+            _validate_mission_plan(document["mission_plan"])
+            if "mission_plan" in document
+            else None
+        ),
     )
 
 
@@ -748,6 +816,11 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
         }
     if config.qgc is not None:
         document["qgc"] = _qgc_document(config.qgc)
+    if config.mission_plan_json is not None:
+        try:
+            document["mission_plan"] = json.loads(config.mission_plan_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("mission_plan_json must contain valid JSON") from exc
     return document
 
 
@@ -791,6 +864,7 @@ def resolve_run_config(
         config_sha256="",
         competition=template.competition,
         qgc=template.qgc,
+        mission_plan_json=template.mission_plan_json,
     )
     return replace(
         unresolved,
@@ -831,6 +905,11 @@ def load_run_config(path: str | Path) -> RunConfig:
             if "qgc" in document
             else None
         )
+        mission_plan_json = (
+            _validate_mission_plan(document["mission_plan"])
+            if "mission_plan" in document
+            else None
+        )
     finally:
         os.close(configuration_fd)
     competition = _competition_from_resolved(document.get("competition"), source.parent)
@@ -852,6 +931,7 @@ def load_run_config(path: str | Path) -> RunConfig:
         config_sha256=checksum,
         competition=competition,
         qgc=qgc,
+        mission_plan_json=mission_plan_json,
     )
 
 

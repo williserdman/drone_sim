@@ -4,11 +4,16 @@ from pathlib import Path
 from threading import Event, Thread
 import time
 
-from artifacts.runtime_status import FlightExchange, MissionCommandDeliveredStatus
+from artifacts.runtime_status import (
+    FlightExchange,
+    MissionCommandDeliveredStatus,
+    MissionExecutionReadyStatus,
+)
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
 from drone_sim_gazebo.runtime.runtime_node import (
     PublicEpochRendezvous,
+    _release_status_type_for_mission,
     _probe_flight_exchange,
     _record_adapter_fault,
     _start_server_ready,
@@ -16,6 +21,18 @@ from drone_sim_gazebo.runtime.runtime_node import (
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+
+
+@pytest.mark.parametrize(
+    ("mission", "expected"),
+    [
+        ("configured", MissionExecutionReadyStatus),
+        ("comp2026_auto", MissionCommandDeliveredStatus),
+        ("vertical_descent", MissionCommandDeliveredStatus),
+    ],
+)
+def test_release_status_type_is_specific_to_configured_mission(mission, expected):
+    assert _release_status_type_for_mission(mission) is expected
 
 
 def test_competition_bridge_is_minimal_and_directional():
@@ -225,6 +242,34 @@ def test_public_epoch_rendezvous_steps_to_target_then_waits_for_delivery_ack():
         assert time.monotonic() < deadline
         time.sleep(0.01)
     assert calls.count(("paused", False)) == 2
+
+
+def test_public_epoch_rendezvous_can_wait_for_execution_readiness():
+    observed_types = []
+
+    class Transport:
+        def run_to_sim_time(self, _target_ns):
+            return None
+
+    class Protocol:
+        def read_status(self, status_type):
+            observed_types.append(status_type)
+            return None
+
+    rendezvous = PublicEpochRendezvous(
+        transport=Transport(),
+        protocol=Protocol(),
+        public_epoch_native_ns=0,
+        activate_output=lambda: None,
+        prepare_output=lambda: None,
+        epoch_reached=lambda: True,
+        release_status_type=MissionExecutionReadyStatus,
+    )
+    rendezvous.start_warmup()
+    rendezvous.begin()
+
+    assert rendezvous.release_if_delivered() is False
+    assert observed_types == [MissionExecutionReadyStatus]
 
 
 def test_public_epoch_rendezvous_keeps_run_to_after_rejected_reply():

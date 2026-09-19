@@ -15,6 +15,7 @@ from artifacts.runtime_status import (
     FlightExchange,
     GazeboReadyStatus,
     MissionCommandDeliveredStatus,
+    MissionExecutionReadyStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
     RuntimeFailureStatus,
@@ -225,6 +226,11 @@ CASES = (
         "terminal-notified",
         {"run_id": RUN_ID, "notified": True},
     ),
+    (
+        MissionExecutionReadyStatus(RUN_ID, 50_000_001),
+        "mission-execution-ready",
+        {"run_id": RUN_ID, "ready": True, "sim_timestamp_ns": 50_000_001},
+    ),
 )
 
 
@@ -243,7 +249,7 @@ def test_registered_status_inventory_is_consistent():
     names = {name for _status, name, _document in CASES}
     policies = [status_write_policy(type(status)) for status, _name, _document in CASES]
 
-    assert len(CASES) == len(status_types) == len(names) == 14
+    assert len(CASES) == len(status_types) == len(names) == 15
     assert policies.count(WritePolicy.FIRST_WINS) == 1
 
 
@@ -338,6 +344,7 @@ CONSTANT_MUTATIONS = (
     (9, ("finished",), False),
     (11, ("frozen",), False),
     (13, ("notified",), False),
+    (14, ("ready",), False),
 )
 
 
@@ -359,6 +366,7 @@ TIMESTAMP_CASES = (
     (SourceFinishedStatus, 7),
     (MissionFinishedStatus, 8),
     (ScoreFinishedStatus, 9),
+    (MissionExecutionReadyStatus, 14),
 )
 
 

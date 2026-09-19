@@ -7,6 +7,73 @@ The companion owns mission, vision, and autonomy decisions. It turns public
 simulation inputs and ArduPilot telemetry into flight commands, payload
 requests, mission events, and durable mission lifecycle evidence.
 
+## Configured diagnostic missions
+
+The `configured` runner executes a fixed sequence of shared drone operations.
+Each operation has a name, validated arguments, an operation ID, and an observed
+terminal result. The runner waits for success before starting the next step;
+failure stops the sequence. Mode selection and arming are explicit operations.
+An operator-driven plan can instead wait for observed armed GUIDED state.
+Arming establishes the mission-start timestamp; no competition countdown applies.
+
+Start from [configured-descent-run.json](../config/configured-descent-run.json)
+for automatic flight or
+[configured-operator-run.json](../config/configured-operator-run.json) to wait
+for an operator. Each run template contains `mission_plan` with `schema_version: 1`
+and a nonempty `steps` array. Each step contains `tool`, `args`, and an optional
+`timeout_sim_s`, default 60. The complete normalized plan is captured inside the
+checksum-bound `configuration/run.json`; the runtime never rereads the template.
+
+[mission_plan.py](src/drone_sim_companion/mission_plan.py) defines and validates
+the tool arguments and exports JSON-compatible `tool_definitions()` for future
+callers. Unknown tools, unknown arguments, nonfinite numbers, and invalid plans
+fail before ROS or MAVLink resources are created.
+
+| Tool | Arguments and completion |
+| --- | --- |
+| `wait_for_state` | One or more of `armed`, `mode`, `landed`; waits for matching fresh telemetry without issuing commands. |
+| `set_mode` | `mode: GUIDED`; requires command acceptance and observed mode. |
+| `arm` | Empty arguments; requires fresh GUIDED and healthy prearm state, then command acceptance and observed arming. |
+| `takeoff` | Positive `altitude_m`, optional positive `tolerance_m` smaller than the target height; default is the smaller of 0.15 m and 10% of the height. Requires already armed GUIDED state, command acceptance, and reaching the altitude threshold. |
+| `goto_waypoint` | `latitude_deg`, `longitude_deg`, positive `altitude_m`, optional positive `tolerance_m`, default 1; waits for fresh position within horizontal and altitude tolerances. |
+| `hold` | Positive `duration_sim_s`, shorter than the step timeout; leaves the existing GUIDED target in place while waiting. Requires armed GUIDED state throughout. |
+| `land` | Empty arguments; requires command acceptance followed by observed touchdown and disarm. Already landed/disarmed is a successful no-op. |
+
+Waypoints use WGS84 latitude/longitude in degrees and altitude in metres above
+ArduPilot home, following
+[SET_POSITION_TARGET_GLOBAL_INT](https://mavlink.io/en/messages/common.html#SET_POSITION_TARGET_GLOBAL_INT).
+They are numeric coordinates, not named competition waypoints. Takeoff altitude
+also uses metres above home. Arming time is the first observed armed state in
+the public simulation epoch; a vehicle already armed when first observed has no
+reconstructed earlier timestamp. Step deadlines use simulation time; the run's
+wall deadline still bounds stalled infrastructure and operator waiting.
+
+Only one flight operation runs at a time. Operations advance from telemetry and
+simulation-clock ticks, leaving the runtime responsive to observation and abort.
+The future agent caller can use `DroneOperations.start()`, `operation_status()`,
+and `read_vehicle_state()` from
+[operations.py](src/drone_sim_companion/operations.py). Calls are serialized on the
+runtime owner thread; no agent endpoint is installed. Heartbeats older than three
+simulation seconds fail active flight operations. Completed operations retain
+their status; an ACK alone never establishes flight completion.
+
+[configured_runtime.py](src/drone_sim_companion/configured_runtime.py) opens a
+distinct `mission-execution-ready` gate after passive readiness, matching RUNNING,
+and public clock. This lets physics advance during an operator wait without
+sending a GUIDED command. Other mission hosts retain their existing start gate.
+Only a completed sequence with observed landing and disarm publishes
+`mission-finished`. Failure or abort stops the sequence and may attempt one local
+LAND when a fresh heartbeat still reports armed GUIDED/LAND. It does not override
+another observed mode. Recovery is bounded by the configured finalization wall
+budget and the overall wall deadline, and never changes the failed mission result.
+
+Deferred work: precision landing, camera/LiDAR tools, agent transport, named
+waypoints, branching, retries, and resource-exclusive actions. Unsupported tools
+are rejected before flight. Camera/FM3 remains disabled in the existing QGC
+composition; this runner does not change the independent Comp2026 checkout.
+Host tests exercise source behavior; current container/flight verification is
+recorded separately in [handoff](../docs/handoff.md).
+
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 

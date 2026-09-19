@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from artifacts.runtime_status import RuntimeStatus, status_document, status_name
+
 import drone_sim_companion.runtime_node as runtime_node
 
 
@@ -35,8 +37,10 @@ class FakeProtocol:
         self.events = events
         self.finalize_requested = threading.Event()
 
-    def write_status(self, name: str, document: dict[str, object]) -> None:
-        self.events.append(("status", name, document))
+    def write_status(self, status: RuntimeStatus) -> None:
+        self.events.append(
+            ("status", status_name(type(status)), status_document(status))
+        )
 
     def write_quiescence(self, module: str) -> None:
         self.events.append(("quiescence", module))
@@ -2963,10 +2967,10 @@ def test_ready_publication_failure_closes_unhanded_controller(
     dependencies = harness.dependencies()
 
     class ReadyFailureProtocol(FakeProtocol):
-        def write_status(self, name: str, document: dict[str, object]) -> None:
-            if name == "companion-ready":
+        def write_status(self, status: RuntimeStatus) -> None:
+            if status_name(type(status)) == "companion-ready":
                 raise RuntimeError("ready publication failed")
-            super().write_status(name, document)
+            super().write_status(status)
 
     protocol = ReadyFailureProtocol(harness.events)
     monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
@@ -3026,10 +3030,11 @@ def test_terminal_and_protocol_close_failures_do_not_escape_or_skip_cleanup(
     dependencies = harness.dependencies()
 
     class FailingProtocol(FakeProtocol):
-        def write_status(self, name: str, document: dict[str, object]) -> None:
+        def write_status(self, status: RuntimeStatus) -> None:
+            name = status_name(type(status))
             if name in {"mission-finished", "runtime-failure"}:
                 raise RuntimeError(f"{name} publication failed")
-            super().write_status(name, document)
+            super().write_status(status)
 
         def close(self) -> None:
             self.events.append("protocol-close-attempt")
