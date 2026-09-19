@@ -56,6 +56,10 @@ runs extend the base bag with their physical/scoring evidence as selected by
 `search_delivery_v1` uses that topic inventory with exactly one payload-state
 sample for ID 3 on every physical tick and no descent scenario event. Artifact
 replay independently checks its seven mission events and two payload events.
+Replay allows the first physical sample within one 50 ms interval after mission
+start, matching the public grid's first sample at 50 ms when SEARCH starts at
+zero. Every later sample must remain exactly 50 ms apart; a missing first tick
+or an interior gap still fails validation.
 
 The search-delivery onboard stream is 640x480 and its observer stream is
 1280x960. Resolved recording configuration carries the observer dimensions

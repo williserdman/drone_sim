@@ -217,7 +217,8 @@ on that inventory. The mission's local success/failure contract is in the
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.
 Gazebo rebases native timestamps onto the public epoch; the first 20 Hz camera
-sample is at 50 ms with frame ID zero. Do not substitute wall time for simulation
+and physical-state samples are at 50 ms. The first camera frame ID is zero.
+Do not substitute wall time for simulation
 time or hide gaps by restamping queued samples. Run IDs isolate streams; invalid
 ordering or missing required samples fail validation rather than proving success.
 Reliable transport with bounded history is not a guarantee of lossless recording.

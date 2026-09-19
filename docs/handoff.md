@@ -19,7 +19,7 @@ and home landing. Observer recording is 1280×960; onboard calibration remains
 of private warmup. See the [mission contract](../companion/README.md#search-and-deliver-contract)
 and [run procedure](runbook.md#search-and-deliver-mission).
 
-Source checks currently pass for companion (130), orchestration (472),
+Initial source checks passed for companion (130), orchestration (472),
 Gazebo/electromagnet (393, with 14 ROS-dependent skips), and scorekeeper (79).
 An additional container run passed 35 Gazebo adapter/payload/asset tests with
 ROS dependencies available. Artifact checks passed 535 tests with 12 skips;
@@ -53,9 +53,39 @@ missing targets; the 500 ms limit is unchanged. Direct camera failures still
 stop the mission, and operation results retain explicit exception causes.
 All 571 companion tests passed; a final 81-test I/O, camera, operation and live-loop
 subset also passed. This includes a real-camera test that excludes a
-600 ms clock advance during frame handoff. The retry build and flight audit is
-`runs/builds/search-delivery-retry-20260919-tpz1_zf4/`; flight verification remains
-pending.
+600 ms clock advance during frame handoff.
+
+Retry `527fa45a-1565-40b1-b6da-6db57ae65f73` used parent `179fcfe` with nested
+`a89aede` unchanged. The confirmed seven-image rebuild exited 0; 175 installed
+source/asset checks matched. It completed in 3,521.23 wall seconds. Its audit is
+`runs/builds/search-delivery-retry-20260919-tpz1_zf4/`.
+
+- Physical outcome: all 24 operations succeeded. Raw evidence confirms search
+  staging at 22 s, 0.772 m eastward search progress at 24.05 s, precision landing
+  at 40.05 s, physical attachment at 40.1 s and attached lift at 44.35 s. Payload
+  3 detached at 62.5 s and settled inside F2 during 63.95–64.95 s. HOME completed
+  at 87.1 s after landing/disarm; final ground truth shows stationary contact
+  inside the home pad.
+- Score: the live scorer awarded 100/100. Raw evidence independently passes
+  search, pickup, delivery and home conditions, including both stable release
+  windows. The first semantic replay rejected the score because its new oracle
+  incorrectly required a physical sample at time zero. An in-memory correction
+  admitting the actual first sample at 50 ms makes the result and all score
+  events match exactly. The correction passed 36 focused artifact/replay tests,
+  including rejection of a missing first tick and an interior gap. A rebuilt
+  validator recheck remains pending.
+- Artifacts: terminal COMPLETED / `mission_complete`, all 25 manifest artifacts
+  valid and no incomplete paths. Each H.264 video has 4,800 decoded frames at
+  20 fps for 240 s: observer 1280×960, onboard 640×480. The bag has 4,800 samples
+  each for vehicle and payload 3, exactly 50 ms apart, seven mission events and
+  two payload events. Normal teardown left no run resources.
+
+The observer recording is `runs/527fa45a-1565-40b1-b6da-6db57ae65f73/video/observer.mp4`.
+The retry audit contains `vehicle_trajectory.csv`,
+`search_delivery_physical_audit.json` and `video-verification.json`. The rejected
+initial replay report remains unchanged beside them. The checker correction and
+revalidation audit is `runs/builds/search-replay-20260919-2xm7nofo/`; flight inputs,
+recordings and published scores are preserved.
 
 ## 2026-09-19 configured competition conversion
 

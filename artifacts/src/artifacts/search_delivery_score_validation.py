@@ -286,9 +286,13 @@ class _PhysicalOracle:
 
     def _contiguous(self, rows: tuple[object, ...]) -> bool:
         timestamps = [row.sim_timestamp_ns for row in rows]  # type: ignore[attr-defined]
-        return bool(timestamps) and timestamps[0] == self.start_ns and all(
-            current - previous == self.rules.interval_ns
-            for previous, current in zip(timestamps, timestamps[1:])
+        return (
+            bool(timestamps)
+            and 0 <= timestamps[0] - self.start_ns <= self.rules.interval_ns
+            and all(
+                current - previous == self.rules.interval_ns
+                for previous, current in zip(timestamps, timestamps[1:])
+            )
         )
 
     @staticmethod

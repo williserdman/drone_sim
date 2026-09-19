@@ -53,10 +53,12 @@ def _payload_events() -> tuple[PayloadEventEvidence, ...]:
     )
 
 
-def _physical_evidence(run_directory: Path) -> PhysicalBagEvidence:
+def _physical_evidence(
+    run_directory: Path, *, first_sample_ns: int = 0
+) -> PhysicalBagEvidence:
     ground_truth: list[GroundTruthEvidence] = []
     payload_states: list[PayloadStateEvidence] = []
-    for stamp in range(0, 7_200_000_000 + DT, DT):
+    for stamp in range(first_sample_ns, 7_200_000_000 + DT, DT):
         if stamp < 500_000_000:
             vehicle_xy, vehicle_z, contact = (0.0, 0.0), 0.0, True
         elif stamp < 600_000_000:
@@ -133,7 +135,7 @@ def _physical_evidence(run_directory: Path) -> PhysicalBagEvidence:
     )
 
 
-def _fixture(tmp_path: Path) -> PhysicalBagEvidence:
+def _fixture(tmp_path: Path, *, first_sample_ns: int = 0) -> PhysicalBagEvidence:
     (tmp_path / "rosbag").mkdir()
     (tmp_path / "rosbag/data.mcap").write_bytes(b"search delivery evidence")
     scoring = tmp_path / "scoring"
@@ -191,7 +193,7 @@ def _fixture(tmp_path: Path) -> PhysicalBagEvidence:
         "diagnostic": None,
     }
     (scoring / "result.json").write_text(json.dumps(result), encoding="utf-8")
-    return _physical_evidence(tmp_path)
+    return _physical_evidence(tmp_path, first_sample_ns=first_sample_ns)
 
 
 def test_independent_search_delivery_validation_accepts_valid_bundle(tmp_path):
@@ -209,6 +211,60 @@ def test_independent_search_delivery_validation_accepts_valid_bundle(tmp_path):
 
     assert metadata.achieved_score == metadata.maximum_available_score == 100.0
     assert metadata.elapsed_simulated_ns == 7_200_000_000
+
+
+def test_independent_validation_accepts_physical_grid_starting_at_50_ms(tmp_path):
+    """The public 20 Hz grid is (0, duration], after SEARCH starts at zero."""
+    from artifacts.search_delivery_score_validation import (
+        validate_search_delivery_score_outputs,
+    )
+
+    metadata = validate_search_delivery_score_outputs(
+        tmp_path,
+        run_id=RUN_ID,
+        rules_path=RULES_PATH,
+        physical_evidence=_fixture(tmp_path, first_sample_ns=DT),
+    )
+
+    assert metadata.achieved_score == metadata.maximum_available_score == 100.0
+
+
+def test_independent_validation_rejects_first_physical_sample_at_100_ms(tmp_path):
+    """Allowing the normal first tick must not hide a missing 50 ms sample."""
+    from artifacts.search_delivery_score_validation import (
+        SearchDeliveryScoreValidationError,
+        validate_search_delivery_score_outputs,
+    )
+
+    with pytest.raises(SearchDeliveryScoreValidationError, match="independent"):
+        validate_search_delivery_score_outputs(
+            tmp_path,
+            run_id=RUN_ID,
+            rules_path=RULES_PATH,
+            physical_evidence=_fixture(tmp_path, first_sample_ns=2 * DT),
+        )
+
+
+def test_independent_validation_rejects_internal_physical_grid_gap(tmp_path):
+    """A missing later tick remains invalid after admitting the 50 ms first tick."""
+    from artifacts.search_delivery_score_validation import (
+        SearchDeliveryScoreValidationError,
+        validate_search_delivery_score_outputs,
+    )
+
+    evidence = _fixture(tmp_path, first_sample_ns=DT)
+    missing_stamp = 2_500_000_000
+    ground_truth = tuple(
+        row for row in evidence.ground_truth if row.sim_timestamp_ns != missing_stamp
+    )
+
+    with pytest.raises(SearchDeliveryScoreValidationError, match="independent"):
+        validate_search_delivery_score_outputs(
+            tmp_path,
+            run_id=RUN_ID,
+            rules_path=RULES_PATH,
+            physical_evidence=replace(evidence, ground_truth=ground_truth),
+        )
 
 
 def test_independent_search_delivery_validation_rejects_missing_search_motion(tmp_path):

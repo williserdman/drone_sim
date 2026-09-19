@@ -84,6 +84,10 @@ compact search-and-deliver example is
 turns, altitude changes, an offset marker search, one payload delivery, and home landing.
 Its [course](config/course-search-delivery.yaml) and
 [scenario](config/scenario-search-delivery.yaml) select separate generated world assets.
+Run `527fa45a-1565-40b1-b6da-6db57ae65f73` completed all 24 steps and scored
+100/100 on 2026-09-19. Its observer recorded 1280×960 at 20 fps. See the
+[search mission evidence](docs/handoff.md#2026-09-19-search-and-deliver-mission)
+for the flight, recordings and replay verification scope.
 The
 [companion guide](companion/README.md#configured-diagnostic-missions) defines the
 tools and limitations; the [runbook](docs/runbook.md#configured-mission-runner)
