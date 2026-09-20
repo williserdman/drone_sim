@@ -64,8 +64,10 @@ The runtime publishes it through the
 
 The `search_delivery` world uses `iris_search_delivery`, starts empty, and
 publishes physical truth only for payload 3. It reuses the checked-in
-`payload_3` marker model. Its flat 60 m square scene and fixed observer camera
-cover the compact H–WA–F2 route. The onboard stream remains calibrated at
+`payload_3` marker model. Its flat 60 m square scene has a fixed, downward-facing
+observer at 50 m above ground, centered at ENU (9, 10). This frames the compact
+H–WA–F2 route with room for the drone at its planned flight altitudes.
+The onboard stream remains calibrated at
 640x480; the search observer records 1280x960. Both publish at 20 Hz.
 
 ## Constraints worth knowing

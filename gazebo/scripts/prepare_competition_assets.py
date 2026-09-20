@@ -520,7 +520,7 @@ def _add_observer(
 ) -> None:
     model = ET.SubElement(world, "model", {"name": "observer_station"})
     if profile == "search_delivery":
-        _text(model, "pose", "9 10 30 0 1.570796327 0")
+        _text(model, "pose", "9 10 50 0 1.570796327 0")
     else:
         _text(model, "pose", "-76.2 -100 90 0 0.733 1.570796327")
     _text(model, "static", "true")

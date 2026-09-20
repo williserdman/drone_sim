@@ -201,7 +201,7 @@
       <pose>18 8 0.0354 0 0 0</pose>
     </include>
     <model name="observer_station">
-      <pose>9 10 30 0 1.570796327 0</pose>
+      <pose>9 10 50 0 1.570796327 0</pose>
       <static>true</static>
       <link name="observer_link">
         <sensor name="observer_camera" type="camera">

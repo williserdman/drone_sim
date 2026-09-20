@@ -126,7 +126,7 @@ def test_search_delivery_generator_creates_separate_empty_vehicle_and_compact_wo
 
     observer = world.find("model[@name='observer_station']")
     camera = observer.find("link/sensor[@name='observer_camera']")
-    assert observer.findtext("pose") == "9 10 30 0 1.570796327 0"
+    assert observer.findtext("pose") == "9 10 50 0 1.570796327 0"
     assert camera.findtext("camera/image/width") == "1280"
     assert camera.findtext("camera/image/height") == "960"
     assert float(camera.findtext("camera/horizontal_fov")) == pytest.approx(

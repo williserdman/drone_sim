@@ -8,6 +8,24 @@ verified on the isolated `fix/precision-landing-reacquire` parent and nested
 branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 600-second window with accepted terminal artifacts and a 150/150 score.
 
+## 2026-09-20 search observer framing
+
+Raised the search-delivery observer from 30 m to 50 m, keeping its downward
+orientation, ENU center (9, 10), field of view, and 1280×960 at 20 Hz.
+The previous view clipped the route, especially near pickup at flight altitude.
+Projection of all 4,800 positions from the successful September 19 flight now
+fits a 1.5 m cube around the drone with at least 99 pixels to every frame edge.
+The seven search asset tests and twelve competition asset tests passed.
+
+Verification evidence is in `runs/builds/observer-height-20260920-68qlwskd/`.
+The Gazebo image rebuild exited 0 and its installed world hash matches the
+generated source. The other six runtime image identities are unchanged.
+This is a geometry check against the recorded trajectory; a new flight and
+visual recording check remain unrun. Existing recordings and their scores
+retain the previous camera position. See [Gazebo](../gazebo/README.md) for the
+current framing and asset regeneration command. Operator procedures and shared
+interfaces are unchanged.
+
 ## 2026-09-19 search-and-deliver mission
 
 Added [a 24-step search-and-deliver plan](../config/configured-search-delivery-run.json)
