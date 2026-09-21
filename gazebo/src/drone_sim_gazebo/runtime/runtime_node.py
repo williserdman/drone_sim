@@ -12,7 +12,12 @@ from threading import Event, Thread
 import time
 
 from artifacts.runtime_protocol import RuntimeProtocol
-from artifacts.runtime_status import ArtifactsReadyStatus, MissionCommandDeliveredStatus
+from artifacts.runtime_status import (
+    ArtifactsReadyStatus,
+    MissionCommandDeliveredStatus,
+    MissionExecutionReadyStatus,
+    RuntimeStatus,
+)
 from artifacts.structured_log import StructuredEvent, write_event
 from orchestration.config import load_run_config
 
@@ -165,6 +170,7 @@ class PublicEpochRendezvous:
         activate_output,
         prepare_output,
         epoch_reached,
+        release_status_type: type[RuntimeStatus] = MissionCommandDeliveredStatus,
     ) -> None:
         self._transport = transport
         self._protocol = protocol
@@ -172,6 +178,7 @@ class PublicEpochRendezvous:
         self._activate_output = activate_output
         self._prepare_output = prepare_output
         self._epoch_reached = epoch_reached
+        self._release_status_type = release_status_type
         self._begun = False
         self._run_to_requested = False
         self._released = False
@@ -228,7 +235,7 @@ class PublicEpochRendezvous:
             return False
         if not self._run_to_requested:
             return False
-        if self._protocol.read_status(MissionCommandDeliveredStatus) is None:
+        if self._protocol.read_status(self._release_status_type) is None:
             return False
         if self._unpause_attempts_started == 0:
             self._start_unpause()
@@ -250,6 +257,12 @@ class PublicEpochRendezvous:
             return True
         self._released = True
         return True
+
+
+def _release_status_type_for_mission(mission: str) -> type[RuntimeStatus]:
+    if mission == "configured":
+        return MissionExecutionReadyStatus
+    return MissionCommandDeliveredStatus
 
 
 def main() -> int:
@@ -328,6 +341,7 @@ def main() -> int:
         activate_output=adapter.activate_output,
         prepare_output=adapter.prepare_output_epoch,
         epoch_reached=adapter.public_epoch_reached,
+        release_status_type=_release_status_type_for_mission(config.mission),
     )
     action_executor = ActionExecutor(
         run_id=run_id,

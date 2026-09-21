@@ -56,7 +56,7 @@ SIM_COMP2026_REVISION=$(git rev-parse HEAD) \
   docker compose --profile phase3 build
 ```
 
-`docker compose --profile phase3 build` requires this explicit nested HEAD build
+`docker compose --profile phase3 build` requires this explicit monorepo HEAD build
 argument. Compose leaves it empty when omitted so inactive profiles and
 noncompanion configuration still resolve, but the companion build then fails
 before package installation or source copies. At launch the CLI checks the
@@ -72,6 +72,70 @@ docker compose --profile phase3 config --services
 Expect seven services. `start` uses `--no-build`; rebuild affected images after
 source/parameter changes. In particular, the SITL parameter overlay is copied
 into the ArduPilot image. Editing it on the host does not change an existing image.
+
+## Local developer workflow
+
+After editing `companion/comp2026` or simulator code, run from the repository root:
+
+1. Prepare the host environment and rebuild images with the current source:
+
+   ```bash
+   uv sync --locked
+   SIM_COMP2026_REVISION=$(git rev-parse HEAD) docker compose --profile phase3 build
+   ```
+
+   `start` never builds images. For later edits confined to companion/Comp2026,
+   append `companion-runtime` to that build command. Keep source and image tags
+   unchanged through launch and acceptance; see [build provenance](#build-runtime-images).
+
+2. Run the configured takeoff/hold/land example:
+
+   ```bash
+   uv run --locked drone-sim start --config config/configured-descent-run.json
+   ```
+
+   Use `config/default-run.json` for the existing Comp2026 competition path.
+   Configured diagnostics exercise the new operation runner, not Comp2026's
+   mission classes. To add a fixed sequence, copy the configured template and
+   edit `mission_plan.steps` using the [tool contract](../companion/README.md#configured-diagnostic-missions).
+
+3. Copy the UUID from the `run_starting` JSON line and follow [monitoring](#run-and-monitor).
+   The final `run_result` reports the terminal state. Results and recordings live
+   under `runs/RUN_ID/`; see [evidence paths](#find-evidence-and-debug-a-run).
+   Configured operations record their arguments and outcomes in `logs/companion.jsonl`.
+
+The automatic example targets 90 simulated seconds of warmup plus 30 recorded
+seconds at one-tenth real time, about 20 wall minutes before startup overhead.
+The operator example waits for external arming and GUIDED selection through an
+existing connection; it does not provision one. Its 60-second public window must
+cover the wait and flight, and targets 25 wall minutes including warmup.
+
+### Run all automatic templates
+
+There is no `run-all` command. This Bash sequence attempts all six automatic
+templates, stops on the first failure or abort, and retains each normal run bundle:
+
+```bash
+(
+  set -euo pipefail
+  for mission_config in \
+    config/configured-descent-run.json \
+    config/vertical-descent-run.json \
+    config/hover-roll-run.json \
+    config/autotune-roll-run.json \
+    config/default-run.json \
+    config/realtime-run.json
+  do
+    uv run --locked drone-sim start --config "$mission_config"
+  done
+)
+```
+
+Run `configured-operator-run.json` separately with an operator present. The batch
+includes the existing AutoTune experiment and both competition timing variants;
+allow several hours. It checks process exit codes, not independent physical
+acceptance. Inspect each bundle and use [competition acceptance](#independent-competition-acceptance)
+for competition runs. AutoTune records candidates without promoting parameters.
 
 ## Run and monitor
 
@@ -115,6 +179,8 @@ mission logs alone as a stopped process.
 
 | Template | Purpose | Public duration / warmup / target RTF |
 | --- | --- | --- |
+| [configured-descent-run.json](../config/configured-descent-run.json) | Fixed automatic takeoff/hold/land | 30 s / 90 s / 0.1 |
+| [configured-operator-run.json](../config/configured-operator-run.json) | Operator arms/selects GUIDED, then takeoff/hold/land | 60 s / 90 s / 0.1 |
 | [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
 | [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |

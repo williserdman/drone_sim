@@ -45,6 +45,15 @@ actual service definitions and container commands live in [`compose.yaml`](../co
 GPU operation is an optional deployment workflow documented in the
 [runbook](../docs/runbook.md#optional-nvidia-path).
 
+The Phase 3 `configured` selector requires an inline `mission_plan`. The
+[template schema](../config/run-template.schema.json) defines its envelope;
+resolution normalizes step timeouts and binds the entire plan to `config_sha256`.
+The resolved configuration stores the plan as immutable canonical JSON and
+persists it in `configuration/run.json`. Exact tool names and arguments are
+validated by the companion. Examples are
+[automatic descent](../config/configured-descent-run.json) and
+[operator waiting](../config/configured-operator-run.json).
+
 At runtime, orchestration publishes `/simulation/run_state` using the actual
 [`RunState` schema](../ros_ws/src/simulation_interfaces/msg/RunState.msg), consumes
 aggregate [`ArtifactStatus`](../ros_ws/src/simulation_interfaces/msg/ArtifactStatus.msg),

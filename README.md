@@ -54,6 +54,11 @@ build images automatically. Do not start with a bare `docker compose up`.
 
 ## Contributing or adding a mission
 
+For a fixed sequence, copy [configured-descent-run.json](config/configured-descent-run.json)
+and edit its `mission_plan.steps`. The [companion guide](companion/README.md#configured-diagnostic-missions)
+defines the seven tools; the [local workflow](docs/runbook.md#local-developer-workflow)
+covers rebuilding changed code, running one template, and running the automatic set.
+
 Read [AGENTS.md](AGENTS.md) for contribution rules, then the affected module
 README. For a mission, start with [companion](companion/README.md): define its
 behavior and success/failure conditions, implement and register it through the

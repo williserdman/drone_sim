@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .mission import Ack, CommandKind, Telemetry
@@ -40,6 +41,51 @@ class MavlinkAdapter:
             command_id,
             0,
             *parameters,
+        )
+
+    def send_waypoint(
+        self, latitude_deg: float, longitude_deg: float, altitude_m: float
+    ) -> None:
+        values = (latitude_deg, longitude_deg, altitude_m)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in values
+        ):
+            raise ValueError("waypoint coordinates and altitude must be finite numbers")
+        if not -90.0 <= latitude_deg <= 90.0:
+            raise ValueError("waypoint latitude must be between -90 and 90 degrees")
+        if not -180.0 <= longitude_deg <= 180.0:
+            raise ValueError("waypoint longitude must be between -180 and 180 degrees")
+        mavlink = self._mavutil.mavlink
+        type_mask = (
+            mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE
+            | mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE
+            | mavlink.POSITION_TARGET_TYPEMASK_VZ_IGNORE
+            | mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE
+            | mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE
+            | mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE
+            | mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
+            | mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
+        )
+        self._connection.mav.set_position_target_global_int_send(
+            0,
+            self._connection.target_system,
+            self._connection.target_component,
+            mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            type_mask,
+            int(round(latitude_deg * 1e7)),
+            int(round(longitude_deg * 1e7)),
+            altitude_m,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         )
 
     def request_telemetry(self, *, rate_hz: int = 10) -> None:
@@ -106,6 +152,8 @@ class MavlinkAdapter:
                 prearm_checks_healthy=enabled and healthy,
             )
         if kind == "GLOBAL_POSITION_INT":
+            latitude = getattr(message, "lat", None)
+            longitude = getattr(message, "lon", None)
             return Telemetry(
                 timestamp_ns,
                 mode=self._mode,
@@ -113,6 +161,8 @@ class MavlinkAdapter:
                 landed=self._landed,
                 relative_altitude_m=float(message.relative_alt) / 1000.0,
                 vertical_speed_m_s=-float(message.vz) / 100.0,
+                latitude_deg=float(latitude) / 1e7 if latitude is not None else None,
+                longitude_deg=float(longitude) / 1e7 if longitude is not None else None,
             )
         if kind == "EXTENDED_SYS_STATE":
             self._landed = int(message.landed_state) == mavlink.MAV_LANDED_STATE_ON_GROUND

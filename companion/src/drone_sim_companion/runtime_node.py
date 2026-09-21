@@ -1,4 +1,4 @@
-"""Select and host the resolved controlled-descent or Comp2026 mission."""
+"""Select and host the resolved diagnostic, configured, or Comp2026 mission."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from artifacts.runtime_protocol import RuntimeProtocol
 from artifacts.runtime_status import (
     CompanionReadyStatus,
     MissionCommandDeliveredStatus,
+    MissionExecutionReadyStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
     RuntimeFailureStatus,
@@ -41,6 +42,7 @@ from .controller import MissionController, mission_policy_active, process_teleme
 from .lifecycle import CompanionLifecycle, INITIAL_COMMAND_WINDOW_NS
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
+from .mission_plan import MissionPlan, parse_mission_plan
 from .comp2026_host import (
     AttemptFailureCoordinator,
     Comp2026StartGate,
@@ -88,6 +90,7 @@ class RuntimeConfig:
     finalization_wall_seconds: float = 120.0
     course_path: Path | None = None
     scenario_path: Path | None = None
+    mission_plan: MissionPlan | None = None
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "RuntimeConfig":
@@ -144,8 +147,18 @@ class RuntimeConfig:
             "comp2026_auto",
             "autotune_roll",
             "hover_roll",
+            "configured",
         }:
             raise ValueError("resolved mission must select an approved companion host")
+        mission_plan = None
+        if mission == "configured":
+            if document.get("runtime_profile") != "phase3" or not isinstance(
+                document.get("simulation"), dict
+            ):
+                raise ValueError("configured mission requires phase3 simulation")
+            mission_plan = parse_mission_plan(document.get("mission_plan"))
+        elif "mission_plan" in document:
+            raise ValueError("mission_plan is only valid for configured missions")
         course_path: Path | None = None
         scenario_path: Path | None = None
         if mission == "comp2026_auto":
@@ -180,6 +193,7 @@ class RuntimeConfig:
             finalization_wall_seconds=float(finalization_wall_seconds),
             course_path=course_path,
             scenario_path=scenario_path,
+            mission_plan=mission_plan,
         )
 
 
@@ -358,6 +372,7 @@ class _ProductionProtocol:
             CompanionReadyStatus,
             MissionReadyStatus,
             MissionCommandDeliveredStatus,
+            MissionExecutionReadyStatus,
             MissionFinishedStatus,
             RuntimeFailureStatus,
         }:
@@ -1288,6 +1303,10 @@ def _run_comp2026(config: RuntimeConfig) -> int:
 
 def main() -> int:
     config = RuntimeConfig.from_environment(os.environ)
+    if config.mission == "configured":
+        from .configured_runtime import run_configured
+
+        return run_configured(config)
     if config.mission == "controlled_descent":
         return _run_controlled_descent(config)
     if config.mission in {"autotune_roll", "hover_roll"}:

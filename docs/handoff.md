@@ -3,7 +3,20 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-11. The fast precision-landing recovery is implemented and
+Audited 2026-09-21. This branch adds the fixed-sequence configured runner with
+seven basic tools and two diagnostic templates. The existing competition path
+is unchanged from `main`. Competition conversion, search-and-deliver, camera,
+and QGC work remain on `archive/configured-missions-full-20260921` for separate
+follow-ups.
+
+Source verification passed 904 tests across companion, orchestration, shared
+runtime statuses/protocol, Gazebo runtime, and contracts. All seven run templates
+validate, and Phase 3 Compose configuration resolves. No images were rebuilt or
+flights run for this reduced branch; physical outcome, score, and artifact
+validity have not been verified on this source. Rebuild before launching the
+[configured example](runbook.md#local-developer-workflow).
+
+Historical audit, 2026-09-11: fast precision-landing recovery was implemented and
 verified on the isolated `fix/precision-landing-reacquire` parent and nested
 branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 600-second window with accepted terminal artifacts and a 150/150 score.
