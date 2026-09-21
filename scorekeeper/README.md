@@ -92,4 +92,4 @@ uv run pytest tests/contracts -v
 ```
 
 For interpreting a completed run, use the independent acceptance command and
-prerequisites in the [runbook](../docs/runbook.md#independent-competition-acceptance).
+prerequisites in the [runbook](../docs/runbook.md#independent-payload-mission-acceptance).

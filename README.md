@@ -13,7 +13,9 @@ validated run bundle establish what actually happened.
    how one mission flows through the system, and where to make a change.
 2. [Operator and developer runbook](docs/runbook.md): prerequisites, builds,
    running, finding videos, stopping safely, and testing.
-3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
+3. [Local developer workflow](docs/runbook.md#local-developer-workflow): rebuild
+   after a code change, run one mission or all automatic templates, and inspect results.
+4. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
 ## First local check
@@ -28,6 +30,8 @@ make test-unit
 
 This checks the host tooling; it does **not** launch a flight or prove ROS/Gazebo
 integration. The [runbook](docs/runbook.md) explains the remaining prerequisites.
+Comp2026 source and its prior Git history are bundled at
+`companion/comp2026`. See the [source and build workflow](docs/runbook.md#locate-the-comp2026-source).
 
 For a supported local diagnostic after its runtime images are ready, run:
 
@@ -74,6 +78,12 @@ and [operator procedure](docs/runbook.md#configured-competition-plan).
 
 ## Contributing or adding a mission
 
+After editing Comp2026, start with the [local developer workflow](docs/runbook.md#local-developer-workflow).
+Configured payload missions exercise its camera and range code, while flight
+and mission sequencing use this repository's configured runner. They do not
+execute arbitrary edits to Comp2026's own mission/controller classes; see the
+[coverage map](companion/README.md#which-code-does-a-local-mission-exercise).
+
 For a fixed sequence of flight operations, copy
 [configured-descent-run.json](config/configured-descent-run.json) and edit its
 `mission_plan.steps`. Use [configured-operator-run.json](config/configured-operator-run.json)
@@ -104,6 +114,3 @@ belong under `companion/comp2026`; read its local documentation before editing.
 Update every affected module README and shared guide **in the same change**.
 Report documentation impact (or why none is needed), tests, and any unverified
 runtime behavior when handing off.
-
-The Comp2026 mission source and its prior Git history are included in this
-monorepo at `companion/comp2026`.

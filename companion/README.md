@@ -81,6 +81,25 @@ composition; this runner does not change the independent Comp2026 checkout.
 Host tests exercise source behavior; current container/flight verification is
 recorded separately in [handoff](../docs/handoff.md).
 
+### Which code does a local mission exercise?
+
+Use the [local developer workflow](../docs/runbook.md#local-developer-workflow)
+after editing source. Rebuild the companion image before launching; source is
+copied into the image, not mounted live.
+
+| Edited code | Coverage from the current run templates |
+| --- | --- |
+| Comp2026 `drone/sensors/camera/` and range sample/clearance helpers | Configured competition and search-and-deliver import these through [configured_io.py](src/drone_sim_companion/configured_io.py). Hardware camera/LiDAR I/O is replaced by public simulated input; simulator calibration and mounting come from the parent package. |
+| Comp2026 `drone/missions/`, `drone/control/`, or `drone/auto_attempt.py` | Configured missions use the parent's [operations.py](src/drone_sim_companion/operations.py) and [configured_precision.py](src/drone_sim_companion/configured_precision.py), so their success does not validate these edits. The guarded `comp2026_auto` path binds the nested FM1/FM2 controller, requires operator/QGC setup, and disables FM3. |
+| Parent `drone_sim_companion` mission/operation code | Select its corresponding configured, controlled-descent, hover, or AutoTune template. The six automatic templates and three excluded/manual templates are listed in the runbook. |
+
+The configured three-payload plan reproduces competition behavior using shared
+operations; it does not invoke the nested FM1/FM2/FM3 mission classes. A general
+"edit any Comp2026 mission and run all configs" regression workflow is not yet
+implemented. Tests under `companion/tests` cover simulator adapters and policies;
+Comp2026's own tests and the admitted QGC path are needed for its controller
+changes. A module copied into the image is not necessarily exercised by a run.
+
 ### Configured competition contract
 
 The [configured competition template](../config/configured-competition-run.json)

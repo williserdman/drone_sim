@@ -117,8 +117,11 @@ to exercise lifecycle and recording infrastructure.
 2. Runtime processes establish actual endpoint readiness. Gazebo/SITL perform
    private warmup before the public simulation epoch is released. Public time
    starts at zero; warmup is not a payload mission phase.
-3. The companion executes mission logic from the bundled Comp2026 source. Camera/range
-   data enters through the host adapter; vehicle commands go through MAVLink.
+3. The companion selects the mission implementation. Configured missions use
+   parent-owned operations and precision landing, reusing Comp2026 camera/range
+   helpers. The guarded QGC path invokes the Comp2026 controller and admitted
+   FM1/FM2 missions. Camera/range data enters through the host adapter; vehicle
+   commands go through MAVLink. See the [coverage map](../companion/README.md#which-code-does-a-local-mission-exercise).
 4. ArduPilot executes flight control; Gazebo determines movement and payload
    attachment. A mission command or an accepted service request is not proof of
    a physical pickup. Inspect payload height, attachment, release, and settlement.

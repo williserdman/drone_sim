@@ -37,6 +37,7 @@ change these `comp2026_auto` admission requirements.
 - Docker Engine and the Compose plugin, with permission to use the daemon.
 - A Linux/container environment able to run the pinned ROS 2 Jazzy, Gazebo
   Harmonic, and ArduPilot images. Image builds need network access and can be slow.
+- Comp2026 source at `companion/comp2026` for the Phase 3 build/run path.
 - Free disk space for images and `runs/` evidence. Check `df -h .` and
   `docker system df`; this guide does not delete old evidence or images.
 
@@ -52,7 +53,7 @@ docker compose version
 make test-unit
 ```
 
-### Comp2026 mission source
+### Locate the Comp2026 source
 
 `companion/comp2026` is tracked in this monorepo. A normal clone contains the
 mission source required by the Phase 3 build. Its history before the monorepo
@@ -113,7 +114,7 @@ An import-only check can confirm that the QGC listener package is present withou
 opening MAVLink or constructing GPIO, I2C, camera, or payload devices:
 
 ```bash
-PYTHONPATH=companion/comp2026/src python -c \
+PYTHONPATH=companion/comp2026/src uv run --locked python -c \
   'import drone.control.listener; print(drone.control.listener.start_repl.__name__)'
 ```
 
@@ -121,17 +122,139 @@ These checks prove packaging and inert import behavior only. They do not replace
 a uniquely tagged matching image build, a QGC-to-SITL test, a scored simulation,
 or aircraft acceptance.
 
+## Local developer workflow
+
+Run these steps from the repository root after changing code. First check the
+[coverage map](../companion/README.md#which-code-does-a-local-mission-exercise):
+the configured competition and search missions reuse Comp2026 camera/range
+code, but their flight operations and mission sequence are implemented in the
+parent package. A successful configured flight does not validate edits to
+Comp2026's separate mission/controller implementation.
+
+1. Prepare the Python environment and inspect source changes:
+
+   ```bash
+   uv sync --locked
+   git status --short
+   ```
+
+   For a shared regression baseline, commit the relevant edits in their owning
+   repository before building. Uncommitted allowlisted edits are copied into
+   the image too, but a revision plus a dirty flag does not identify their exact
+   contents. Keep the source unchanged through launch and acceptance.
+
+2. Build the [seven runtime images](#build-runtime-images) on a fresh checkout
+   or after changes spanning modules. If only Comp2026 or the parent companion
+   code changed and the other images already match the checkout, rebuild just
+   the companion:
+
+   ```bash
+   SIM_COMP2026_REVISION=$(git rev-parse HEAD) \
+     docker compose --profile phase3 build companion-runtime
+   ```
+
+   `start` never rebuilds images. Docker copies only the runtime files admitted
+   by [`.dockerignore`](../.dockerignore); a newly imported module must be
+   included there. Changes to dependencies also need the corresponding
+   [Dockerfile](../companion/Dockerfile) update. Even a commit-only change can
+   require a companion rebuild when its recorded source revision changes.
+
+3. Run one mission in the foreground:
+
+   ```bash
+   uv run --locked drone-sim start --config config/configured-search-delivery-run.json
+   ```
+
+   Substitute `config/configured-competition-run.json` for the three-payload
+   competition or `config/configured-descent-run.json` for the takeoff/hold/land
+   smoke mission. The [batch recipe below](#run-all-automatic-mission-templates)
+   runs every automatic template on this branch.
+
+4. Copy the UUID from the `run_starting` JSON line. In another terminal:
+
+   ```bash
+   uv run --locked drone-sim status RUN_ID
+   ```
+
+   To stop, use `uv run --locked drone-sim abort RUN_ID` and leave the original
+   process alive until it finishes teardown. `start` emits multiple JSON lines;
+   its final `run_result` line reports the terminal state. Exit codes are 0 for
+   COMPLETED, 1 for FAILED, 130 for ABORTED, and 2 for CLI/configuration errors.
+
+5. After completion, collect the result and open the recordings:
+
+   ```bash
+   uv run --locked drone-sim collect-results RUN_ID
+   ```
+
+   Read `runs/RUN_ID/manifest.json` and `scoring/result.json`; open
+   `video/observer.mp4` and `video/onboard.mp4` under that directory. For configured
+   missions, `logs/companion.jsonl` contains each operation's arguments and
+   outcome. `collect-results` checks the stored manifest; independent physical
+   replay is a separate [acceptance step](#independent-payload-mission-acceptance).
+
+### Run all automatic mission templates
+
+There is currently no `drone-sim run-all` command or Phase 3 suite target. After
+building the images once, paste this Bash block from the repository root. It
+runs the three automatic configured missions and the three existing diagnostics
+sequentially, preserving console output in a unique directory. It stops on the
+first failure or abort, including failures before a run directory is created.
+Normal per-run evidence remains under `runs/RUN_ID/`.
+
+```bash
+(
+  set -euo pipefail
+  mkdir -p runs
+  suite_logs=$(mktemp -d "$PWD/runs/local-suite.XXXXXX")
+  printf 'Suite console logs: %s\n' "$suite_logs"
+  mission_templates=(
+    config/configured-descent-run.json
+    config/configured-search-delivery-run.json
+    config/configured-competition-run.json
+    config/vertical-descent-run.json
+    config/hover-roll-run.json
+    config/autotune-roll-run.json
+  )
+  for mission_config in "${mission_templates[@]}"; do
+    mission_name=${mission_config##*/}
+    printf 'Running %s\n' "$mission_config"
+    uv run --locked drone-sim start --config "$mission_config" 2>&1 \
+      | tee "$suite_logs/${mission_name%.json}.log"
+  done
+)
+```
+
+This checks mission process exit codes; it does not automatically perform
+independent semantic acceptance. Apply the acceptance commands below to each
+payload mission's run ID before claiming a regression pass. Keep source and
+image tags unchanged throughout the batch and inspection. The AutoTune
+diagnostic records candidate gains; it does not promote them into source.
+
+The remaining checked-in templates require separate handling:
+
+| Template | Why it is excluded from the unattended batch |
+| --- | --- |
+| [configured-operator-run.json](../config/configured-operator-run.json) | Requires an operator to arm and select GUIDED through an existing verified connection; see [operator arming](#operator-arming). |
+| [default-run.json](../config/default-run.json) | Quarantined `comp2026_auto` input; lacks the required QGC input bundle and attempt-state setup. |
+| [realtime-run.json](../config/realtime-run.json) | The same guarded QGC requirements apply; it is not an automatic alternative to the configured competition. |
+
+Allow several hours for the six-template batch. The most recent search flight
+took 47 wall minutes and the configured competition took 63; those are dated
+measurements, not deadlines or guarantees. See [handoff](handoff.md) and
+[recording windows](#recording-windows-and-historical-competition-timing).
+
 ## Run and monitor a current diagnostic
 
 ### Configured mission runner
 
 The configured runner accepts automatic and operator-wait plans. See
 [handoff](handoff.md#2026-09-19-configured-mission-runner) for dated verification.
-Build matching runtime images before using either template, with the nested
+Build matching runtime images before using either template, with the monorepo
 revision argument described in [Build runtime images](#build-runtime-images):
 
 ```bash
-SIM_COMP2026_REVISION=$(git -C companion/comp2026 rev-parse HEAD) \
+SIM_COMP2026_REVISION=$(git rev-parse HEAD) \
   docker compose --profile phase3 build
 uv run --locked drone-sim start --config config/configured-descent-run.json
 ```
@@ -143,8 +266,10 @@ case; tool arguments and outcome checks are in the
 `world` selects the Gazebo environment: this example uses
 [`vertical_descent`](../gazebo/resources/worlds/vertical_descent.sdf), a flat
 ground plane with a yellow landing circle, the Iris drone, and an observer camera.
-The template runs at one-tenth real time: 90 simulated seconds of private warmup
-plus 60 recorded seconds take at least 25 wall minutes, excluding startup.
+The automatic template targets one-tenth real time: 90 simulated seconds of
+private warmup plus 30 recorded seconds take 20 wall minutes at that rate,
+excluding startup. The operator template records 60 seconds, taking 25 minutes
+at the same target rate before additional startup overhead.
 `timeout_sim_s` bounds each step, default 60. The simulation recording duration
 must accommodate the whole sequence, including any operator wait and landing.
 
@@ -331,8 +456,8 @@ the mission, what points were awarded, and did the full evidence bundle validate
 Use [the latest documented failure](payload-timestamp-fix.md) as an example of
 150 points coexisting with a failed run.
 
-Precision-landing recovery records one compact JSON object per rejected
-observation and state transition. Inspect it without changing the bundle:
+Historical Comp2026 precision-landing runs record one compact JSON object per
+rejected observation and state transition. Inspect it without changing the bundle:
 
 ```bash
 RUN_ID=replace-with-run-uuid
@@ -349,7 +474,7 @@ assuming the host parameter file reached the container:
 ```bash
 BIN="runs/$RUN_ID/ardupilot_sitl/logs/00000001.BIN"
 uv run --locked mavlogdump.py --types PARM --format csv "$BIN" \
-  | rg 'LAND_SPD_MS|PLND_|ATC_ANG_RLL_P|ATC_RAT_RLL_|ATC_RAT_PIT_|ATC_ACC_R_MAX'
+  | rg 'LAND_SPD_MS|LAND_SPEED|PLND_|ATC_ANG_RLL_P|ATC_RAT_RLL_|ATC_RAT_PIT_|ATC_ACC_R_MAX|ATC_ACCEL_R_MAX'
 uv run --locked mavlogdump.py --types ATT,PL --format csv "$BIN" \
   > "/tmp/$RUN_ID-att-pl.csv"
 ```
@@ -370,19 +495,30 @@ ffprobe -v error -show_streams -of json "runs/$RUN_ID/video/observer.mp4"
 ros2 bag info "runs/$RUN_ID/rosbag"
 ```
 
-### Independent competition acceptance
+### Independent payload mission acceptance
 
 ```bash
-make inspect-competition RUN_DIRECTORY=/absolute/path/to/runs/RUN_ID
+# Search-and-deliver: requires 100/100.
+uv run --locked python scripts/inspect_competition_run.py \
+  runs/SEARCH_RUN_ID --ruleset search_delivery_v1
+
+# Configured competition: requires 150/150.
+uv run --locked python scripts/inspect_competition_run.py \
+  runs/COMPETITION_RUN_ID --ruleset competition_v1
 ```
 
 This is read-only and requires the Python environment to provide ROS Jazzy
 `rosbag2_py`, plus FFmpeg/FFprobe and access to the seven Docker image tags.
-`uv sync` alone does not install those system dependencies. See
+`uv sync` alone does not install those system dependencies. If they are missing,
+the mission launch/recording workflow still works through Docker, but this host
+inspection command is unavailable. A portable local/CI acceptance wrapper remains
+future work. Do not report independent acceptance from `collect-results` alone.
+`make inspect-competition RUN_DIRECTORY=/absolute/path/to/runs/RUN_ID` remains
+the shorthand for the competition ruleset only. See
 [acceptance implementation](../artifacts/src/artifacts/acceptance.py) and
 [inspector](../scripts/inspect_competition_run.py).
 
-It requires 150/150, valid evidence, and matching **current** parent/nested
+Both commands require their maximum score, valid evidence, and matching **current** source
 revisions, dirty flags, and image digests. Running it after changing source or
 retagging images can reject an old bundle on provenance alone. Preserve its
 original checkout/images when establishing a baseline; never edit historical
