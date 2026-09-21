@@ -1678,17 +1678,17 @@ def test_search_delivery_uses_scenario_score_provenance(tmp_path):
         tmp_path,
         score_mutator=replace_descent_details,
         statuses=(
-            "artifacts-ready",
-            "gazebo-ready",
-            "ardupilot-ready",
-            "companion-ready",
-            "runtime-running",
-            "mission-ready",
-            "source-finished",
-            "mission-finished",
-            "score-finished",
-            "runtime-frozen",
-            "terminal-notified",
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            RuntimeRunningStatus,
+            MissionReadyStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
         ),
     )
 
@@ -1724,7 +1724,7 @@ def test_search_delivery_uses_scenario_score_provenance(tmp_path):
             "mission_readiness_stall",
         ),
     ],
-    ids=("runtime-running", "mission-ready"),
+    ids=(RuntimeRunningStatus, MissionReadyStatus),
 )
 def test_comp2026_timeout_identifies_the_next_missing_status(tmp_path, statuses, reason):
     controller, _trace, _clock, _holder = _controller(tmp_path, statuses=statuses)

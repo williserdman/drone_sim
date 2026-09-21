@@ -3,10 +3,40 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-11. The fast precision-landing recovery is implemented and
-verified on the isolated `fix/precision-landing-reacquire` parent and nested
-branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
-600-second window with accepted terminal artifacts and a 150/150 score.
+Audited 2026-09-21 after rebasing the configured missions onto `main` at
+`3164930`. Source verification passes; recorded flights below retain their
+original source and image identities.
+
+## 2026-09-21 rebase onto main
+
+The configured mission branch now includes the tracked Comp2026 subtree and
+its imported history. A normal clone supplies both the simulator and mission
+source. The Comp2026 files are unchanged from `main`; the build revision is
+monorepo HEAD. See the [local workflow](runbook.md#local-developer-workflow).
+
+Conflict resolution retained main's typed runtime status contract, shutdown
+cleanup, strict source validation, and precision-landing settings. Configured
+execution readiness now uses that typed contract without changing its wire
+fields or its distinction from command delivery. Search scoring retains main's
+shared finalization code. The ArduCopter 4.5.7 profile uses its corresponding
+parameter names and units.
+
+The full parent source suite passed **2,619 tests**, with **26 skipped**, across
+orchestration, artifacts, companion, ArduPilot, Gazebo, electromagnet,
+scorekeeper, and root contracts. All seven runnable templates resolve; the two
+historical QGC templates still reject missing QGC input. Base and GPU Compose
+configuration validate, as do shell snippets and 295 local links in current
+guides. The imported Comp2026 suite was not rerun because its source is unchanged.
+
+Physical mission: not rerun. Score: no new score. Artifact validity: historical
+bundles preserved, not reevaluated. Images: not rebuilt for this rebased source.
+The accepted 50 m recording below remains demonstration evidence for its
+original revision, not a flight verification of the integrated tree.
+
+The earlier 2026-09-11 precision-landing run
+`b3dfad75-4630-4233-84e3-836943459903` completed its 600-second window with
+accepted terminal artifacts and 150/150 on the isolated
+`fix/precision-landing-reacquire` parent and nested branches.
 
 ## 2026-09-21 verified 50 m observer run
 

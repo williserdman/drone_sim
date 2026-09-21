@@ -77,7 +77,7 @@ budget and the overall wall deadline, and never changes the failed mission resul
 Deferred work: standalone camera/LiDAR tools, agent transport, named
 waypoints, branching, runner-level retries, and resource-exclusive actions. Unsupported tools
 are rejected before flight. Camera/FM3 remains disabled in the existing QGC
-composition; this runner does not change the independent Comp2026 checkout.
+composition; its mission sequence is separate from the bundled Comp2026 mission classes.
 Host tests exercise source behavior; current container/flight verification is
 recorded separately in [handoff](../docs/handoff.md).
 
