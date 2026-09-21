@@ -8,6 +8,27 @@ verified on the isolated `fix/precision-landing-reacquire` parent and nested
 branches. Fresh run `b3dfad75-4630-4233-84e3-836943459903` completed the
 600-second window with accepted terminal artifacts and a 150/150 score.
 
+## 2026-09-21 verified 50 m observer run
+
+Run `2d33d0a1-8504-4e05-a31d-a1a1498fc1c4` used parent `e369dc2` and
+unchanged nested `a89aede` on `feat/configured-missions`. The installed observer
+pose was verified at 50 m before launch; all 175 installed source/asset hashes
+matched the launch checkout. The run took 2,812.09 wall seconds.
+
+- Physical outcome: the search-and-deliver mission completed its pickup,
+  delivery, return home, and landing sequence.
+- Score: live scoring and independent semantic acceptance both passed at
+  100/100 with matching launch source and image identities.
+- Artifacts: terminal COMPLETED / `mission_complete`, all 25 manifest artifacts
+  valid, no incomplete paths, and no leftover run resources. The observer and
+  onboard recordings are under `runs/2d33d0a1-8504-4e05-a31d-a1a1498fc1c4/video/`.
+
+The launch and acceptance audit is `runs/builds/search-50m-20260921-zfu99hkp/`.
+Evidence remains local and retains its original flight revision. The user
+reviewed and accepted the updated recording. This verifies the feature branch;
+it does not establish a pass after integration with `main` and its monorepo
+changes.
+
 ## 2026-09-20 search observer framing
 
 Raised the search-delivery observer from 30 m to 50 m, keeping its downward
@@ -20,8 +41,8 @@ The seven search asset tests and twelve competition asset tests passed.
 Verification evidence is in `runs/builds/observer-height-20260920-68qlwskd/`.
 The Gazebo image rebuild exited 0 and its installed world hash matches the
 generated source. The other six runtime image identities are unchanged.
-This is a geometry check against the recorded trajectory; a new flight and
-visual recording check remain unrun. Existing recordings and their scores
+That initial check used the recorded trajectory; the September 21 run above
+subsequently verified the updated camera in a complete mission. Older recordings
 retain the previous camera position. See [Gazebo](../gazebo/README.md) for the
 current framing and asset regeneration command. Operator procedures and shared
 interfaces are unchanged.
