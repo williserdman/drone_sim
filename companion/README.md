@@ -10,6 +10,55 @@ requests, mission events, and durable mission lifecycle evidence.
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
+## Configured diagnostic missions
+
+`mission: configured` runs an ordered list of drone operations and stops on the
+first failed step. Mode selection and arming are separate calls. An operator
+plan can wait for observed armed GUIDED state. Arming records the mission-start
+time without imposing a competition countdown.
+
+Use [configured-descent-run.json](../config/configured-descent-run.json) for
+automatic takeoff/hold/land, or
+[configured-operator-run.json](../config/configured-operator-run.json) to wait for
+external arming. Each `mission_plan` has `schema_version: 1` and nonempty `steps`.
+A step has `tool`, `args`, and an optional `timeout_sim_s`, default 60. The
+normalized plan is frozen in checksum-bound `configuration/run.json`.
+
+[mission_plan.py](src/drone_sim_companion/mission_plan.py) validates tools and
+exports `tool_definitions()` for future callers. Invalid tools, arguments, or
+numbers fail before ROS or MAVLink resources open.
+
+| Tool | Arguments and observed completion |
+| --- | --- |
+| `wait_for_state` | Any of `armed`, `mode`, `landed`; waits for fresh matching telemetry. |
+| `set_mode` | `mode: GUIDED`; requires acceptance and observed mode. |
+| `arm` | Empty arguments; requires fresh GUIDED/prearm readiness and observed arming. |
+| `takeoff` | Positive `altitude_m`, optional `tolerance_m`; requires armed GUIDED and reaching the altitude threshold. |
+| `goto_waypoint` | `latitude_deg`, `longitude_deg`, positive `altitude_m`, optional `tolerance_m`; waits for position within tolerance. |
+| `hold` | Positive `duration_sim_s` shorter than its timeout; maintains the current GUIDED target. |
+| `land` | Empty arguments; waits for touchdown and disarm. Already landed/disarmed succeeds. |
+
+Coordinates are WGS84 degrees; altitudes are metres above ArduPilot home.
+[operations.py](src/drone_sim_companion/operations.py) exposes `start()`,
+`operation_status()`, and `read_vehicle_state()`. One operation owns flight output
+at a time, advancing on telemetry and simulation-clock ticks so observation and
+abort remain responsive. Deadlines use simulation time; the run wall deadline
+bounds stalled infrastructure. An ACK alone does not establish flight completion.
+
+[configured_runtime.py](src/drone_sim_companion/configured_runtime.py) publishes
+execution readiness after passive readiness, matching RUNNING, and public clock.
+This releases physics during operator waiting without issuing a flight command.
+The whole sequence must finish landed/disarmed to publish mission success.
+Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
+state; recovery is bounded by the finalization/overall wall deadlines and retains
+the failed result. Another observed mode prevents that recovery command.
+
+These templates exercise the parent operation runner, not Comp2026's mission
+classes. Existing competition missions retain their own execution path.
+Precision landing, payload tools, agent transport, sensor-read tools, branching,
+and retries are deferred. For local commands, see the
+[runbook](../docs/runbook.md#local-developer-workflow).
+
 ## Entry points and implementation seams
 
 - [pyproject.toml](pyproject.toml) exposes `drone-sim-companion-runtime`.

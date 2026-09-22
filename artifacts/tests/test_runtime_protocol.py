@@ -10,6 +10,7 @@ from artifacts.protocol_files import ProtocolIOError
 from artifacts.runtime_protocol import ProtocolError, RuntimeProtocol
 from artifacts.runtime_status import (
     ArtifactsReadyStatus,
+    MissionExecutionReadyStatus,
     RuntimeFailureStatus,
     RuntimeRunningStatus,
     SourceFinishedStatus,
@@ -87,6 +88,20 @@ def test_identical_status_equal_retry_succeeds_and_different_retry_conflicts(run
 
     with pytest.raises(ProtocolError, match="conflict"):
         protocol.write_status(RuntimeRunningStatus(RUN_ID, 2))
+
+
+def test_mission_execution_ready_round_trips_with_unbounded_timestamp(run_directory):
+    protocol = RuntimeProtocol(run_directory, RUN_ID)
+    status = MissionExecutionReadyStatus(RUN_ID, 50_000_001)
+
+    path = protocol.write_status(status)
+
+    assert json.loads(path.read_text()) == {
+        "run_id": RUN_ID,
+        "ready": True,
+        "sim_timestamp_ns": 50_000_001,
+    }
+    assert protocol.read_status(MissionExecutionReadyStatus) == status
 
 
 def test_runtime_status_write_rejects_cross_run_value_before_publication(run_directory):

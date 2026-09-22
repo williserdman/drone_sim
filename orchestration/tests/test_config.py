@@ -25,6 +25,8 @@ DEFAULT_TEMPLATE = CONFIG / "default-run.json"
 REALTIME_TEMPLATE = CONFIG / "realtime-run.json"
 VERTICAL_DESCENT_TEMPLATE = CONFIG / "vertical-descent-run.json"
 ROLL_AUTOTUNE_TEMPLATE = CONFIG / "autotune-roll-run.json"
+CONFIGURED_DESCENT_TEMPLATE = CONFIG / "configured-descent-run.json"
+CONFIGURED_OPERATOR_TEMPLATE = CONFIG / "configured-operator-run.json"
 FIXED_RUN_ID = UUID("00000000-0000-4000-8000-000000000222")
 
 
@@ -129,6 +131,20 @@ def _phase2_document() -> dict:
             "encoding": "rgb8",
         },
     }
+
+
+def _configured_document() -> dict:
+    document = json.loads(VERTICAL_DESCENT_TEMPLATE.read_text(encoding="utf-8"))
+    document["mission"] = "configured"
+    document["mission_plan"] = {
+        "schema_version": 1,
+        "steps": [
+            {"tool": "set_mode", "args": {"mode": "GUIDED"}},
+            {"tool": "arm", "args": {}},
+            {"tool": "land", "args": {}, "timeout_sim_s": 30},
+        ],
+    }
+    return document
 
 
 def _competition_document() -> dict:
@@ -901,3 +917,73 @@ def test_load_run_config_rejects_checksum_mismatch(tmp_path):
 
     with pytest.raises(ValueError, match="config_sha256"):
         load_run_config(path)
+
+
+def test_configured_plan_resolves_canonically_and_round_trips_in_run_snapshot(tmp_path):
+    resolved = resolve_run_config(CONFIGURED_DESCENT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+    assert resolved.mission == "configured"
+    assert resolved.runtime_profile == "phase3"
+    assert resolved.mission_plan_json == (
+        '{"schema_version":1,"steps":['
+        '{"args":{"mode":"GUIDED"},"timeout_sim_s":60,"tool":"set_mode"},'
+        '{"args":{},"timeout_sim_s":60,"tool":"arm"},'
+        '{"args":{"altitude_m":1.5},"timeout_sim_s":60,"tool":"takeoff"},'
+        '{"args":{"duration_sim_s":2},"timeout_sim_s":60,"tool":"hold"},'
+        '{"args":{},"timeout_sim_s":60,"tool":"land"}]}'
+    )
+    written = write_resolved_config(tmp_path, resolved)
+    document = json.loads(written.read_text(encoding="utf-8"))
+    assert document["mission_plan"] == json.loads(resolved.mission_plan_json)
+    assert document["config_sha256"] == hashlib.sha256(
+        json.dumps(
+            {key: value for key, value in document.items() if key != "config_sha256"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert load_run_config(written).mission_plan_json == resolved.mission_plan_json
+
+
+def test_configured_operator_plan_keeps_manual_state_wait_as_first_step():
+    resolved = resolve_run_config(CONFIGURED_OPERATOR_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+    assert json.loads(resolved.mission_plan_json)["steps"][0] == {
+        "tool": "wait_for_state",
+        "args": {"armed": True, "mode": "GUIDED"},
+        "timeout_sim_s": 60,
+    }
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_configured_plan_matches_public_config_schemas(tmp_path, schema_name):
+    resolved = resolve_run_config(CONFIGURED_DESCENT_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
+    if schema_name == "run-template.schema.json":
+        document = json.loads(CONFIGURED_DESCENT_TEMPLATE.read_text(encoding="utf-8"))
+    else:
+        document = json.loads(write_resolved_config(tmp_path, resolved).read_text(encoding="utf-8"))
+    _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda value: value.pop("mission_plan"), "configured.*mission_plan"),
+        (lambda value: value.update(runtime_profile="phase2") or value.pop("simulation"), "configured.*phase3"),
+        (lambda value: value["mission_plan"].update(schema_version=2), "schema_version"),
+        (lambda value: value["mission_plan"].update(steps=[]), "steps"),
+        (lambda value: value["mission_plan"]["steps"][0].update(tool=""), "tool"),
+        (lambda value: value["mission_plan"]["steps"][0].update(args=[]), "args"),
+        (lambda value: value["mission_plan"]["steps"][0].update(timeout_sim_s=0), "timeout_sim_s"),
+    ],
+)
+def test_configured_plan_rejects_invalid_basic_structure(tmp_path, mutate, message):
+    document = _configured_document()
+    mutate(document)
+    with pytest.raises(ValueError, match=message):
+        resolve_run_config(_write_template(tmp_path, document), run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def test_other_missions_reject_mission_plan(tmp_path):
+    document = _configured_document()
+    document["mission"] = "controlled_descent"
+    with pytest.raises(ValueError, match="mission_plan.*configured"):
+        resolve_run_config(_write_template(tmp_path, document), run_id_factory=lambda: FIXED_RUN_ID)

@@ -35,6 +35,10 @@ required evidence is missing or invalid.
   [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
   implement independent semantic acceptance for completed physical runs.
 
+The shared status contract includes `MissionExecutionReadyStatus`, published by
+the configured companion runner and consumed by Gazebo's public-epoch gate.
+It records readiness to execute a plan, independently of command delivery.
+
 ## Consumer and producer seams
 
 The runtime consumes lifecycle state, camera pixels and frame metadata, public

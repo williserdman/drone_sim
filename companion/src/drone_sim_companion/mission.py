@@ -50,6 +50,8 @@ class Telemetry:
     status_text: str | None = None
     status_severity: int | None = None
     prearm_checks_healthy: bool | None = None
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
 
 
 @dataclass(frozen=True)

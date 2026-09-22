@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import pytest
+
 from drone_sim_companion.mavlink_adapter import MavlinkAdapter
 from drone_sim_companion.mission import CommandKind
 
@@ -21,12 +23,16 @@ class Message:
 class FakeMav:
     calls: list[tuple[object, ...]] = field(default_factory=list)
     stream_calls: list[tuple[object, ...]] = field(default_factory=list)
+    global_position_target_calls: list[tuple[object, ...]] = field(default_factory=list)
 
     def command_long_send(self, *arguments: object) -> None:
         self.calls.append(arguments)
 
     def request_data_stream_send(self, *arguments: object) -> None:
         self.stream_calls.append(arguments)
+
+    def set_position_target_global_int_send(self, *arguments: object) -> None:
+        self.global_position_target_calls.append(arguments)
 
 
 class FakeConnection:
@@ -55,6 +61,15 @@ def mavutil() -> SimpleNamespace:
         MAV_LANDED_STATE_ON_GROUND=1,
         MAV_DATA_STREAM_ALL=0,
         MAV_SYS_STATUS_PREARM_CHECK=0x10000000,
+        MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+        POSITION_TARGET_TYPEMASK_VX_IGNORE=8,
+        POSITION_TARGET_TYPEMASK_VY_IGNORE=16,
+        POSITION_TARGET_TYPEMASK_VZ_IGNORE=32,
+        POSITION_TARGET_TYPEMASK_AX_IGNORE=64,
+        POSITION_TARGET_TYPEMASK_AY_IGNORE=128,
+        POSITION_TARGET_TYPEMASK_AZ_IGNORE=256,
+        POSITION_TARGET_TYPEMASK_YAW_IGNORE=1024,
+        POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE=2048,
     )
     return SimpleNamespace(
         mavlink=constants,
@@ -78,6 +93,58 @@ def test_commands_translate_to_exact_mavlink_long_commands() -> None:
         (1, 1, 22, 0, 0, 0, 0, 0, 0, 0, 1.5),
         (1, 1, 21, 0, 0, 0, 0, 0, 0, 0, 0),
     ]
+
+
+def test_waypoint_translates_to_relative_home_global_position_target() -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    adapter.send_waypoint(37.4003371, -122.0800351, 12.5)
+
+    assert connection.mav.global_position_target_calls == [
+        (
+            0,
+            1,
+            1,
+            6,
+            3576,
+            374003371,
+            -1220800351,
+            12.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("latitude_deg", "longitude_deg", "altitude_m"),
+    [
+        (float("nan"), 0.0, 10.0),
+        (0.0, float("inf"), 10.0),
+        (0.0, 0.0, float("-inf")),
+        (-90.0000001, 0.0, 10.0),
+        (90.0000001, 0.0, 10.0),
+        (0.0, -180.0000001, 10.0),
+        (0.0, 180.0000001, 10.0),
+    ],
+)
+def test_waypoint_rejects_invalid_coordinates_before_output(
+    latitude_deg: float, longitude_deg: float, altitude_m: float
+) -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    with pytest.raises(ValueError, match="waypoint"):
+        adapter.send_waypoint(latitude_deg, longitude_deg, altitude_m)
+
+    assert connection.mav.global_position_target_calls == []
 
 
 def test_telemetry_request_keeps_generic_stream_and_requests_landed_state() -> None:
@@ -120,7 +187,30 @@ def test_mavlink_messages_are_stamped_with_current_simulation_time() -> None:
     assert altitude is not None
     assert altitude.relative_altitude_m == 1.234
     assert altitude.vertical_speed_m_s == -0.25
+    assert altitude.latitude_deg is None
+    assert altitude.longitude_deg is None
     assert landed is not None and landed.landed is True
+
+
+def test_global_position_exposes_decimal_degree_coordinates() -> None:
+    connection = FakeConnection(
+        [
+            Message(
+                "GLOBAL_POSITION_INT",
+                lat=374003371,
+                lon=-1220800351,
+                relative_alt=12_500,
+                vz=-25,
+            )
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    position = adapter.poll(2_000_000_000)
+
+    assert position is not None
+    assert position.latitude_deg == pytest.approx(37.4003371)
+    assert position.longitude_deg == pytest.approx(-122.0800351)
 
 
 def test_in_progress_ack_waits_and_negative_ack_is_exposed() -> None:

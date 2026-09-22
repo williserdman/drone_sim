@@ -36,8 +36,9 @@ to exercise lifecycle and recording infrastructure.
 2. Runtime processes establish actual endpoint readiness. Gazebo/SITL perform
    private warmup before the public simulation epoch is released. Public time
    starts at zero; warmup is not a payload mission phase.
-3. The companion executes mission logic from the bundled Comp2026 source. Camera/range
-   data enters through the host adapter; vehicle commands go through MAVLink.
+3. The companion selects an existing mission or the configured operation runner.
+   Camera/range data enters through the host adapter; vehicle commands go through
+   MAVLink. Configured diagnostics do not invoke the bundled Comp2026 missions.
 4. ArduPilot executes flight control; Gazebo determines movement and payload
    attachment. A mission command or an accepted service request is not proof of
    a physical pickup. Inspect payload height, attachment, release, and settlement.
@@ -66,6 +67,19 @@ interfaces, implementation entry points, tests, and important constraints.
 | [Scorekeeper](../scorekeeper/README.md) | Read-only competition evaluation and evidence-linked points |
 
 ## Shared communication guarantees
+
+Configured missions validate their fixed sequence before opening live resources.
+The plan is frozen under the run configuration checksum. Each operation waits
+for observed success before the next starts; failure ends the sequence. Final
+success requires landing and disarm. Any local LAND recovery remains separate
+from mission success; scoring and artifact validity remain independent.
+
+After passive readiness, matching RUNNING, and accepted public clock, the
+companion publishes typed `MissionExecutionReadyStatus`. Gazebo selects this
+release fact only for `mission: configured`. Operator waiting can then observe
+advancing simulation without a fabricated GUIDED command. Other missions keep
+their existing command-delivery gate. See the
+[tool contract](../companion/README.md#configured-diagnostic-missions).
 
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.

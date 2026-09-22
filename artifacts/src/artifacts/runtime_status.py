@@ -23,6 +23,7 @@ __all__ = [
     "FlightExchange",
     "GazeboReadyStatus",
     "MissionCommandDeliveredStatus",
+    "MissionExecutionReadyStatus",
     "MissionFinishedStatus",
     "MissionReadyStatus",
     "RuntimeFailureStatus",
@@ -221,6 +222,15 @@ class MissionCommandDeliveredStatus(RuntimeStatus):
         _require_timestamp(self.sim_timestamp_ns)
         if self.sim_timestamp_ns > 50_000_000:
             raise RuntimeStatusError("mission command timestamp exceeds startup window")
+
+
+@dataclass(frozen=True)
+class MissionExecutionReadyStatus(RuntimeStatus):
+    sim_timestamp_ns: int
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _require_timestamp(self.sim_timestamp_ns)
 
 
 @dataclass(frozen=True)
@@ -461,6 +471,11 @@ _STATUS_REGISTRY: Mapping[type[RuntimeStatus], _StatusDefinition] = MappingProxy
         MissionCommandDeliveredStatus: _StatusDefinition(
             "mission-command-delivered",
             fixed_fields=(("command", "SET_GUIDED"), ("delivered", True)),
+            constructor_fields=(_TIMESTAMP_FIELD,),
+        ),
+        MissionExecutionReadyStatus: _StatusDefinition(
+            "mission-execution-ready",
+            fixed_fields=(("ready", True),),
             constructor_fields=(_TIMESTAMP_FIELD,),
         ),
         RuntimeRunningStatus: _StatusDefinition(
