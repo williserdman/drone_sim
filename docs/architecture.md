@@ -189,3 +189,93 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
   turn a diagnostic failure into a passing run.
 - A source edit is not an image update. Source provenance, image build identity,
   and runtime evidence must agree before claiming a verified result.
+
+## Proposed moving-pad mission
+
+Design draft, 2026-09-23; not implemented. This section is the reviewable spec
+for one regression mission: takeoff, transit, and camera-guided landing on a
+platform moving straight at 0.5 m/s from public simulation time zero through
+touchdown. The platform continues moving after disarm. ArUco 7 identifies the
+landing target; this mission does not pick up or deliver a payload.
+
+### Course and acquisition
+
+The proposed starting course has a 3 m square deck, 0.2 m above the floor, with
+a centered 0.1 m marker. The vehicle starts at local ENU (0, 0); the pad starts
+at (10, 0) and travels east. The vehicle takes off to 5 m above home and transits
+to (35, 0), ahead of the pad. The pad reaches that waypoint at 50 simulated
+seconds. The automatic example must arrive and settle by 45 seconds; a late
+arrival fails this attempt rather than starting an unbounded pursuit.
+
+Reuse the downward camera geometry from the competition vehicle, with matching
+[intrinsics](../companion/src/drone_sim_companion/gazebo_camera_calibration.json)
+and verified simulation calibration/mount metadata. The current configured host
+does not yet subscribe to images; connect the existing camera acquisition path.
+Its 0.6-radian horizontal field of view at 640x480 covers approximately 3.1 by
+2.3 m at 5 m above a level surface. The usable marker-detection region is smaller;
+vehicle tilt, the camera offset, deck height, marker size, and frame age affect
+acquisition. With the proposed deck and camera offset, coverage is about 2.9 by
+2.2 m. Align the route with the image's long axis and hold yaw during acquisition.
+The course creates an arrival window, not a guarantee that a waypoint implies
+visibility. Actual rendered images must establish target lock.
+
+Camera acquisition and detection run throughout takeoff, transit, and landing.
+A bounded camera worker publishes the latest timestamped observation; image
+processing cannot block the flight owner or accumulate stale frames. There is
+one active flight operation. Watching the camera does not cancel or redirect
+the waypoint operation in this first version.
+
+At the approach waypoint, the vehicle holds while the pad enters view. The
+precision-landing operation accepts only fresh observations of marker 7 and
+must establish continuous usable observations for two simulated seconds before
+requesting LAND. Accepted camera offsets can initialize ArduPilot's target
+estimator during GUIDED without changing the waypoint command. Observations
+older than 0.25 simulated seconds cannot authorize descent. Acquisition must
+finish by public time 60 seconds; a missed pass or camera timeout fails the run.
+
+### Landing and module boundaries
+
+Keep explicit mode and arm calls, followed by takeoff, waypoint, and one new
+precision-landing operation. The config remains a fixed sequence. The new
+operation owns acquisition and tracking; ArduPilot owns flight stabilization
+and descent. Pad pose, velocity, and contact truth are available to evaluation
+and recording only. Autonomy uses camera, range, and vehicle telemetry.
+
+Use a dedicated moving-target parameter profile, initially `PLND_OPTIONS=5`
+and `PLND_EST_TYPE=1`, retaining the 0.5 m/s final descent setting. Bit 0 enables
+moving-target support; bit 2 preserves final descent speed. The current raw
+estimator supplies no target-velocity estimate. These are initial settings to
+verify in simulation, not a validated tuning claim. See
+[ArduPilot's landing documentation](https://ardupilot.org/copter/docs/precision-landing-and-loiter.html)
+and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp#L415).
+
+The moving operation must accept coherent target motion instead of applying
+the existing fixed-anchor drift rejection. Continue feeding valid observations
+near the deck. Above 0.75 m clearance, tracking loss lasting 0.5 simulated seconds
+ends the landing attempt and requests GUIDED hold before bounded host recovery.
+Below that height, permit
+ArduPilot's final touchdown handoff after recent valid tracking; touchdown must
+follow within three simulated seconds. Recovery cannot turn a failed attempt
+into success. Existing stationary landing behavior and its profile stay intact.
+
+Gazebo moves the pad collision surface and marker together with physical surface
+velocity. Contact must carry the aircraft after landing. Publish pad pose/twist
+and pad-specific contact evidence on the same 20 Hz public clock as vehicle
+truth. The scorer checks touchdown on the deck, disarm, and two continuous
+simulated seconds aboard the moving platform. Record touchdown offset and
+relative velocity as diagnostics. Ground contact elsewhere is not a pass.
+
+### Verification and scope
+
+Focused checks cover concurrent transit/observation, stale or wrong marker
+rejection, missed acquisition, and pad-relative touchdown evaluation. A rendered
+camera check establishes marker detection at approach height. Then rebuild
+matching images and run a stationary control followed by the 0.5 m/s mission.
+Report physical outcome, evaluation, and artifact validity separately, with
+onboard and observer recordings. No current recording verifies this proposal.
+
+Implementation affects companion vision/operations, Gazebo world/motion and
+truth, the SITL profile, configuration, and scoring/recording. Update their
+guides and the runbook with executable entry points when those exist. Turns,
+search sweeps, replanning the intercept during transit, payload handling, and
+agent transport are deferred. This design is separate from the core-runner PR.
