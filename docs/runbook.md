@@ -112,7 +112,7 @@ cover the wait and flight, and targets 25 wall minutes including warmup.
 
 ### Run all automatic templates
 
-There is no `run-all` command. This Bash sequence attempts all six automatic
+There is no `run-all` command. This Bash sequence attempts all seven automatic
 templates, stops on the first failure or abort, and retains each normal run bundle:
 
 ```bash
@@ -120,6 +120,7 @@ templates, stops on the first failure or abort, and retains each normal run bund
   set -euo pipefail
   for mission_config in \
     config/configured-descent-run.json \
+    config/configured-moving-pad-run.json \
     config/vertical-descent-run.json \
     config/hover-roll-run.json \
     config/autotune-roll-run.json \
@@ -180,6 +181,7 @@ mission logs alone as a stopped process.
 | Template | Purpose | Public duration / warmup / target RTF |
 | --- | --- | --- |
 | [configured-descent-run.json](../config/configured-descent-run.json) | Fixed automatic takeoff/hold/land | 30 s / 90 s / 0.1 |
+| [configured-moving-pad-run.json](../config/configured-moving-pad-run.json) | Takeoff/transit/camera-guided moving-deck landing | 90 s / 90 s / 0.1 |
 | [configured-operator-run.json](../config/configured-operator-run.json) | Operator arms/selects GUIDED, then takeoff/hold/land | 60 s / 90 s / 0.1 |
 | [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
@@ -297,6 +299,61 @@ retagging images can reject an old bundle on provenance alone. Preserve its
 original checkout/images when establishing a baseline; never edit historical
 evidence to match today's checkout. `collect-results` is not this full semantic
 competition acceptance check.
+
+### Moving-pad landing
+
+Build from a committed checkout using [the image-build command](#build-runtime-images).
+The configured mission takes off to 5 m, flies 35 m east, then watches marker 7
+and precision-lands. The 3 m deck moves east at 0.5 m/s from public time zero,
+including after disarm. Camera observation continues during transit. The mission
+must settle by 45 s and acquire two seconds of fresh observations by 60 s;
+failure ends the attempt. The [architecture contract](architecture.md#moving-pad-landing)
+defines tracking loss and final touchdown behavior.
+
+First run the stationary control; then run the moving mission:
+
+```bash
+uv run --locked drone-sim start --config tests/fixtures/configured-stationary-pad-run.json
+uv run --locked drone-sim start --config config/configured-moving-pad-run.json
+```
+
+Run each command separately and inspect its result before continuing. Each
+includes 90 s of warmup and 90 s of public simulation at target RTF 0.1:
+approximately 30 wall minutes plus startup/finalization. The stationary fixture
+uses the same deck, camera, landing controller, and scoring, with its pad held at
+the approach point. It is a control experiment, not part of the automatic batch.
+
+For independent acceptance, capture expected provenance **before launching**,
+in the same Bash session used to inspect the result:
+
+```bash
+mission_revision=$(git rev-parse HEAD)
+mission_acceptance_args=(
+  --rules-path "$PWD/scorekeeper/rules/moving_pad_v1.json"
+  --require-maximum-score
+  --expected-source "drone_sim=$mission_revision"
+  --expected-source-dirty-entry drone_sim=false
+  --expected-source "comp2026=$mission_revision"
+  --expected-source-dirty-entry comp2026=false
+)
+while IFS= read -r mission_image; do
+  mission_digest=$(docker image inspect --format '{{.Id}}' "$mission_image")
+  mission_acceptance_args+=(--expected-image-digest "$mission_image=${mission_digest#sha256:}")
+done < <(docker compose --profile phase3 config --images | sort -u)
+
+# After the run finishes, replace RUN_ID with its UUID:
+uv run --locked python -m artifacts.acceptance "$PWD/runs/RUN_ID" \
+  "${mission_acceptance_args[@]}"
+```
+
+Keep the checkout clean and image tags unchanged between capture, flight, and
+acceptance. The inspector runs ROS-dependent checks inside the artifacts image
+and verifies Compose teardown on the host. A physical pass requires deck contact,
+observed disarm, and two continuous simulated seconds aboard. Acceptance
+independently recomputes the 100-point result from recorded vehicle/pad truth
+and arm transitions, then validates both recordings and provenance. Inspect
+`video/onboard.mp4`, `video/observer.mp4`, and `scoring/result.json` under the run
+directory. Report physical landing, score, and artifact validity separately.
 
 ## Test without a full flight
 

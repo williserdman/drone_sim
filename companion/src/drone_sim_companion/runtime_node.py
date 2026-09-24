@@ -91,6 +91,7 @@ class RuntimeConfig:
     course_path: Path | None = None
     scenario_path: Path | None = None
     mission_plan: MissionPlan | None = None
+    scenario: str = ""
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "RuntimeConfig":
@@ -194,6 +195,7 @@ class RuntimeConfig:
             course_path=course_path,
             scenario_path=scenario_path,
             mission_plan=mission_plan,
+            scenario=str(document.get("scenario", "")),
         )
 
 

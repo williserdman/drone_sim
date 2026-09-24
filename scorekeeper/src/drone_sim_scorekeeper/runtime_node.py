@@ -23,6 +23,12 @@ from .competition import (
 from .competition_runtime import CompetitionScorekeeperRuntime
 from .descent import DescentScorer, GroundTruthSample, load_descent_rules
 from .models import ScoreEvent, ScoreResult
+from .moving_pad import (
+    LandingPadSample,
+    MovingPadScorer,
+    load_moving_pad_rules,
+)
+from .moving_pad_runtime import MovingPadScorekeeperRuntime
 from .runtime import ScenarioSample, ScorekeeperRuntime
 
 
@@ -45,8 +51,10 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
     if not isinstance(document, dict) or document.get("run_id") != canonical:
         raise ValueError("resolved scorekeeper configuration has the wrong run_id")
     scenario = document.get("scenario")
-    if scenario not in {"descent_v1", "competition_v1"}:
-        raise ValueError("scorekeeper scenario must be descent_v1 or competition_v1")
+    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
+        raise ValueError(
+            "scorekeeper scenario must be descent_v1, competition_v1, or moving_pad_v1"
+        )
     recording = document.get("recording")
     simulation = document.get("simulation")
     if (
@@ -76,7 +84,7 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
 
 def rules_path_for_scenario(path: Path | str, scenario: str) -> Path:
     """Resolve the selected ruleset beside either a rules directory or old file path."""
-    if scenario not in {"descent_v1", "competition_v1"}:
+    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
         raise ValueError("unsupported scoring scenario")
     configured = Path(path)
     directory = configured.parent if configured.suffix == ".json" else configured
@@ -125,6 +133,32 @@ def ground_truth_from_message(message: Any) -> GroundTruthSample:
             message.twist.angular.z,
         ),
         in_contact=message.in_contact,
+    )
+
+
+def landing_pad_from_message(message: Any) -> LandingPadSample:
+    return LandingPadSample(
+        run_id=message.run_id,
+        sim_timestamp_ns=_timestamp_ns(message.sim_timestamp),
+        marker_id=message.marker_id,
+        position_xyz=(message.pose.position.x, message.pose.position.y, message.pose.position.z),
+        orientation_xyzw=(
+            message.pose.orientation.x,
+            message.pose.orientation.y,
+            message.pose.orientation.z,
+            message.pose.orientation.w,
+        ),
+        linear_velocity_xyz=(
+            message.twist.linear.x,
+            message.twist.linear.y,
+            message.twist.linear.z,
+        ),
+        angular_velocity_xyz=(
+            message.twist.angular.x,
+            message.twist.angular.y,
+            message.twist.angular.z,
+        ),
+        vehicle_in_contact=message.vehicle_in_contact,
     )
 
 
@@ -336,8 +370,11 @@ def _create_ros_boundary(
         ScoreEvent,
     )
 
-    if scenario not in {"descent_v1", "competition_v1"}:
+    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
         raise ValueError("unsupported scoring scenario")
+
+    if scenario == "moving_pad_v1":
+        from simulation_interfaces.msg import LandingPadState
 
     node = Node("drone_sim_scorekeeper")
     publisher = node.create_publisher(
@@ -382,6 +419,15 @@ def _create_ros_boundary(
             if message.run_id != run_id:
                 return
             runtime_ref[0].accept_payload_state(payload_state_from_message(message))
+        except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
+            errors.append(error)
+
+    def accept_landing_pad(message: Any) -> None:
+        try:
+            if message.run_id != run_id:
+                return
+            runtime_ref[0].accept_landing_pad(landing_pad_from_message(message))
         except BaseException as error:
             runtime_ref[0].fail("ros_evidence_invalid")
             errors.append(error)
@@ -443,7 +489,7 @@ def _create_ros_boundary(
             depth=10,
             reliability=(
                 ReliabilityPolicy.RELIABLE
-                if scenario == "competition_v1"
+                if scenario in {"competition_v1", "moving_pad_v1"}
                 else ReliabilityPolicy.BEST_EFFORT
             ),
         ),
@@ -465,6 +511,24 @@ def _create_ros_boundary(
             "/simulation/payload_events",
             accept_payload_event,
             event_qos,
+        )
+        node.create_subscription(
+            MissionEvent,
+            "/simulation/mission_events",
+            accept_mission_event,
+            event_qos,
+        )
+    elif scenario == "moving_pad_v1":
+        event_qos = QoSProfile(
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        node.create_subscription(
+            LandingPadState,
+            "/simulation/landing_pad_state",
+            accept_landing_pad,
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE),
         )
         node.create_subscription(
             MissionEvent,
@@ -536,6 +600,20 @@ def main() -> int:
         runtime: ScoreRuntimeProtocol = CompetitionScorekeeperRuntime(
             run_id,
             CompetitionScorer(run_id, rules),
+            run_directory=run_directory,
+            protocol=protocol,
+            publish=boundary.publish,
+            flush=boundary.flush,
+        )
+    elif settings.scenario == "moving_pad_v1":
+        rules = load_moving_pad_rules(rules_path)
+        runtime = MovingPadScorekeeperRuntime(
+            run_id,
+            MovingPadScorer(
+                run_id,
+                rules,
+                settings.expected_ground_truth_samples,
+            ),
             run_directory=run_directory,
             protocol=protocol,
             publish=boundary.publish,
@@ -613,6 +691,7 @@ __all__ = [
     "RuntimeSettings",
     "ScorekeeperDriver",
     "ground_truth_from_message",
+    "landing_pad_from_message",
     "load_runtime_settings",
     "main",
     "mission_event_from_message",

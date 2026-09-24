@@ -3,8 +3,8 @@
 [Project README](../README.md) · [Architecture](../docs/architecture.md) · [Runbook](../docs/runbook.md)
 
 This module owns deterministic, run-scoped evaluation of authoritative physical
-evidence for the frozen `descent_v1` and three-payload `competition_v1` policies,
-then persists and publishes their score results.
+evidence for the frozen `descent_v1`, three-payload `competition_v1`, and
+`moving_pad_v1` policies, then persists and publishes their score results.
 
 It is read-only with respect to the simulated system: it does **not** command the
 aircraft, electromagnet, Gazebo, mission phases, or retry behavior. A mission
@@ -20,9 +20,12 @@ whether the evidence bundle is complete and valid.
 - [competition.py](src/drone_sim_scorekeeper/competition.py) is the pure competition
   evidence model and scorer.
 - [descent.py](src/drone_sim_scorekeeper/descent.py) is the pure descent scorer.
+- [moving_pad.py](src/drone_sim_scorekeeper/moving_pad.py) pairs vehicle and pad
+  truth and evaluates the physical moving-pad landing.
 - [competition_runtime.py](src/drone_sim_scorekeeper/competition_runtime.py) and
-  [runtime.py](src/drone_sim_scorekeeper/runtime.py) bind scorers to persistence,
-  publication, failure, and quiescence through the private shared
+  [runtime.py](src/drone_sim_scorekeeper/runtime.py), together with
+  [moving_pad_runtime.py](src/drone_sim_scorekeeper/moving_pad_runtime.py), bind
+  scorers to persistence, publication, failure, and quiescence through the private shared
   [_finalization.py](src/drone_sim_scorekeeper/_finalization.py) lifecycle.
 - [models.py](src/drone_sim_scorekeeper/models.py) defines result contracts;
   [output.py](src/drone_sim_scorekeeper/output.py) creates no-clobber evidence.
@@ -39,14 +42,17 @@ The runtime consumes `/clock`, [GroundTruth](../ros_ws/src/simulation_interfaces
 [ScenarioEvent](../ros_ws/src/simulation_interfaces/msg/ScenarioEvent.msg),
 [PayloadState](../ros_ws/src/simulation_interfaces/msg/PayloadState.msg),
 [PayloadEvent](../ros_ws/src/simulation_interfaces/msg/PayloadEvent.msg), and
-[MissionEvent](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg). It only
-publishes [ScoreEvent](../ros_ws/src/simulation_interfaces/msg/ScoreEvent.msg).
+[MissionEvent](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg). The
+moving-pad scenario also consumes
+[LandingPadState](../ros_ws/src/simulation_interfaces/msg/LandingPadState.msg).
+It only publishes [ScoreEvent](../ros_ws/src/simulation_interfaces/msg/ScoreEvent.msg).
 Topic selection and QoS live in
 [runtime_node.py](src/drone_sim_scorekeeper/runtime_node.py), not this guide.
 
 The exact scoring data authorities are
 [competition_v1.json](rules/competition_v1.json) and
-[descent_v1.json](rules/descent_v1.json), enforced by their loaders and scorers.
+[descent_v1.json](rules/descent_v1.json), plus
+[moving_pad_v1.json](rules/moving_pad_v1.json), enforced by their loaders and scorers.
 Do not duplicate point allocations, timing windows, or physical thresholds in
 documentation. The persisted schema is defined by
 [ScoreResult](src/drone_sim_scorekeeper/models.py), while creation of
@@ -65,6 +71,14 @@ documentation. The persisted schema is defined by
 - Payload release is evidence, not points by itself. Delivery requires physical
   detachment and settled geometry; Home completion requires physical landing
   truth through distinct ordered `HOME/DISARMED` and `HOME/COMPLETE` events.
+- Moving-pad truth is joined to vehicle truth at exact timestamps. A physical
+  pass requires ordered observed `MOVING_PAD/ARMED` and `MOVING_PAD/DISARMED`
+  events, deck-specific contact, position within the measured deck frame, and
+  41 consecutive 20 Hz endpoint samples aboard after disarm. The stationary
+  control uses the same rules and measured pad velocity.
+- Moving-pad touchdown offset and rigid-body relative velocity are score-event
+  diagnostics. Mission success text and ground contact away from the deck do
+  not prove the physical landing.
 - Missing point components may yield an honest finalized partial score when the
   evidence grammar and terminal conditions remain valid.
 - Evidence is persisted before reliable score-event publication is flushed and

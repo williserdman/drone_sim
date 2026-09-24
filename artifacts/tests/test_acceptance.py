@@ -881,14 +881,14 @@ def test_semantic_inspector_container_command_uses_pinned_image_and_read_only_mo
         "--mount",
         f"type=bind,src={bundle.resolve()},dst=/bundle,readonly",
         "--mount",
-        f"type=bind,src={rules.resolve()},dst=/rules/descent_v1.json,readonly",
+        f"type=bind,src={rules.resolve()},dst=/rules/rules.json,readonly",
         "drone-sim-artifacts-runtime:phase2",
         "python3",
         "-m",
         "artifacts.acceptance",
         "/bundle",
         "--rules-path",
-        "/rules/descent_v1.json",
+        "/rules/rules.json",
         "--semantic-only",
         "--expected-source-revision",
         EXPECTED_SOURCE_REVISION,
@@ -904,6 +904,30 @@ def test_semantic_inspector_container_command_uses_pinned_image_and_read_only_mo
         ),
         "--require-maximum-score",
     )
+
+
+def test_semantic_container_command_preserves_two_source_provenance(tmp_path):
+    from artifacts.acceptance import semantic_container_command
+
+    command = semantic_container_command(
+        tmp_path / "run",
+        rules_path=tmp_path / "moving_pad_v1.json",
+        expected_source_revisions={
+            "drone_sim": "a" * 40,
+            "comp2026": "a" * 40,
+        },
+        expected_source_dirty={"drone_sim": True, "comp2026": True},
+        expected_image_digests=EXPECTED_IMAGE_DIGESTS,
+    )
+
+    assert "--expected-source-revision" not in command
+    assert "--expected-source-dirty" not in command
+    assert command.count("--expected-source") == 2
+    assert "drone_sim=" + "a" * 40 in command
+    assert "comp2026=" + "a" * 40 in command
+    assert command.count("--expected-source-dirty-entry") == 2
+    assert "drone_sim=true" in command
+    assert "comp2026=true" in command
 
 
 def test_semantic_container_command_rejects_nonexact_expected_image_map(tmp_path):

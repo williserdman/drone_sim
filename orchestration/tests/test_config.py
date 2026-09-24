@@ -147,6 +147,48 @@ def _configured_document() -> dict:
     return document
 
 
+def _moving_pad_document() -> dict:
+    document = _configured_document()
+    document.update(
+        world="moving_pad_landing", vehicle="iris_moving_pad", scenario="moving_pad_v1"
+    )
+    document["recording"].update(width_px=640, height_px=480)
+    return document
+
+
+@pytest.mark.parametrize("world", ["moving_pad_landing", "moving_pad_stationary"])
+def test_moving_pad_configuration_round_trips_calibrated_scene(tmp_path, world):
+    document = _moving_pad_document()
+    document["world"] = world
+    _load_validator("run-template.schema.json").validate(document)
+    resolved = resolve_run_config(_write_template(tmp_path, document))
+    assert resolved.recording == RecordingConfig(640, 480, 20, "rgb8")
+    assert resolved.simulation.public_epoch_native_ns == 90_000_000_000
+    path = write_resolved_config(tmp_path / "run", resolved)
+    _load_validator("run.schema.json").validate(json.loads(path.read_text()))
+    assert load_run_config(path) == resolved
+
+
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda d: d.update(world="vertical_descent"), id="wrong-world"),
+    pytest.param(lambda d: d.update(vehicle="iris_flight"), id="wrong-vehicle"),
+    pytest.param(lambda d: d.update(scenario="descent_v1"), id="wrong-rules"),
+    pytest.param(lambda d: (d.update(mission="descent"), d.pop("mission_plan")), id="wrong-mission"),
+    pytest.param(lambda d: d["simulation"].update(public_epoch_native_sim_seconds=15), id="wrong-epoch"),
+    pytest.param(lambda d: d.update(competition={"course": "course.yaml", "scenario": "scenario.yaml"}), id="unrelated-course"),
+])
+def test_moving_pad_rejects_mismatched_scene_before_launch(tmp_path, mutate):
+    document = _moving_pad_document()
+    mutate(document)
+    with pytest.raises(ValueError, match="moving.pad"):
+        resolve_run_config(_write_template(tmp_path, document))
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(document)
+    document.update(run_id=str(FIXED_RUN_ID), config_sha256="a" * 64)
+    with pytest.raises(ValidationError):
+        _load_validator("run.schema.json").validate(document)
+
+
 def _competition_document() -> dict:
     document = _phase2_document()
     document.update(

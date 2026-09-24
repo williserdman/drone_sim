@@ -10,6 +10,12 @@ def bridge_config_for_world(world_name: str) -> Path:
         "competition_mission": Path(
             "/etc/drone_sim/gazebo-bridge-competition.yaml"
         ),
+        "moving_pad_landing": Path(
+            "/etc/drone_sim/gazebo-bridge-moving-pad.yaml"
+        ),
+        "moving_pad_stationary": Path(
+            "/etc/drone_sim/gazebo-bridge-moving-pad.yaml"
+        ),
     }
     try:
         return paths[world_name]

@@ -54,6 +54,15 @@ validated by the companion. Examples are
 [automatic descent](../config/configured-descent-run.json) and
 [operator waiting](../config/configured-operator-run.json).
 
+The [moving-pad template](../config/configured-moving-pad-run.json) binds
+`configured`, `iris_moving_pad`, and `moving_pad_v1` to the moving-pad world,
+640x480 recording, and a 90-second native warmup. Resolution rejects mismatched
+scene bindings before launch. The stationary control uses the same contract
+with `moving_pad_stationary`; its template lives in
+[`tests/fixtures`](../tests/fixtures/configured-stationary-pad-run.json).
+Completed moving-pad runs validate the moving-pad scoring rules, independently
+of the companion's mission completion.
+
 At runtime, orchestration publishes `/simulation/run_state` using the actual
 [`RunState` schema](../ros_ws/src/simulation_interfaces/msg/RunState.msg), consumes
 aggregate [`ArtifactStatus`](../ros_ws/src/simulation_interfaces/msg/ArtifactStatus.msg),

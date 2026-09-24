@@ -8,11 +8,20 @@ from typing import Protocol
 
 from .mission import CommandKind, Telemetry
 from .mission_plan import positive_seconds, validate_arguments
+from .moving_precision import MovingObservation, MovingPrecisionLanding
 
 
 class Vehicle(Protocol):
     def send(self, command: CommandKind, altitude_m: float | None) -> None: ...
-    def send_waypoint(self, latitude_deg: float, longitude_deg: float, altitude_m: float) -> None: ...
+    def send_waypoint(
+        self,
+        latitude_deg: float,
+        longitude_deg: float,
+        altitude_m: float,
+        *,
+        yaw_rad: float | None = None,
+    ) -> None: ...
+    def send_landing_target(self, forward_m: float, right_m: float, down_m: float) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -38,7 +47,13 @@ class _Active:
 class DroneOperations:
     """Call on the runtime owner thread; reads never consume telemetry or block."""
 
-    def __init__(self, vehicle: Vehicle, emit=None) -> None:
+    def __init__(
+        self,
+        vehicle: Vehicle,
+        emit=None,
+        *,
+        moving_precision: MovingPrecisionLanding | None = None,
+    ) -> None:
         self._vehicle = vehicle
         self._emit = emit or (lambda _event, _stamp, _fields: None)
         self._clock_ns = 0
@@ -49,6 +64,8 @@ class DroneOperations:
         self._active: _Active | None = None
         self._stopped_reason: str | None = None
         self._recovery_id: str | None = None
+        self._moving_precision = moving_precision
+        self._precision_hold_requested = False
         self.armed_at_ns: int | None = None
 
     @property
@@ -56,9 +73,18 @@ class DroneOperations:
         return self._fresh("heartbeat", "prearm_checks_healthy") and self._values.get("prearm_checks_healthy") is True
 
     def read_vehicle_state(self) -> dict:
-        return {**self._values, "sim_timestamp_ns": self._clock_ns,
+        state = {**self._values, "sim_timestamp_ns": self._clock_ns,
                 "armed_at_ns": self.armed_at_ns,
                 "observed_at_ns": {name: stamp for name, (stamp, _) in self._observed.items()}}
+        if "horizontal_speed_m_s" in self._observed:
+            state["horizontal_speed_timestamp_ns"] = self._observed["horizontal_speed_m_s"][0]
+        return state
+
+    def observe_precision(self, observation: MovingObservation) -> None:
+        if self._moving_precision is None:
+            raise RuntimeError("moving precision landing is not configured")
+        self._moving_precision.observe(observation)
+        self._evaluate()
 
     def operation_status(self, operation_id: str) -> OperationStatus:
         return self._operations[operation_id]
@@ -114,7 +140,7 @@ class DroneOperations:
             return
         if not self._fresh("heartbeat"):
             raise RuntimeError("fresh vehicle heartbeat required")
-        if tool in {"takeoff", "goto_waypoint", "hold"}:
+        if tool in {"takeoff", "goto_waypoint", "hold", "precision_land"}:
             if self._values.get("armed") is not True or self._values.get("mode") != "GUIDED":
                 raise RuntimeError(f"{tool} requires observed armed GUIDED state")
         if tool == "arm":
@@ -124,8 +150,22 @@ class DroneOperations:
                 raise RuntimeError("arm requires healthy prearm checks")
         if tool == "hold":
             return
+        if tool == "precision_land":
+            if self._moving_precision is None:
+                raise RuntimeError("moving precision landing is not configured")
+            self._moving_precision.start(
+                args["marker_id"],
+                int(args["settle_by_sim_s"] * 1e9),
+                int(args["acquire_by_sim_s"] * 1e9),
+            )
+            return
         if tool == "goto_waypoint":
-            self._vehicle.send_waypoint(args["latitude_deg"], args["longitude_deg"], args["altitude_m"])
+            self._vehicle.send_waypoint(
+                args["latitude_deg"],
+                args["longitude_deg"],
+                args["altitude_m"],
+                **({"yaw_rad": 0.0} if self._moving_precision is not None else {}),
+            )
             return
         if tool == "land" and self._fresh("landed") and self._values.get("landed") is True and self._values.get("armed") is False:
             self._finish("succeeded")
@@ -142,7 +182,8 @@ class DroneOperations:
             self._values["heartbeat"] = True
             self._observed["heartbeat"] = (self._clock_ns, self._sequence)
         for name in ("mode", "armed", "landed", "relative_altitude_m", "latitude_deg",
-                     "longitude_deg", "vertical_speed_m_s", "prearm_checks_healthy"):
+                     "longitude_deg", "vertical_speed_m_s", "horizontal_speed_m_s",
+                     "prearm_checks_healthy"):
             value = getattr(telemetry, name)
             if value is None:
                 continue
@@ -187,6 +228,26 @@ class DroneOperations:
                 values.get("mode") != "GUIDED" or values.get("armed") is not True):
             self._finish("failed", "armed GUIDED state lost during operation")
             return
+        if tool == "precision_land":
+            assert self._moving_precision is not None
+            precision = self._moving_precision.tick(self._clock_ns, self.read_vehicle_state())
+            if precision.target_body_frd is not None:
+                self._vehicle.send_landing_target(*precision.target_body_frd)
+            if precision.requested_mode is not None:
+                command = {
+                    "LAND": CommandKind.LAND,
+                    "GUIDED": CommandKind.SET_GUIDED,
+                }[precision.requested_mode]
+                self._vehicle.send(command, None)
+                if command is CommandKind.LAND:
+                    active.expected_ack = command
+                else:
+                    self._precision_hold_requested = True
+            if precision.state == "failed":
+                self._finish("failed", precision.error)
+            elif precision.state == "succeeded":
+                self._finish("succeeded")
+            return
         if active.expected_ack is not None and not active.acknowledged:
             return
         complete = False
@@ -215,12 +276,17 @@ class DroneOperations:
 
     def abort(self, reason: str = "operator abort") -> None:
         self._stopped_reason = reason
+        if self._active is not None and self._active.status.tool == "precision_land":
+            assert self._moving_precision is not None
+            self._moving_precision.abort(reason)
         self._finish("cancelled", reason)
 
     def recover_land(self, *, timeout_sim_s: float = 60) -> str | None:
         """Host-only, one local LAND attempt; never resume the failed sequence."""
         if self._recovery_id is not None:
             return self._recovery_id
+        if self._precision_hold_requested:
+            return None
         if (not self._fresh("heartbeat") or self._values.get("armed") is not True
                 or self._values.get("mode") not in {"GUIDED", "LAND"}):
             return None

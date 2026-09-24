@@ -317,7 +317,10 @@ def main() -> int:
         world_name=resolved.world_name,
         width_px=config.recording.width_px,
         height_px=config.recording.height_px,
-        require_competition_recorders=config.scenario == "competition_v1",
+        require_competition_recorders=config.scenario in {
+            "competition_v1",
+            "moving_pad_v1",
+        },
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
         on_fault=lambda reason: _record_adapter_fault(run_id, inbox, reason),
     )

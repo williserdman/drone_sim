@@ -182,6 +182,38 @@ def test_competition_bag_contract_extends_descent_without_changing_base_topics(t
     assert recorder.command()[-len(COMPETITION_TOPICS) :] == COMPETITION_TOPICS
 
 
+def test_moving_pad_bag_contract_records_pad_vehicle_disarm_range_and_video_metadata(
+    tmp_path,
+):
+    from artifacts._adapters.rosbag import (
+        BASE_TOPICS,
+        MOVING_PAD_TOPIC_TYPES,
+        MOVING_PAD_TOPICS,
+    )
+
+    assert MOVING_PAD_TOPICS == BASE_TOPICS + (
+        "/simulation/landing_pad_state",
+        "/simulation/mission_events",
+        "/competition/range/downward",
+    )
+    assert MOVING_PAD_TOPIC_TYPES["/simulation/landing_pad_state"] == (
+        "simulation_interfaces/msg/LandingPadState"
+    )
+    assert MOVING_PAD_TOPIC_TYPES["/simulation/mission_events"] == (
+        "simulation_interfaces/msg/MissionEvent"
+    )
+    assert MOVING_PAD_TOPIC_TYPES["/competition/range/downward"] == (
+        "sensor_msgs/msg/LaserScan"
+    )
+    assert "/camera/onboard/frame_metadata" in MOVING_PAD_TOPICS
+    assert "/camera/observer/frame_metadata" in MOVING_PAD_TOPICS
+    assert "/camera/onboard/image_raw" not in MOVING_PAD_TOPICS
+    assert "/camera/observer/image_raw" not in MOVING_PAD_TOPICS
+
+    recorder = _recorder(tmp_path, topics=MOVING_PAD_TOPICS)
+    assert recorder.command()[-len(MOVING_PAD_TOPICS) :] == MOVING_PAD_TOPICS
+
+
 def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
     import yaml
 
@@ -233,6 +265,12 @@ def test_private_recorder_qos_retains_lifecycle_and_artifact_startup_statuses():
         in dockerfile
     )
     qos_document = yaml.safe_load(override)
+    assert qos_document["/simulation/landing_pad_state"] == {
+        "history": "keep_last",
+        "depth": 100,
+        "reliability": "reliable",
+        "durability": "volatile",
+    }
     assert qos_document["/simulation/payload_state"] == {
         "history": "keep_last",
         "depth": 100,
@@ -573,6 +611,13 @@ def _range(timestamp_ns, value=10.0):
     )
 
 
+def _landing_pad_state(timestamp_ns, *, marker_id=7, in_contact=True):
+    message = _ground_truth(timestamp_ns, value=0.5, in_contact=in_contact)
+    message.marker_id = marker_id
+    message.vehicle_in_contact = in_contact
+    return message
+
+
 def _run_state(timestamp_ns, state, *, reason=""):
     return _custom_message(
         timestamp_ns,
@@ -802,6 +847,69 @@ def _valid_competition_messages():
     return messages
 
 
+def _valid_moving_pad_messages():
+    messages = [
+        item
+        for item in _valid_physical_messages()
+        if item.topic not in {"/simulation/score_events", "/simulation/scenario_events"}
+    ]
+    messages.extend(
+        (
+            BagMessage(
+                "/simulation/score_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=0,
+                    event_type="moving_pad.physical_landing",
+                    value=100.0,
+                    evidence_ref="scoring/events.jsonl#event-0",
+                ),
+                200,
+            ),
+            BagMessage(
+                "/simulation/score_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=1,
+                    event_type="score.finalized",
+                    value=100.0,
+                    evidence_ref="scoring/events.jsonl#event-1",
+                ),
+                201,
+            ),
+            BagMessage(
+                "/simulation/landing_pad_state",
+                _landing_pad_state(50_000_000),
+                202,
+            ),
+            BagMessage(
+                "/simulation/mission_events",
+                _custom_message(
+                    0,
+                    event_id=0,
+                    phase="MOVING_PAD",
+                    state="ARMED",
+                    detail="observed vehicle transition",
+                ),
+                203,
+            ),
+            BagMessage(
+                "/simulation/mission_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=1,
+                    phase="MOVING_PAD",
+                    state="DISARMED",
+                    detail="observed vehicle transition",
+                ),
+                204,
+            ),
+            BagMessage("/competition/range/downward", _range(50_000_000), 205),
+        )
+    )
+    return messages
+
+
 def _competition_metadata_for(messages):
     from artifacts._adapters.rosbag import COMPETITION_TOPIC_TYPES, COMPETITION_TOPICS
 
@@ -814,6 +922,22 @@ def _competition_metadata_for(messages):
                 sum(message.topic == topic for message in messages),
             )
             for topic in COMPETITION_TOPICS
+        ),
+    )
+
+
+def _moving_pad_metadata_for(messages):
+    from artifacts._adapters.rosbag import MOVING_PAD_TOPIC_TYPES, MOVING_PAD_TOPICS
+
+    return BagMetadata(
+        storage_id="mcap",
+        topics=tuple(
+            BagTopicMetadata(
+                topic,
+                MOVING_PAD_TOPIC_TYPES[topic],
+                sum(message.topic == topic for message in messages),
+            )
+            for topic in MOVING_PAD_TOPICS
         ),
     )
 
@@ -1015,6 +1139,88 @@ def test_competition_bag_decodes_three_payloads_events_and_downward_range(tmp_pa
         ),
     )
     assert evidence.downward_ranges == (DownwardRangeEvidence(50_000_000, 10.0),)
+
+
+def test_moving_pad_bag_decodes_exact_pad_grid_and_observed_arm_transitions(tmp_path):
+    from artifacts._adapters.rosbag import (
+        DownwardRangeEvidence,
+        LandingPadStateEvidence,
+        MissionEventEvidence,
+    )
+
+    _bag_directory(tmp_path)
+    messages = _valid_moving_pad_messages()
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_moving_pad_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="moving_pad_v1",
+        width_px=640,
+        height_px=480,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+    evidence = result.physical_evidence
+    assert evidence is not None
+    assert evidence.landing_pad_states == (
+        LandingPadStateEvidence(
+            50_000_000,
+            7,
+            (0.5, 0.5, 0.5),
+            (0.0, 0.0, 0.0, 1.0),
+            (0.5, 0.5, 0.5),
+            (0.5, 0.5, 0.5),
+            True,
+        ),
+    )
+    assert evidence.mission_events == (
+        MissionEventEvidence(0, 0, "MOVING_PAD", "ARMED", "observed vehicle transition"),
+        MissionEventEvidence(
+            50_000_000,
+            1,
+            "MOVING_PAD",
+            "DISARMED",
+            "observed vehicle transition",
+        ),
+    )
+    assert evidence.downward_ranges == (DownwardRangeEvidence(50_000_000, 10.0),)
+
+
+def test_moving_pad_bag_rejects_pad_truth_not_aligned_to_vehicle_truth(tmp_path):
+    _bag_directory(tmp_path)
+    messages = _valid_moving_pad_messages()
+    pad_index = next(
+        index
+        for index, item in enumerate(messages)
+        if item.topic == "/simulation/landing_pad_state"
+    )
+    messages[pad_index] = replace(
+        messages[pad_index],
+        message=_landing_pad_state(100_000_000),
+    )
+    messages.append(BagMessage("/clock", SimpleNamespace(clock=_stamp(100_000_000)), 300))
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_moving_pad_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="moving_pad_v1",
+        width_px=640,
+        height_px=480,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.INVALID
+    assert "landing-pad" in result.detail
 
 
 def test_competition_bag_allows_empty_optional_scenario_event_diagnostics(tmp_path):

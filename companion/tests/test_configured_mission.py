@@ -47,6 +47,31 @@ def test_whole_plan_is_validated_before_any_operation(bad):
         plan({"tool": "arm", "args": {}}, bad)
 
 
+def test_precision_land_plan_accepts_approved_absolute_deadlines():
+    parsed = plan({
+        "tool": "precision_land",
+        "args": {"marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60},
+        "timeout_sim_s": 45,
+    })
+
+    assert dict(parsed.steps[0].args) == {
+        "marker_id": 7,
+        "settle_by_sim_s": 45,
+        "acquire_by_sim_s": 60,
+    }
+
+
+@pytest.mark.parametrize("args", [
+    {"marker_id": True, "settle_by_sim_s": 45, "acquire_by_sim_s": 60},
+    {"marker_id": -1, "settle_by_sim_s": 45, "acquire_by_sim_s": 60},
+    {"marker_id": 7, "settle_by_sim_s": float("inf"), "acquire_by_sim_s": 60},
+    {"marker_id": 7, "settle_by_sim_s": 60, "acquire_by_sim_s": 60},
+])
+def test_precision_land_plan_rejects_invalid_contract(args):
+    with pytest.raises(ValueError):
+        plan({"tool": "precision_land", "args": args})
+
+
 def test_operator_wait_is_passive_and_takeoff_never_arms_or_changes_mode():
     vehicle = Vehicle()
     operations = DroneOperations(vehicle)

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "ruleset_id": "moving_pad_v1",
+  "sample_interval_ns": 50000000,
+  "marker_id": 7,
+  "deck_half_extent_m": 1.5,
+  "aboard_duration_ns": 2000000000,
+  "rules": [
+    {"id": "physical_landing", "points": 100.0}
+  ]
+}

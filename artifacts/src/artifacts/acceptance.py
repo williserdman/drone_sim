@@ -143,6 +143,20 @@ def _parse_image_digest(value: str) -> tuple[str, str]:
     return name, digest
 
 
+def _parse_named_source(value: str) -> tuple[str, str]:
+    name, separator, revision = value.partition("=")
+    if not separator or not name or not revision:
+        raise argparse.ArgumentTypeError("expected SOURCE=REVISION")
+    return name, revision
+
+
+def _parse_named_dirty(value: str) -> tuple[str, bool]:
+    name, separator, dirty = value.partition("=")
+    if not separator or not name:
+        raise argparse.ArgumentTypeError("expected SOURCE=true|false")
+    return name, _parse_boolean(dirty)
+
+
 def _exact_dict(value: object, keys: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         raise BundleAcceptanceError(f"manifest domain {label} is invalid")
@@ -562,13 +576,37 @@ def semantic_container_command(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
-    expected_source_revision: str,
-    expected_source_dirty: bool,
+    expected_source_revision: str | None = None,
+    expected_source_dirty: bool | Mapping[str, bool] | None = None,
+    expected_source_revisions: Mapping[str, str] | None = None,
     expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
 ) -> tuple[str, ...]:
     if set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES):
         raise ValueError("expected_image_digests must contain exact Phase 3 image names")
+    source_revisions, source_dirty = _expected_sources(
+        expected_source_revision=expected_source_revision,
+        expected_source_dirty=expected_source_dirty,
+        expected_source_revisions=expected_source_revisions,
+    )
+    if expected_source_revisions is None:
+        provenance_arguments = (
+            "--expected-source-revision",
+            source_revisions["drone_sim"],
+            "--expected-source-dirty",
+            str(source_dirty["drone_sim"]).lower(),
+        )
+    else:
+        provenance_arguments = tuple(
+            argument
+            for name in source_revisions
+            for argument in (
+                "--expected-source",
+                f"{name}={source_revisions[name]}",
+                "--expected-source-dirty-entry",
+                f"{name}={str(source_dirty[name]).lower()}",
+            )
+        )
     command = (
         "docker",
         "run",
@@ -579,19 +617,16 @@ def semantic_container_command(
         "--mount",
         f"type=bind,src={Path(run_directory).resolve()},dst=/bundle,readonly",
         "--mount",
-        f"type=bind,src={Path(rules_path).resolve()},dst=/rules/descent_v1.json,readonly",
+        f"type=bind,src={Path(rules_path).resolve()},dst=/rules/rules.json,readonly",
         _ARTIFACTS_RUNTIME_IMAGE,
         "python3",
         "-m",
         "artifacts.acceptance",
         "/bundle",
         "--rules-path",
-        "/rules/descent_v1.json",
+        "/rules/rules.json",
         "--semantic-only",
-        "--expected-source-revision",
-        expected_source_revision,
-        "--expected-source-dirty",
-        str(expected_source_dirty).lower(),
+        *provenance_arguments,
         *(
             argument
             for name in _PHASE3_IMAGE_NAMES
@@ -608,8 +643,9 @@ def inspect_phase3_via_container(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
-    expected_source_revision: str,
-    expected_source_dirty: bool,
+    expected_source_revision: str | None = None,
+    expected_source_dirty: bool | Mapping[str, bool] | None = None,
+    expected_source_revisions: Mapping[str, str] | None = None,
     expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
     runner: Callable[..., Any] = subprocess.run,
@@ -622,6 +658,7 @@ def inspect_phase3_via_container(
                 rules_path=rules_path,
                 expected_source_revision=expected_source_revision,
                 expected_source_dirty=expected_source_dirty,
+                expected_source_revisions=expected_source_revisions,
                 expected_image_digests=expected_image_digests,
                 require_maximum_score=require_maximum_score,
             )
@@ -768,9 +805,10 @@ def inspect_phase3_semantics(
     ]:
         raise BundleAcceptanceError("manifest configuration provenance is invalid")
     _validate_manifest_inventory(directory, manifest)
+    scenario = configuration.get("scenario", "descent_v1")
     ruleset_id = (
-        "competition_v1"
-        if configuration.get("scenario") == "competition_v1"
+        scenario
+        if scenario in {"descent_v1", "competition_v1", "moving_pad_v1"}
         else "descent_v1"
     )
     _validate_module_logs(directory, run_id, ruleset_id=ruleset_id)
@@ -857,6 +895,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--expected-source-revision")
     parser.add_argument("--expected-source-dirty", type=_parse_boolean)
     parser.add_argument(
+        "--expected-source", type=_parse_named_source, action="append", default=[]
+    )
+    parser.add_argument(
+        "--expected-source-dirty-entry",
+        type=_parse_named_dirty,
+        action="append",
+        default=[],
+    )
+    parser.add_argument(
         "--expected-image-digest", type=_parse_image_digest, action="append", default=[]
     )
     modes = parser.add_mutually_exclusive_group()
@@ -887,29 +934,63 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.rules_path is None:
             parser.error("--rules-path is required for semantic acceptance")
         expected_image_digests = dict(arguments.expected_image_digest)
+        named_revisions = dict(arguments.expected_source)
+        named_dirty = dict(arguments.expected_source_dirty_entry)
+        named_mode = bool(arguments.expected_source or arguments.expected_source_dirty_entry)
+        legacy_valid = (
+            arguments.expected_source_revision is not None
+            and arguments.expected_source_dirty is not None
+        )
+        named_valid = (
+            named_mode
+            and len(named_revisions) == len(arguments.expected_source)
+            and len(named_dirty) == len(arguments.expected_source_dirty_entry)
+            and tuple(named_revisions) == tuple(named_dirty)
+            and arguments.expected_source_revision is None
+            and arguments.expected_source_dirty is None
+        )
         if (
-            arguments.expected_source_revision is None
-            or arguments.expected_source_dirty is None
+            not (legacy_valid or named_valid)
             or len(arguments.expected_image_digest) != len(_PHASE3_IMAGE_NAMES)
             or set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES)
         ):
             parser.error(
-                "semantic acceptance requires the expected source revision, dirty "
-                "state, and exact seven Phase 3 image digests"
+                "semantic acceptance requires matching source revision/dirty "
+                "expectations and exact seven Phase 3 image digests"
             )
-        inspector = (
-            inspect_phase3_semantics
-            if arguments.semantic_only
-            else inspect_phase3_via_container
-        )
-        report = inspector(
-            arguments.run_directory,
-            rules_path=arguments.rules_path,
-            expected_source_revision=arguments.expected_source_revision,
-            expected_source_dirty=arguments.expected_source_dirty,
-            expected_image_digests=expected_image_digests,
-            require_maximum_score=arguments.require_maximum_score,
-        )
+        common = {
+            "rules_path": arguments.rules_path,
+            "expected_image_digests": expected_image_digests,
+            "require_maximum_score": arguments.require_maximum_score,
+        }
+        if arguments.semantic_only and named_valid:
+            report = inspect_phase3_semantics(
+                arguments.run_directory,
+                expected_source_revisions=named_revisions,
+                expected_source_dirty=named_dirty,
+                **common,
+            )
+        elif arguments.semantic_only:
+            report = inspect_phase3_semantics(
+                arguments.run_directory,
+                expected_source_revision=arguments.expected_source_revision,
+                expected_source_dirty=arguments.expected_source_dirty,
+                **common,
+            )
+        elif named_valid:
+            report = inspect_phase3_via_container(
+                arguments.run_directory,
+                expected_source_revisions=named_revisions,
+                expected_source_dirty=named_dirty,
+                **common,
+            )
+        else:
+            report = inspect_phase3_via_container(
+                arguments.run_directory,
+                expected_source_revision=arguments.expected_source_revision,
+                expected_source_dirty=arguments.expected_source_dirty,
+                **common,
+            )
     except BundleAcceptanceError as error:
         print(json.dumps({"accepted": False, "detail": str(error)}, sort_keys=True))
         return 1

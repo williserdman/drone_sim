@@ -17,6 +17,20 @@ def test_descent_v1_emits_one_truthful_inactive_event_at_first_clock() -> None:
     assert policy.observe_clock(50_000_000) is None
 
 
+def test_moving_pad_v1_emits_inactive_event_with_its_scenario_identity() -> None:
+    policy = ScenarioPolicy(
+        run_id="00000000-0000-4000-8000-000000000001",
+        scenario="moving_pad_v1",
+    )
+
+    event = policy.observe_clock(0)
+
+    assert event is not None
+    assert event.magnet_id == "moving-pad-v1-magnet"
+    assert event.state == "INACTIVE"
+    assert policy.observe_clock(50_000_000) is None
+
+
 def test_clock_regression_fails_and_cannot_repair_or_republish() -> None:
     policy = ScenarioPolicy(run_id="00000000-0000-4000-8000-000000000001")
     policy.observe_clock(50_000_000)

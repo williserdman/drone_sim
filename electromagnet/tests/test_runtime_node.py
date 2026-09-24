@@ -217,6 +217,48 @@ def test_runtime_config_keeps_descent_without_competition_sources(tmp_path: Path
     assert config.scenario == "descent_v1"
 
 
+def test_runtime_config_keeps_moving_pad_without_payload_sources(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_config(run_directory, "moving_pad_v1")
+
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+
+    assert config.scenario == "moving_pad_v1"
+    with pytest.raises(ValueError, match="competition_v1"):
+        config.authority()
+
+
+def test_main_runs_moving_pad_as_inactive_scenario(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_config(run_directory, "moving_pad_v1")
+    monkeypatch.setenv("SIM_RUN_ID", RUN_ID)
+    monkeypatch.setenv("SIM_RUN_DIRECTORY", str(run_directory))
+    monkeypatch.setenv("SIM_CONFIG_PATH", str(config_path))
+    selected: list[str] = []
+
+    def inactive(config: RuntimeConfig) -> int:
+        selected.append(config.scenario)
+        return 23
+
+    monkeypatch.setattr(runtime_node, "_descent_main", inactive)
+    monkeypatch.setattr(
+        runtime_node,
+        "_competition_main",
+        lambda _config: pytest.fail("moving_pad_v1 invoked payload authority"),
+    )
+
+    assert runtime_node.main() == 23
+    assert selected == ["moving_pad_v1"]
+
+
 def test_physical_result_parser_accepts_only_exact_coordinator_wire() -> None:
     result = parse_physical_result(
         "payload-result-v1|run:3:attach:1|confirmed|attached|OK"

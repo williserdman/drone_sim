@@ -32,7 +32,8 @@ required evidence is missing or invalid.
   adapter over the strict, descriptor-safe persistence mechanics in
   [`protocol_files.py`](src/artifacts/protocol_files.py).
 - [`acceptance.py`](src/artifacts/acceptance.py) and
-  [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
+  the scenario score validators, including
+  [`moving_pad_score_validation.py`](src/artifacts/moving_pad_score_validation.py),
   implement independent semantic acceptance for completed physical runs.
 
 The shared status contract includes `MissionExecutionReadyStatus`, published by
@@ -52,8 +53,13 @@ inventory into prose.
 The bag is deliberately metadata-only for cameras: it stores frame IDs and
 timestamps, not raw image pixels. Pixel recordings are `video/onboard.mp4` and
 `video/observer.mp4`; losing an MP4 cannot be repaired from the bag. Competition
-runs extend the base bag with their physical/scoring evidence as selected by
+Scenario-specific runs extend the base bag with their physical/scoring evidence as selected by
 [`RecordingRuntimeConfig.topics`](src/artifacts/runtime_configuration.py).
+The moving-pad inventory records pad truth, observed arm-state mission events,
+downward range, both camera metadata streams, and the shared vehicle truth and
+score events. Acceptance joins pad and vehicle samples by exact timestamp and
+recomputes deck touchdown, disarm, and 41 endpoint samples spanning two seconds
+before it trusts the persisted 100-point result.
 
 The deployed private rosbag QoS overrides are
 [`recording-qos.yaml`](recording-qos.yaml), copied into the runtime image by the
@@ -104,4 +110,5 @@ uv run pytest artifacts/tests/test_protocol_files.py \
 uv run pytest artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
 uv run pytest artifacts/tests/test_manifest.py artifacts/tests/test_session.py \
   artifacts/tests/test_acceptance.py -q
+uv run pytest artifacts/tests/test_moving_pad_score_validation.py -q
 ```

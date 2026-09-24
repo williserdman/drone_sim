@@ -1,4 +1,4 @@
-"""ROS 2 process adapter for inactive descent and competition payload authority."""
+"""ROS 2 process adapter for inactive scenarios and competition payload authority."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ class RuntimeConfig:
         if not isinstance(document, dict) or document.get("run_id") != run_id:
             raise ValueError("resolved run configuration must match SIM_RUN_ID")
         scenario = document.get("scenario")
-        if scenario == "descent_v1":
+        if scenario in {"descent_v1", "moving_pad_v1"}:
             return cls(
                 run_id,
                 run_directory,
@@ -86,7 +86,10 @@ class RuntimeConfig:
                 0.0,
             )
         if scenario != "competition_v1":
-            raise ValueError("electromagnet scenario must be descent_v1 or competition_v1")
+            raise ValueError(
+                "electromagnet scenario must be descent_v1, moving_pad_v1, "
+                "or competition_v1"
+            )
         competition = document.get("competition")
         if not isinstance(competition, dict) or not {"course", "scenario"}.issubset(
             competition
@@ -219,10 +222,11 @@ def _descent_main(config: RuntimeConfig) -> int:
 
     controller = ScenarioController(
         run_id=run_id,
-        policy=ScenarioPolicy(run_id=run_id),
+        policy=ScenarioPolicy(run_id=run_id, scenario=config.scenario),
         publish=publish,
         protocol=protocol,
         stream=sys.stdout,
+        scenario=config.scenario,
     )
     finalizing = False
     requested_stop = False
@@ -497,7 +501,7 @@ def _competition_main(config: RuntimeConfig) -> int:
 
 def main() -> int:
     config = RuntimeConfig.from_environment(os.environ)
-    if config.scenario == "descent_v1":
+    if config.scenario in {"descent_v1", "moving_pad_v1"}:
         return _descent_main(config)
     return _competition_main(config)
 

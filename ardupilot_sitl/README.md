@@ -25,8 +25,10 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
   readiness output, writes events, and inventories diagnostics.
 - [json_peer.py](src/drone_sim_ardupilot/json_peer.py) is a bounded test peer for
   the upstream UDP protocol; production does not use it.
-- [descent.parm](params/descent.parm) is the image-baked parameter overlay, and
-  [Dockerfile](Dockerfile) pins the upstream build and runtime layout.
+- [descent.parm](params/descent.parm) is the image-baked base parameter overlay.
+  [moving-pad.parm](params/moving-pad.parm) is the two-value moving-target
+  override, and [Dockerfile](Dockerfile) pins the upstream build and runtime
+  layout.
 
 ## Interfaces
 
@@ -75,6 +77,11 @@ that SITL exited, and it always attempts to close the protocol.
   missed pickup through the scorer or by silently overriding these values at
   runtime; inspect [descent.parm](params/descent.parm) and its executable
   assertions in [test_config.py](tests/test_config.py).
+- A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
+  comma-separated `--defaults` argument. The later file changes only
+  `PLND_OPTIONS` from 4 to 5 and `PLND_EST_TYPE` from 0 to 1. Other scenarios
+  keep the base profile. The companion reads back every effective precision
+  value before it can send a flight command.
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is

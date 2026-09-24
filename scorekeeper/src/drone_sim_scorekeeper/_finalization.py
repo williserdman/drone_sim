@@ -18,7 +18,9 @@ from .output import persist_score_outputs
 
 class _Scorer(Protocol):
     run_id: str
-    last_sim_timestamp_ns: int
+
+    @property
+    def last_sim_timestamp_ns(self) -> int: ...
 
     def fail(self, reason: str) -> None: ...
     def finalize(self) -> ScoreResult: ...

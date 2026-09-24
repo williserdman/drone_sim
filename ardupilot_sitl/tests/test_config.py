@@ -20,6 +20,16 @@ def _descent_parameters() -> dict[str, str]:
     }
 
 
+def _moving_parameters() -> dict[str, str]:
+    parameter_file = Path(__file__).parents[1] / "params/moving-pad.parm"
+    return {
+        name: value
+        for line in parameter_file.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+        for name, value in (line.split(),)
+    }
+
+
 def test_descent_parameters_disable_rc_flight_mode_override() -> None:
     assert _descent_parameters()["FLTMODE_CH"] == "0"
 
@@ -179,6 +189,19 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "--wipe",
     )
     assert "--no-lockstep" not in config.argv
+
+
+def test_moving_profile_overlays_only_moving_estimator_values(tmp_path: Path) -> None:
+    overlay = Path("/opt/drone_sim/ardupilot/params/moving-pad.parm")
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        parameter_overlay_file=overlay,
+    )
+
+    defaults = config.argv[config.argv.index("--defaults") + 1]
+    assert defaults == "/opt/drone_sim/ardupilot/params/descent.parm,/opt/drone_sim/ardupilot/params/moving-pad.parm"
+    assert _moving_parameters() == {"PLND_OPTIONS": "5", "PLND_EST_TYPE": "1"}
 
 
 @pytest.mark.parametrize(

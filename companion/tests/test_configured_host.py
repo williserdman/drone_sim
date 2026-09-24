@@ -1,7 +1,9 @@
 from io import StringIO
+from pathlib import Path
 
 from artifacts.runtime_status import RuntimeStatus, status_document, status_name
 from drone_sim_companion.configured_runtime import ConfiguredHost
+from drone_sim_companion.configured_runtime import MOVING_PRECISION_PARAMETERS
 from drone_sim_companion.lifecycle import CompanionLifecycle
 from drone_sim_companion.mission import Ack, CommandKind, Telemetry
 from drone_sim_companion.mission_plan import parse_mission_plan
@@ -121,3 +123,95 @@ def test_low_takeoff_target_cannot_succeed_at_ground_altitude():
     host.observe(Telemetry(100_000_000, ack=Ack(CommandKind.TAKEOFF, True, 0)))
     host.observe(Telemetry(200_000_000, relative_altitude_m=0.0))
     assert host.operations.operation_status(operation_id).state == "running"
+
+
+def test_moving_profile_mismatch_emits_zero_flight_commands():
+    host, vehicle, protocol = host_for([
+        {"tool": "set_mode", "args": {"mode": "GUIDED"}},
+        {"tool": "precision_land", "args": {
+            "marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60,
+        }, "timeout_sim_s": 45},
+    ])
+    host.observe(Telemetry(
+        0, heartbeat=True, mode="STABILIZE", armed=False, landed=True,
+        prearm_checks_healthy=True,
+    ))
+    host.observe(Telemetry(
+        0, parameter_name="PLND_OPTIONS", parameter_value=4.0,
+    ))
+    host.tick(0, mission_running=True)
+
+    assert host.error == "effective precision parameter PLND_OPTIONS is 4.0, expected 5.0"
+    assert vehicle.commands == []
+    assert "mission-execution-ready" not in protocol.statuses
+
+
+def test_moving_profile_gate_needs_no_image_before_first_flight_command():
+    host, vehicle, protocol = host_for([
+        {"tool": "set_mode", "args": {"mode": "GUIDED"}},
+        {"tool": "precision_land", "args": {
+            "marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60,
+        }, "timeout_sim_s": 45},
+    ])
+    host.observe(Telemetry(
+        0, heartbeat=True, mode="STABILIZE", armed=False, landed=True,
+        prearm_checks_healthy=True,
+    ))
+    for name, value in MOVING_PRECISION_PARAMETERS.items():
+        host.observe(Telemetry(0, parameter_name=name, parameter_value=value))
+
+    host.tick(0, mission_running=True)
+
+    assert protocol.statuses["mission-execution-ready"]["ready"] is True
+    assert vehicle.commands == [(CommandKind.SET_GUIDED, None)]
+
+
+def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
+    root = Path(__file__).parents[2]
+    effective = {}
+    for relative in ("ardupilot_sitl/params/descent.parm", "ardupilot_sitl/params/moving-pad.parm"):
+        for line in (root / relative).read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith("#"):
+                name, value = line.split()
+                effective[name] = float(value)
+
+    assert {name: effective[name] for name in MOVING_PRECISION_PARAMETERS} == {
+        "LAND_SPD_MS": 0.50,
+        "PLND_ENABLED": 1.0,
+        "PLND_TYPE": 1.0,
+        "PLND_LAG": 0.08,
+        "PLND_EST_TYPE": 1.0,
+        "PLND_XY_DIST_MAX": 0.50,
+        "PLND_STRICT": 2.0,
+        "PLND_RET_MAX": 1.0,
+        "PLND_TIMEOUT": 0.50,
+        "PLND_ALT_MIN": 0.75,
+        "PLND_ALT_MAX": 8.0,
+        "PLND_OPTIONS": 5.0,
+    }
+
+
+def test_moving_plan_publishes_observed_arm_and_disarm_events():
+    published = []
+    protocol = Protocol()
+    vehicle = Vehicle()
+    lifecycle = CompanionLifecycle(run_id=RUN_ID, protocol=protocol, stream=StringIO())
+    host = ConfiguredHost(
+        parse_mission_plan({"schema_version": 1, "steps": [{
+            "tool": "precision_land",
+            "args": {"marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60},
+        }]}),
+        vehicle,
+        lifecycle,
+        protocol,
+        RUN_ID,
+        publish_mission_event=published.append,
+    )
+
+    host.observe(Telemetry(1, heartbeat=True, armed=True, mode="GUIDED"))
+    host.observe(Telemetry(2, heartbeat=True, armed=False, mode="LAND", landed=True))
+
+    assert [(event.phase, event.state, event.sim_timestamp_ns) for event in published] == [
+        ("MOVING_PAD", "ARMED", 1),
+        ("MOVING_PAD", "DISARMED", 2),
+    ]

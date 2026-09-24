@@ -18,6 +18,11 @@
   depth: 100
   reliability: reliable
   durability: volatile
+/simulation/landing_pad_state:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
 /simulation/scenario_events:
   history: keep_last
   depth: 100

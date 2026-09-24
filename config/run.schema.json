@@ -43,9 +43,10 @@
     },
     {
       "if": {
-        "properties": {
-          "mission": {"const": "comp2026_auto"}
-        }
+        "anyOf": [
+          {"properties": {"mission": {"const": "comp2026_auto"}}},
+          {"properties": {"scenario": {"const": "moving_pad_v1"}}}
+        ]
       },
       "then": {"properties": {"recording": {"$ref": "#/$defs/competition_recording"}}},
       "else": {"properties": {"recording": {"$ref": "#/$defs/baseline_recording"}}}
@@ -61,6 +62,25 @@
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
       "else": {"not": {"required": ["mission_plan"]}}
+    },
+    {
+      "if": {"anyOf": [
+        {"properties": {"world": {"enum": ["moving_pad_landing", "moving_pad_stationary"]}}},
+        {"properties": {"vehicle": {"const": "iris_moving_pad"}}},
+        {"properties": {"scenario": {"const": "moving_pad_v1"}}}
+      ]},
+      "then": {
+        "required": ["runtime_profile", "simulation"],
+        "not": {"required": ["competition"]},
+        "properties": {
+          "world": {"enum": ["moving_pad_landing", "moving_pad_stationary"]},
+          "vehicle": {"const": "iris_moving_pad"},
+          "mission": {"const": "configured"},
+          "scenario": {"const": "moving_pad_v1"},
+          "runtime_profile": {"const": "phase3"},
+          "simulation": {"properties": {"public_epoch_native_sim_seconds": {"const": 90}}}
+        }
+      }
     }
   ],
   "$defs": {

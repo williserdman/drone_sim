@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import signal
 import sys
@@ -155,6 +156,9 @@ def install_ros(monkeypatch, fake_ros):
             self.callbacks[topic] = callback
             return callback
 
+        def create_publisher(self, _message_type, _topic, _qos):
+            return SimpleNamespace(publish=lambda _message: None)
+
         def destroy_node(self):
             self.callbacks.clear()
             self.destroyed = True
@@ -177,7 +181,11 @@ def install_ros(monkeypatch, fake_ros):
             QoSProfile=QoSProfile,
         ),
         "rosgraph_msgs.msg": SimpleNamespace(Clock=object),
-        "simulation_interfaces.msg": SimpleNamespace(RunState=RunState),
+        "sensor_msgs.msg": SimpleNamespace(Image=object, LaserScan=object),
+        "simulation_interfaces.msg": SimpleNamespace(
+            RunState=RunState,
+            MissionEvent=lambda: SimpleNamespace(sim_timestamp=SimpleNamespace()),
+        ),
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -227,3 +235,61 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
     assert fake_ros.node.destroyed and fake_ros.node.callbacks == {}
     assert fake_ros.initialized is False and not connection.messages
     assert {item: signal.getsignal(item) for item in previous_handlers} == previous_handlers
+
+
+def test_moving_camera_starts_before_flight_and_closes_during_teardown(monkeypatch):
+    protocol = Protocol()
+    connection = FakeConnection()
+    fake_ros = FakeRos(None)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    trace = []
+
+    class CameraManager:
+        def __init__(self, **_kwargs): pass
+
+    class Camera:
+        def __init__(self, *_args, **_kwargs): pass
+
+    class Vision:
+        def __init__(self, *_args, **_kwargs): pass
+        def start(self): trace.append("vision_started")
+        def latest(self): return None
+        def close(self, _timeout):
+            trace.append("vision_closed")
+            return True
+
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "comp2026/src"))
+    import drone.sensors.camera._camera_manager as manager_module
+    import drone.sensors.camera.camera as camera_module
+    import drone_sim_companion.moving_vision as vision_module
+    monkeypatch.setattr(manager_module, "CameraManager", CameraManager)
+    monkeypatch.setattr(camera_module, "Camera", Camera)
+    monkeypatch.setattr(vision_module, "MovingVision", Vision)
+
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission_plan=parse_mission_plan({
+            "schema_version": 1,
+            "steps": [{
+                "tool": "precision_land",
+                "args": {"marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60},
+                "timeout_sim_s": 45,
+            }],
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+    )
+
+    assert run_configured(config) == 1
+    assert trace == ["vision_started", "vision_closed"]
+    flight_commands = {
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+        mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+        mavutil.mavlink.MAV_CMD_NAV_LAND,
+    }
+    assert not flight_commands.intersection(connection.mav.command_ids)

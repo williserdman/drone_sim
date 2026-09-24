@@ -164,7 +164,7 @@ guides before changing this ordering. A landed vehicle is not a terminal run.
 | What are the wire schemas? | [ROS messages/services](../ros_ws/src/simulation_interfaces), with QoS at the actual publisher/subscriber and [recording overrides](../artifacts/recording-qos.yaml) |
 | What counts for points? | [versioned rules](../scorekeeper/rules) and scorer implementation; never the mission's success print alone |
 | Which code/images produced an old result? | That run's `configuration/run.json`, manifest source revisions/image digests, and logs; mutable local Docker tags and today's Git HEAD are not historical evidence |
-| Which topics are actually in the bag? | `BASE_TOPICS` / `COMPETITION_TOPICS` in the [bag adapter](../artifacts/src/artifacts/_adapters/rosbag.py) |
+| Which topics are actually in the bag? | `BASE_TOPICS`, `COMPETITION_TOPICS`, and `MOVING_PAD_TOPICS` in the [bag adapter](../artifacts/src/artifacts/_adapters/rosbag.py) |
 
 The bag stores camera **metadata**, not raw image pixels. The MP4s are the image
 recordings; a bag cannot recreate a lost recording. Private Gazebo topics also
@@ -190,9 +190,9 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 - A source edit is not an image update. Source provenance, image build identity,
   and runtime evidence must agree before claiming a verified result.
 
-## Proposed moving-pad mission
+## Moving-pad landing
 
-Design approved 2026-09-24; not implemented. This section is the spec
+Design approved 2026-09-24; implementation under verification. This is the contract
 for one regression mission: takeoff, transit, and camera-guided landing on a
 platform moving straight at 0.5 m/s from public simulation time zero through
 touchdown. The platform continues moving after disarm. ArUco 7 identifies the
@@ -200,24 +200,25 @@ landing target; this mission does not pick up or deliver a payload.
 
 ### Course and acquisition
 
-The proposed starting course has a 3 m square deck, 0.2 m above the floor, with
+The course has a 3 m square deck, 0.2 m above the floor, with
 a centered 0.1 m marker. The vehicle starts at local ENU (0, 0); the pad starts
 at (10, 0) and travels east. The vehicle takes off to 5 m above home and transits
 to (35, 0), ahead of the pad. The pad reaches that waypoint at 50 simulated
 seconds. The automatic example must arrive and settle by 45 seconds; a late
 arrival fails this attempt rather than starting an unbounded pursuit.
 
-Reuse the downward camera geometry from the competition vehicle, with matching
-[intrinsics](../companion/src/drone_sim_companion/gazebo_camera_calibration.json)
-and verified simulation calibration/mount metadata. The current configured host
-does not yet subscribe to images; connect the existing camera acquisition path.
+The downward camera reuses competition geometry, with matching
+[intrinsics](../companion/src/drone_sim_companion/moving_pad_camera_calibration.json)
+and [mount metadata](../companion/src/drone_sim_companion/moving_pad_camera_mounting.json).
+The configured host subscribes to images and range for precision-landing plans.
+Unverified calibration or mounting prevents precision readiness.
 Its 0.6-radian horizontal field of view at 640x480 covers approximately 3.1 by
 2.3 m at 5 m above a level surface. The usable marker-detection region is smaller;
 vehicle tilt, the camera offset, deck height, marker size, and frame age affect
 acquisition. With the proposed deck and camera offset, coverage is about 2.9 by
 2.2 m. Align the route with the image's long axis and hold yaw during acquisition.
-The course creates an arrival window, not a guarantee that a waypoint implies
-visibility. Actual rendered images must establish target lock.
+The course creates an arrival window. Actual rendered images must establish
+target lock; reaching a waypoint alone does not authorize descent.
 
 Camera acquisition and detection run throughout takeoff, transit, and landing.
 A bounded camera worker publishes the latest timestamped observation; image
@@ -296,7 +297,7 @@ paths with one explicit scenario, without a general scenario framework.
 
 **Tech stack:** existing Python 3.12, ROS 2 Jazzy, Gazebo Sim 8/C++17, OpenCV,
 and the pinned ArduPilot build. **Spec:** the preceding
-[moving-pad design](#proposed-moving-pad-mission).
+[moving-pad design](#moving-pad-landing).
 
 #### Global constraints and verification focus
 

@@ -68,6 +68,28 @@ def test_competition_profile_preserves_resolved_640x480_geometry_and_topics():
     assert contract.topics == COMPETITION_TOPICS
 
 
+def test_moving_pad_profile_selects_its_physical_evidence_inventory_explicitly():
+    """Moving-pad truth must not fall through to stationary descent evidence."""
+    from artifacts._adapters.rosbag import MOVING_PAD_TOPICS
+
+    contract = resolve_recording_runtime_config(
+        {
+            "runtime_profile": "phase3",
+            "scenario": "moving_pad_v1",
+            "recording": {
+                "width_px": 640,
+                "height_px": 480,
+                "fps": 20,
+                "encoding": "rgb8",
+            },
+            "simulation": {"duration_sim_seconds": 90},
+        }
+    )
+
+    assert contract.ruleset_id == "moving_pad_v1"
+    assert contract.topics == MOVING_PAD_TOPICS
+
+
 @pytest.mark.parametrize("duration", [0, 0.075, True, float("nan")])
 def test_physical_profile_rejects_nonpositive_or_off_grid_duration(duration):
     """Rounding an invalid duration could certify the wrong camera inventory."""

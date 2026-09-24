@@ -35,7 +35,7 @@ from artifacts import (
 )
 from artifacts.score_validation import (
     ScoreValidationError,
-    validate_descent_score_outputs,
+    validate_score_outputs,
 )
 from artifacts.runtime_status import (
     ArduPilotReadyStatus,
@@ -1082,12 +1082,17 @@ class RunController:
                         and config.runtime_profile == "phase3"
                         and config.scenario != "competition_v1"
                     ):
-                        score = validate_descent_score_outputs(
+                        ruleset = (
+                            "moving_pad_v1"
+                            if config.scenario == "moving_pad_v1"
+                            else "descent_v1"
+                        )
+                        score = validate_score_outputs(
                             run_directory,
                             run_id=config.run_id,
                             rules_path=(
                                 self.project_directory
-                                / "scorekeeper/rules/descent_v1.json"
+                                / f"scorekeeper/rules/{ruleset}.json"
                             ),
                             deadline_check=work_deadline_check,
                         )

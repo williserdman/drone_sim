@@ -175,7 +175,7 @@ def _read_document(path: str | Path) -> dict[str, Any]:
     return document
 
 
-def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
+def _validate_recording(document: Any, *, mission: str, scenario: str) -> RecordingConfig:
     if not isinstance(document, dict) or set(document) != _RECORDING_FIELDS:
         raise ValueError("recording configuration has missing or unknown keys")
     width = document["width_px"]
@@ -188,7 +188,7 @@ def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
         raise ValueError("recording dimensions must be 320x240 or 640x480")
     required_dimensions = (
         (640, 480)
-        if mission == "comp2026_auto"
+        if mission == "comp2026_auto" or scenario == "moving_pad_v1"
         else (320, 240)
     )
     if (width, height) != required_dimensions:
@@ -356,8 +356,29 @@ def _validate_common(
         if "simulation" in document:
             raise ValueError("simulation configuration requires runtime_profile phase3")
         simulation = None
+    moving_worlds = {"moving_pad_landing", "moving_pad_stationary"}
+    if (
+        document["world"] in moving_worlds
+        or document["vehicle"] == "iris_moving_pad"
+        or document["scenario"] == "moving_pad_v1"
+    ) and not (
+        document["world"] in moving_worlds
+        and document["vehicle"] == "iris_moving_pad"
+        and document["scenario"] == "moving_pad_v1"
+        and document["mission"] == "configured"
+        and runtime_profile == "phase3"
+        and simulation is not None
+        and simulation.public_epoch_native_ns == PUBLIC_EPOCH_DEFAULT_NS
+        and "competition" not in document
+    ):
+        raise ValueError(
+            "moving-pad scenes require configured/iris_moving_pad/moving_pad_v1, "
+            "phase3, a 90-second native epoch, and no competition course"
+        )
     return (
-        _validate_recording(document["recording"], mission=document["mission"]),
+        _validate_recording(
+            document["recording"], mission=document["mission"], scenario=document["scenario"]
+        ),
         runtime_profile,
         simulation,
     )

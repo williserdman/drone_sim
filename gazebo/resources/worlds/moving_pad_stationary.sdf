@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <world name="moving_pad_stationary">
+    <gravity>0 0 -9.8</gravity>
+    <physics name="moving_pad_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>0.1</real_time_factor>
+      <real_time_update_rate>100</real_time_update_rate>
+    </physics>
+    <scene><ambient>0.4 0.4 0.4 1</ambient><background>0.7 0.8 0.9 1</background><shadows>false</shadows></scene>
+    <light name="sun" type="directional">
+      <pose>0 0 30 0 0 0</pose><cast_shadows>false</cast_shadows>
+      <diffuse>0.8 0.8 0.8 1</diffuse><specular>0.2 0.2 0.2 1</specular><direction>-0.5 0.1 -0.9</direction>
+    </light>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors"><render_engine>ogre2</render_engine></plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="ground_link">
+        <collision name="ground_collision"><geometry><plane><normal>0 0 1</normal><size>150 60</size></plane></geometry></collision>
+        <visual name="ground_visual"><geometry><plane><normal>0 0 1</normal><size>150 60</size></plane></geometry><material><ambient>0.25 0.25 0.25 1</ambient><diffuse>0.35 0.35 0.35 1</diffuse></material></visual>
+      </link>
+    </model>
+    <include>
+      <uri>model://moving_pad</uri><name>moving_pad</name><pose>35 0 0 0 0 0</pose>
+      <plugin filename="libdrone_sim_moving_pad_controller.so" name="drone_sim::gazebo::MovingPadController">
+        <joint_name>rail_joint</joint_name><motion_start_sim_time_s>90</motion_start_sim_time_s><velocity_mps>0</velocity_mps>
+      </plugin>
+      <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+        <dimensions>3</dimensions><odom_publish_frequency>20</odom_publish_frequency>
+        <odom_topic>/gazebo/private/moving_pad/odometry</odom_topic><odom_frame>moving_pad_stationary</odom_frame><robot_base_frame>moving_pad</robot_base_frame>
+      </plugin>
+    </include>
+    <include>
+      <uri>model://iris_moving_pad</uri><name>iris</name><pose>0 0 0.195 0 0 1.570796327</pose><static>false</static>
+      <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+        <dimensions>3</dimensions><odom_publish_frequency>20</odom_publish_frequency>
+        <odom_topic>/gazebo/private/iris/odometry</odom_topic><odom_frame>moving_pad_stationary</odom_frame><robot_base_frame>iris</robot_base_frame>
+      </plugin>
+    </include>
+    <model name="observer_station">
+      <pose>32.5 -50 50 0 0.785398163 1.570796327</pose><static>true</static>
+      <link name="observer_link"><sensor name="observer_camera" type="camera">
+        <topic>/gazebo/private/camera/observer/image</topic><always_on>true</always_on><update_rate>20</update_rate><visualize>false</visualize>
+        <camera><horizontal_fov>1.5</horizontal_fov><image><width>640</width><height>480</height><format>R8G8B8</format></image><clip><near>0.1</near><far>200</far></clip></camera>
+      </sensor></link>
+    </model>
+  </world>
+</sdf>

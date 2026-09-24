@@ -32,6 +32,7 @@ class RuntimeConfig:
     run_directory: Path
     executable: Path = Path("/opt/ardupilot/bin/arducopter")
     parameter_file: Path = Path("/opt/drone_sim/ardupilot/params/descent.parm")
+    parameter_overlay_file: Path | None = None
     gazebo_host: str = "gazebo-runtime"
     gazebo_port: int = 9002
     gazebo_input_port: int = 9003
@@ -47,6 +48,14 @@ class RuntimeConfig:
             raise ValueError("run_id must be a canonical UUID")
         if not isinstance(self.run_directory, Path):
             object.__setattr__(self, "run_directory", Path(self.run_directory))
+        if not isinstance(self.parameter_file, Path):
+            object.__setattr__(self, "parameter_file", Path(self.parameter_file))
+        if self.parameter_overlay_file is not None and not isinstance(
+            self.parameter_overlay_file, Path
+        ):
+            object.__setattr__(
+                self, "parameter_overlay_file", Path(self.parameter_overlay_file)
+            )
         if not self.gazebo_host or any(character.isspace() for character in self.gazebo_host):
             raise ValueError("gazebo_host must be a nonempty DNS name or address")
         _port(self.gazebo_port, "gazebo_port")
@@ -55,6 +64,9 @@ class RuntimeConfig:
 
     @property
     def argv(self) -> tuple[str, ...]:
+        defaults = str(self.parameter_file)
+        if self.parameter_overlay_file is not None:
+            defaults += f",{self.parameter_overlay_file}"
         return (
             str(self.executable),
             "--model",
@@ -70,7 +82,7 @@ class RuntimeConfig:
             "--serial0",
             f"tcp:0.0.0.0:{self.mavlink_port}",
             "--defaults",
-            str(self.parameter_file),
+            defaults,
             "--home",
             self.home,
             "--wipe",

@@ -45,7 +45,11 @@ def gazebo_child_specs(
                 environment,
             ),
         )
-        if world_name == "competition_mission"
+        if world_name in {
+            "competition_mission",
+            "moving_pad_landing",
+            "moving_pad_stationary",
+        }
         else ()
     )
     bridge = ChildSpec(

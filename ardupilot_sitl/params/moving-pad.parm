@@ -1,0 +1,3 @@
+# Moving-target override layered after descent.parm for moving_pad_v1 only.
+PLND_OPTIONS 5
+PLND_EST_TYPE 1

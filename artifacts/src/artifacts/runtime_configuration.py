@@ -25,9 +25,13 @@ class RecordingRuntimeConfig:
 
     @property
     def topics(self) -> tuple[str, ...]:
-        from ._adapters.rosbag import BASE_TOPICS, COMPETITION_TOPICS
+        from ._adapters.rosbag import BASE_TOPICS, COMPETITION_TOPICS, MOVING_PAD_TOPICS
 
-        return COMPETITION_TOPICS if self.ruleset_id == "competition_v1" else BASE_TOPICS
+        if self.ruleset_id == "competition_v1":
+            return COMPETITION_TOPICS
+        if self.ruleset_id == "moving_pad_v1":
+            return MOVING_PAD_TOPICS
+        return BASE_TOPICS
 
 
 def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRuntimeConfig:
@@ -47,9 +51,12 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
         )
     width_px, height_px, fps, encoding = geometry
     ruleset_id = document.get("scenario", "descent_v1")
-    if ruleset_id == "competition_v1" and (width_px, height_px) != (640, 480):
-        raise ValueError("competition_v1 recording must equal 640x480 rgb8 at 20 FPS")
-    if ruleset_id != "competition_v1":
+    if ruleset_id in {"competition_v1", "moving_pad_v1"} and (
+        width_px,
+        height_px,
+    ) != (640, 480):
+        raise ValueError(f"{ruleset_id} recording must equal 640x480 rgb8 at 20 FPS")
+    if ruleset_id not in {"competition_v1", "moving_pad_v1"}:
         ruleset_id = "descent_v1"
 
     profile = document.get("runtime_profile", "phase2")

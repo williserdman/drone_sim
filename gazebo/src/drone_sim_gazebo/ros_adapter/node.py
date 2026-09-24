@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from .aggregation import AggregationFault, NativeOdometry
 from .epoch import FRAME_INTERVAL_NS, OutputEpochGate
 from .live import LiveAdapter
+from .landing_pad import (
+    LandingPadTracker,
+    PublicLandingPadState,
+    landing_pad_state_message,
+    vehicle_on_deck,
+)
 from .model import (
     AdapterFault,
     AdapterSummary,
@@ -103,8 +109,13 @@ class GazeboAdapterNode(_node_base()):
         self._run_id = run_id
         self._world_name = world_name
         self._competition = world_name == "competition_mission"
+        self._moving_pad = world_name in {
+            "moving_pad_landing",
+            "moving_pad_stationary",
+        }
+        self._range_enabled = self._competition or self._moving_pad
         self._require_competition_recorders = (
-            self._competition
+            self._competition or self._moving_pad
             if require_competition_recorders is None
             else require_competition_recorders
         )
@@ -134,6 +145,7 @@ class GazeboAdapterNode(_node_base()):
         self._metadata_type = FrameMetadata
         self._ground_truth_type = GroundTruth
         self._payload_state_type = PayloadState
+        self._landing_pad_state_type = None
         self._image_publishers = {
             stream: self.create_publisher(
                 Image, f"/camera/{stream}/image_raw", _qos(100, reliable=True)
@@ -155,6 +167,8 @@ class GazeboAdapterNode(_node_base()):
         self._range_publisher = None
         self._payload_trackers: dict[int, PayloadTracker] = {}
         self._range_sequence: RangeSequence | None = None
+        self._landing_pad_state_publisher = None
+        self._landing_pad_tracker: LandingPadTracker | None = None
         if self._competition:
             from geometry_msgs.msg import PoseArray
             from std_msgs.msg import String
@@ -214,6 +228,46 @@ class GazeboAdapterNode(_node_base()):
                     # These small messages need history, not just the latest state.
                     _qos(1000, reliable=True),
                 )
+        elif self._moving_pad:
+            from simulation_interfaces.msg import LandingPadState
+
+            self._landing_pad_state_type = LandingPadState
+            self._range_publisher = self.create_publisher(
+                LaserScan,
+                "/competition/range/downward",
+                _qos(100, reliable=True),
+            )
+            self._range_sequence = RangeSequence(
+                expected_samples=expected_frames,
+                interval_ns=50_000_000,
+            )
+            self._landing_pad_state_publisher = self.create_publisher(
+                LandingPadState,
+                "/simulation/landing_pad_state",
+                _qos(100, reliable=True),
+            )
+            self._landing_pad_tracker = LandingPadTracker(
+                run_id=run_id,
+                marker_id=7,
+            )
+            self.create_subscription(
+                LaserScan,
+                "/gazebo/private/range/downward",
+                self._accept_range,
+                _qos(10, reliable=False),
+            )
+            self.create_subscription(
+                Odometry,
+                "/gazebo/private/moving_pad/odometry",
+                self._accept_landing_pad_odometry,
+                _qos(10, reliable=False),
+            )
+            self.create_subscription(
+                Contacts,
+                "/gazebo/private/moving_pad/contact",
+                self._accept_landing_pad_contacts,
+                _qos(10, reliable=False),
+            )
         self._clock_publisher = self.create_publisher(
             Clock, "/clock", _qos(1000, reliable=True)
         )
@@ -449,6 +503,55 @@ class GazeboAdapterNode(_node_base()):
         except (AdapterFault, ValueError, TypeError) as error:
             self._fail(error)
 
+    def _accept_landing_pad_odometry(self, message) -> None:
+        if (
+            self._faulted
+            or self._completion_reported
+            or not self._output_active
+            and not self._output_epoch.activation_pending
+        ):
+            return
+        try:
+            timestamp_ns = self._sample_timestamp(message)
+            if timestamp_ns is None or timestamp_ns == 0:
+                return
+            pose = message.pose.pose
+            twist = message.twist.twist
+            assert self._landing_pad_tracker is not None
+            output = self._landing_pad_tracker.accept_odometry(
+                NativeOdometry(
+                    sim_timestamp_ns=timestamp_ns,
+                    position_xyz=_vector3(pose.position),
+                    orientation_xyzw=_quaternion(pose.orientation),
+                    linear_velocity_xyz=_vector3(twist.linear),
+                    angular_velocity_xyz=_vector3(twist.angular),
+                )
+            )
+            self._emit(() if output is None else (output,))
+        except (AdapterFault, AggregationFault, ValueError, TypeError) as error:
+            self._fail(error)
+
+    def _accept_landing_pad_contacts(self, message) -> None:
+        if (
+            self._faulted
+            or self._completion_reported
+            or not self._output_active
+            and not self._output_epoch.activation_pending
+        ):
+            return
+        try:
+            timestamp_ns = self._sample_timestamp(message)
+            if timestamp_ns is None or timestamp_ns == 0:
+                return
+            assert self._landing_pad_tracker is not None
+            output = self._landing_pad_tracker.accept_contact(
+                timestamp_ns,
+                vehicle_on_deck(message.contacts),
+            )
+            self._emit(() if output is None else (output,))
+        except (AdapterFault, ValueError, TypeError) as error:
+            self._fail(error)
+
     def _accept_payload_attachment(self, aruco_id: int, message) -> None:
         if (
             self._faulted
@@ -521,7 +624,7 @@ class GazeboAdapterNode(_node_base()):
         if self._output_active:
             self._publish(output)
             return
-        limit = 14 if self._competition else 6
+        limit = 14 if self._competition else 10 if self._moving_pad else 6
         if len(self._pre_zero_outputs) + len(output) > limit:
             raise AdapterFault("pre-zero output queue exceeded two public epochs")
         self._pre_zero_outputs.extend(output)
@@ -576,6 +679,15 @@ class GazeboAdapterNode(_node_base()):
                 self._payload_state_publisher.publish(
                     payload_state_message(value, self._payload_state_type)
                 )
+            elif isinstance(value, PublicLandingPadState):
+                self._publish_clock(value.sim_timestamp_ns)
+                assert self._landing_pad_state_publisher is not None
+                self._landing_pad_state_publisher.publish(
+                    landing_pad_state_message(
+                        value,
+                        self._landing_pad_state_type,
+                    )
+                )
             elif isinstance(value, _PublicRange):
                 self._publish_clock(value.sim_timestamp_ns)
                 assert self._range_publisher is not None
@@ -592,9 +704,21 @@ class GazeboAdapterNode(_node_base()):
                 for tracker in self._payload_trackers.values()
             )
         )
+        range_complete = (
+            not self._range_enabled
+            or self._range_sequence is not None
+            and self._range_sequence.accepted_samples == self._expected_frames
+        )
+        moving_pad_complete = (
+            not self._moving_pad
+            or self._landing_pad_tracker is not None
+            and self._landing_pad_tracker.accepted_samples == self._expected_frames
+        )
         if (
             self._live.complete
             and competition_complete
+            and range_complete
+            and moving_pad_complete
             and not self._completion_reported
         ):
             self._completion_reported = True

@@ -18,6 +18,13 @@ from .competition import (
     load_competition_rules,
 )
 from .competition_runtime import CompetitionScorekeeperRuntime
+from .moving_pad import (
+    LandingPadSample,
+    MovingPadRules,
+    MovingPadScorer,
+    load_moving_pad_rules,
+)
+from .moving_pad_runtime import MovingPadScorekeeperRuntime
 from .output import ScoreOutputPaths, persist_score_outputs
 
 __all__ = [
@@ -27,7 +34,11 @@ __all__ = [
     "CompetitionScorer",
     "CompetitionScorekeeperRuntime",
     "GroundTruthSample",
+    "LandingPadSample",
     "MissionEventSample",
+    "MovingPadRules",
+    "MovingPadScorer",
+    "MovingPadScorekeeperRuntime",
     "PayloadEventSample",
     "PayloadStateSample",
     "RuleResult",
@@ -36,5 +47,6 @@ __all__ = [
     "ScoreResult",
     "load_descent_rules",
     "load_competition_rules",
+    "load_moving_pad_rules",
     "persist_score_outputs",
 ]

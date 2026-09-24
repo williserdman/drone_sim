@@ -56,6 +56,19 @@ COMPETITION_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
         "/competition/range/downward": "sensor_msgs/msg/LaserScan",
     }
 )
+MOVING_PAD_TOPICS = BASE_TOPICS + (
+    "/simulation/landing_pad_state",
+    "/simulation/mission_events",
+    "/competition/range/downward",
+)
+MOVING_PAD_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
+    {
+        **BASE_TOPIC_TYPES,
+        "/simulation/landing_pad_state": "simulation_interfaces/msg/LandingPadState",
+        "/simulation/mission_events": "simulation_interfaces/msg/MissionEvent",
+        "/competition/range/downward": "sensor_msgs/msg/LaserScan",
+    }
+)
 
 _QOS_OVERRIDES_PATH = "/etc/drone_sim/recording-qos.yaml"
 _FRAME_INTERVAL_NS = 50_000_000
@@ -181,6 +194,17 @@ class DownwardRangeEvidence:
 
 
 @dataclass(frozen=True)
+class LandingPadStateEvidence:
+    sim_timestamp_ns: int
+    marker_id: int
+    position_xyz: tuple[float, float, float]
+    orientation_xyzw: tuple[float, float, float, float]
+    linear_velocity_xyz: tuple[float, float, float]
+    angular_velocity_xyz: tuple[float, float, float]
+    vehicle_in_contact: bool
+
+
+@dataclass(frozen=True)
 class PhysicalBagEvidence:
     bag_sha256: str
     config_sha256: str
@@ -191,6 +215,7 @@ class PhysicalBagEvidence:
     payload_events: tuple[PayloadEventEvidence, ...] = ()
     mission_events: tuple[MissionEventEvidence, ...] = ()
     downward_ranges: tuple[DownwardRangeEvidence, ...] = ()
+    landing_pad_states: tuple[LandingPadStateEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -312,6 +337,8 @@ class RosbagRecorder:
             self.topic_types = BASE_TOPIC_TYPES
         elif self.topics == COMPETITION_TOPICS:
             self.topic_types = COMPETITION_TOPIC_TYPES
+        elif self.topics == MOVING_PAD_TOPICS:
+            self.topic_types = MOVING_PAD_TOPIC_TYPES
         else:
             raise ValueError("rosbag topics must equal a supported evidence inventory")
         self.node_name = f"rosbag2_recorder_{uuid_factory().hex}"
@@ -736,6 +763,38 @@ def _mission_event_evidence(message: Any, timestamp_ns: int) -> MissionEventEvid
     )
 
 
+def _landing_pad_state_evidence(
+    message: Any, timestamp_ns: int
+) -> LandingPadStateEvidence:
+    if type(message.marker_id) is not int or message.marker_id != 7:
+        raise ValueError("landing-pad state marker ID must be 7")
+    position = _finite_vector(message.pose.position, ("x", "y", "z"), "landing-pad state")
+    orientation = _finite_vector(
+        message.pose.orientation,
+        ("x", "y", "z", "w"),
+        "landing-pad state",
+    )
+    linear = _finite_vector(message.twist.linear, ("x", "y", "z"), "landing-pad state")
+    angular = _finite_vector(
+        message.twist.angular,
+        ("x", "y", "z"),
+        "landing-pad state",
+    )
+    if sum(item * item for item in orientation) == 0.0:
+        raise ValueError("landing-pad state orientation has zero norm")
+    if type(message.vehicle_in_contact) is not bool:
+        raise ValueError("landing-pad state contact flag is invalid")
+    return LandingPadStateEvidence(
+        timestamp_ns,
+        message.marker_id,
+        (position[0], position[1], position[2]),
+        (orientation[0], orientation[1], orientation[2], orientation[3]),
+        (linear[0], linear[1], linear[2]),
+        (angular[0], angular[1], angular[2]),
+        message.vehicle_in_contact,
+    )
+
+
 def _downward_range_evidence(message: Any, timestamp_ns: int) -> DownwardRangeEvidence:
     if not isinstance(message.ranges, Sequence) or len(message.ranges) != 1:
         raise ValueError("downward range must contain exactly one beam")
@@ -784,7 +843,7 @@ class RosbagValidator:
             or any(character not in "0123456789abcdef" for character in config_sha256)
         ):
             raise ValueError("physical_run requires a lowercase config SHA-256")
-        if ruleset_id not in {"descent_v1", "competition_v1"}:
+        if ruleset_id not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
             raise ValueError("ruleset_id is unsupported")
         if (
             type(width_px) is not int
@@ -805,6 +864,9 @@ class RosbagValidator:
         if ruleset_id == "competition_v1":
             self.topics = COMPETITION_TOPICS
             self.topic_types = COMPETITION_TOPIC_TYPES
+        elif ruleset_id == "moving_pad_v1":
+            self.topics = MOVING_PAD_TOPICS
+            self.topic_types = MOVING_PAD_TOPIC_TYPES
         else:
             self.topics = BASE_TOPICS
             self.topic_types = BASE_TOPIC_TYPES
@@ -900,7 +962,7 @@ class RosbagValidator:
                     f"rosbag topic {topic} has wrong type {topic_metadata.message_type!r}",
                 )
             if topic_metadata.message_count <= 0 and not (
-                self.ruleset_id == "competition_v1"
+                self.ruleset_id in {"competition_v1", "moving_pad_v1"}
                 and topic == "/simulation/scenario_events"
             ):
                 return self._result(
@@ -922,6 +984,7 @@ class RosbagValidator:
         payload_events: list[PayloadEventEvidence] = []
         mission_events: list[MissionEventEvidence] = []
         downward_ranges: list[DownwardRangeEvidence] = []
+        landing_pad_states: list[LandingPadStateEvidence] = []
         first_clock_index: int | None = None
         try:
             for record_index, record in enumerate(
@@ -1014,6 +1077,10 @@ class RosbagValidator:
                     elif record.topic == "/simulation/mission_events":
                         mission_events.append(
                             _mission_event_evidence(message, sim_timestamp_ns)
+                        )
+                    elif record.topic == "/simulation/landing_pad_state":
+                        landing_pad_states.append(
+                            _landing_pad_state_evidence(message, sim_timestamp_ns)
                         )
                 timestamps[record.topic].append(sim_timestamp_ns)
         except Exception as error:
@@ -1145,7 +1212,7 @@ class RosbagValidator:
                     "descent.stable_contact",
                     "score.finalized",
                 )
-            else:
+            elif self.ruleset_id == "competition_v1":
                 expected_event_types = (
                     "competition.fm1_landing",
                     "competition.fm1_autonomy",
@@ -1156,6 +1223,23 @@ class RosbagValidator:
                     "competition.payload_4",
                     "score.finalized",
                 )
+            else:
+                moving_event_types = tuple(event.event_type for event in score_events)
+                if moving_event_types not in {
+                    ("moving_pad.physical_landing", "score.finalized"),
+                    (
+                        "moving_pad.physical_landing",
+                        "moving_pad.touchdown_offset_m",
+                        "moving_pad.touchdown_relative_velocity_mps",
+                        "score.finalized",
+                    ),
+                }:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag moving-pad score event inventory is invalid",
+                    )
+                expected_event_types = moving_event_types
             if len(score_events) != len(expected_event_types) or any(
                 event.event_id != index
                 or event.event_type != event_type
@@ -1216,6 +1300,36 @@ class RosbagValidator:
                             ValidationStatus.INVALID,
                             f"rosbag competition {label} events are not contiguous and monotonic",
                         )
+            elif self.ruleset_id == "moving_pad_v1":
+                expected_grid = timestamps["/simulation/ground_truth"]
+                if timestamps["/simulation/landing_pad_state"] != expected_grid:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag moving-pad landing-pad truth is not aligned to the physical grid",
+                    )
+                if timestamps["/competition/range/downward"] != expected_grid:
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag moving-pad downward range is not aligned to the physical grid",
+                    )
+                if (
+                    len(mission_events) != 2
+                    or tuple(event.event_id for event in mission_events) != (0, 1)
+                    or tuple(event.phase for event in mission_events)
+                    != ("MOVING_PAD", "MOVING_PAD")
+                    or tuple(event.state for event in mission_events)
+                    != ("ARMED", "DISARMED")
+                    or mission_events[1].sim_timestamp_ns
+                    < mission_events[0].sim_timestamp_ns
+                    or mission_events[1].sim_timestamp_ns not in set(expected_grid)
+                ):
+                    return self._result(
+                        filesystem,
+                        ValidationStatus.INVALID,
+                        "rosbag moving-pad mission events are not observed ARMED/DISARMED transitions",
+                    )
 
         if self.expected_camera_frames is not None:
             exact_topics = (
@@ -1314,6 +1428,7 @@ class RosbagValidator:
                 tuple(payload_events),
                 tuple(mission_events),
                 tuple(downward_ranges),
+                tuple(landing_pad_states),
             )
         return self._result(
             filesystem,
@@ -1336,8 +1451,11 @@ __all__ = [
     "BagMetadata",
     "BagTopicMetadata",
     "GroundTruthEvidence",
+    "LandingPadStateEvidence",
     "DownwardRangeEvidence",
     "MissionEventEvidence",
+    "MOVING_PAD_TOPIC_TYPES",
+    "MOVING_PAD_TOPICS",
     "PayloadEventEvidence",
     "PayloadStateEvidence",
     "PhysicalBagEvidence",

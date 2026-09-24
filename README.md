@@ -56,8 +56,14 @@ build images automatically. Do not start with a bare `docker compose up`.
 
 For a fixed sequence, copy [configured-descent-run.json](config/configured-descent-run.json)
 and edit its `mission_plan.steps`. The [companion guide](companion/README.md#configured-diagnostic-missions)
-defines the seven tools; the [local workflow](docs/runbook.md#local-developer-workflow)
+defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow)
 covers rebuilding changed code, running one template, and running the automatic set.
+
+[configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds a
+camera-guided landing on a deck traveling at 0.5 m/s. Use the
+[moving-pad workflow](docs/runbook.md#moving-pad-landing) for the stationary
+control, moving flight, and independent acceptance. Current verification is
+recorded in [handoff](docs/handoff.md).
 
 Read [AGENTS.md](AGENTS.md) for contribution rules, then the affected module
 README. For a mission, start with [companion](companion/README.md): define its
