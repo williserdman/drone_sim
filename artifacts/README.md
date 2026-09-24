@@ -52,14 +52,13 @@ inventory into prose.
 
 The bag is deliberately metadata-only for cameras: it stores frame IDs and
 timestamps, not raw image pixels. Pixel recordings are `video/onboard.mp4` and
-`video/observer.mp4`; losing an MP4 cannot be repaired from the bag. Competition
+`video/observer.mp4`; losing an MP4 cannot be repaired from the bag.
 Scenario-specific runs extend the base bag with their physical/scoring evidence as selected by
 [`RecordingRuntimeConfig.topics`](src/artifacts/runtime_configuration.py).
-The moving-pad inventory records pad truth, observed arm-state mission events,
-downward range, both camera metadata streams, and the shared vehicle truth and
-score events. Acceptance joins pad and vehicle samples by exact timestamp and
-recomputes deck touchdown, disarm, and 41 endpoint samples spanning two seconds
-before it trusts the persisted 100-point result.
+Moving-pad acceptance joins recorded pad and vehicle samples by exact timestamp
+and independently recomputes touchdown, disarm, and continued physical support
+under the [moving-pad rules](../scorekeeper/rules/moving_pad_v1.json) before it
+trusts the persisted result.
 
 The deployed private rosbag QoS overrides are
 [`recording-qos.yaml`](recording-qos.yaml), copied into the runtime image by the

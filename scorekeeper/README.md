@@ -74,7 +74,7 @@ documentation. The persisted schema is defined by
 - Moving-pad truth is joined to vehicle truth at exact timestamps. A physical
   pass requires ordered observed `MOVING_PAD/ARMED` and `MOVING_PAD/DISARMED`
   events, deck-specific contact, position within the measured deck frame, and
-  41 consecutive 20 Hz endpoint samples aboard after disarm. The stationary
+  the continuous post-disarm interval defined by the ruleset. The stationary
   control uses the same rules and measured pad velocity.
 - Moving-pad touchdown offset and rigid-body relative velocity are score-event
   diagnostics. Mission success text and ground contact away from the deck do

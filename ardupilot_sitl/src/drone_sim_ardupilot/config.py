@@ -2,12 +2,38 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 from ipaddress import IPv4Address
 from pathlib import Path
 import socket
 from typing import Callable
 from uuid import UUID
+
+
+MOVING_PAD_PARAMETERS = Path("/opt/drone_sim/ardupilot/params/moving-pad.parm")
+
+
+def parameter_overlay_from_environment(
+    environment: Mapping[str, str],
+    *,
+    run_id: str,
+    run_directory: Path,
+) -> Path | None:
+    raw_path = environment.get("SIM_CONFIG_PATH")
+    if raw_path is None:
+        return None
+    path = Path(raw_path)
+    if path != run_directory / "configuration/run.json":
+        raise ValueError("SIM_CONFIG_PATH must be the run's frozen configuration")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("SIM_CONFIG_PATH must contain readable JSON") from error
+    if not isinstance(document, dict) or document.get("run_id") != run_id:
+        raise ValueError("frozen configuration run_id does not match SIM_RUN_ID")
+    return MOVING_PAD_PARAMETERS if document.get("scenario") == "moving_pad_v1" else None
 
 
 def _port(value: int, name: str) -> int:

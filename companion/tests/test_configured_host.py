@@ -31,6 +31,9 @@ class Vehicle:
     def send(self, command, altitude_m):
         self.commands.append((command, altitude_m))
 
+    def send_waypoint(self, latitude, longitude, altitude, *, yaw_rad=None):
+        self.commands.append(("waypoint", latitude, longitude, altitude, yaw_rad))
+
 
 def host_for(steps):
     protocol = Protocol()
@@ -146,6 +149,19 @@ def test_moving_profile_mismatch_emits_zero_flight_commands():
     assert "mission-execution-ready" not in protocol.statuses
 
 
+def test_ordinary_configured_plan_ignores_moving_profile_parameter_values():
+    host, vehicle, _protocol = host_for([
+        {"tool": "wait_for_state", "args": {"armed": True, "mode": "GUIDED"}},
+    ])
+
+    host.observe(Telemetry(
+        0, parameter_name="PLND_EST_TYPE", parameter_value=0.0,
+    ))
+
+    assert host.error is None
+    assert vehicle.commands == []
+
+
 def test_moving_profile_gate_needs_no_image_before_first_flight_command():
     host, vehicle, protocol = host_for([
         {"tool": "set_mode", "args": {"mode": "GUIDED"}},
@@ -215,3 +231,38 @@ def test_moving_plan_publishes_observed_arm_and_disarm_events():
         ("MOVING_PAD", "ARMED", 1),
         ("MOVING_PAD", "DISARMED", 2),
     ]
+
+
+def test_moving_approach_fails_if_waypoint_is_still_active_after_absolute_settle_deadline():
+    host, vehicle, _protocol = host_for([
+        {"tool": "goto_waypoint", "args": {
+            "latitude_deg": 37.4003371,
+            "longitude_deg": -122.079639322083,
+            "altitude_m": 5,
+        }},
+        {"tool": "precision_land", "args": {
+            "marker_id": 7,
+            "settle_by_sim_s": 45,
+            "acquire_by_sim_s": 60,
+        }, "timeout_sim_s": 45},
+    ])
+    host.observe(Telemetry(
+        0, heartbeat=True, mode="GUIDED", armed=True, landed=False,
+        prearm_checks_healthy=True,
+    ))
+    for name, value in MOVING_PRECISION_PARAMETERS.items():
+        host.observe(Telemetry(0, parameter_name=name, parameter_value=value))
+    host.tick(0, mission_running=True)
+    assert vehicle.commands == [
+        ("waypoint", 37.4003371, -122.079639322083, 5, 0.0),
+    ]
+
+    late = 45_000_000_001
+    host.observe(Telemetry(
+        late, heartbeat=True, mode="GUIDED", armed=True, landed=False,
+        latitude_deg=37.4003371, longitude_deg=-122.0800351,
+        relative_altitude_m=5.0,
+    ))
+    host.tick(late, mission_running=True)
+
+    assert host.error == "moving-pad approach did not reach precision settlement by 45 simulated seconds"

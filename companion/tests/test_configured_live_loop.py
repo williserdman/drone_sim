@@ -65,6 +65,9 @@ class FakeMav:
     def request_data_stream_send(self, *arguments):
         pass
 
+    def param_request_read_send(self, *arguments):
+        pass
+
 
 class FakeConnection:
     def __init__(self):
@@ -117,6 +120,7 @@ class FakeRos:
         self.node = None
         self.loop = 0
         self.initialized = False
+        self.publisher_qos = {}
 
     def init(self):
         self.initialized = True
@@ -157,6 +161,7 @@ def install_ros(monkeypatch, fake_ros):
             return callback
 
         def create_publisher(self, _message_type, _topic, _qos):
+            fake_ros.publisher_qos[_topic] = _qos.settings
             return SimpleNamespace(publish=lambda _message: None)
 
         def destroy_node(self):
@@ -293,3 +298,4 @@ def test_moving_camera_starts_before_flight_and_closes_during_teardown(monkeypat
         mavutil.mavlink.MAV_CMD_NAV_LAND,
     }
     assert not flight_commands.intersection(connection.mav.command_ids)
+    assert fake_ros.publisher_qos["/simulation/mission_events"]["durability"] == 1

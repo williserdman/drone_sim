@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import json
 from pathlib import Path
 import signal
 import sys
@@ -12,7 +11,7 @@ from typing import Any
 from artifacts.runtime_protocol import RuntimeProtocol
 from artifacts.runtime_status import ArduPilotReadyStatus, RuntimeFailureStatus
 
-from .config import RuntimeConfig, resolve_gazebo_address
+from .config import RuntimeConfig, parameter_overlay_from_environment, resolve_gazebo_address
 from .runtime import (
     DiagnosticInventory,
     EventWriter,
@@ -20,30 +19,6 @@ from .runtime import (
     SITLProcess,
     atomic_document,
 )
-
-
-MOVING_PAD_PARAMETERS = Path("/opt/drone_sim/ardupilot/params/moving-pad.parm")
-
-
-def _parameter_overlay_from_environment(
-    environment: dict[str, str] | os._Environ[str],
-    *,
-    run_id: str,
-    run_directory: Path,
-) -> Path | None:
-    raw_path = environment.get("SIM_CONFIG_PATH")
-    if raw_path is None:
-        return None
-    path = Path(raw_path)
-    if path != run_directory / "configuration/run.json":
-        raise ValueError("SIM_CONFIG_PATH must be the run's frozen configuration")
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError("SIM_CONFIG_PATH must contain readable JSON") from error
-    if not isinstance(document, dict) or document.get("run_id") != run_id:
-        raise ValueError("frozen configuration run_id does not match SIM_RUN_ID")
-    return MOVING_PAD_PARAMETERS if document.get("scenario") == "moving_pad_v1" else None
 
 
 def _diagnostic_paths(run_directory: Path, working_directory: Path) -> list[str]:
@@ -165,7 +140,7 @@ def main() -> int:
         run_id=run_id,
         run_directory=run_directory,
         gazebo_host=resolve_gazebo_address(gazebo_service),
-        parameter_overlay_file=_parameter_overlay_from_environment(
+        parameter_overlay_file=parameter_overlay_from_environment(
             os.environ,
             run_id=run_id,
             run_directory=run_directory,

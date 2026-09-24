@@ -75,6 +75,9 @@ command. Marker detection is not an execution-readiness condition, which avoids
 a paused-physics startup deadlock. The moving plan holds north yaw during the
 eastbound waypoint so the route follows the camera image's long axis. Observed
 arm and disarm transitions publish mission events in phase `MOVING_PAD`.
+The companion's expected profile is a live command gate, while the two SITL
+parameter files remain the launch inputs. A focused test merges those inputs and
+requires the gated values to match, preventing silent drift between them.
 
 ## Entry points and implementation seams
 

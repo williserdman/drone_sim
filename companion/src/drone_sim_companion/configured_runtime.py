@@ -49,6 +49,22 @@ class ConfiguredHost:
         publish_mission_event=None,
     ) -> None:
         self._moving_required = any(step.tool == "precision_land" for step in plan.steps)
+        precision_step = next(
+            (
+                (index, step)
+                for index, step in enumerate(plan.steps)
+                if step.tool == "precision_land"
+            ),
+            None,
+        )
+        self._precision_step_index = (
+            precision_step[0] if precision_step is not None else None
+        )
+        self._settle_by_ns = (
+            int(float(precision_step[1].args["settle_by_sim_s"]) * 1e9)
+            if precision_step is not None
+            else None
+        )
         self.operations = DroneOperations(
             vehicle,
             lifecycle.emit,
@@ -74,7 +90,10 @@ class ConfiguredHost:
         return self._recovery_id is not None and self.operations.operation_status(self._recovery_id).state == "running"
 
     def observe(self, telemetry) -> None:
-        if telemetry.parameter_name in MOVING_PRECISION_PARAMETERS:
+        if (
+            self._moving_required
+            and telemetry.parameter_name in MOVING_PRECISION_PARAMETERS
+        ):
             expected = MOVING_PRECISION_PARAMETERS[telemetry.parameter_name]
             value = telemetry.parameter_value
             if value is None or not math.isclose(value, expected, rel_tol=0.0, abs_tol=1e-6):
@@ -119,6 +138,18 @@ class ConfiguredHost:
                 self.operations.observe_precision(observation)
         self.operations.tick(timestamp_ns)
         if self.error is not None:
+            return
+        if (
+            mission_running
+            and self._precision_step_index is not None
+            and self._settle_by_ns is not None
+            and self.mission.step_index < self._precision_step_index
+            and timestamp_ns > self._settle_by_ns
+        ):
+            self.fail(
+                "moving-pad approach did not reach precision settlement by "
+                f"{self._settle_by_ns / 1e9:g} simulated seconds"
+            )
             return
         if not self.started:
             if (
@@ -302,7 +333,11 @@ def run_configured(config) -> int:
             mission_event_publisher = node.create_publisher(
                 MissionEvent,
                 "/simulation/mission_events",
-                QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE),
+                QoSProfile(
+                    depth=1000,
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                ),
             )
             publish_event = publish_mission_event
             frame_source = RosFrameSource(width_px=640, height_px=480)
