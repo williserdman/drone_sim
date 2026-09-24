@@ -3,18 +3,23 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-21. This branch adds the fixed-sequence configured runner with
-seven basic tools and two diagnostic templates. The existing competition path
-is unchanged from `main`. Competition conversion, search-and-deliver, camera,
-and QGC work remain on `archive/configured-missions-full-20260921` for separate
-follow-ups.
+Audited 2026-09-24. Branch `design/moving-pad-landing` adds the moving-pad
+world, configured precision-landing operation, concurrent camera observation,
+SITL overlay, physical scoring, and independent artifact checks. The core-runner
+PR and imported `companion/comp2026` source remain unchanged.
 
-Source verification passed 904 tests across companion, orchestration, shared
-runtime statuses/protocol, Gazebo runtime, and contracts. All seven run templates
-validate, and Phase 3 Compose configuration resolves. No images were rebuilt or
-flights run for this reduced branch; physical outcome, score, and artifact
-validity have not been verified on this source. Rebuild before launching the
-[configured example](runbook.md#local-developer-workflow).
+The implementation is committed, but flight acceptance is not complete. The
+stationary control takes off, reaches its waypoint, acquires marker 7, and enters
+LAND. It then oscillates until the marker leaves the camera view. Tracking loss
+fails the mission and requests GUIDED hold. No stationary landing or moving-pad
+landing has passed; this is not a demo-ready mission.
+
+Current source checks passed 2,071 tests, with 27 ROS/environment cases skipped.
+The unchanged imported Comp2026 suite passed 1,126 tests. All seven runtime images
+were built from clean `c523af3adce8230624cf8c7953920ca51c3f0891`; native Gazebo
+integration checks passed 4/4. Focused new-module type checks passed; the full
+repository still has pre-existing annotation errors. Source checks do not prove
+physical landing or artifact acceptance.
 
 Historical audit, 2026-09-11: fast precision-landing recovery was implemented and
 verified on the isolated `fix/precision-landing-reacquire` parent and nested
@@ -28,6 +33,53 @@ and acceptance commands. The tracked `companion/comp2026` source is included in
 a fresh clone. Verify monorepo HEAD before a Phase 3 build; a mission log or
 score alone is not a pass.
 
+## Moving-pad verification
+
+Five stationary attempts were preserved. The first three exposed startup RPC,
+contact-watermark, and shutdown defects, now covered by focused regressions.
+The fourth exposed acquisition initialization between camera frames; `c523af3`
+fixes that and increases the relative precision timeout to the full public run
+budget without changing the absolute settle/acquisition deadlines.
+
+| Run | Physical outcome | Score | Artifacts / acceptance | Runtime source |
+| --- | --- | --- | --- | --- |
+| `0f608531-736f-495e-a6b9-b55afb0452f9` | Takeoff at 7.05 s; waypoint at 14.45 s; no LAND; aborted at 54 s | 0/100, incomplete | `ABORTED`; rosbag incomplete at abort boundary; not accepted | `1b4efbf42ef55f75af8c887de77af1870995eb7b` |
+| `24a1f1c5-7846-40d4-9c4d-ddcd6da15506` | Takeoff at 7.05 s; waypoint at 14.55 s; LAND at 17.35 s; tracking lost at 20.40 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; rosbag incomplete at failure boundary; not accepted | `c523af3adce8230624cf8c7953920ca51c3f0891` |
+
+Each bundle lives at `runs/RUN_ID/` in the moving-pad worktree. Videos are
+`video/onboard.mp4` and `video/observer.mp4`; manifests contain both clean source
+revisions, all seven image digests, frozen configuration, and artifact hashes.
+Manifest SHA-256 values, in table order:
+
+- `2e0d4998b47ad454e6b5329f84e9e29d0900f474ccb02cd768f1f6e5f6b756b7`
+- `ccfd1ae4b74a5c2709454ea2bc5e3b609918016db735be0e9d6d8e36633aeb93`
+
+The latest onboard recording contains 408 frames at 640x480/20 Hz. Recorded
+camera/range timestamps match at every 50 ms tick. Production camera replay
+finds marker 7 through 19.85 s; it clips the image edge at 19.90 s and remains
+undetected through failure. Ground-truth projection agrees within 0.91 pixels;
+body-right vector error averages 8.9 mm, with 31 mm maximum. Roll reaches
+about -17.7 degrees. This establishes real field-of-view loss, not a timestamp
+or mounting-sign defect. The 0.55-second loss correctly crosses the 0.50-second
+tracking threshold.
+
+The doubtful assumption is that re-enabling the Kalman precision estimator
+provides stable descent with this airframe's existing gains. The base
+`descent.parm` explicitly uses the raw estimator to avoid earlier Kalman
+oscillation; the moving overlay reintroduces the Kalman estimator. Recorded
+Kalman lateral position lags and briefly opposes the raw target offset. This
+supports an estimator/control interaction, but does not establish a validated fix.
+The raw estimator is a candidate comparison; it supplies zero target-velocity
+feedforward even when moving-target support is enabled.
+Further full-flight retries stopped after repeated fixes. The 0.5 m/s moving
+mission has not been launched, pending a successful stationary control.
+
+Machine-local diagnostics and prelaunch expectations are under
+`.superpowers/sdd/moving-pad/`, including `stationary-5-diagnostics/REPORT.md`
+and `provenance.json`. Preserve them with the run bundles. The superseded
+implementation checklist remains in Git at `63f9674`; the architecture now
+contains the implemented contract and this handoff owns remaining validation.
+
 ## Verified behavior and limits
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
@@ -39,7 +91,7 @@ score alone is not a pass.
 Run directories and absolute paths in verification notes are ignored, machine-local
 evidence. Transfer a needed bundle with its manifest, checksums, configuration, and provenance intact.
 
-## Current source verification
+## Historical source verification
 
 Focused verification for the precision-landing branch passed 171 host companion
 and ArduPilot tests and 81 nested mission tests. The profile now preserves
@@ -102,20 +154,28 @@ scoped review fixes; no Critical, Important, or Minor findings remain.
 
 ## Image and runtime boundary
 
-No image was rebuilt or retagged. Existing tags predate these changes and are
-stale and unrun for this revision. That cleanup worktree had no
-`companion/comp2026`; no symlink was created and no Phase 3 build was claimed.
+Current Phase 3 tags point to the clean `c523af3` build used by the latest
+stationary attempt. Prelaunch expectations were captured before that run.
+Subsequent documentation commits do not change those recorded source identities.
+Earlier images remain under preservation tags; never retag them as new evidence.
+Rebuild after runtime edits and capture new expectations before the next flight.
 
-Campaign outcomes are separate: physical mission `not run`; score `not produced`;
-artifact validity `not evaluated`; images `not rebuilt`. Source tests do not change them.
+Physical landing: not achieved. Score: 0/100, incomplete. Artifact acceptance:
+not passed. Images: rebuilt. No current competition flight was run in this task;
+the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Diagnose the historical range-stream sample loss, then obtain a fresh pinned,
-   full-window competition baseline. Check physical behavior, score, and artifact
-   validity separately while keeping the timestamp and physical checks strict.
+1. Compare `PLND_EST_TYPE=0` against the current value of 1 in a bounded
+   stationary diagnostic, keeping `PLND_OPTIONS=5` and all other settings fixed.
+   Keep the live parameter guard aligned with the diagnostic profile; verify
+   continuous target visibility and absence of growing lateral/roll oscillation.
+2. Obtain an independently accepted stationary control, then the 0.5 m/s moving
+   mission. Require physical landing, 100/100, complete recordings, and provenance.
+3. Separately diagnose historical competition range-stream loss before claiming
+   a fresh full-window competition baseline.
 
-Lower-priority work remains deferred: improve zero-budget Compose timeout
+Lower-priority work remains deferred: structured precision-phase diagnostics; improve zero-budget Compose timeout
 diagnostics; freeze final flight-exchange counters; investigate rare process and
 session races; expand malformed-input, network, and multi-vehicle stress tests;
 make rendering hosts reproducible; and add later-command simulation-time

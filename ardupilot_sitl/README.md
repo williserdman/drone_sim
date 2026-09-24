@@ -81,7 +81,8 @@ that SITL exited, and it always attempts to close the protocol.
   comma-separated `--defaults` argument. The later file changes only
   `PLND_OPTIONS` from 4 to 5 and `PLND_EST_TYPE` from 0 to 1. Other scenarios
   keep the base profile. The companion reads back every effective precision
-  value before it can send a flight command.
+  value before it can send a flight command. This profile is not flight-validated;
+  see the [moving-pad evidence](../docs/handoff.md#moving-pad-verification) before tuning it.
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is

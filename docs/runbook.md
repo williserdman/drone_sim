@@ -302,6 +302,9 @@ competition acceptance check.
 
 ### Moving-pad landing
 
+This mission is experimental. Read the [current flight evidence](handoff.md#moving-pad-verification)
+before using it for a demo; neither control nor moving acceptance has passed.
+
 Build from a committed checkout using [the image-build command](#build-runtime-images).
 The configured mission takes off to 5 m, flies 35 m east, then watches marker 7
 and precision-lands. The 3 m deck moves east at 0.5 m/s from public time zero,

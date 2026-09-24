@@ -60,7 +60,8 @@ defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow
 covers rebuilding changed code, running one template, and running the automatic set.
 
 [configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds a
-camera-guided landing on a deck traveling at 0.5 m/s. Use the
+experimental camera-guided landing on a deck traveling at 0.5 m/s. The
+stationary landing control has not passed. Use the
 [moving-pad workflow](docs/runbook.md#moving-pad-landing) for the stationary
 control, moving flight, and independent acceptance. Current verification is
 recorded in [handoff](docs/handoff.md).
