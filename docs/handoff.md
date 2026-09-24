@@ -59,9 +59,16 @@ camera/range timestamps match at every 50 ms tick. Production camera replay
 finds marker 7 through 19.85 s; it clips the image edge at 19.90 s and remains
 undetected through failure. Ground-truth projection agrees within 0.91 pixels;
 body-right vector error averages 8.9 mm, with 31 mm maximum. Roll reaches
-about -17.7 degrees. This establishes real field-of-view loss, not a timestamp
-or mounting-sign defect. The 0.55-second loss correctly crosses the 0.50-second
+about -17.7 degrees. This establishes real field-of-view loss, not a
+camera/range timestamp or mounting-sign defect. The 0.55-second loss correctly crosses the 0.50-second
 tracking threshold.
+
+A separate outbound timestamp defect remains: `MavlinkAdapter.send_landing_target`
+sends `LANDING_TARGET.time_usec=0`. Pinned ArduPilot jitter correction then clamps
+measurement time to its maximum lag after an initial constant-timestamp period.
+This needs a deterministic timestamp test and fix. It does not establish that
+vectors arrived late or caused the later oscillation; camera/range timestamps
+and the final rendered tracking-loss sequence above remain valid evidence.
 
 The doubtful assumption is that re-enabling the Kalman precision estimator
 provides stable descent with this airframe's existing gains. The base
@@ -166,13 +173,15 @@ the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Compare `PLND_EST_TYPE=0` against the current value of 1 in a bounded
+1. Fix and test outbound landing-target timestamps against the pinned ArduPilot
+   time-correction behavior. Do not weaken observation freshness checks.
+2. Compare `PLND_EST_TYPE=0` against the current value of 1 in a bounded
    stationary diagnostic, keeping `PLND_OPTIONS=5` and all other settings fixed.
    Keep the live parameter guard aligned with the diagnostic profile; verify
    continuous target visibility and absence of growing lateral/roll oscillation.
-2. Obtain an independently accepted stationary control, then the 0.5 m/s moving
+3. Obtain an independently accepted stationary control, then the 0.5 m/s moving
    mission. Require physical landing, 100/100, complete recordings, and provenance.
-3. Separately diagnose historical competition range-stream loss before claiming
+4. Separately diagnose historical competition range-stream loss before claiming
    a fresh full-window competition baseline.
 
 Lower-priority work remains deferred: structured precision-phase diagnostics; improve zero-budget Compose timeout
