@@ -88,6 +88,8 @@ class LandingPadTracker:
             if any(epoch > contact_stamp for epoch in self._contact_epochs):
                 raise AdapterFault("landing-pad contact sample is missing")
             return None
+        if self._last_contact_stamp is None or self._last_contact_stamp < contact_stamp:
+            return None
         vehicle_in_contact = self._contact_epochs[contact_stamp]
         expected = (self._accepted_samples + 1) * TRUTH_PERIOD_NS
         if contact_stamp != expected:

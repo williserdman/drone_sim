@@ -76,7 +76,8 @@ def test_pad_truth_aggregates_physics_rate_contact_identity_for_each_public_tick
 
     for stamp in range(1_000_000, STAMP, 1_000_000):
         assert tracker.accept_contact(stamp, stamp == 25_000_000) is None
-    state = tracker.accept_odometry(_odometry())
+    assert tracker.accept_odometry(_odometry()) is None
+    state = tracker.accept_contact(STAMP, False)
 
     assert state.sim_timestamp_ns == STAMP
     assert state.vehicle_in_contact is True

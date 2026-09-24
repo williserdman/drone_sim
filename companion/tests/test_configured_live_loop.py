@@ -9,6 +9,7 @@ import sys
 from pymavlink import mavutil
 
 from artifacts.runtime_status import RuntimeStatus, status_document, status_name
+import drone_sim_companion.configured_runtime as configured_runtime
 import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.configured_runtime import run_configured
 from drone_sim_companion.mission_plan import parse_mission_plan
@@ -145,6 +146,25 @@ class FakeRos:
         self.initialized = False
 
 
+class FinalizingRos(FakeRos):
+    def __init__(self, run_state, *, finalize_on_loop):
+        super().__init__(run_state)
+        self.finalize_on_loop = finalize_on_loop
+
+    def spin_once(self, node, *, timeout_sec):
+        assert timeout_sec == 0.02
+        if self.loop == 0:
+            node.callbacks["/simulation/run_state"](SimpleNamespace(
+                run_id=RUN_ID, state=self.run_state.RUNNING))
+        if self.loop == self.finalize_on_loop:
+            node.callbacks["/simulation/run_state"](SimpleNamespace(
+                run_id=RUN_ID, state=self.run_state.FINALIZING))
+        stamp = min(self.loop, 1) * 100_000_000
+        node.callbacks["/clock"](SimpleNamespace(
+            clock=SimpleNamespace(sec=0, nanosec=stamp)))
+        self.loop += 1
+
+
 def install_ros(monkeypatch, fake_ros):
     class RunState:
         RUNNING = 2
@@ -240,6 +260,85 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
     assert fake_ros.node.destroyed and fake_ros.node.callbacks == {}
     assert fake_ros.initialized is False and not connection.messages
     assert {item: signal.getsignal(item) for item in previous_handlers} == previous_handlers
+
+
+def test_global_finalization_does_not_start_recovery_land(monkeypatch):
+    protocol = Protocol()
+    connection = FakeConnection()
+    connection.messages = deque([
+        heartbeat(4, armed=True),
+        mavutil.mavlink.MAVLink_extended_sys_state_message(
+            0, mavutil.mavlink.MAV_LANDED_STATE_IN_AIR),
+    ])
+    fake_ros = FinalizingRos(None, finalize_on_loop=0)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission_plan=parse_mission_plan({
+            "schema_version": 1,
+            "steps": [{"tool": "hold", "args": {"duration_sim_s": 1}}],
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+    )
+
+    assert run_configured(config) == 1
+    assert mavutil.mavlink.MAV_CMD_NAV_LAND not in connection.mav.command_ids
+    assert fake_ros.loop == 1
+    assert protocol.statuses["runtime-failure"]["reason"] == (
+        "configured mission interrupted before completion"
+    )
+
+
+def test_global_finalization_cancels_pending_recovery_without_waiting(monkeypatch):
+    protocol = Protocol()
+    connection = FakeConnection()
+    prearm = mavutil.mavlink.MAV_SYS_STATUS_PREARM_CHECK
+    connection.messages = deque([
+        heartbeat(4, armed=True),
+        mavutil.mavlink.MAVLink_sys_status_message(
+            0, prearm, prearm, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        mavutil.mavlink.MAVLink_extended_sys_state_message(
+            0, mavutil.mavlink.MAV_LANDED_STATE_IN_AIR),
+    ])
+
+    def command_long_send(*arguments):
+        command = arguments[2]
+        connection.mav.command_ids.append(command)
+        if command == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            connection.messages.append(mavutil.mavlink.MAVLink_command_ack_message(
+                command, mavutil.mavlink.MAV_RESULT_DENIED,
+            ))
+
+    connection.mav.command_long_send = command_long_send
+    fake_ros = FinalizingRos(None, finalize_on_loop=2)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    monotonic_values = iter(range(1_000))
+    monkeypatch.setattr(configured_runtime.time, "monotonic", lambda: next(monotonic_values))
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission_plan=parse_mission_plan({
+            "schema_version": 1,
+            "steps": [{"tool": "takeoff", "args": {"altitude_m": 2}}],
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=500.0,
+        finalization_wall_seconds=120.0,
+    )
+
+    assert run_configured(config) == 1
+    assert connection.mav.command_ids.count(mavutil.mavlink.MAV_CMD_NAV_LAND) == 1
+    assert fake_ros.loop == 3
+    assert protocol.statuses["runtime-failure"]["reason"] == (
+        "command rejected: TAKEOFF, result 2"
+    )
 
 
 def test_moving_camera_starts_before_flight_and_closes_during_teardown(monkeypatch):

@@ -52,7 +52,9 @@ This releases physics during operator waiting without issuing a flight command.
 The whole sequence must finish landed/disarmed to publish mission success.
 Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
-the failed result. Another observed mode prevents that recovery command.
+the failed result. Another observed mode prevents that recovery command. Global
+finalization cancels a pending recovery and never starts a new one, allowing
+teardown to finish when simulation time and the vehicle transport have stopped.
 
 These templates exercise the parent operation runner, not Comp2026's mission
 classes. Existing competition missions retain their own execution path.

@@ -183,6 +183,12 @@ class ConfiguredHost:
         if attempt_recovery:
             self._recovery_id = self.operations.recover_land()
 
+    def stop_for_finalization(self, reason: str) -> None:
+        if self.error is None:
+            self.fail(reason, attempt_recovery=False)
+        if self.recovery_pending:
+            self.operations.abort("recovery cancelled by global finalization")
+
     def finalize(self) -> None:
         if self.recovery_pending:
             self.operations.abort("recovery confirmation unavailable at shutdown")
@@ -412,10 +418,11 @@ def run_configured(config) -> int:
                 break
             stopping = requested_stop or finalizing or protocol.read_finalize_request() is not None
             if stopping:
-                if host.mission.state != "succeeded":
-                    host.fail("configured mission interrupted before completion")
-                elif host.error is None:
-                    break
+                if host.mission.state != "succeeded" or host.error is not None:
+                    host.stop_for_finalization(
+                        "configured mission interrupted before completion"
+                    )
+                break
             if host.error is None and not stopping:
                 host.tick(latest_clock_ns, mission_running=mission_running)
             elif latest_clock_ns is not None:
