@@ -150,7 +150,8 @@ class MovingPrecisionLanding:
                 target = observation.target_body_frd
                 self._forwarded_sequence = observation.camera_sequence
             if (
-                self._last_valid_ns is None
+                self._tracking_since_ns is None
+                or self._last_valid_ns is None
                 or observation.camera_timestamp_ns - self._last_valid_ns > MAX_EVIDENCE_AGE_NS
             ):
                 self._tracking_since_ns = observation.camera_timestamp_ns

@@ -16,7 +16,7 @@
       {
         "tool": "precision_land",
         "args": {"marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60},
-        "timeout_sim_s": 45
+        "timeout_sim_s": 90
       }
     ]
   },

@@ -319,7 +319,9 @@ uv run --locked drone-sim start --config config/configured-moving-pad-run.json
 
 Run each command separately and inspect its result before continuing. Each
 includes 90 s of warmup and 90 s of public simulation at target RTF 0.1:
-approximately 30 wall minutes plus startup/finalization. The stationary fixture
+30 wall minutes at that rate, plus startup/finalization. On the validation host,
+90 s of warmup took about 18 wall minutes; allow about 36 minutes for the full run.
+The stationary fixture
 uses the same deck, camera, landing controller, and scoring, with its pad held at
 the approach point. It is a control experiment, not part of the automatic batch.
 

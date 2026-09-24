@@ -233,6 +233,8 @@ requesting LAND. Accepted camera offsets can initialize ArduPilot's target
 estimator during GUIDED without changing the waypoint command. Observations
 older than 0.25 simulated seconds cannot authorize descent. Acquisition must
 finish by public time 60 seconds; a missed pass or camera timeout fails the run.
+The precision operation has a 90-second relative timeout so it cannot preempt
+those absolute deadlines or descent; the public run window still ends at 90 seconds.
 
 ### Landing and module boundaries
 
@@ -439,7 +441,7 @@ for camera, range, and attitude so stale inputs remain detectable.
   existing bounded recovery. The tool arguments are:
 
   ```json
-  {"tool":"precision_land","args":{"marker_id":7,"settle_by_sim_s":45,"acquire_by_sim_s":60},"timeout_sim_s":45}
+  {"tool":"precision_land","args":{"marker_id":7,"settle_by_sim_s":45,"acquire_by_sim_s":60},"timeout_sim_s":90}
   ```
 
   Validate integer marker ID, finite positive deadlines, and settlement before

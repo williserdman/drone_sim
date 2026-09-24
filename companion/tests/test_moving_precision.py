@@ -62,6 +62,26 @@ def test_two_seconds_of_fresh_unique_tracking_requests_land_once() -> None:
     assert requested == ["LAND"]
 
 
+def test_tracking_starts_with_first_fresh_frame_after_repeated_sequence_settlement() -> None:
+    policy = MovingPrecisionLanding()
+    policy.start(7, 45_000_000_000, 60_000_000_000)
+    policy.tick(0, vehicle())
+    policy.observe(observation(450_000_000, sequence=1))
+    policy.tick(450_000_000, vehicle())
+
+    assert policy.tick(500_000_000, vehicle()).requested_mode is None
+
+    sequence = 1
+    for stamp in range(550_000_000, 2_550_000_000, 50_000_000):
+        sequence += 1
+        policy.observe(observation(stamp, sequence=sequence))
+        assert policy.tick(stamp, vehicle()).requested_mode is None
+
+    sequence += 1
+    policy.observe(observation(2_550_000_000, sequence=sequence))
+    assert policy.tick(2_550_000_000, vehicle()).requested_mode == "LAND"
+
+
 def test_stale_wrong_marker_and_duplicate_frames_cannot_authorize_land() -> None:
     policy = MovingPrecisionLanding()
     policy.start(7, 45_000_000_000, 60_000_000_000)
