@@ -70,7 +70,9 @@ The runtime publishes it through the
   armed before the exact target; late activation or a skipped target faults
   closed. Public zero precedes buffered output, and the server is not reset.
   Configured missions release the paused epoch on `mission-execution-ready`;
-  other missions retain `mission-command-delivered`.
+  other missions retain `mission-command-delivered`. A timed-out world-control
+  reply is accepted only when world statistics prove the requested effect;
+  otherwise the runtime retries once and faults closed.
 - Camera and aligned physical-truth samples advance at the configured 20 Hz.
   Invalid, duplicate, regressing, misaligned, or excess samples latch the first
   adapter fault; later input cannot repair it.
