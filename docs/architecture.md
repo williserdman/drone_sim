@@ -192,7 +192,7 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 
 ## Proposed moving-pad mission
 
-Design draft, 2026-09-23; not implemented. This section is the reviewable spec
+Design approved 2026-09-24; not implemented. This section is the spec
 for one regression mission: takeoff, transit, and camera-guided landing on a
 platform moving straight at 0.5 m/s from public simulation time zero through
 touchdown. The platform continues moving after disarm. ArUco 7 identifies the
@@ -279,3 +279,277 @@ truth, the SITL profile, configuration, and scoring/recording. Update their
 guides and the runbook with executable entry points when those exist. Turns,
 search sweeps, replanning the intercept during transit, payload handling, and
 agent transport are deferred. This design is separate from the core-runner PR.
+
+### Moving-pad landing implementation plan
+
+> For implementation: use `superpowers:executing-plans` for inline execution,
+> or `superpowers:subagent-driven-development` if requested. Follow the project
+> preference for focused checks and no unsolicited review cycles.
+
+**Goal:** produce an accepted, recorded moving-platform landing with continuous
+camera observation during transit.
+
+**Architecture:** retain fixed-sequence execution and one flight owner. Gazebo
+drives a physical deck and publishes evaluation truth; the companion feeds
+camera observations to ArduPilot. Extend the existing scoring and artifact
+paths with one explicit scenario, without a general scenario framework.
+
+**Tech stack:** existing Python 3.12, ROS 2 Jazzy, Gazebo Sim 8/C++17, OpenCV,
+and the pinned ArduPilot build. **Spec:** the preceding
+[moving-pad design](#proposed-moving-pad-mission).
+
+#### Global constraints and verification focus
+
+The approved geometry, deadlines, freshness limits, and ownership above apply
+to every task. Work in `design/moving-pad-landing`; preserve the core-runner PR,
+the imported Comp2026 source, existing profiles, and all run evidence. No new
+host dependencies, firmware version, CI service, or general mission language.
+Keep the implementation plan here during execution, then replace it with the
+implemented contract; Git retains the completed plan.
+
+The five required checks are physical carriage, acquisition without blocking
+transit, stale/lost target behavior, truthful pad-relative scoring, and a fresh
+recorded run. These belong to tasks 1 through 5 respectively. Test failures
+must be diagnosed rather than accommodated by loosening acceptance.
+
+#### Task 1: Physical deck and camera scene
+
+**Create:** `gazebo/plugin/MovingPadController.cc`,
+`gazebo/plugin/test/MovingPadControllerIntegrationTest.cc`, models under
+`gazebo/resources/models/moving_pad/` and `iris_moving_pad/`, worlds
+`gazebo/resources/worlds/moving_pad_landing.sdf` and `moving_pad_stationary.sdf`,
+and `gazebo/tests/test_moving_pad_resources.py`.
+**Modify:** `gazebo/plugin/CMakeLists.txt`, `gazebo/Dockerfile`,
+`gazebo/src/drone_sim_gazebo/worlds/api.py`, and `gazebo/README.md`.
+**Interface:** the model plugin reads `joint_name`, `motion_start_sim_time_s`,
+and `velocity_mps`; native deck odometry and contact sensors feed task 2 on
+`/gazebo/private/moving_pad/odometry` and `/gazebo/private/moving_pad/contact`.
+The stationary world is a verification fixture, sharing both models; its deck
+starts at the approach point with velocity zero. The operator-facing mission
+uses the moving world.
+
+- [ ] Add a real-server CTest, following the existing detachable-joint test,
+  with a shortened warmup, a deck, and a passive rider. Initially it must fail
+  because the controller is absent. Check no warmup movement, 0.5 m/s after
+  release, approximately 1 m displacement over two public seconds, and rider
+  support/carriage. Also run the same fixture at zero speed.
+- [ ] Implement a dynamic deck on a world-fixed prismatic joint along +X. In
+  `Configure`, resolve `Model(entity).JointByName(ecm, joint_name)` and reject
+  a missing joint. In `PreUpdate`, skip paused updates and apply:
+
+  ```cpp
+  const double native_s =
+      std::chrono::duration<double>(info.simTime).count();
+  gz::sim::Joint(joint_entity).SetVelocity(
+      ecm, {native_s >= motion_start_sim_time_s ? velocity_mps : 0.0});
+  ```
+
+  Use [Joint::SetVelocity](https://gazebosim.org/api/sim/8/classgz_1_1sim_1_1Joint.html)
+  without a competing force controller. Do not reset poses or attach the drone
+  artificially. A contact test establishes friction and scoped collision names.
+- [ ] Add the camera/range elements from the existing competition sensor model
+  to the derived Iris model, without payload hardware. Generate marker 7 with
+  the existing ArUco dictionary. Place the observer to cover the entire route;
+  keep both recordings 640x480/20 Hz. Use the fixed 90-second native warmup.
+- [ ] Build the Gazebo image and run the new named CTest through the existing
+  Docker build, then run `uv run --locked pytest gazebo/tests/test_moving_pad_resources.py -q`.
+  Expected: real contact/carriage and model/resource checks pass. Stop here if
+  the deck cannot carry the rider; do not substitute visual movement.
+- [ ] Update the Gazebo guide with the scene/controller contract and commit
+  only task files: `git commit -m "Add physical moving-pad scene"`.
+
+#### Task 2: Pad truth and scenario selection
+
+**Create:** `ros_ws/src/simulation_interfaces/msg/LandingPadState.msg`,
+`gazebo/config/bridge-moving-pad.yaml`, and
+`gazebo/src/drone_sim_gazebo/ros_adapter/landing_pad.py`.
+**Modify:** the interface CMake list; Gazebo `ros_adapter/{topics,node,aggregation}.py`
+and `runtime/{entrypoint,children,runtime_node}.py`, plus `server/process.py`;
+orchestration `config.py` and its tests; template
+and resolved JSON schemas; affected Gazebo/orchestration guides.
+**Interface:** `/simulation/landing_pad_state` uses this new message; it is
+recorded/scored only. The public camera and `/competition/range/downward` retain
+their existing types. Both verification worlds select `scenario: moving_pad_v1`.
+
+```text
+string run_id
+builtin_interfaces/Time sim_timestamp
+uint32 marker_id
+geometry_msgs/Pose pose
+geometry_msgs/Twist twist
+bool vehicle_in_contact
+```
+
+- [ ] Add failing adapter tests for warmup exclusion, matching 20 Hz timestamps,
+  and deck/leg contact identity. Feed a deck-floor or vehicle-floor contact and
+  require `vehicle_in_contact == false`; an Iris-leg/deck pair must be true.
+- [ ] Translate native deck odometry and contacts through the existing epoch
+  and bounded aggregation path. Publish false contact samples while airborne;
+  absent data is not false contact. Reject missing/regressing same-run evidence
+  through the existing adapter fault path. Record actual deck pose and velocity,
+  not values calculated from the nominal route.
+- [ ] Register both worlds and their bridge/topic inventories, including recorder
+  discovery. Add an opt-in valid tuple: configured mission, moving-pad world,
+  Iris moving-pad vehicle, moving-pad rules, 640x480, and 90-second warmup.
+  Reject other combinations before launch. Existing selector behavior stays
+  unchanged; no new arbitrary world or parameter override field is needed.
+- [ ] Run `uv run --locked pytest gazebo/tests/test_adapter_node.py gazebo/tests/test_private_aggregation.py gazebo/tests/test_world_resources.py orchestration/tests/test_config.py tests/contracts -q`.
+  Expected: new truth/selection cases and existing contracts pass. Add message
+  field assertions to `tests/contracts/test_moving_pad_interfaces.py`.
+- [ ] Document the truth producer/consumers and commit task files with
+  `git commit -m "Publish moving-pad truth on the public simulation clock"`.
+
+#### Task 3: Observe during transit and precision-land
+
+**Create:** `companion/src/drone_sim_companion/moving_precision.py`,
+`moving_vision.py`, verified `moving_pad_camera_{calibration,mounting}.json`,
+`companion/tests/test_moving_precision.py`, and `test_moving_vision.py`.
+**Modify:** companion `operations.py`, `mission_plan.py`, `mission.py`,
+`mavlink_adapter.py`, `configured_runtime.py`, their focused tests, and packaging
+allowlist only if the camera import closure requires it. Add
+`ardupilot_sitl/params/moving-pad.parm`, update SITL `config.py`/`runtime_node.py`
+and their tests, and update both module guides.
+
+**Interfaces:** `MovingVision.start()`, `latest()`, and `close(timeout_s)` wrap
+the existing camera/frame worker. `latest()` returns an immutable observation
+or `None`, carrying source timestamp/sequence, marker ID, body-FRD vector, and
+coherent range/attitude evidence. The worker never sends vehicle commands.
+`MovingPrecisionLanding.start(marker_id, settle_by_ns, acquire_by_ns)`,
+`observe(observation)`, `tick(timestamp_ns, vehicle_state)`, and `abort(reason)`
+run only on the flight-owner thread. `tick` returns state/error plus optional
+target measurement and requested mode; the owner applies those effects once.
+Inject it into `DroneOperations`; existing `OperationStatus` remains the result.
+Use an immutable `PrecisionStatus` with `state`, `error`, `target_body_frd`, and
+`requested_mode` fields. States are `running`, `succeeded`, or `failed`; optional
+effects are `None` when absent. An observation carries separate source times
+for camera, range, and attitude so stale inputs remain detectable.
+
+- [ ] Add failing fake-vehicle/clock tests: moving observations accepted during
+  waypoint transit without another flight action; stale/wrong-marker data cannot
+  authorize LAND; valid observations spanning two seconds request LAND once;
+  late settlement/acquisition fails; tracking-loss and final-touchdown deadlines
+  match the approved spec. Update `test_configured_live_loop.py` to prove image
+  acquisition starts before flight and stops during teardown without hanging.
+- [ ] Implement the policy without importing the stationary fixed-anchor code.
+  Forward only new, valid target measurements. At the waypoint, require fresh
+  horizontal speed <=0.2 m/s for 0.5 simulated seconds before the settlement
+  deadline. A duplicate image cannot extend target health or the acquisition
+  interval. Keep near-deck observation active and preserve failure through
+  existing bounded recovery. The tool arguments are:
+
+  ```json
+  {"tool":"precision_land","args":{"marker_id":7,"settle_by_sim_s":45,"acquire_by_sim_s":60},"timeout_sim_s":45}
+  ```
+
+  Validate integer marker ID, finite positive deadlines, and settlement before
+  acquisition. One precision operation owns all acquisition/landing phases.
+- [ ] Wire image/range subscriptions only for plans containing this tool;
+  reuse the existing frame source and detection thread. Add ATTITUDE and
+  PARAM_VALUE observations to the MAVLink adapter, with
+  `request_parameters(names)` and `send_landing_target(forward_m,right_m,down_m)`.
+  Test BODY_FRD encoding and exposure timestamps. Complete verified camera
+  metadata by checking the actual SDF transform and a rendered marker pose.
+- [ ] Load the ordinary SITL defaults followed by the two-line moving override
+  below, selected only by the frozen moving-pad scenario. Extend `RuntimeConfig`
+  with an optional overlay path and build ArduPilot's comma-separated `--defaults`
+  argument. Request/validate the full effective precision profile before flight
+  commands, preserving passive execution readiness without waiting for a marker
+  while physics is paused.
+
+  ```text
+  PLND_OPTIONS 5
+  PLND_EST_TYPE 1
+  ```
+
+  Run `uv run --locked pytest companion/tests/test_moving_precision.py companion/tests/test_moving_vision.py companion/tests/test_configured_host.py companion/tests/test_configured_live_loop.py companion/tests/test_configured_mission.py companion/tests/test_mavlink_adapter.py ardupilot_sitl/tests/test_config.py ardupilot_sitl/tests/test_runtime_node.py -q`.
+  Expected: a profile mismatch emits zero flight commands; ordinary missions
+  still use their original profile and behavior. Pin the companion's expected
+  effective values against the base and override parameter files in that test.
+- [ ] Update companion/SITL guides and commit task files with
+  `git commit -m "Add observed moving-target precision landing"`.
+
+#### Task 4: Score and preserve physical evidence
+
+**Create:** `scorekeeper/rules/moving_pad_v1.json`, scorekeeper
+`moving_pad.py`/`moving_pad_runtime.py`, and artifacts
+`moving_pad_score_validation.py`, each with focused tests.
+**Modify:** scorekeeper `runtime_node.py`; artifacts `runtime_configuration.py`,
+`_adapters/rosbag.py`, `score_validation.py`, `acceptance.py`, and recording QoS;
+orchestration `controller.py`; companion `configured_runtime.py`; affected guides.
+**Interfaces:** `MovingPadScorer(run_id,rules,expected_frames)` accepts joined
+vehicle/pad samples via `accept_frame(vehicle,pad)` and fresh disarm evidence
+via `accept_disarmed(timestamp_ns)`. Expose `fail`, `finalize`, and the existing
+`ScoreResult` contract to `_ScoreFinalizer`. Companion emits ordered
+`MissionEvent` phase `MOVING_PAD`, states `ARMED`/`DISARMED`, from observed
+transitions. Mission success text is not evidence of deck contact.
+Use existing `GroundTruthSample` for the vehicle. Define `LandingPadSample` in
+`moving_pad.py` with the matching run/time, marker ID, position/orientation,
+linear/angular velocity, and `vehicle_in_contact` fields from LandingPadState.
+The runtime joins samples by exact timestamp before calling `accept_frame`.
+
+- [ ] Add failing scorer cases: true deck landing, floor landing near the marker,
+  marker passing underneath an airborne vehicle, sliding off before two seconds,
+  and missing/misaligned pad truth. A two-second interval requires endpoint
+  timestamps two seconds apart, not merely 40 samples at 20 Hz.
+- [ ] Implement a single 100-point physical-pass rule. After observed disarm,
+  require continuous pad contact, vehicle position above/within the deck, and
+  two seconds aboard. Missing evidence makes the result incomplete; a complete
+  failed landing scores zero. Preserve touchdown offset and relative velocity
+  diagnostics. The stationary fixture uses identical rules and measured pose.
+- [ ] Add the pad state, mission transitions, and range to one explicit moving-pad
+  rosbag inventory. Extend bag inspection with exact sample/run/clock checks.
+  Wire `moving_pad_v1` explicitly through recorders, scenario runtime, score
+  validation, host finalization, and acceptance; it must never fall through to
+  the stationary descent rules. Recompute physical acceptance from recorded
+  truth and compare it with persisted scores and manifest provenance.
+- [ ] Run `uv run --locked pytest scorekeeper/tests/test_moving_pad.py scorekeeper/tests/test_moving_pad_runtime.py artifacts/tests/test_moving_pad_score_validation.py artifacts/tests/test_runtime_configuration.py artifacts/tests/test_rosbag_adapter.py artifacts/tests/test_acceptance.py orchestration/tests/test_controller.py -q`.
+  Expected: positive fixture passes, negative physical cases cannot pass, and
+  missing evidence cannot produce a completed valid bundle.
+- [ ] Update evidence/scoring guides and commit task files with
+  `git commit -m "Validate moving-pad landing from recorded physical evidence"`.
+
+#### Task 5: Run the stationary control, then moving mission
+
+**Create:** `config/configured-moving-pad-run.json` and the stationary control
+fixture `tests/fixtures/configured-stationary-pad-run.json` with root-relative
+launch instructions. **Modify:** `README.md`, `docs/runbook.md`, and
+`docs/handoff.md` after verification. Extend existing packaging/resource tests
+for the new models, profile, plugin, and message; do not add a deployment system.
+**Interface:** existing `drone-sim start --config` and `artifacts.acceptance`.
+
+- [ ] Resolve the two templates before launch. Both use the approved fixed
+  sequence, calibrated camera, 90-second native warmup, 90-second public window,
+  and target real-time factor 0.1. Compute the WGS84 waypoint for local ENU
+  (35,0) from the existing SITL home using the established coordinate mapping;
+  check the conversion. The control world keeps its deck at this waypoint.
+- [ ] Run the focused suites from tasks 1-4 once on the assembled tree, check
+  Compose and image import/resource contracts, then commit the runnable config.
+  Record clean source HEAD, effective parameters, and seven image digests before
+  launching. Build from this worktree, with no concurrent run using mutable tags:
+
+  ```bash
+  uv sync --locked
+  SIM_COMP2026_REVISION=$(git rev-parse HEAD) docker compose --profile phase3 build
+  uv run --locked drone-sim start --config tests/fixtures/configured-stationary-pad-run.json
+  ```
+
+- [ ] Independently accept the stationary bundle using the existing runbook
+  procedure and the moving-pad rules, requiring maximum score and matching
+  build provenance. Then run:
+
+  ```bash
+  uv run --locked drone-sim start --config config/configured-moving-pad-run.json
+  ```
+
+  Each run targets 30 wall minutes of simulation plus startup/finalization at
+  the configured real-time factor. These are estimates, not deadlines or proof.
+- [ ] Inspect camera acquisition before LAND, pad velocity through touchdown,
+  fresh disarm, and two seconds of carriage in recorded truth and videos.
+  Independently accept the moving bundle. Report physical outcome, score, and
+  artifact validity separately. Preserve failed attempts; do not change motion
+  or evidence to manufacture a pass. After three failed fixes, stop and name
+  the doubtful assumption, following the project rule.
+- [ ] Replace this execution checklist with the implemented contract. Update
+  the README/runbook commands, affected module guides, and dated handoff with
+  run IDs, provenance, acceptance results, video paths, and remaining limits.
+  Commit documentation separately from the runtime commit used by the recordings.
