@@ -113,7 +113,10 @@ class GazeboTransport:
             raise TransportUnavailable(
                 f"Gazebo Transport command failed: {error}"
             ) from error
-        if result.returncode != 0:
+        if (
+            result.returncode != 0
+            or result.stderr.strip() == "Service call timed out"
+        ):
             raise TransportUnavailable(
                 f"Gazebo Transport command failed: {result.stderr.strip()}"
             )
