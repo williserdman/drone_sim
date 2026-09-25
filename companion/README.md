@@ -85,9 +85,8 @@ requires the gated values to match, preventing silent drift between them.
 The current experiment uses `PLND_EST_TYPE=0`, retaining `PLND_OPTIONS=5` and
 `PLND_LAG=0.04`. Raw estimation follows camera positions and supplies zero
 target-velocity feedforward even with the moving-target option set. The prior
-Kalman moving flight lost tracking at 51.55 s. Position-only following may still
-lose the marker as the field of view shrinks; this is not a validated moving
-profile. See the [current experiment](../docs/handoff.md#moving-pad-verification).
+Kalman moving flight lost tracking at 51.55 s. The raw follow-up also lost
+tracking, at 63.65 s without touchdown. This is not a validated moving profile. See the [current experiment](../docs/handoff.md#moving-pad-verification).
 
 ## Entry points and implementation seams
 

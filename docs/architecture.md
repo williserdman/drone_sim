@@ -264,7 +264,8 @@ The current controlled experiment changes only `PLND_EST_TYPE` to 0, preserving
 that lag, options, gains, geometry, and loss policy. Raw mode sends zero target
 velocity to the position controller; a moving option bit alone does not prove
 velocity feedforward is active. Following camera positions may retain enough
-lag to lose the shrinking field of view, so moving landing remains unverified.
+lag to lose the shrinking field of view. The raw moving trial also failed
+tracking at 63.65 s; moving landing remains unresolved.
 See the [recorded outcome](handoff.md#moving-pad-verification).
 
 The moving operation must accept coherent target motion instead of applying
