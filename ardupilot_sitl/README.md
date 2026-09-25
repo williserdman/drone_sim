@@ -26,7 +26,7 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
 - [json_peer.py](src/drone_sim_ardupilot/json_peer.py) is a bounded test peer for
   the upstream UDP protocol; production does not use it.
 - [descent.parm](params/descent.parm) is the image-baked base parameter overlay.
-  [moving-pad.parm](params/moving-pad.parm) is the two-value moving-target
+  [moving-pad.parm](params/moving-pad.parm) is the moving-target
   profile, and [Dockerfile](Dockerfile) pins the upstream build and runtime
   layout.
 
@@ -79,9 +79,10 @@ that SITL exited, and it always attempts to close the protocol.
   assertions in [test_config.py](tests/test_config.py).
 - A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
   comma-separated `--defaults` argument. The later file changes only
-  `PLND_EST_TYPE` from 0 to 1. The current stationary diagnostic keeps
-  `PLND_OPTIONS=4`, disabling target-velocity feedforward while retaining Kalman
-  position estimation; the moving candidate previously used 5. Other scenarios
+  `PLND_EST_TYPE` from 0 to 1, `PLND_OPTIONS` from 4 to 5, and `PLND_LAG` from
+  0.08 to 0.04 s. The lag is a test candidate based on recorded observation
+  timing, not a validated tuning claim. Moving-target velocity feedforward is
+  enabled; the stationary option-4 experiment remains historical evidence. Other scenarios
   keep the base profile. The companion reads back every effective precision
   value before it can send a flight command. This profile is not flight-validated;
   see the [moving-pad evidence](../docs/handoff.md#moving-pad-verification) before tuning it.

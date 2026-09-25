@@ -21,7 +21,14 @@ class Vehicle(Protocol):
         *,
         yaw_rad: float | None = None,
     ) -> None: ...
-    def send_landing_target(self, forward_m: float, right_m: float, down_m: float) -> None: ...
+    def send_landing_target(
+        self,
+        forward_m: float,
+        right_m: float,
+        down_m: float,
+        *,
+        exposure_timestamp_ns: int,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -232,7 +239,11 @@ class DroneOperations:
             assert self._moving_precision is not None
             precision = self._moving_precision.tick(self._clock_ns, self.read_vehicle_state())
             if precision.target_body_frd is not None:
-                self._vehicle.send_landing_target(*precision.target_body_frd)
+                assert precision.target_timestamp_ns is not None
+                self._vehicle.send_landing_target(
+                    *precision.target_body_frd,
+                    exposure_timestamp_ns=precision.target_timestamp_ns,
+                )
             if precision.requested_mode is not None:
                 command = {
                     "LAND": CommandKind.LAND,

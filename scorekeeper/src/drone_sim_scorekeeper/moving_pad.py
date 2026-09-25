@@ -359,9 +359,7 @@ class MovingPadScorer:
             evidence_ref="rosbag#moving_pad:physical_landing",
         )
         final_timestamp = self.last_sim_timestamp_ns
-        event_specs: list[tuple[int, str, float]] = [
-            (final_timestamp, "moving_pad.physical_landing", awarded)
-        ]
+        event_specs: list[tuple[int, str, float]] = []
         if touchdown is not None:
             vehicle, pad = touchdown
             x, y, _z = _pad_relative_position(vehicle, pad)
@@ -379,7 +377,12 @@ class MovingPadScorer:
                     ),
                 )
             )
-        event_specs.append((final_timestamp, "score.finalized", awarded))
+        event_specs.extend(
+            (
+                (final_timestamp, "moving_pad.physical_landing", awarded),
+                (final_timestamp, "score.finalized", awarded),
+            )
+        )
         events = tuple(
             ScoreEvent(
                 run_id=self.run_id,

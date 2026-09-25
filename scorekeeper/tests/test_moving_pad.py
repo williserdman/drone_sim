@@ -85,12 +85,44 @@ def test_disarmed_vehicle_aboard_for_two_endpoint_seconds_scores_100():
         ("physical_landing", True)
     ]
     assert [event.event_type for event in result.events] == [
-        "moving_pad.physical_landing",
         "moving_pad.touchdown_offset_m",
         "moving_pad.touchdown_relative_velocity_mps",
+        "moving_pad.physical_landing",
         "score.finalized",
     ]
-    assert [event.value for event in result.events] == [100.0, 0.0, 0.0, 100.0]
+    assert [event.value for event in result.events] == [0.0, 0.0, 100.0, 100.0]
+    assert [event.sim_timestamp_ns for event in result.events] == [
+        2 * DT,
+        2 * DT,
+        42 * DT,
+        42 * DT,
+    ]
+    assert [event.event_id for event in result.events] == [0, 1, 2, 3]
+    assert [event.evidence_ref for event in result.events] == [
+        f"scoring/events.jsonl#event-{index}" for index in range(4)
+    ]
+
+
+def test_recorded_touchdown_diagnostics_precede_ninety_second_final_events():
+    subject = scorer(1_801)
+    subject.accept_frame(vehicle(0, z=0.0, velocity_x=0.0, contact=True), pad(0))
+    for index in range(1, 549):
+        subject.accept_frame(vehicle(index, z=5.0), pad(index))
+    for index in range(549, 601):
+        subject.accept_frame(vehicle(index, contact=True), pad(index, contact=True))
+    subject.accept_disarmed(601 * DT)
+    for index in range(601, 1_801):
+        subject.accept_frame(vehicle(index, contact=True), pad(index, contact=True))
+
+    events = subject.finalize().events
+
+    assert [event.sim_timestamp_ns for event in events] == [
+        27_450_000_000,
+        27_450_000_000,
+        90_000_000_000,
+        90_000_000_000,
+    ]
+    assert [event.event_id for event in events] == [0, 1, 2, 3]
 
 
 def test_forty_aboard_samples_are_short_of_two_endpoint_seconds():
@@ -140,7 +172,7 @@ def test_stationary_control_uses_the_same_physical_rules():
 
     assert result.complete is True
     assert result.achieved_score == 100.0
-    assert result.events[2].value == 0.0
+    assert result.events[1].value == 0.0
 
 
 def test_floor_landing_near_marker_cannot_pass_without_pad_contact():

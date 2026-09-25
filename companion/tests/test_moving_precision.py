@@ -97,6 +97,22 @@ def test_stale_wrong_marker_and_duplicate_frames_cannot_authorize_land() -> None
     assert policy.tick(2_900_000_000, vehicle()).requested_mode is None
 
 
+def test_fresh_target_retains_exposure_time_and_duplicate_is_not_forwarded() -> None:
+    policy = MovingPrecisionLanding()
+    policy.start(7, 45_000_000_000, 60_000_000_000)
+    settled(policy)
+    policy.observe(observation(900_000_000, sequence=1))
+
+    fresh = policy.tick(925_000_000, vehicle())
+    duplicate = policy.tick(950_000_000, vehicle())
+
+    assert (fresh.target_body_frd, fresh.target_timestamp_ns) == (
+        (0.2, -0.1, 5.0),
+        900_000_000,
+    )
+    assert (duplicate.target_body_frd, duplicate.target_timestamp_ns) == (None, None)
+
+
 def test_settlement_must_be_slow_for_half_second_by_deadline() -> None:
     policy = MovingPrecisionLanding()
     policy.start(7, 1_000_000_000, 2_000_000_000)
@@ -177,8 +193,10 @@ def test_drone_operations_alone_applies_precision_target_and_mode_effects() -> N
         def send(self, command, altitude_m) -> None:
             self.commands.append((command, altitude_m))
 
-        def send_landing_target(self, forward, right, down) -> None:
-            self.targets.append((forward, right, down))
+        def send_landing_target(
+            self, forward_m, right_m, down_m, *, exposure_timestamp_ns
+        ) -> None:
+            self.targets.append((forward_m, right_m, down_m, exposure_timestamp_ns))
 
     vehicle_adapter = Vehicle()
     operations = DroneOperations(
@@ -199,10 +217,13 @@ def test_drone_operations_alone_applies_precision_target_and_mode_effects() -> N
             stamp, heartbeat=True, mode="GUIDED", armed=True, landed=False,
             horizontal_speed_m_s=0.0,
         ))
-        operations.observe_precision(observation(stamp, sequence=sequence))
+        operations.observe_precision(replace(
+            observation(stamp, sequence=sequence),
+            camera_timestamp_ns=stamp - 25_000_000,
+        ))
         operations.tick(stamp)
 
-    assert vehicle_adapter.targets[-1] == (0.2, -0.1, 5.0)
+    assert vehicle_adapter.targets[-1] == (0.2, -0.1, 5.0, 2_475_000_000)
     assert vehicle_adapter.commands == [(CommandKind.LAND, None)]
     assert operations.operation_status(operation_id).state == "running"
 

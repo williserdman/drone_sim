@@ -29,26 +29,26 @@ def _write_score(run_directory: Path, *, passed: bool = True) -> None:
     event_rows = (
         {
             "run_id": RUN_ID,
-            "sim_timestamp_ns": 2_100_000_000,
+            "sim_timestamp_ns": 100_000_000,
             "event_id": 0,
-            "event_type": "moving_pad.physical_landing",
-            "value": awarded,
+            "event_type": "moving_pad.touchdown_offset_m",
+            "value": 0.1,
             "evidence_ref": "scoring/events.jsonl#event-0",
         },
         {
             "run_id": RUN_ID,
             "sim_timestamp_ns": 100_000_000,
             "event_id": 1,
-            "event_type": "moving_pad.touchdown_offset_m",
-            "value": 0.1,
+            "event_type": "moving_pad.touchdown_relative_velocity_mps",
+            "value": 0.0,
             "evidence_ref": "scoring/events.jsonl#event-1",
         },
         {
             "run_id": RUN_ID,
-            "sim_timestamp_ns": 100_000_000,
+            "sim_timestamp_ns": 2_100_000_000,
             "event_id": 2,
-            "event_type": "moving_pad.touchdown_relative_velocity_mps",
-            "value": 0.0,
+            "event_type": "moving_pad.physical_landing",
+            "value": awarded,
             "evidence_ref": "scoring/events.jsonl#event-2",
         },
         {
@@ -128,24 +128,24 @@ def _physical_evidence(run_directory: Path, *, outside_deck: bool = False):
         )
     score_events = (
         ScoreEventEvidence(
-            2_100_000_000,
+            100_000_000,
             0,
-            "moving_pad.physical_landing",
-            100.0,
+            "moving_pad.touchdown_offset_m",
+            0.1,
             "scoring/events.jsonl#event-0",
         ),
         ScoreEventEvidence(
             100_000_000,
             1,
-            "moving_pad.touchdown_offset_m",
-            0.1,
+            "moving_pad.touchdown_relative_velocity_mps",
+            0.0,
             "scoring/events.jsonl#event-1",
         ),
         ScoreEventEvidence(
-            100_000_000,
+            2_100_000_000,
             2,
-            "moving_pad.touchdown_relative_velocity_mps",
-            0.0,
+            "moving_pad.physical_landing",
+            100.0,
             "scoring/events.jsonl#event-2",
         ),
         ScoreEventEvidence(
@@ -195,6 +195,23 @@ def test_host_metadata_validation_accepts_complete_logical_score_without_ros_dec
     assert result.maximum_available_score == 100.0
 
 
+def test_host_metadata_validation_rejects_retrospective_touchdown_events(tmp_path):
+    _write_score(tmp_path)
+    _host_rosbag(tmp_path)
+    events_path = tmp_path / "scoring/events.jsonl"
+    rows = [json.loads(line) for line in events_path.read_text().splitlines()]
+    rows = [rows[index] for index in (2, 0, 1, 3)]
+    for index, row in enumerate(rows):
+        row["event_id"] = index
+        row["evidence_ref"] = f"scoring/events.jsonl#event-{index}"
+    events_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    with pytest.raises(ScoreValidationError, match="logically ordered"):
+        validate_score_outputs(tmp_path, run_id=RUN_ID, rules_path=RULES_PATH)
+
+
 def test_host_metadata_validation_rejects_score_event_value_mismatch(tmp_path):
     _write_score(tmp_path)
     _host_rosbag(tmp_path)
@@ -214,7 +231,10 @@ def test_host_metadata_validation_rejects_pass_without_touchdown_diagnostics(tmp
     _host_rosbag(tmp_path)
     events_path = tmp_path / "scoring/events.jsonl"
     rows = [json.loads(line) for line in events_path.read_text().splitlines()]
-    rows = (rows[0], {**rows[-1], "event_id": 1, "evidence_ref": "scoring/events.jsonl#event-1"})
+    rows = (
+        {**rows[2], "event_id": 0, "evidence_ref": "scoring/events.jsonl#event-0"},
+        {**rows[-1], "event_id": 1, "evidence_ref": "scoring/events.jsonl#event-1"},
+    )
     events_path.write_text(
         "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
     )

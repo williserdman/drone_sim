@@ -70,7 +70,9 @@ for 0.5 simulated seconds. LAND requires two continuous seconds of unique,
 coherent observations no older than 0.25 simulated seconds. Above 0.75 m target
 clearance, 0.5 seconds of tracking loss fails and requests GUIDED. Below that
 clearance, touchdown has three simulated seconds while valid observations keep
-flowing.
+flowing. Each forwarded target retains its accepted camera exposure time;
+`LANDING_TARGET.time_usec` uses public simulation microseconds rather than the
+later owner-loop send time or host wall time.
 
 The host reads back the full effective precision profile before any flight
 command. Marker detection is not an execution-readiness condition, which avoids
@@ -80,9 +82,11 @@ arm and disarm transitions publish mission events in phase `MOVING_PAD`.
 The companion's expected profile is a live command gate, while the two SITL
 parameter files remain the launch inputs. A focused test merges those inputs and
 requires the gated values to match, preventing silent drift between them.
-The current profile is a stationary diagnostic with `PLND_OPTIONS=4` and the
-Kalman estimator retained. It isolates target-velocity feedforward; it is not
-the moving-pad candidate profile. See the [current experiment](../docs/handoff.md#moving-pad-verification).
+The current moving-pad candidate restores `PLND_OPTIONS=5` with the Kalman
+estimator and tests `PLND_LAG=0.04` from the measured timing range. The
+stationary option-4 diagnostic isolated target-velocity feedforward; the moving
+profile and lag remain unverified in flight. See the
+[current experiment](../docs/handoff.md#moving-pad-verification).
 
 ## Entry points and implementation seams
 

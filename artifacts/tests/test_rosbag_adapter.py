@@ -858,10 +858,10 @@ def _valid_moving_pad_messages():
             BagMessage(
                 "/simulation/score_events",
                 _custom_message(
-                    50_000_000,
+                    0,
                     event_id=0,
-                    event_type="moving_pad.physical_landing",
-                    value=100.0,
+                    event_type="moving_pad.touchdown_offset_m",
+                    value=0.1,
                     evidence_ref="scoring/events.jsonl#event-0",
                 ),
                 200,
@@ -869,18 +869,40 @@ def _valid_moving_pad_messages():
             BagMessage(
                 "/simulation/score_events",
                 _custom_message(
-                    50_000_000,
+                    0,
                     event_id=1,
-                    event_type="score.finalized",
-                    value=100.0,
+                    event_type="moving_pad.touchdown_relative_velocity_mps",
+                    value=0.0,
                     evidence_ref="scoring/events.jsonl#event-1",
                 ),
                 201,
             ),
             BagMessage(
+                "/simulation/score_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=2,
+                    event_type="moving_pad.physical_landing",
+                    value=100.0,
+                    evidence_ref="scoring/events.jsonl#event-2",
+                ),
+                202,
+            ),
+            BagMessage(
+                "/simulation/score_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=3,
+                    event_type="score.finalized",
+                    value=100.0,
+                    evidence_ref="scoring/events.jsonl#event-3",
+                ),
+                203,
+            ),
+            BagMessage(
                 "/simulation/landing_pad_state",
                 _landing_pad_state(50_000_000),
-                202,
+                204,
             ),
             BagMessage(
                 "/simulation/mission_events",
@@ -891,7 +913,7 @@ def _valid_moving_pad_messages():
                     state="ARMED",
                     detail="observed vehicle transition",
                 ),
-                203,
+                205,
             ),
             BagMessage(
                 "/simulation/mission_events",
@@ -902,9 +924,9 @@ def _valid_moving_pad_messages():
                     state="DISARMED",
                     detail="observed vehicle transition",
                 ),
-                204,
+                206,
             ),
-            BagMessage("/competition/range/downward", _range(50_000_000), 205),
+            BagMessage("/competition/range/downward", _range(50_000_000), 207),
         )
     )
     return messages
@@ -1189,6 +1211,18 @@ def test_moving_pad_bag_decodes_exact_pad_grid_and_observed_arm_transitions(tmp_
         ),
     )
     assert evidence.downward_ranges == (DownwardRangeEvidence(50_000_000, 10.0),)
+    assert tuple(event.event_type for event in evidence.score_events) == (
+        "moving_pad.touchdown_offset_m",
+        "moving_pad.touchdown_relative_velocity_mps",
+        "moving_pad.physical_landing",
+        "score.finalized",
+    )
+    assert tuple(event.sim_timestamp_ns for event in evidence.score_events) == (
+        0,
+        0,
+        50_000_000,
+        50_000_000,
+    )
 
 
 def test_moving_pad_bag_rejects_pad_truth_not_aligned_to_vehicle_truth(tmp_path):

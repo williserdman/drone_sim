@@ -193,9 +193,7 @@ def _recompute_events(
 
     awarded = _AVAILABLE_POINTS if passed else 0.0
     last_timestamp = timestamps[-1]
-    specs: list[tuple[int, str, float]] = [
-        (last_timestamp, "moving_pad.physical_landing", awarded)
-    ]
+    specs: list[tuple[int, str, float]] = []
     if touchdown is not None:
         vehicle, pad = touchdown
         x, y, _z = _pad_relative_position(vehicle, pad)
@@ -209,7 +207,12 @@ def _recompute_events(
                 ),
             )
         )
-    specs.append((last_timestamp, "score.finalized", awarded))
+    specs.extend(
+        (
+            (last_timestamp, "moving_pad.physical_landing", awarded),
+            (last_timestamp, "score.finalized", awarded),
+        )
+    )
     return passed, tuple(
         ScoreEventEvidence(
             timestamp,
@@ -242,17 +245,22 @@ def _validate_logical_events(
     if event_types not in {
         ("moving_pad.physical_landing", "score.finalized"),
         (
-            "moving_pad.physical_landing",
             "moving_pad.touchdown_offset_m",
             "moving_pad.touchdown_relative_velocity_mps",
+            "moving_pad.physical_landing",
             "score.finalized",
         ),
     }:
         raise ScoreValidationError("moving-pad score events are not logically ordered")
+    physical = events[0] if len(events) == 2 else events[2]
     if (
-        events[0].value != achieved
+        physical.value != achieved
         or events[-1].value != achieved
-        or events[0].sim_timestamp_ns != events[-1].sim_timestamp_ns
+        or physical.sim_timestamp_ns != events[-1].sim_timestamp_ns
+        or any(
+            current.sim_timestamp_ns > following.sim_timestamp_ns
+            for current, following in zip(events, events[1:])
+        )
     ):
         raise ScoreValidationError("moving-pad score events are logically inconsistent")
     if achieved == _AVAILABLE_POINTS and len(events) != 4:
@@ -260,10 +268,9 @@ def _validate_logical_events(
             "moving-pad physical pass requires touchdown diagnostics"
         )
     if len(events) == 4 and (
-        events[1].value < 0.0
-        or events[2].value < 0.0
-        or events[1].sim_timestamp_ns != events[2].sim_timestamp_ns
-        or events[1].sim_timestamp_ns > events[-1].sim_timestamp_ns
+        events[0].value < 0.0
+        or events[1].value < 0.0
+        or events[0].sim_timestamp_ns != events[1].sim_timestamp_ns
     ):
         raise ScoreValidationError("moving-pad touchdown events are logically inconsistent")
 

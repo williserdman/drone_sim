@@ -210,14 +210,19 @@ def test_attitude_and_horizontal_velocity_keep_public_exposure_timestamp() -> No
     assert position is not None and position.horizontal_speed_m_s == pytest.approx(0.5)
 
 
-def test_landing_target_uses_position_valid_body_frd_encoding() -> None:
+def test_landing_target_uses_exposure_time_and_position_valid_body_frd_encoding() -> None:
     connection = FakeConnection()
     adapter = MavlinkAdapter(connection, mavutil())
 
-    adapter.send_landing_target(1.0, -2.0, 4.0)
+    adapter.send_landing_target(
+        1.0,
+        -2.0,
+        4.0,
+        exposure_timestamp_ns=12_345_678_901,
+    )
 
     assert connection.mav.landing_target_calls == [(
-        0, 0, 12,
+        12_345_678, 0, 12,
         pytest.approx(0.2449786631), pytest.approx(-0.4636476090), pytest.approx(4.582575695),
         0.0, 0.0,
         1.0, -2.0, 4.0,

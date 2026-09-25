@@ -226,6 +226,10 @@ A bounded camera worker publishes the latest timestamped observation; image
 processing cannot block the flight owner or accumulate stale frames. There is
 one active flight operation. Watching the camera does not cancel or redirect
 the waypoint operation in this first version.
+The accepted observation keeps its camera exposure timestamp through the policy
+and flight owner into `LANDING_TARGET.time_usec`, converted from public
+simulation nanoseconds to microseconds. Send time and host wall time must not
+replace exposure time.
 
 At the approach waypoint, the vehicle holds while the pad enters view. The
 precision-landing operation accepts only fresh observations of marker 7 and
@@ -253,10 +257,12 @@ verify in simulation, not a validated tuning claim. See
 [ArduPilot's landing documentation](https://ardupilot.org/copter/docs/precision-landing-and-loiter.html)
 and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp#L415).
 
-The current stationary diagnostic temporarily uses `PLND_OPTIONS=4` with the
-same estimator, lag, and gains. It isolates target-velocity feedforward after
-the failed baseline. This diagnostic does not establish moving-pad support;
-restore and verify the moving candidate before its flight acceptance.
+The stationary option-4 diagnostic isolated target-velocity feedforward and
+landed, but does not establish moving-pad support. The current moving candidate
+restores option 5 and tests `PLND_LAG=0.04` after the recorded observation-to-log
+interval of 25-40 ms exposed possible overcompensation at 0.08 s. This remains a
+tuning hypothesis until flight verification; the base competition profile and
+controller gains stay unchanged.
 
 The moving operation must accept coherent target motion instead of applying
 the existing fixed-anchor drift rejection. Continue feeding valid observations
@@ -273,6 +279,9 @@ and pad-specific contact evidence on the same 20 Hz public clock as vehicle
 truth. The scorer checks touchdown on the deck, disarm, and two continuous
 simulated seconds aboard the moving platform. Record touchdown offset and
 relative velocity as diagnostics. Ground contact elsewhere is not a pass.
+Score events are emitted in nondecreasing simulation timestamp order with
+contiguous IDs and matching evidence references. Touchdown diagnostics keep
+their occurrence time and precede the final-time physical result and score.
 
 ### Verification and scope
 

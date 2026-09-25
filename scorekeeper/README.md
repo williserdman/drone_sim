@@ -77,8 +77,10 @@ documentation. The persisted schema is defined by
   the continuous post-disarm interval defined by the ruleset. The stationary
   control uses the same rules and measured pad velocity.
 - Moving-pad touchdown offset and rigid-body relative velocity are score-event
-  diagnostics. Mission success text and ground contact away from the deck do
-  not prove the physical landing.
+  diagnostics. They retain the touchdown timestamp and are emitted before the
+  final-time physical result and `score.finalized`, with contiguous event IDs
+  and matching evidence references. Mission success text and ground contact
+  away from the deck do not prove the physical landing.
 - Missing point components may yield an honest finalized partial score when the
   evidence grammar and terminal conditions remain valid.
 - Evidence is persisted before reliable score-event publication is flushed and

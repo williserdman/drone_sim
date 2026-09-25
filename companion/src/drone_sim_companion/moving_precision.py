@@ -45,6 +45,7 @@ class PrecisionStatus:
     state: str
     error: str = ""
     target_body_frd: tuple[float, float, float] | None = None
+    target_timestamp_ns: int | None = None
     requested_mode: str | None = None
 
 
@@ -137,6 +138,7 @@ class MovingPrecisionLanding:
             return PrecisionStatus(self._state, self._error, requested_mode=mode)
 
         target: tuple[float, float, float] | None = None
+        target_timestamp_ns: int | None = None
         observation = self._latest
         usable = observation is not None and self._usable(observation, timestamp_ns)
         new_usable = (
@@ -148,6 +150,7 @@ class MovingPrecisionLanding:
             assert observation is not None
             if observation.camera_sequence > self._forwarded_sequence:
                 target = observation.target_body_frd
+                target_timestamp_ns = observation.camera_timestamp_ns
                 self._forwarded_sequence = observation.camera_sequence
             if (
                 self._tracking_since_ns is None
@@ -223,7 +226,13 @@ class MovingPrecisionLanding:
 
         mode = self._mode_effect
         self._mode_effect = None
-        return PrecisionStatus(self._state, self._error, target, mode)
+        return PrecisionStatus(
+            self._state,
+            self._error,
+            target,
+            target_timestamp_ns,
+            mode,
+        )
 
     def abort(self, reason: str) -> PrecisionStatus:
         if self._state == "running":

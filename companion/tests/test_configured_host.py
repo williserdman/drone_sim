@@ -140,11 +140,11 @@ def test_moving_profile_mismatch_emits_zero_flight_commands():
         prearm_checks_healthy=True,
     ))
     host.observe(Telemetry(
-        0, parameter_name="PLND_OPTIONS", parameter_value=5.0,
+        0, parameter_name="PLND_OPTIONS", parameter_value=4.0,
     ))
     host.tick(0, mission_running=True)
 
-    assert host.error == "effective precision parameter PLND_OPTIONS is 5.0, expected 4.0"
+    assert host.error == "effective precision parameter PLND_OPTIONS is 4.0, expected 5.0"
     assert vehicle.commands == []
     assert "mission-execution-ready" not in protocol.statuses
 
@@ -195,7 +195,7 @@ def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
         "LAND_SPD_MS": 0.50,
         "PLND_ENABLED": 1.0,
         "PLND_TYPE": 1.0,
-        "PLND_LAG": 0.08,
+        "PLND_LAG": 0.04,
         "PLND_EST_TYPE": 1.0,
         "PLND_XY_DIST_MAX": 0.50,
         "PLND_STRICT": 2.0,
@@ -203,7 +203,7 @@ def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
         "PLND_TIMEOUT": 0.50,
         "PLND_ALT_MIN": 0.75,
         "PLND_ALT_MAX": 8.0,
-        "PLND_OPTIONS": 4.0,
+        "PLND_OPTIONS": 5.0,
     }
     assert {name: effective[name] for name in MOVING_PRECISION_PARAMETERS} == MOVING_PRECISION_PARAMETERS
 

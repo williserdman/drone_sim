@@ -304,10 +304,9 @@ competition acceptance check.
 
 This mission is experimental. Read the [current flight evidence](handoff.md#moving-pad-verification)
 before using it for a demo; neither control nor moving acceptance has passed.
-The current branch profile is a stationary A/B with `PLND_OPTIONS=4`, retaining
-Kalman estimation and the original lag/gains. Run only the stationary fixture
-for this experiment. Restore the moving candidate and its matching companion
-parameter gate before launching the moving command below.
+The current candidate restores moving-target velocity feedforward and tests
+40 ms lag with exposure-stamped target messages. The prior option-4 stationary
+run is a diagnostic control, not evidence of moving-pad landing.
 
 Build from a committed checkout using [the image-build command](#build-runtime-images).
 The configured mission takes off to 5 m, flies 35 m east, then watches marker 7
@@ -317,7 +316,8 @@ must settle by 45 s and acquire two seconds of fresh observations by 60 s;
 failure ends the attempt. The [architecture contract](architecture.md#moving-pad-landing)
 defines tracking loss and final touchdown behavior.
 
-First run the stationary control; then run the moving mission:
+Use the stationary fixture for controller isolation and the moving configuration
+for the actual mission. These commands launch different courses:
 
 ```bash
 uv run --locked drone-sim start --config tests/fixtures/configured-stationary-pad-run.json

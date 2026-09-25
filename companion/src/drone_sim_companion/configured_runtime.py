@@ -24,7 +24,7 @@ MOVING_PRECISION_PARAMETERS = {
     "LAND_SPD_MS": 0.50,
     "PLND_ENABLED": 1.0,
     "PLND_TYPE": 1.0,
-    "PLND_LAG": 0.08,
+    "PLND_LAG": 0.04,
     "PLND_EST_TYPE": 1.0,
     "PLND_XY_DIST_MAX": 0.50,
     "PLND_STRICT": 2.0,
@@ -32,7 +32,7 @@ MOVING_PRECISION_PARAMETERS = {
     "PLND_TIMEOUT": 0.50,
     "PLND_ALT_MIN": 0.75,
     "PLND_ALT_MAX": 8.0,
-    "PLND_OPTIONS": 4.0,  # Stationary diagnostic; target-velocity feedforward disabled.
+    "PLND_OPTIONS": 5.0,
 }
 
 

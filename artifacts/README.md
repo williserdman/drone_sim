@@ -58,7 +58,9 @@ Scenario-specific runs extend the base bag with their physical/scoring evidence 
 Moving-pad acceptance joins recorded pad and vehicle samples by exact timestamp
 and independently recomputes touchdown, disarm, and continued physical support
 under the [moving-pad rules](../scorekeeper/rules/moving_pad_v1.json) before it
-trusts the persisted result.
+trusts the persisted result. It requires touchdown diagnostics to precede the
+final-time physical result in nondecreasing simulation timestamp order, with
+contiguous IDs and matching evidence references.
 
 The deployed private rosbag QoS overrides are
 [`recording-qos.yaml`](recording-qos.yaml), copied into the runtime image by the

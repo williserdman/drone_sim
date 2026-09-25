@@ -39,10 +39,17 @@ score alone is not a pass.
 
 Completed diagnostic: one stationary flight with `PLND_OPTIONS=4`, retaining
 `PLND_EST_TYPE=1`, `PLND_LAG=0.08`, all gains, geometry, and tracking-loss policy.
-The launch overlay and companion parameter gate select this profile. It is
+The recorded launch overlay and companion parameter gate selected this profile. It was
 an experiment, not a promoted moving-pad fix. Recorded control parameters
 confirm that only `PLND_OPTIONS` changed. Frozen mission inputs match the fifth
 attempt except for run identity and its checksum.
+
+The next candidate restores `PLND_OPTIONS=5` and tests `PLND_LAG=0.04`, with
+camera exposure timestamps preserved through MAVLink and chronological score
+events. The target run is `config/configured-moving-pad-run.json`: the pad moves
+at 0.5 m/s from mission start through touchdown. Its outcome is pending. Current affected-module checks passed 1,335 tests with
+12 ROS/environment cases skipped. These cover companion, SITL, scorekeeper, and
+artifacts; unchanged native Gazebo and imported Comp2026 suites were not rerun.
 
 Six stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
@@ -74,12 +81,13 @@ about -17.7 degrees. This establishes real field-of-view loss, not a
 camera/range timestamp or mounting-sign defect. The 0.55-second loss correctly crosses the 0.50-second
 tracking threshold.
 
-A separate outbound timestamp defect remains: `MavlinkAdapter.send_landing_target`
-sends `LANDING_TARGET.time_usec=0`. Pinned ArduPilot jitter correction then clamps
-measurement time to its maximum lag after an initial constant-timestamp period.
-This needs a deterministic timestamp test and fix. It does not establish that
-vectors arrived late or caused the later oscillation; camera/range timestamps
-and the final rendered tracking-loss sequence above remain valid evidence.
+Both stationary recordings used `LANDING_TARGET.time_usec=0`. Pinned ArduPilot
+jitter correction then clamps measurement time to its maximum lag after an
+initial constant-timestamp period. The current candidate carries camera exposure
+time through the policy and operation owner, converting nanoseconds to MAVLink
+microseconds. Focused tests cover delayed observations, duplicate suppression,
+and wire conversion. Flight verification is pending. The old zero field alone
+does not establish why the estimator inferred false motion.
 
 The failed baseline questioned whether Kalman moving-target tracking provides
 stable descent with this airframe's existing gains. The base
@@ -207,15 +215,13 @@ the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Reconcile moving-pad score-event ordering with generic bag timestamp validation.
-   Preserve the failed bundle and strict validation; add a focused regression for
-   the recorded final-score/retrospective-touchdown sequence before changing code.
-2. Fix and test outbound landing-target timestamps against the pinned ArduPilot
-   time-correction behavior, then measure the appropriate lag before restoring
-   moving-target velocity feedforward. Do not weaken observation freshness checks.
-3. Obtain an independently accepted stationary control, then the 0.5 m/s moving
-   mission. Require physical landing, 100/100, complete recordings, and provenance.
-4. Separately diagnose historical competition range-stream loss before claiming
+1. Build the tested timestamp and score-ordering fixes, capture fresh provenance,
+   and run the actual 0.5 m/s moving course with option 5 and 40 ms lag. Preserve
+   the tracking-loss guard and all historical evidence.
+2. Require physical landing, 100/100, complete recordings, and independent artifact
+   acceptance before claiming the moving mission works. The new lag remains a
+   hypothesis until flight evidence supports it.
+3. Separately diagnose historical competition range-stream loss before claiming
    a fresh full-window competition baseline.
 
 Lower-priority work remains deferred: structured precision-phase diagnostics; improve zero-budget Compose timeout

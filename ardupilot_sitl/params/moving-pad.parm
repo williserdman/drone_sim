@@ -1,4 +1,5 @@
-# Stationary diagnostic for moving_pad_v1: isolate target-velocity feedforward.
-# Retain Kalman estimation and the base lag/gains; moving-target mode needs 5.
-PLND_OPTIONS 4
+# Moving-target candidate layered after descent.parm for moving_pad_v1 only.
+# Test 40 ms lag against the recorded 25-40 ms observation-to-log interval.
+PLND_OPTIONS 5
 PLND_EST_TYPE 1
+PLND_LAG 0.04

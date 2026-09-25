@@ -1228,9 +1228,9 @@ class RosbagValidator:
                 if moving_event_types not in {
                     ("moving_pad.physical_landing", "score.finalized"),
                     (
-                        "moving_pad.physical_landing",
                         "moving_pad.touchdown_offset_m",
                         "moving_pad.touchdown_relative_velocity_mps",
+                        "moving_pad.physical_landing",
                         "score.finalized",
                     ),
                 }:

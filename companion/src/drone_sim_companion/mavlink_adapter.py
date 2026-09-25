@@ -99,7 +99,12 @@ class MavlinkAdapter:
         )
 
     def send_landing_target(
-        self, forward_m: float, right_m: float, down_m: float
+        self,
+        forward_m: float,
+        right_m: float,
+        down_m: float,
+        *,
+        exposure_timestamp_ns: int,
     ) -> None:
         values = (forward_m, right_m, down_m)
         if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
@@ -108,7 +113,7 @@ class MavlinkAdapter:
             raise ValueError("landing target down distance must be positive")
         distance = math.sqrt(forward_m**2 + right_m**2 + down_m**2)
         self._connection.mav.landing_target_send(
-            0,
+            exposure_timestamp_ns // 1_000,
             0,
             self._mavutil.mavlink.MAV_FRAME_BODY_FRD,
             math.atan2(forward_m, down_m),
