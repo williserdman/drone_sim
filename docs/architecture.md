@@ -192,7 +192,8 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 
 ## Moving-pad landing
 
-Implemented 2026-09-24; flight acceptance is blocked by descent oscillation.
+Implemented 2026-09-24. The stationary diagnostic lands with velocity feedforward
+disabled; artifact acceptance and the moving flight remain unverified.
 This is the contract for one regression mission: takeoff, transit, and camera-guided landing on a
 platform moving straight at 0.5 m/s from public simulation time zero through
 touchdown. The platform continues moving after disarm. ArUco 7 identifies the
@@ -280,7 +281,8 @@ rejection, missed acquisition, and pad-relative touchdown evaluation. A rendered
 camera check establishes marker detection at approach height. Then rebuild
 matching images and run a stationary control followed by the 0.5 m/s mission.
 Report physical outcome, evaluation, and artifact validity separately, with
-onboard and observer recordings. The stationary control has not passed;
+onboard and observer recordings. The stationary diagnostic physically landed,
+but its score-event timestamps failed generic bag validation; see
 [current evidence and the remaining flight gate](handoff.md#moving-pad-verification)
 are recorded in the handoff.
 

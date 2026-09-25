@@ -59,9 +59,10 @@ and edit its `mission_plan.steps`. The [companion guide](companion/README.md#con
 defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow)
 covers rebuilding changed code, running one template, and running the automatic set.
 
-[configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds a
+[configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds an
 experimental camera-guided landing on a deck traveling at 0.5 m/s. The
-stationary landing control has not passed. Use the
+stationary diagnostic has landed, but artifact acceptance remains blocked and
+the moving flight is unverified. Use the
 [moving-pad workflow](docs/runbook.md#moving-pad-landing) for the stationary
 control, moving flight, and independent acceptance. Current verification is
 recorded in [handoff](docs/handoff.md).

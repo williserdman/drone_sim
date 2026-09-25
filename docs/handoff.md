@@ -8,18 +8,20 @@ world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
 
-The implementation is committed, but flight acceptance is not complete. The
-stationary control takes off, reaches its waypoint, acquires marker 7, and enters
-LAND. It then oscillates until the marker leaves the camera view. Tracking loss
-fails the mission and requests GUIDED hold. No stationary landing or moving-pad
-landing has passed; this is not a demo-ready mission.
+The stationary A/B with `PLND_OPTIONS=4` landed on the deck and scored 100/100.
+Peak roll fell from 19.04 to 1.17 degrees. Artifact finalization rejected the
+bundle because retrospective touchdown score events have earlier timestamps
+than the final score event published before them. The moving-target profile
+with option 5 still lacks a stable landing, and the moving flight is unrun.
+This remains a diagnostic, not an accepted moving-pad demo.
 
-Current source checks passed 2,071 tests, with 27 ROS/environment cases skipped.
-The unchanged imported Comp2026 suite passed 1,126 tests. All seven runtime images
-were built from clean `c523af3adce8230624cf8c7953920ca51c3f0891`; native Gazebo
-integration checks passed 4/4. Focused new-module type checks passed; the full
-repository still has pre-existing annotation errors. Source checks do not prove
-physical landing or artifact acceptance.
+The diagnostic passed 250 companion/SITL tests. All seven runtime images were
+built from clean `7ec09e1a7f02849b264690aa763da40d4fdb4c38`. Earlier full checks
+at `c523af3` passed 2,071 tests with 27 ROS/environment cases skipped; the
+unchanged imported Comp2026 suite passed 1,126 tests and native Gazebo checks
+passed 4/4. Those broader checks were not repeated for the parameter-only A/B.
+The full repository still has pre-existing annotation errors. Source checks do
+not prove physical landing or artifact acceptance.
 
 Historical audit, 2026-09-11: fast precision-landing recovery was implemented and
 verified on the isolated `fix/precision-landing-reacquire` parent and nested
@@ -35,14 +37,14 @@ score alone is not a pass.
 
 ## Moving-pad verification
 
-Approved diagnostic: one stationary flight with `PLND_OPTIONS=4`, retaining
+Completed diagnostic: one stationary flight with `PLND_OPTIONS=4`, retaining
 `PLND_EST_TYPE=1`, `PLND_LAG=0.08`, all gains, geometry, and tracking-loss policy.
-The launch overlay and companion parameter gate now select this profile. It is
-an experiment, not a promoted moving-pad fix; rebuild before running it. Its
-flight outcome is pending. Compare roll/position oscillation, retained marker
-visibility, and physical touchdown against the fifth attempt below.
+The launch overlay and companion parameter gate select this profile. It is
+an experiment, not a promoted moving-pad fix. Recorded control parameters
+confirm that only `PLND_OPTIONS` changed. Frozen mission inputs match the fifth
+attempt except for run identity and its checksum.
 
-Five stationary attempts were preserved. The first three exposed startup RPC,
+Six stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
 The fourth exposed acquisition initialization between camera frames; `c523af3`
 fixes that and increases the relative precision timeout to the full public run
@@ -52,6 +54,7 @@ budget without changing the absolute settle/acquisition deadlines.
 | --- | --- | --- | --- | --- |
 | `0f608531-736f-495e-a6b9-b55afb0452f9` | Takeoff at 7.05 s; waypoint at 14.45 s; no LAND; aborted at 54 s | 0/100, incomplete | `ABORTED`; rosbag incomplete at abort boundary; not accepted | `1b4efbf42ef55f75af8c887de77af1870995eb7b` |
 | `24a1f1c5-7846-40d4-9c4d-ddcd6da15506` | Takeoff at 7.05 s; waypoint at 14.55 s; LAND at 17.35 s; tracking lost at 20.40 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; rosbag incomplete at failure boundary; not accepted | `c523af3adce8230624cf8c7953920ca51c3f0891` |
+| `f7c75af5-12a3-4bda-b4c2-41c519ac3943` | Takeoff at 7.05 s; waypoint at 14.45 s; touchdown at 27.45 s; observed disarm/mission success at 30.05 s | 100/100, complete | Full 90 s recorded; `FAILED` for nonmonotonic score-event timestamps; not accepted | `7ec09e1a7f02849b264690aa763da40d4fdb4c38` |
 
 Each bundle lives at `runs/RUN_ID/` in the moving-pad worktree. Videos are
 `video/onboard.mp4` and `video/observer.mp4`; manifests contain both clean source
@@ -60,8 +63,9 @@ Manifest SHA-256 values, in table order:
 
 - `2e0d4998b47ad454e6b5329f84e9e29d0900f474ccb02cd768f1f6e5f6b756b7`
 - `ccfd1ae4b74a5c2709454ea2bc5e3b609918016db735be0e9d6d8e36633aeb93`
+- `124157bdd19718dfd2fd21b1011f0c9b531a80950803ffd517f6066082918fa1`
 
-The latest onboard recording contains 408 frames at 640x480/20 Hz. Recorded
+The failed option-5 onboard recording contains 408 frames at 640x480/20 Hz. Recorded
 camera/range timestamps match at every 50 ms tick. Production camera replay
 finds marker 7 through 19.85 s; it clips the image edge at 19.90 s and remains
 undetected through failure. Ground-truth projection agrees within 0.91 pixels;
@@ -77,27 +81,43 @@ This needs a deterministic timestamp test and fix. It does not establish that
 vectors arrived late or caused the later oscillation; camera/range timestamps
 and the final rendered tracking-loss sequence above remain valid evidence.
 
-The doubtful assumption is that re-enabling the Kalman precision estimator
-provides stable descent with this airframe's existing gains. The base
+The failed baseline questioned whether Kalman moving-target tracking provides
+stable descent with this airframe's existing gains. The base
 `descent.parm` explicitly uses the raw estimator to avoid earlier Kalman
-oscillation; the moving overlay reintroduces the Kalman estimator and enables
-moving-target velocity feedforward. DataFlash analysis finds that the stationary
+oscillation; the option-5 overlay reintroduced Kalman estimation and enabled
+moving-target velocity feedforward. Baseline DataFlash analysis finds that the stationary
 pad's inferred east velocity grows to roughly 0.5-0.8 m/s and enters the navigation
 command. The aircraft follows the growing roll command with 0.19 degrees mean
 absolute error; motor outputs remain clear of their limits. This locates the
 failure upstream of attitude control without proving the estimator is its sole
 cause. Raw `PL.mY` and predicted `PL.pY` describe different time horizons, so their
 earlier wrong-sign comparison alone was not proof of filter lag.
-The next isolating comparison should disable moving-target velocity feedforward
-while retaining the Kalman estimator. Raw estimator type 0 changes both position
-filtering and target-velocity behavior, making it a broader fallback experiment.
-Further full-flight retries stopped after repeated fixes. The 0.5 m/s moving
-mission has not been launched, pending a successful stationary control.
+The approved option-4 A/B then disabled velocity feedforward while retaining
+Kalman position estimation. Over the same first 3.038 s after LAND, peak actual
+roll fell from 19.04 to 1.17 degrees and mean roll tracking error from 0.189 to
+0.016 degrees. Actual roll stayed within 1.17 degrees throughout descent and
+disarm. ArduPilot target loss occurred after physical touchdown. This supports
+false target-velocity feedforward as the immediate destabilizing path, but does
+not establish why the estimator inferred motion. Raw estimator type 0 changes
+both position filtering and target-velocity behavior, so remains a broader
+fallback experiment. The 0.5 m/s moving mission has not been launched.
+
+The option-4 scorer records touchdown offset 0.00570 m and relative speed
+0.0607 m/s. Both H.264 videos contain 1,800 frames at 640x480/20 Hz and last 90 s.
+Bag validation rejects score-event times `90.00, 27.45, 27.45, 90.00` s: the final
+physical result precedes two retrospective touchdown diagnostics in event-ID
+order. Independent full acceptance exits 1 on the failed manifest. A separate,
+partial semantic check recomputes 100/100 from all 1,800 vehicle/pad samples;
+it does not make the bundle accepted. Preserve this
+bundle unchanged; reconcile the event ordering contract before another accepted
+flight. The diagnosis is not permission to remove timestamp checks.
 
 Machine-local diagnostics and prelaunch expectations are under
 `.superpowers/sdd/moving-pad/`, including `stationary-5-diagnostics/REPORT.md`,
 the `stationary-5-diagnostics/flight-log-analysis/` reports and timeline plot,
-and `provenance.json`. Preserve them with the run bundles. The superseded
+`options4-ab-f7c75af5-12a3-4bda-b4c2-41c519ac3943.json` and its plot,
+`options4-artifact-diagnosis.md`, and `provenance-options4.json`. Preserve them
+with the run bundles. The superseded
 implementation checklist remains in Git at `63f9674`; the architecture now
 contains the implemented contract and this handoff owns remaining validation.
 
@@ -175,23 +195,21 @@ scoped review fixes; no Critical, Important, or Minor findings remain.
 
 ## Image and runtime boundary
 
-Current Phase 3 tags point to the clean `c523af3` build used by the latest
+Current Phase 3 tags point to the clean `7ec09e1` build used by the latest
 stationary attempt. Prelaunch expectations were captured before that run.
 Subsequent documentation commits do not change those recorded source identities.
 Earlier images remain under preservation tags; never retag them as new evidence.
 Rebuild after runtime edits and capture new expectations before the next flight.
 
-Physical landing: not achieved. Score: 0/100, incomplete. Artifact acceptance:
-not passed. Images: rebuilt. No current competition flight was run in this task;
+Physical stationary landing: achieved. Score: 100/100, complete. Artifact acceptance:
+not passed. Moving flight: unrun. Images: rebuilt. No current competition flight was run in this task;
 the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Compare `PLND_OPTIONS=4` against the current value of 5 in a bounded
-   stationary diagnostic, keeping `PLND_EST_TYPE=1`, `PLND_LAG=0.08`, and all
-   other settings fixed. This isolates inferred target-velocity feedforward.
-   Keep the live parameter guard aligned with the diagnostic profile; verify
-   continuous target visibility and absence of growing lateral/roll oscillation.
+1. Reconcile moving-pad score-event ordering with generic bag timestamp validation.
+   Preserve the failed bundle and strict validation; add a focused regression for
+   the recorded final-score/retrospective-touchdown sequence before changing code.
 2. Fix and test outbound landing-target timestamps against the pinned ArduPilot
    time-correction behavior, then measure the appropriate lag before restoring
    moving-target velocity feedforward. Do not weaken observation freshness checks.
