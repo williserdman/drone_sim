@@ -32,7 +32,7 @@ MOVING_PRECISION_PARAMETERS = {
     "PLND_TIMEOUT": 0.50,
     "PLND_ALT_MIN": 0.75,
     "PLND_ALT_MAX": 8.0,
-    "PLND_OPTIONS": 5.0,
+    "PLND_OPTIONS": 4.0,  # Stationary diagnostic; target-velocity feedforward disabled.
 }
 
 

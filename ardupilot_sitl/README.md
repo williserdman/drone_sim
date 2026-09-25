@@ -27,7 +27,7 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
   the upstream UDP protocol; production does not use it.
 - [descent.parm](params/descent.parm) is the image-baked base parameter overlay.
   [moving-pad.parm](params/moving-pad.parm) is the two-value moving-target
-  override, and [Dockerfile](Dockerfile) pins the upstream build and runtime
+  profile, and [Dockerfile](Dockerfile) pins the upstream build and runtime
   layout.
 
 ## Interfaces
@@ -79,7 +79,9 @@ that SITL exited, and it always attempts to close the protocol.
   assertions in [test_config.py](tests/test_config.py).
 - A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
   comma-separated `--defaults` argument. The later file changes only
-  `PLND_OPTIONS` from 4 to 5 and `PLND_EST_TYPE` from 0 to 1. Other scenarios
+  `PLND_EST_TYPE` from 0 to 1. The current stationary diagnostic keeps
+  `PLND_OPTIONS=4`, disabling target-velocity feedforward while retaining Kalman
+  position estimation; the moving candidate previously used 5. Other scenarios
   keep the base profile. The companion reads back every effective precision
   value before it can send a flight command. This profile is not flight-validated;
   see the [moving-pad evidence](../docs/handoff.md#moving-pad-verification) before tuning it.

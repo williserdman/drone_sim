@@ -3,7 +3,7 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-24. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-09-25. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
@@ -34,6 +34,13 @@ a fresh clone. Verify monorepo HEAD before a Phase 3 build; a mission log or
 score alone is not a pass.
 
 ## Moving-pad verification
+
+Approved diagnostic: one stationary flight with `PLND_OPTIONS=4`, retaining
+`PLND_EST_TYPE=1`, `PLND_LAG=0.08`, all gains, geometry, and tracking-loss policy.
+The launch overlay and companion parameter gate now select this profile. It is
+an experiment, not a promoted moving-pad fix; rebuild before running it. Its
+flight outcome is pending. Compare roll/position oscillation, retained marker
+visibility, and physical touchdown against the fifth attempt below.
 
 Five stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
@@ -73,16 +80,23 @@ and the final rendered tracking-loss sequence above remain valid evidence.
 The doubtful assumption is that re-enabling the Kalman precision estimator
 provides stable descent with this airframe's existing gains. The base
 `descent.parm` explicitly uses the raw estimator to avoid earlier Kalman
-oscillation; the moving overlay reintroduces the Kalman estimator. Recorded
-Kalman lateral position lags and briefly opposes the raw target offset. This
-supports an estimator/control interaction, but does not establish a validated fix.
-The raw estimator is a candidate comparison; it supplies zero target-velocity
-feedforward even when moving-target support is enabled.
+oscillation; the moving overlay reintroduces the Kalman estimator and enables
+moving-target velocity feedforward. DataFlash analysis finds that the stationary
+pad's inferred east velocity grows to roughly 0.5-0.8 m/s and enters the navigation
+command. The aircraft follows the growing roll command with 0.19 degrees mean
+absolute error; motor outputs remain clear of their limits. This locates the
+failure upstream of attitude control without proving the estimator is its sole
+cause. Raw `PL.mY` and predicted `PL.pY` describe different time horizons, so their
+earlier wrong-sign comparison alone was not proof of filter lag.
+The next isolating comparison should disable moving-target velocity feedforward
+while retaining the Kalman estimator. Raw estimator type 0 changes both position
+filtering and target-velocity behavior, making it a broader fallback experiment.
 Further full-flight retries stopped after repeated fixes. The 0.5 m/s moving
 mission has not been launched, pending a successful stationary control.
 
 Machine-local diagnostics and prelaunch expectations are under
-`.superpowers/sdd/moving-pad/`, including `stationary-5-diagnostics/REPORT.md`
+`.superpowers/sdd/moving-pad/`, including `stationary-5-diagnostics/REPORT.md`,
+the `stationary-5-diagnostics/flight-log-analysis/` reports and timeline plot,
 and `provenance.json`. Preserve them with the run bundles. The superseded
 implementation checklist remains in Git at `63f9674`; the architecture now
 contains the implemented contract and this handoff owns remaining validation.
@@ -173,12 +187,14 @@ the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Fix and test outbound landing-target timestamps against the pinned ArduPilot
-   time-correction behavior. Do not weaken observation freshness checks.
-2. Compare `PLND_EST_TYPE=0` against the current value of 1 in a bounded
-   stationary diagnostic, keeping `PLND_OPTIONS=5` and all other settings fixed.
+1. Compare `PLND_OPTIONS=4` against the current value of 5 in a bounded
+   stationary diagnostic, keeping `PLND_EST_TYPE=1`, `PLND_LAG=0.08`, and all
+   other settings fixed. This isolates inferred target-velocity feedforward.
    Keep the live parameter guard aligned with the diagnostic profile; verify
    continuous target visibility and absence of growing lateral/roll oscillation.
+2. Fix and test outbound landing-target timestamps against the pinned ArduPilot
+   time-correction behavior, then measure the appropriate lag before restoring
+   moving-target velocity feedforward. Do not weaken observation freshness checks.
 3. Obtain an independently accepted stationary control, then the 0.5 m/s moving
    mission. Require physical landing, 100/100, complete recordings, and provenance.
 4. Separately diagnose historical competition range-stream loss before claiming

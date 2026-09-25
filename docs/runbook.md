@@ -304,6 +304,10 @@ competition acceptance check.
 
 This mission is experimental. Read the [current flight evidence](handoff.md#moving-pad-verification)
 before using it for a demo; neither control nor moving acceptance has passed.
+The current branch profile is a stationary A/B with `PLND_OPTIONS=4`, retaining
+Kalman estimation and the original lag/gains. Run only the stationary fixture
+for this experiment. Restore the moving candidate and its matching companion
+parameter gate before launching the moving command below.
 
 Build from a committed checkout using [the image-build command](#build-runtime-images).
 The configured mission takes off to 5 m, flies 35 m east, then watches marker 7

@@ -1,3 +1,4 @@
-# Moving-target override layered after descent.parm for moving_pad_v1 only.
-PLND_OPTIONS 5
+# Stationary diagnostic for moving_pad_v1: isolate target-velocity feedforward.
+# Retain Kalman estimation and the base lag/gains; moving-target mode needs 5.
+PLND_OPTIONS 4
 PLND_EST_TYPE 1

@@ -252,6 +252,11 @@ verify in simulation, not a validated tuning claim. See
 [ArduPilot's landing documentation](https://ardupilot.org/copter/docs/precision-landing-and-loiter.html)
 and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp#L415).
 
+The current stationary diagnostic temporarily uses `PLND_OPTIONS=4` with the
+same estimator, lag, and gains. It isolates target-velocity feedforward after
+the failed baseline. This diagnostic does not establish moving-pad support;
+restore and verify the moving candidate before its flight acceptance.
+
 The moving operation must accept coherent target motion instead of applying
 the existing fixed-anchor drift rejection. Continue feeding valid observations
 near the deck. Above 0.75 m clearance, tracking loss lasting 0.5 simulated seconds
