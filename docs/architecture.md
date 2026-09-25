@@ -258,11 +258,14 @@ verify in simulation, not a validated tuning claim. See
 and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp#L415).
 
 The stationary option-4 diagnostic isolated target-velocity feedforward and
-landed, but does not establish moving-pad support. The current moving candidate
-restores option 5 and tests `PLND_LAG=0.04` after the recorded observation-to-log
-interval of 25-40 ms exposed possible overcompensation at 0.08 s. This remains a
-tuning hypothesis until flight verification; the base competition profile and
-controller gains stay unchanged.
+landed, but does not establish moving-pad support. The next moving flight used
+option 5 and `PLND_LAG=0.04`; its velocity estimate diverged and tracking failed.
+The current controlled experiment changes only `PLND_EST_TYPE` to 0, preserving
+that lag, options, gains, geometry, and loss policy. Raw mode sends zero target
+velocity to the position controller; a moving option bit alone does not prove
+velocity feedforward is active. Following camera positions may retain enough
+lag to lose the shrinking field of view, so moving landing remains unverified.
+See the [recorded outcome](handoff.md#moving-pad-verification).
 
 The moving operation must accept coherent target motion instead of applying
 the existing fixed-anchor drift rejection. Continue feeding valid observations

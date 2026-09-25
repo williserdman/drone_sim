@@ -155,7 +155,7 @@ def test_ordinary_configured_plan_ignores_moving_profile_parameter_values():
     ])
 
     host.observe(Telemetry(
-        0, parameter_name="PLND_EST_TYPE", parameter_value=0.0,
+        0, parameter_name="PLND_EST_TYPE", parameter_value=1.0,
     ))
 
     assert host.error is None
@@ -196,7 +196,7 @@ def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
         "PLND_ENABLED": 1.0,
         "PLND_TYPE": 1.0,
         "PLND_LAG": 0.04,
-        "PLND_EST_TYPE": 1.0,
+        "PLND_EST_TYPE": 0.0,
         "PLND_XY_DIST_MAX": 0.50,
         "PLND_STRICT": 2.0,
         "PLND_RET_MAX": 1.0,

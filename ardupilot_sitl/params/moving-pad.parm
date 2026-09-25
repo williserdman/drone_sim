@@ -1,5 +1,5 @@
-# Moving-target candidate layered after descent.parm for moving_pad_v1 only.
-# Test 40 ms lag against the recorded 25-40 ms observation-to-log interval.
+# Raw-position moving-pad experiment layered after descent.parm.
+# Keep OPTIONS and LAG fixed; raw mode supplies zero target-velocity feedforward.
 PLND_OPTIONS 5
-PLND_EST_TYPE 1
+PLND_EST_TYPE 0
 PLND_LAG 0.04

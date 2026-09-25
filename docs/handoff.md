@@ -12,8 +12,9 @@ The stationary A/B with `PLND_OPTIONS=4` landed on the deck and scored 100/100.
 Peak roll fell from 19.04 to 1.17 degrees. Artifact finalization rejected the
 bundle because retrospective touchdown score events have earlier timestamps
 than the final score event published before them. The moving-target profile
-with option 5 still lacks a stable landing, and the moving flight is unrun.
-This remains a diagnostic, not an accepted moving-pad demo.
+with option 5 still lacks a stable landing. A subsequent actual 0.5 m/s moving
+flight reached LAND at about 49.08 s, lost tracking at 51.55 s, and scored 0/100.
+Neither run is an accepted moving-pad demo.
 
 The diagnostic passed 250 companion/SITL tests. All seven runtime images were
 built from clean `7ec09e1a7f02849b264690aa763da40d4fdb4c38`. Earlier full checks
@@ -44,12 +45,22 @@ an experiment, not a promoted moving-pad fix. Recorded control parameters
 confirm that only `PLND_OPTIONS` changed. Frozen mission inputs match the fifth
 attempt except for run identity and its checksum.
 
-The next candidate restores `PLND_OPTIONS=5` and tests `PLND_LAG=0.04`, with
+The recorded Kalman moving candidate restored `PLND_OPTIONS=5` and tested `PLND_LAG=0.04`, with
 camera exposure timestamps preserved through MAVLink and chronological score
 events. The target run is `config/configured-moving-pad-run.json`: the pad moves
-at 0.5 m/s from mission start through touchdown. Its outcome is pending. Current affected-module checks passed 1,335 tests with
+at 0.5 m/s from mission start. Run `2a5f3972-c851-4d13-b92e-145ef34cedb6`
+failed above final clearance without touchdown or disarm. Current affected-module
+checks passed 1,335 tests with
 12 ROS/environment cases skipped. These cover companion, SITL, scorekeeper, and
 artifacts; unchanged native Gazebo and imported Comp2026 suites were not rerun.
+
+The next experiment changes only `PLND_EST_TYPE` from 1 to 0. It retains option 5,
+40 ms lag, all gains, geometry, and loss policy. Raw mode supplies zero target
+velocity and follows camera positions; whether this can track the 0.5 m/s pad
+through the shrinking field of view remains unproven. A fresh build, prelaunch
+provenance, and actual moving run are required. The parameter-only follow-up
+passed 251 companion/SITL tests; other suites were not repeated after the prior
+1,335-test check.
 
 Six stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
@@ -62,6 +73,7 @@ budget without changing the absolute settle/acquisition deadlines.
 | `0f608531-736f-495e-a6b9-b55afb0452f9` | Takeoff at 7.05 s; waypoint at 14.45 s; no LAND; aborted at 54 s | 0/100, incomplete | `ABORTED`; rosbag incomplete at abort boundary; not accepted | `1b4efbf42ef55f75af8c887de77af1870995eb7b` |
 | `24a1f1c5-7846-40d4-9c4d-ddcd6da15506` | Takeoff at 7.05 s; waypoint at 14.55 s; LAND at 17.35 s; tracking lost at 20.40 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; rosbag incomplete at failure boundary; not accepted | `c523af3adce8230624cf8c7953920ca51c3f0891` |
 | `f7c75af5-12a3-4bda-b4c2-41c519ac3943` | Takeoff at 7.05 s; waypoint at 14.45 s; touchdown at 27.45 s; observed disarm/mission success at 30.05 s | 100/100, complete | Full 90 s recorded; `FAILED` for nonmonotonic score-event timestamps; not accepted | `7ec09e1a7f02849b264690aa763da40d4fdb4c38` |
+| `2a5f3972-c851-4d13-b92e-145ef34cedb6` | Moving pad; takeoff 7.05 s; waypoint 14.55 s; LAND about 49.08 s; tracking lost 51.55 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; abort-tail pad/vehicle grid mismatch; not accepted | `921e09b9eca6eaab9756d54a43994959eae5a867` |
 
 Each bundle lives at `runs/RUN_ID/` in the moving-pad worktree. Videos are
 `video/onboard.mp4` and `video/observer.mp4`; manifests contain both clean source
@@ -71,6 +83,7 @@ Manifest SHA-256 values, in table order:
 - `2e0d4998b47ad454e6b5329f84e9e29d0900f474ccb02cd768f1f6e5f6b756b7`
 - `ccfd1ae4b74a5c2709454ea2bc5e3b609918016db735be0e9d6d8e36633aeb93`
 - `124157bdd19718dfd2fd21b1011f0c9b531a80950803ffd517f6066082918fa1`
+- `d3dd03c03195e9fe7a292e53ae0488f78b04d09655d824ca6ffedb6db2911abf`
 
 The failed option-5 onboard recording contains 408 frames at 640x480/20 Hz. Recorded
 camera/range timestamps match at every 50 ms tick. Production camera replay
@@ -86,7 +99,7 @@ jitter correction then clamps measurement time to its maximum lag after an
 initial constant-timestamp period. The current candidate carries camera exposure
 time through the policy and operation owner, converting nanoseconds to MAVLink
 microseconds. Focused tests cover delayed observations, duplicate suppression,
-and wire conversion. Flight verification is pending. The old zero field alone
+and wire conversion. The subsequent moving flight still failed. The old zero field alone
 does not establish why the estimator inferred false motion.
 
 The failed baseline questioned whether Kalman moving-target tracking provides
@@ -108,7 +121,27 @@ disarm. ArduPilot target loss occurred after physical touchdown. This supports
 false target-velocity feedforward as the immediate destabilizing path, but does
 not establish why the estimator inferred motion. Raw estimator type 0 changes
 both position filtering and target-velocity behavior, so remains a broader
-fallback experiment. The 0.5 m/s moving mission has not been launched.
+fallback experiment.
+
+The subsequent moving flight used clean `921e09b`, matching all seven captured
+image IDs and both source identities. Recorded pad position advances from
+10.0255 to 35.7755 m over 51.5 s, with east velocity 0.5 m/s throughout. The
+marker was found at 47.10 s; ArduPilot reported initialization complete at
+49.10 s. During 2.44 s of LAND, peak roll reached 14.54 degrees and inferred
+pad east velocity ranged from -0.359 to 1.207 m/s against the actual 0.5 m/s.
+The aircraft followed the roll command with 0.177 degrees mean absolute error.
+GUIDED recovery appears in DataFlash at about 51.52 s; the companion failed
+the operation at 51.55 s. These estimates align two matched ArduPilot status
+messages with 0.34 ms maximum residual. The timing patch and shorter lag did
+not resolve the moving-target instability. No new gain or guard changes were
+made after this failure.
+
+Both moving-run videos contain 1,031 frames at 640x480/20 Hz, lasting 51.55 s,
+with hashes matching the manifest. Strict acceptance rejects the failed
+manifest. Its bag has 1,031 pad samples and 1,030 vehicle samples at the abort
+boundary, so the physical grid is incomplete. No touchdown events were produced,
+so this flight does not verify the successful-landing score-ordering fix end
+to end; that fix has focused test coverage only.
 
 The option-4 scorer records touchdown offset 0.00570 m and relative speed
 0.0607 m/s. Both H.264 videos contain 1,800 frames at 640x480/20 Hz and last 90 s.
@@ -203,21 +236,22 @@ scoped review fixes; no Critical, Important, or Minor findings remain.
 
 ## Image and runtime boundary
 
-Current Phase 3 tags point to the clean `7ec09e1` build used by the latest
-stationary attempt. Prelaunch expectations were captured before that run.
+Current Phase 3 tags point to the clean `921e09b` build used by the moving
+attempt. Prelaunch expectations were captured in `provenance-moving-timing.json`
+before that run. The stationary images remain preserved separately.
 Subsequent documentation commits do not change those recorded source identities.
 Earlier images remain under preservation tags; never retag them as new evidence.
 Rebuild after runtime edits and capture new expectations before the next flight.
 
 Physical stationary landing: achieved. Score: 100/100, complete. Artifact acceptance:
-not passed. Moving flight: unrun. Images: rebuilt. No current competition flight was run in this task;
+not passed. Moving flight: attempted, failed tracking, no landing. Images: rebuilt. No current competition flight was run in this task;
 the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Build the tested timestamp and score-ordering fixes, capture fresh provenance,
-   and run the actual 0.5 m/s moving course with option 5 and 40 ms lag. Preserve
-   the tracking-loss guard and all historical evidence.
+1. Run the controlled raw-estimator experiment on the same moving course.
+   Preserve `2a5f3972` evidence, all gains, and the tracking-loss guard. Do not
+   present the stationary run or the moving option bit as moving-flight success.
 2. Require physical landing, 100/100, complete recordings, and independent artifact
    acceptance before claiming the moving mission works. The new lag remains a
    hypothesis until flight evidence supports it.

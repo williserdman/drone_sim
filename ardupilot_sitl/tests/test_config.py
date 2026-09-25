@@ -201,7 +201,7 @@ def test_moving_profile_overlays_only_moving_estimator_values(tmp_path: Path) ->
 
     defaults = config.argv[config.argv.index("--defaults") + 1]
     assert defaults == "/opt/drone_sim/ardupilot/params/descent.parm,/opt/drone_sim/ardupilot/params/moving-pad.parm"
-    assert _moving_parameters() == {"PLND_OPTIONS": "5", "PLND_EST_TYPE": "1", "PLND_LAG": "0.04"}
+    assert _moving_parameters() == {"PLND_OPTIONS": "5", "PLND_EST_TYPE": "0", "PLND_LAG": "0.04"}
 
 
 @pytest.mark.parametrize(

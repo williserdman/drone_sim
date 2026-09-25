@@ -304,9 +304,10 @@ competition acceptance check.
 
 This mission is experimental. Read the [current flight evidence](handoff.md#moving-pad-verification)
 before using it for a demo; neither control nor moving acceptance has passed.
-The current candidate restores moving-target velocity feedforward and tests
-40 ms lag with exposure-stamped target messages. The prior option-4 stationary
-run is a diagnostic control, not evidence of moving-pad landing.
+The current experiment uses raw position estimation, retaining option 5 and
+40 ms lag with exposure-stamped target messages. Raw mode supplies zero target
+velocity. The prior Kalman moving flight lost tracking at 51.55 s; the option-4
+stationary success is not evidence of moving-pad landing.
 
 Build from a committed checkout using [the image-build command](#build-runtime-images).
 The configured mission takes off to 5 m, flies 35 m east, then watches marker 7

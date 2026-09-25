@@ -79,13 +79,12 @@ that SITL exited, and it always attempts to close the protocol.
   assertions in [test_config.py](tests/test_config.py).
 - A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
   comma-separated `--defaults` argument. The later file changes only
-  `PLND_EST_TYPE` from 0 to 1, `PLND_OPTIONS` from 4 to 5, and `PLND_LAG` from
-  0.08 to 0.04 s. The lag is a test candidate based on recorded observation
-  timing, not a validated tuning claim. Moving-target velocity feedforward is
-  enabled; the stationary option-4 experiment remains historical evidence. Other scenarios
+  `PLND_OPTIONS` from 4 to 5 and `PLND_LAG` from 0.08 to 0.04 s, with raw
+  `PLND_EST_TYPE=0` explicitly retained. This experiment follows target positions
+  without target-velocity feedforward. The previous Kalman moving flight failed;
+  neither estimator is validated for moving landing. Other scenarios
   keep the base profile. The companion reads back every effective precision
-  value before it can send a flight command. This profile is not flight-validated;
-  see the [moving-pad evidence](../docs/handoff.md#moving-pad-verification) before tuning it.
+  value before it can send a flight command. See the [moving-pad evidence](../docs/handoff.md#moving-pad-verification) before tuning it.
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is
