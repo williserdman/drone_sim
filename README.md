@@ -59,7 +59,7 @@ and edit its `mission_plan.steps`. The [companion guide](companion/README.md#con
 defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow)
 covers rebuilding changed code, running one template, and running the automatic set.
 
-[configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds an
+[configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds a
 camera-guided landing on a deck traveling at 0.5 m/s. The stock EKF3 profile
 completed an independently accepted moving landing with 100/100 and full
 90-second recordings. A separate stationary run landed but exposed an

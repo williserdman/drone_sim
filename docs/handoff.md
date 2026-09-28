@@ -45,6 +45,28 @@ score alone is not a pass.
 
 ## Moving-pad verification
 
+### Lessons for future missions
+
+- Native ArduPilot precision LAND can land on the 0.5 m/s pad with the current
+  camera. The accepted EKF3 run did not need a companion descent controller.
+- Check estimator input frames and timing before tuning gains. The pinned SIM
+  attitude path returned body-frame delta velocity through a NED interface;
+  the camera's measured 0.49676 m/s versus true 0.5 m/s was not a large error.
+- An enabled moving-target option is insufficient when raw precision estimation
+  supplies zero target velocity. Increasing position gain from 1 to 4 did not
+  remove the observed following offset or produce touchdown.
+- Require live parameter readback and preserve source, images, configuration,
+  and flight logs together. Scope estimator changes to the moving scenario
+  until the existing scenarios have fresh regression evidence.
+- Physical landing, scoring, and artifact acceptance are separate results.
+  Keep missing contact evidence fail-closed, and fix velocity-frame diagnostics
+  separately without rewriting accepted recordings.
+
+The detailed evidence and limitations follow. A full scenario regression sweep
+was requested on 2026-09-28 after the accepted moving flight. Each checked-in
+automatic run template, the stationary control, and the operator-wait template
+must get a fresh run with frozen provenance; results are not yet established.
+
 Completed diagnostic: one stationary flight with `PLND_OPTIONS=4`, retaining
 `PLND_EST_TYPE=1`, `PLND_LAG=0.08`, all gains, geometry, and tracking-loss policy.
 The recorded launch overlay and companion parameter gate selected this profile. It was
