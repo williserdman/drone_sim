@@ -78,17 +78,18 @@ that SITL exited, and it always attempts to close the protocol.
   runtime; inspect [descent.parm](params/descent.parm) and its executable
   assertions in [test_config.py](tests/test_config.py).
 - A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
-  comma-separated `--defaults` argument. The later file changes only
-  `PLND_OPTIONS` from 4 to 5 and `PLND_LAG` from 0.08 to 0.04 s, with raw
-  `PLND_EST_TYPE=0` explicitly retained. The gain experiment also sets
-  `PSC_NE_POS_P=4`, replacing the upstream default of 1 for this scenario only.
-  It affects horizontal waypoint and landing response throughout the run.
-  This experiment follows target positions
-  without target-velocity feedforward. Both Kalman and raw moving flights lost
-  tracking before touchdown; the gain-4 follow-up did not land within the
-  recording window. This remains an experimental profile. Other scenarios
-  keep the base profile. The companion reads back every effective precision
-  value before it can send a flight command. See the [moving-pad evidence](../docs/handoff.md#moving-pad-verification) before tuning it.
+  comma-separated `--defaults` argument. The current moving-only experiment
+  selects stock `AHRS_EKF_TYPE=3` and native precision `PLND_EST_TYPE=1`, with
+  `PLND_OPTIONS=5`, `PLND_LAG=0.04`, and the original `PSC_NE_POS_P=1`.
+  Against the earlier Kalman moving run, only the aircraft estimator changes.
+  This changes attitude/navigation estimation throughout the flight. Other
+  scenarios keep the base profile. The companion reads back every expected
+  value, including the aircraft estimator, before sending a flight command.
+  Moving landing remains experimental; see the [moving-pad evidence](../docs/handoff.md#moving-pad-verification).
+- Offline diagnosis found that the pinned `AHRS_EKF_TYPE=10` path returns body
+  delta velocity through the NED interface consumed by precision landing.
+  Native Kalman landing is affected. The EKF3 experiment avoids that return
+  path; flight validation is pending. See the [native-estimator findings](../docs/handoff.md#native-estimator-findings).
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is

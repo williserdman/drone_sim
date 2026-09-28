@@ -82,11 +82,11 @@ arm and disarm transitions publish mission events in phase `MOVING_PAD`.
 The companion's expected profile is a live command gate, while the two SITL
 parameter files remain the launch inputs. A focused test merges those inputs and
 requires the gated values to match, preventing silent drift between them.
-The current experiment uses `PLND_EST_TYPE=0`, retaining `PLND_OPTIONS=5` and
-`PLND_LAG=0.04`, and gates `PSC_NE_POS_P=4` for the moving-only gain experiment.
-A missing or mismatched gain blocks readiness and flight commands. Raw
-estimation follows camera positions and supplies zero
-target-velocity feedforward even with the moving-target option set. The prior
+The current moving-only experiment requires `AHRS_EKF_TYPE=3`, restoring
+native precision `PLND_EST_TYPE=1` and the original `PSC_NE_POS_P=1` while
+retaining `PLND_OPTIONS=5` and `PLND_LAG=0.04`. Missing or mismatched values
+block readiness and flight commands. EKF3 avoids the diagnosed SIM attitude
+delta-velocity frame error; native LAND still owns tracking and descent. The prior
 Kalman moving flight lost tracking at 51.55 s. The raw follow-up also lost
 tracking, at 63.65 s without touchdown. The gain-4 trial tracked through the
 90-second window but did not land. This is not a validated moving profile. See the [current experiment](../docs/handoff.md#moving-pad-verification).

@@ -304,10 +304,11 @@ competition acceptance check.
 
 This mission is experimental. Read the [current flight evidence](handoff.md#moving-pad-verification)
 before using it for a demo; neither control nor moving acceptance has passed.
-The current gain experiment sets `PSC_NE_POS_P=4` in the moving-only overlay.
-It uses raw position estimation, retaining option 5 and 40 ms lag with
-exposure-stamped target messages. Raw mode supplies zero target
-velocity. The first two moving trials failed tracking, Kalman at 51.55 s and raw at
+The current moving-only experiment selects stock `AHRS_EKF_TYPE=3`, native
+precision `PLND_EST_TYPE=1`, and the original `PSC_NE_POS_P=1`. It retains
+option 5 and 40 ms lag with exposure-stamped target messages. EKF3 avoids the
+diagnosed SIM attitude delta-velocity frame error; flight validation is pending.
+The first two moving trials failed tracking, Kalman at 51.55 s and raw at
 63.65 s. Gain 4 tracked through the 90-second recording window without landing.
 The option-4 stationary success is not evidence of moving-pad landing.
 

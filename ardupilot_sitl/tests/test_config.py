@@ -191,7 +191,7 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
     assert "--no-lockstep" not in config.argv
 
 
-def test_moving_profile_overlays_moving_estimator_and_position_gain(tmp_path: Path) -> None:
+def test_moving_profile_overlays_ekf3_and_native_precision_estimator(tmp_path: Path) -> None:
     overlay = Path("/opt/drone_sim/ardupilot/params/moving-pad.parm")
     config = RuntimeConfig(
         run_id=RUN_ID,
@@ -201,7 +201,13 @@ def test_moving_profile_overlays_moving_estimator_and_position_gain(tmp_path: Pa
 
     defaults = config.argv[config.argv.index("--defaults") + 1]
     assert defaults == "/opt/drone_sim/ardupilot/params/descent.parm,/opt/drone_sim/ardupilot/params/moving-pad.parm"
-    assert _moving_parameters() == {"PLND_OPTIONS": "5", "PLND_EST_TYPE": "0", "PLND_LAG": "0.04", "PSC_NE_POS_P": "4"}
+    assert _moving_parameters() == {
+        "AHRS_EKF_TYPE": "3",
+        "PLND_OPTIONS": "5",
+        "PLND_EST_TYPE": "1",
+        "PLND_LAG": "0.04",
+        "PSC_NE_POS_P": "1",
+    }
 
 
 @pytest.mark.parametrize(

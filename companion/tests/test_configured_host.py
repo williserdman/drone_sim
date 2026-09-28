@@ -132,7 +132,12 @@ def test_low_takeoff_target_cannot_succeed_at_ground_altitude():
 
 @pytest.mark.parametrize(
     ("parameter_name", "actual", "expected"),
-    [("PLND_OPTIONS", 4.0, 5.0), ("PSC_NE_POS_P", 1.0, 4.0)],
+    [
+        ("PLND_OPTIONS", 4.0, 5.0),
+        ("AHRS_EKF_TYPE", 10.0, 3.0),
+        ("PLND_EST_TYPE", 0.0, 1.0),
+        ("PSC_NE_POS_P", 4.0, 1.0),
+    ],
 )
 def test_moving_profile_mismatch_emits_zero_flight_commands(parameter_name, actual, expected):
     host, vehicle, protocol = host_for([
@@ -198,11 +203,12 @@ def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
                 effective[name] = float(value)
 
     assert {name: effective[name] for name in MOVING_PRECISION_PARAMETERS} == {
+        "AHRS_EKF_TYPE": 3.0,
         "LAND_SPD_MS": 0.50,
         "PLND_ENABLED": 1.0,
         "PLND_TYPE": 1.0,
         "PLND_LAG": 0.04,
-        "PLND_EST_TYPE": 0.0,
+        "PLND_EST_TYPE": 1.0,
         "PLND_XY_DIST_MAX": 0.50,
         "PLND_STRICT": 2.0,
         "PLND_RET_MAX": 1.0,
@@ -210,7 +216,7 @@ def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
         "PLND_ALT_MIN": 0.75,
         "PLND_ALT_MAX": 8.0,
         "PLND_OPTIONS": 5.0,
-        "PSC_NE_POS_P": 4.0,
+        "PSC_NE_POS_P": 1.0,
     }
     assert {name: effective[name] for name in MOVING_PRECISION_PARAMETERS} == MOVING_PRECISION_PARAMETERS
 

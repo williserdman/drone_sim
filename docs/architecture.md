@@ -251,8 +251,8 @@ and recording only. Autonomy uses camera, range, and vehicle telemetry.
 
 Use a dedicated moving-target parameter profile, initially `PLND_OPTIONS=5`
 and `PLND_EST_TYPE=1`, retaining the 0.5 m/s final descent setting. Bit 0 enables
-moving-target support; bit 2 preserves final descent speed. The current raw
-estimator supplies no target-velocity estimate. These are initial settings to
+moving-target support; bit 2 preserves final descent speed. Raw estimation
+supplies no target-velocity estimate. These are initial settings to
 verify in simulation, not a validated tuning claim. See
 [ArduPilot's landing documentation](https://ardupilot.org/copter/docs/precision-landing-and-loiter.html)
 and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp#L460).
@@ -265,11 +265,16 @@ that lag, options, gains, geometry, and loss policy. Raw mode sends zero target
 velocity to the position controller; a moving option bit alone does not prove
 velocity feedforward is active. Following camera positions may retain enough
 lag to lose the shrinking field of view. The raw moving trial also failed
-tracking at 63.65 s. The gain experiment sets `PSC_NE_POS_P=4` only
-in the moving profile and adds it to the preflight readback gate. It retains
+tracking at 63.65 s. The gain experiment set `PSC_NE_POS_P=4` only
+in the moving profile and added it to the preflight readback gate. It retained
 raw estimation, camera geometry, pad speed, and all loss/handoff rules. The
 stronger horizontal response also affects transit and initial target capture.
 The gain-4 trial tracked through the 90-second window but did not land.
+The current experiment uses stock `AHRS_EKF_TYPE=3` to avoid the diagnosed SIM
+delta-velocity frame error, restores `PLND_EST_TYPE=1` and `PSC_NE_POS_P=1`,
+and retains option 5 and 40 ms lag. The aircraft estimator is also required by
+the preflight readback gate. Native LAND ownership, camera, pad motion, and
+loss/handoff rules stay fixed. Flight validation is pending.
 Moving landing remains unresolved until physical and artifact checks pass.
 See the [recorded outcome](handoff.md#moving-pad-verification).
 

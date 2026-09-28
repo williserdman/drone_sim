@@ -19,6 +19,13 @@ The subsequent gain-4 experiment tracked through the full recording window but
 did not land. It was explicitly aborted after public time stopped at 90 s.
 There is no accepted moving-pad demo.
 
+The subsequent offline diagnosis identifies a frame error in the pinned
+ArduPilot SIM attitude path used by `AHRS_EKF_TYPE=10`. It returns body-frame
+delta velocity to the precision estimator's NED interface. Source execution
+and recorded prediction-only intervals agree on the error. The approved
+moving-only stock EKF3 profile is implemented; new flight validation is pending.
+See the native-estimator findings below.
+
 The diagnostic passed 250 companion/SITL tests. All seven runtime images were
 built from clean `7ec09e1a7f02849b264690aa763da40d4fdb4c38`. Earlier full checks
 at `c523af3` passed 2,071 tests with 27 ROS/environment cases skipped; the
@@ -75,6 +82,13 @@ Run `2b5c9332-757a-4f75-a477-aef315427354` did not land within 90 public seconds
 The host was still waiting for mission completion after the public clock capped;
 explicit abort preserved the recording. Physical outcome: no touchdown/disarm.
 Score: incomplete 0/100. Terminal state: `ABORTED`, not accepted.
+
+The approved native-LAND follow-up sets `AHRS_EKF_TYPE=3`, restores
+`PLND_EST_TYPE=1` and `PSC_NE_POS_P=1`, and keeps option 5, 40 ms lag, geometry,
+and guards unchanged. Relative to the earlier Kalman moving run `2a5f3972`,
+only the aircraft estimator changes. The companion now requires its readback
+before flight. Focused checks passed 254 companion/SITL tests; unchanged modules
+were not rerun. Stationary and moving flight results are pending.
 
 Six stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
@@ -206,6 +220,39 @@ both source revisions, and all seven image IDs match prelaunch expectations.
 Strict acceptance rejects the aborted manifest. Its bag has 1,800 pad samples
 versus 1,799 vehicle samples, so the physical grid is incomplete.
 
+### Native-estimator findings
+
+Read-only diagnosis on 2026-09-28 found a specific frame error in pinned
+[AP_AHRS::_getCorrectedDeltaVelocityNED](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AP_AHRS/AP_AHRS.cpp#L2660).
+The SIM branch leaves `imu_idx=-1`; its early return passes integrated body
+specific force through without the later body-to-NED rotation and gravity
+correction. `AC_PrecLand` consumes that result as NED delta velocity. Both
+Kalman runs recorded `AHRS_EKF_TYPE=10` and `PLND_OPTIONS=5`.
+
+An isolated C++ probe executes that exact upstream function with stubbed sensor
+inputs. At 0.14 rad roll and a 10 ms interval, the SIM branch returns zero east
+delta velocity; the EKF3 branch returns the expected 0.0136845 m/s. This proves
+the branch behavior, not a successful flight. Stationary DataFlash independently
+matches it: during rejected camera fusions, relative east velocity changes at
+about 0.000-0.003 m/s² while vehicle east acceleration is 1.1-1.4 m/s². The
+prediction follows body-Y acceleration instead of subtracting earth-east motion.
+Healthy raw IMU measurements do not rule out this interface conversion error.
+
+The moving recording independently rules out a large camera-motion error.
+Production camera vectors reconstructed with recorded exposure-time attitude
+give 0.49676 m/s east pad speed over 49.10-51.00 s against true 0.5 m/s, with
+23.9 mm maximum absolute east position error. Truth is used only for this offline
+comparison. Exposure timestamp correction handles the public/native clock
+offset; `PLND_LAG` still independently selects a fixed inertial-history depth.
+
+The approved bounded experiment uses stock EKF3 (`AHRS_EKF_TYPE=3`) in the
+moving profile, restoring Kalman precision estimation and the pre-gain-trial
+position gain. It preserves native LAND, camera, 0.5 m/s pad motion, and guards.
+This changes the aircraft's attitude/navigation estimate as well as the
+delta-velocity path, so a stationary check and moving flight remain necessary.
+The parameter change and readback gate are implemented. A firmware patch is another possible
+route, but is not required to test the stock EKF3 path.
+
 The raw-run pad moved 31.825 m over 63.65 s at 0.5 m/s. Both videos contain
 1,273 frames at 640x480/20 Hz and last 63.65 s. Both source revisions, all seven
 image IDs, and video hashes match captured expectations. Strict acceptance
@@ -231,7 +278,9 @@ the `stationary-5-diagnostics/flight-log-analysis/` reports and timeline plot,
 `provenance-moving-timing.json`, `provenance-moving-raw.json`,
 `provenance-moving-gain4.json`, `gain4-bounded-report.md`, and each
 `moving-diagnostic-RUN_ID.json` / `moving-acceptance-RUN_PREFIX.log`. Preserve them
-with the run bundles. The superseded
+with the run bundles. `native-estimator-diagnosis/` contains the exact-source
+`probe_ahrs_frame.py`, its C++ output, inertial checks, and moving-camera replay.
+The superseded
 implementation checklist remains in Git at `63f9674`; the architecture now
 contains the implemented contract and this handoff owns remaining validation.
 
@@ -322,8 +371,8 @@ the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Address target motion before the downstream position controller. Gain 4 did
-   not reduce observed target offset. Preserve all
+1. Test a native-LAND profile that avoids the diagnosed SIM delta-velocity frame
+   error. Stock EKF3 is implemented, with flight validation pending. Preserve all
    three moving experiments and the existing tracking-loss guard.
 2. Require physical landing, 100/100, complete recordings, and independent artifact
    acceptance before claiming the moving mission works. The new lag remains a
