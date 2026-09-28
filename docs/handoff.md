@@ -15,6 +15,8 @@ than the final score event published before them. The moving-target profile
 with option 5 still lacks a stable landing. A subsequent actual 0.5 m/s moving
 flight reached LAND at about 49.08 s, lost tracking at 51.55 s, and scored 0/100.
 A raw-estimator follow-up also failed tracking at 63.65 s without touchdown.
+The subsequent gain-4 experiment tracked through the full recording window but
+did not land. It was explicitly aborted after public time stopped at 90 s.
 There is no accepted moving-pad demo.
 
 The diagnostic passed 250 companion/SITL tests. All seven runtime images were
@@ -62,14 +64,17 @@ supplies zero target velocity; this result does not validate position-only
 moving landing. The parameter-only follow-up passed 251 companion/SITL tests; other suites were not repeated after the prior
 1,335-test check.
 
-The approved 2026-09-28 experiment changes only `PSC_NE_POS_P` from the recorded
+The approved 2026-09-28 experiment changed only `PSC_NE_POS_P` from the recorded
 default of 1 to 4 in the moving profile. The companion requires that value before
 flight. Raw estimation, pad motion, camera, other gains, and guards stay fixed.
-The predicted following error is near the camera limit, so source tests do not
-establish success. Require actual touchdown/disarm, 100/100, and independent
-artifact acceptance from a fresh recorded run. Focused companion/SITL checks
+The proposed reduction in following error was a hypothesis. Success requires
+actual touchdown/disarm, 100/100, and independent artifact acceptance from a
+fresh recorded run. Focused companion/SITL checks
 passed 252 tests; other modules were unchanged and their suites were not rerun.
-Flight outcome is pending.
+Run `2b5c9332-757a-4f75-a477-aef315427354` did not land within 90 public seconds.
+The host was still waiting for mission completion after the public clock capped;
+explicit abort preserved the recording. Physical outcome: no touchdown/disarm.
+Score: incomplete 0/100. Terminal state: `ABORTED`, not accepted.
 
 Six stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
@@ -84,6 +89,7 @@ budget without changing the absolute settle/acquisition deadlines.
 | `f7c75af5-12a3-4bda-b4c2-41c519ac3943` | Takeoff at 7.05 s; waypoint at 14.45 s; touchdown at 27.45 s; observed disarm/mission success at 30.05 s | 100/100, complete | Full 90 s recorded; `FAILED` for nonmonotonic score-event timestamps; not accepted | `7ec09e1a7f02849b264690aa763da40d4fdb4c38` |
 | `2a5f3972-c851-4d13-b92e-145ef34cedb6` | Moving pad; takeoff 7.05 s; waypoint 14.55 s; LAND about 49.08 s; tracking lost 51.55 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; abort-tail pad/vehicle grid mismatch; not accepted | `921e09b9eca6eaab9756d54a43994959eae5a867` |
 | `08113757-a7d3-4f5d-aa21-ca26ea0fa1be` | Moving pad, raw estimator; takeoff 7.05 s; waypoint 14.45 s; tracking lost 63.65 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; not accepted | `2371e61cf497168e0e5c1cf9316c2194eff0dbf9` |
+| `2b5c9332-757a-4f75-a477-aef315427354` | Moving pad, raw estimator, gain 4; takeoff 7.05 s; waypoint 14.45 s; no touchdown/disarm in 90 s | 0/100, incomplete | `ABORTED` after recording window; pad/vehicle grid mismatch; not accepted | `a14347c5bcec4d134c725b909ff6cc9a8f15dc60` |
 
 Each bundle lives at `runs/RUN_ID/` in the moving-pad worktree. Videos are
 `video/onboard.mp4` and `video/observer.mp4`; manifests contain both clean source
@@ -95,6 +101,7 @@ Manifest SHA-256 values, in table order:
 - `124157bdd19718dfd2fd21b1011f0c9b531a80950803ffd517f6066082918fa1`
 - `d3dd03c03195e9fe7a292e53ae0488f78b04d09655d824ca6ffedb6db2911abf`
 - `f5b05cbac3a2148d0a4fff894d5da9eb63391dc89461d30c2161c737d7c330a4`
+- `2e4587ace597352612a78b13c4d390f563698746ae3a2211ddc10ecb8df84fe4`
 
 The failed option-5 onboard recording contains 408 frames at 640x480/20 Hz. Recorded
 camera/range timestamps match at every 50 ms tick. Production camera replay
@@ -156,8 +163,8 @@ to end; that fix has focused test coverage only.
 
 The raw follow-up lasted 14.486 s from LAND to GUIDED. After the initial
 transient, vehicle east speed had median 0.499 m/s and target-right offset
-stayed around 0.52-0.55 m. This matches position-only following with
-`PSC_NE_POS_P=1`: 0.5 m/s requires about 0.5 m of position error. Peak roll was
+stayed around 0.52-0.55 m. The initial explanation attributed this to
+`speed / PSC_NE_POS_P`; the gain-4 result below disproves that model. Peak roll was
 5.335 degrees during initial capture, with 0.048 degrees mean tracking error.
 The last fresh target was 0.542 m right at 1.914 m down. With the pinned 0.6 rad
 horizontal camera FOV and 0.1 m marker, the visible center limit is also 0.542 m.
@@ -167,6 +174,37 @@ times come from DataFlash; absolute public alignment has only one matched status
 message. The 0.5 m horizontal descent gate also explains intermediate plateaus.
 Further tuning is stopped pending a control choice that addresses following
 error without recreating the velocity instability.
+
+The gain-4 DataFlash log confirms `PSC_NE_POS_P=4`. Median fresh target offset
+remained 0.534 m, essentially unchanged from the prior raw flight. Peak actual
+roll reached 8.01 degrees during capture; tracking error averaged 0.035 degrees
+through the recorded window. The final bounded measurement was 0.535 m east at
+2.118 m down, with about 0.070 m of horizontal marker margin. No measurement
+reached the 0.75 m handoff. ArduPilot retained target acquisition throughout the
+window; its later target-loss message occurred after the public sensor stream
+ended and must not be treated as an in-window tracking failure.
+At the end, the commanded east position and aircraft east position differed by
+only about 0.0003 m while the pad remained roughly 0.54 m ahead. This contradicts
+the proposed assumption that the observed following offset would shrink as
+`speed / PSC_NE_POS_P`; the aircraft already tracked the intermediate command.
+The pinned [precision estimator](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp)
+supplies zero target velocity in raw mode. The [position controller](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AttitudeControl/AC_PosControl.cpp)
+shapes the incoming position before applying `PSC_NE_POS_P` between the shaped
+target and aircraft. The [input shaper](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AP_Math/control.cpp)
+derives its correction gain from jerk and acceleration limits. Median logged
+shaped-target error fell from 0.66 mm to 0.09 mm with gain 4, while pad offset
+remained unchanged. This supports an upstream lag problem; the logs do not
+separate input shaping from measurement delay. Further parameter changes stop
+here; the next design must address target motion in that upstream command path.
+The analysis bounds DataFlash using the single pre-window-end target-found
+message, so absolute public timing has event-quantization uncertainty. It excludes
+the post-window target-loss message from alignment.
+
+The gain-4 pad moved 44.975 m between public 0.05 and 90 s, confirming 0.5 m/s.
+Both videos contain 1,800 frames at 640x480/20 Hz and last 90 s. Video hashes,
+both source revisions, and all seven image IDs match prelaunch expectations.
+Strict acceptance rejects the aborted manifest. Its bag has 1,800 pad samples
+versus 1,799 vehicle samples, so the physical grid is incomplete.
 
 The raw-run pad moved 31.825 m over 63.65 s at 0.5 m/s. Both videos contain
 1,273 frames at 640x480/20 Hz and last 63.65 s. Both source revisions, all seven
@@ -190,7 +228,8 @@ Machine-local diagnostics and prelaunch expectations are under
 the `stationary-5-diagnostics/flight-log-analysis/` reports and timeline plot,
 `options4-ab-f7c75af5-12a3-4bda-b4c2-41c519ac3943.json` and its plot,
 `options4-artifact-diagnosis.md`, `provenance-options4.json`, the moving
-`provenance-moving-timing.json` and `provenance-moving-raw.json`, and each
+`provenance-moving-timing.json`, `provenance-moving-raw.json`,
+`provenance-moving-gain4.json`, `gain4-bounded-report.md`, and each
 `moving-diagnostic-RUN_ID.json` / `moving-acceptance-RUN_PREFIX.log`. Preserve them
 with the run bundles. The superseded
 implementation checklist remains in Git at `63f9674`; the architecture now
@@ -270,26 +309,30 @@ scoped review fixes; no Critical, Important, or Minor findings remain.
 
 ## Image and runtime boundary
 
-Current Phase 3 tags point to the clean `2371e61` build used by the raw moving
-attempt. Prelaunch expectations were captured in `provenance-moving-raw.json`
+Current Phase 3 tags point to the clean `a14347c` build used by the gain-4 moving
+attempt. Prelaunch expectations were captured in `provenance-moving-gain4.json`
 before that run. The Kalman moving and stationary images remain preserved separately.
 Subsequent documentation commits do not change those recorded source identities.
 Earlier images remain under preservation tags; never retag them as new evidence.
 Rebuild after runtime edits and capture new expectations before the next flight.
 
 Physical stationary landing: achieved. Score: 100/100, complete. Artifact acceptance:
-not passed. Moving flight: attempted, failed tracking, no landing. Images: rebuilt. No current competition flight was run in this task;
+not passed. Moving flights: attempted, no landing. Images: rebuilt. No current competition flight was run in this task;
 the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Run the approved raw-estimator gain experiment with `PSC_NE_POS_P=4`.
-   Preserve prior evidence and the tracking-loss guard. Verify the full transit,
-   target capture, and descent, since the gain affects every horizontal phase.
+1. Address target motion before the downstream position controller. Gain 4 did
+   not reduce observed target offset. Preserve all
+   three moving experiments and the existing tracking-loss guard.
 2. Require physical landing, 100/100, complete recordings, and independent artifact
    acceptance before claiming the moving mission works. The new lag remains a
    hypothesis until flight evidence supports it.
-3. Separately diagnose historical competition range-stream loss before claiming
+3. Resolve the configured-operation deadline beyond the capped public window.
+   At 90 s the source finishes, but the host waits for mission completion while
+   the precision timeout at 104.45 s is unreachable. Keep artifact-grid diagnosis
+   separate; do not weaken acceptance.
+4. Separately diagnose historical competition range-stream loss before claiming
    a fresh full-window competition baseline.
 
 Lower-priority work remains deferred: structured precision-phase diagnostics; improve zero-budget Compose timeout

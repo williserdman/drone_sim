@@ -307,8 +307,9 @@ before using it for a demo; neither control nor moving acceptance has passed.
 The current gain experiment sets `PSC_NE_POS_P=4` in the moving-only overlay.
 It uses raw position estimation, retaining option 5 and 40 ms lag with
 exposure-stamped target messages. Raw mode supplies zero target
-velocity. Both moving trials failed tracking, Kalman at 51.55 s and raw at
-63.65 s. The option-4 stationary success is not evidence of moving-pad landing.
+velocity. The first two moving trials failed tracking, Kalman at 51.55 s and raw at
+63.65 s. Gain 4 tracked through the 90-second recording window without landing.
+The option-4 stationary success is not evidence of moving-pad landing.
 
 Build from a committed checkout using [the image-build command](#build-runtime-images).
 The configured mission takes off to 5 m, flies 35 m east, then watches marker 7
@@ -325,6 +326,12 @@ for the actual mission. These commands launch different courses:
 uv run --locked drone-sim start --config tests/fixtures/configured-stationary-pad-run.json
 uv run --locked drone-sim start --config config/configured-moving-pad-run.json
 ```
+
+If public time reaches 90 s without mission completion, the current runtime can
+wait for its wall deadline: the precision-operation deadline exceeds the capped
+public clock. Use `uv run --locked drone-sim abort RUN_ID` to finalize a stalled
+experiment and preserve evidence. That result is `ABORTED`, never an accepted
+mission. A deadline/recording-boundary fix remains separate work.
 
 Run each command separately and inspect its result before continuing. Each
 includes 90 s of warmup and 90 s of public simulation at target RTF 0.1:

@@ -85,7 +85,8 @@ that SITL exited, and it always attempts to close the protocol.
   It affects horizontal waypoint and landing response throughout the run.
   This experiment follows target positions
   without target-velocity feedforward. Both Kalman and raw moving flights lost
-  tracking before touchdown; neither estimator is validated for moving landing. Other scenarios
+  tracking before touchdown; the gain-4 follow-up did not land within the
+  recording window. This remains an experimental profile. Other scenarios
   keep the base profile. The companion reads back every effective precision
   value before it can send a flight command. See the [moving-pad evidence](../docs/handoff.md#moving-pad-verification) before tuning it.
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,

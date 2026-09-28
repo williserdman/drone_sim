@@ -88,7 +88,8 @@ A missing or mismatched gain blocks readiness and flight commands. Raw
 estimation follows camera positions and supplies zero
 target-velocity feedforward even with the moving-target option set. The prior
 Kalman moving flight lost tracking at 51.55 s. The raw follow-up also lost
-tracking, at 63.65 s without touchdown. This is not a validated moving profile. See the [current experiment](../docs/handoff.md#moving-pad-verification).
+tracking, at 63.65 s without touchdown. The gain-4 trial tracked through the
+90-second window but did not land. This is not a validated moving profile. See the [current experiment](../docs/handoff.md#moving-pad-verification).
 
 ## Entry points and implementation seams
 

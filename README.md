@@ -61,9 +61,9 @@ covers rebuilding changed code, running one template, and running the automatic 
 
 [configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds an
 experimental camera-guided landing on a deck traveling at 0.5 m/s. The
-stationary diagnostic has landed. Both actual moving trials reached LAND but
-lost tracking before touchdown; moving landing and artifact acceptance remain
-unresolved. Use the
+stationary diagnostic has landed. Actual moving trials have not landed; the
+latest gain experiment tracked through the recording window without touchdown.
+Moving landing and artifact acceptance remain unresolved. Use the
 [moving-pad workflow](docs/runbook.md#moving-pad-landing) for the stationary
 control, moving flight, and independent acceptance. Current verification is
 recorded in [handoff](docs/handoff.md).
