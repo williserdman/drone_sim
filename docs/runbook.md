@@ -304,8 +304,9 @@ competition acceptance check.
 
 This mission is experimental. Read the [current flight evidence](handoff.md#moving-pad-verification)
 before using it for a demo; neither control nor moving acceptance has passed.
-The current experiment uses raw position estimation, retaining option 5 and
-40 ms lag with exposure-stamped target messages. Raw mode supplies zero target
+The current gain experiment sets `PSC_NE_POS_P=4` in the moving-only overlay.
+It uses raw position estimation, retaining option 5 and 40 ms lag with
+exposure-stamped target messages. Raw mode supplies zero target
 velocity. Both moving trials failed tracking, Kalman at 51.55 s and raw at
 63.65 s. The option-4 stationary success is not evidence of moving-pad landing.
 

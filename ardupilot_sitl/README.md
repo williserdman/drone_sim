@@ -80,7 +80,10 @@ that SITL exited, and it always attempts to close the protocol.
 - A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
   comma-separated `--defaults` argument. The later file changes only
   `PLND_OPTIONS` from 4 to 5 and `PLND_LAG` from 0.08 to 0.04 s, with raw
-  `PLND_EST_TYPE=0` explicitly retained. This experiment follows target positions
+  `PLND_EST_TYPE=0` explicitly retained. The gain experiment also sets
+  `PSC_NE_POS_P=4`, replacing the upstream default of 1 for this scenario only.
+  It affects horizontal waypoint and landing response throughout the run.
+  This experiment follows target positions
   without target-velocity feedforward. Both Kalman and raw moving flights lost
   tracking before touchdown; neither estimator is validated for moving landing. Other scenarios
   keep the base profile. The companion reads back every effective precision

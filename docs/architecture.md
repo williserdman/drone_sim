@@ -260,12 +260,16 @@ and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot
 The stationary option-4 diagnostic isolated target-velocity feedforward and
 landed, but does not establish moving-pad support. The next moving flight used
 option 5 and `PLND_LAG=0.04`; its velocity estimate diverged and tracking failed.
-The current controlled experiment changes only `PLND_EST_TYPE` to 0, preserving
+The raw-estimator experiment changed only `PLND_EST_TYPE` to 0, preserving
 that lag, options, gains, geometry, and loss policy. Raw mode sends zero target
 velocity to the position controller; a moving option bit alone does not prove
 velocity feedforward is active. Following camera positions may retain enough
 lag to lose the shrinking field of view. The raw moving trial also failed
-tracking at 63.65 s; moving landing remains unresolved.
+tracking at 63.65 s. The next controlled experiment sets `PSC_NE_POS_P=4` only
+in the moving profile and adds it to the preflight readback gate. It retains
+raw estimation, camera geometry, pad speed, and all loss/handoff rules. The
+stronger horizontal response also affects transit and initial target capture.
+Moving landing remains unresolved until physical and artifact checks pass.
 See the [recorded outcome](handoff.md#moving-pad-verification).
 
 The moving operation must accept coherent target motion instead of applying

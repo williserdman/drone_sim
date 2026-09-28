@@ -3,7 +3,7 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-25. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-09-28. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
@@ -61,6 +61,15 @@ tracked longer, but failed at 63.65 s without touchdown or disarm. Raw mode
 supplies zero target velocity; this result does not validate position-only
 moving landing. The parameter-only follow-up passed 251 companion/SITL tests; other suites were not repeated after the prior
 1,335-test check.
+
+The approved 2026-09-28 experiment changes only `PSC_NE_POS_P` from the recorded
+default of 1 to 4 in the moving profile. The companion requires that value before
+flight. Raw estimation, pad motion, camera, other gains, and guards stay fixed.
+The predicted following error is near the camera limit, so source tests do not
+establish success. Require actual touchdown/disarm, 100/100, and independent
+artifact acceptance from a fresh recorded run. Focused companion/SITL checks
+passed 252 tests; other modules were unchanged and their suites were not rerun.
+Flight outcome is pending.
 
 Six stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
@@ -274,10 +283,9 @@ the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Resolve target tracking through moving descent. Both tested estimator paths
-   lost the marker; the assumption that parameter changes alone suffice remains
-   doubtful. Preserve both moving runs and the tracking-loss guard before
-   proposing another control or acquisition change.
+1. Run the approved raw-estimator gain experiment with `PSC_NE_POS_P=4`.
+   Preserve prior evidence and the tracking-loss guard. Verify the full transit,
+   target capture, and descent, since the gain affects every horizontal phase.
 2. Require physical landing, 100/100, complete recordings, and independent artifact
    acceptance before claiming the moving mission works. The new lag remains a
    hypothesis until flight evidence supports it.

@@ -1,5 +1,6 @@
-# Raw-position moving-pad experiment layered after descent.parm.
+# Raw-position gain experiment layered after descent.parm for moving_pad_v1.
 # Keep OPTIONS and LAG fixed; raw mode supplies zero target-velocity feedforward.
 PLND_OPTIONS 5
 PLND_EST_TYPE 0
 PLND_LAG 0.04
+PSC_NE_POS_P 4

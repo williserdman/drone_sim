@@ -33,6 +33,7 @@ MOVING_PRECISION_PARAMETERS = {
     "PLND_ALT_MIN": 0.75,
     "PLND_ALT_MAX": 8.0,
     "PLND_OPTIONS": 5.0,
+    "PSC_NE_POS_P": 4.0,
 }
 
 
