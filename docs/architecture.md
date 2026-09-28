@@ -192,8 +192,8 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 
 ## Moving-pad landing
 
-Implemented 2026-09-24. The stationary diagnostic lands with velocity feedforward
-disabled; artifact acceptance and the moving flight remain unverified.
+Implemented 2026-09-24. The stock EKF3 profile completed an independently accepted
+0.5 m/s moving landing on 2026-09-28 with native velocity feedforward enabled.
 This is the contract for one regression mission: takeoff, transit, and camera-guided landing on a
 platform moving straight at 0.5 m/s from public simulation time zero through
 touchdown. The platform continues moving after disarm. ArUco 7 identifies the
@@ -274,8 +274,10 @@ The current experiment uses stock `AHRS_EKF_TYPE=3` to avoid the diagnosed SIM
 delta-velocity frame error, restores `PLND_EST_TYPE=1` and `PSC_NE_POS_P=1`,
 and retains option 5 and 40 ms lag. The aircraft estimator is also required by
 the preflight readback gate. Native LAND ownership, camera, pad motion, and
-loss/handoff rules stay fixed. Flight validation is pending.
-Moving landing remains unresolved until physical and artifact checks pass.
+loss/handoff rules stay fixed. Both stationary and moving flights landed; the
+moving run passed physical scoring and independent artifact acceptance. A later
+contact-stream fault invalidated the stationary recording, so repeatability
+remains unproven.
 See the [recorded outcome](handoff.md#moving-pad-verification).
 
 The moving operation must accept coherent target motion instead of applying
@@ -304,10 +306,9 @@ rejection, missed acquisition, and pad-relative touchdown evaluation. A rendered
 camera check establishes marker detection at approach height. Then rebuild
 matching images and run a stationary control followed by the 0.5 m/s mission.
 Report physical outcome, evaluation, and artifact validity separately, with
-onboard and observer recordings. The stationary diagnostic physically landed,
-but its score-event timestamps failed generic bag validation; see
-[current evidence and the remaining flight gate](handoff.md#moving-pad-verification)
-are recorded in the handoff.
+onboard and observer recordings. The accepted EKF3 moving run and the separate
+stationary recording failure are documented in the
+[current evidence and remaining limits](handoff.md#moving-pad-verification).
 
 Implementation affects companion vision/operations, Gazebo world/motion and
 truth, the SITL profile, configuration, and scoring/recording. Their module

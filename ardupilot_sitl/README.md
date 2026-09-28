@@ -89,7 +89,8 @@ that SITL exited, and it always attempts to close the protocol.
 - Offline diagnosis found that the pinned `AHRS_EKF_TYPE=10` path returns body
   delta velocity through the NED interface consumed by precision landing.
   Native Kalman landing is affected. The EKF3 experiment avoids that return
-  path; flight validation is pending. See the [native-estimator findings](../docs/handoff.md#native-estimator-findings).
+  path. Stationary and moving flights landed; the moving bundle passed
+  independent acceptance. See the [native-estimator findings and limits](../docs/handoff.md#native-estimator-findings).
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is

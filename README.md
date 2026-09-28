@@ -60,10 +60,10 @@ defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow
 covers rebuilding changed code, running one template, and running the automatic set.
 
 [configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds an
-experimental camera-guided landing on a deck traveling at 0.5 m/s. The
-stationary diagnostic has landed. Actual moving trials have not landed; the
-latest gain experiment tracked through the recording window without touchdown.
-Moving landing and artifact acceptance remain unresolved. Use the
+camera-guided landing on a deck traveling at 0.5 m/s. The stock EKF3 profile
+completed an independently accepted moving landing with 100/100 and full
+90-second recordings. A separate stationary run landed but exposed an
+intermittent contact-stream fault; repeatability remains a limitation. Use the
 [moving-pad workflow](docs/runbook.md#moving-pad-landing) for the stationary
 control, moving flight, and independent acceptance. Current verification is
 recorded in [handoff](docs/handoff.md).

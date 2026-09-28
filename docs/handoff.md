@@ -8,22 +8,19 @@ world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
 
-The stationary A/B with `PLND_OPTIONS=4` landed on the deck and scored 100/100.
-Peak roll fell from 19.04 to 1.17 degrees. Artifact finalization rejected the
-bundle because retrospective touchdown score events have earlier timestamps
-than the final score event published before them. The moving-target profile
-with option 5 still lacks a stable landing. A subsequent actual 0.5 m/s moving
-flight reached LAND at about 49.08 s, lost tracking at 51.55 s, and scored 0/100.
-A raw-estimator follow-up also failed tracking at 63.65 s without touchdown.
-The subsequent gain-4 experiment tracked through the full recording window but
-did not land. It was explicitly aborted after public time stopped at 90 s.
-There is no accepted moving-pad demo.
+The stock EKF3 moving run `a3f79da9-037d-4734-ac4d-e8381149f407` landed on the
+0.5 m/s deck, disarmed, and passed independent acceptance with 100/100 and full
+90-second recordings. Native ArduPilot LAND, camera, pad speed, and tracking
+guards were unchanged. This is the first accepted moving-pad recording.
+The stationary control also landed, but a later missing contact sample stopped
+its recording at 49.5 s. That bundle failed acceptance; repeatability remains
+unproven. Earlier failed experiments are preserved below.
 
 The subsequent offline diagnosis identifies a frame error in the pinned
 ArduPilot SIM attitude path used by `AHRS_EKF_TYPE=10`. It returns body-frame
 delta velocity to the precision estimator's NED interface. Source execution
 and recorded prediction-only intervals agree on the error. The approved
-moving-only stock EKF3 profile is implemented; new flight validation is pending.
+moving-only stock EKF3 profile is implemented and has fresh moving-flight evidence.
 See the native-estimator findings below.
 
 The diagnostic passed 250 companion/SITL tests. All seven runtime images were
@@ -88,9 +85,49 @@ The approved native-LAND follow-up sets `AHRS_EKF_TYPE=3`, restores
 and guards unchanged. Relative to the earlier Kalman moving run `2a5f3972`,
 only the aircraft estimator changes. The companion now requires its readback
 before flight. Focused checks passed 254 companion/SITL tests; unchanged modules
-were not rerun. Stationary and moving flight results are pending.
+were not rerun. All seven runtime images were built from clean `faef600` for
+both flights. The stationary control touched down at 27.40 s and reported disarm
+at 30.05 s; peak LAND roll was 0.940 degrees. Its adapter then failed on a missing
+landing-pad contact sample at 49.50 s. Pad truth has 989 ticks through 49.45 s,
+while vehicle truth and both videos have 990 through 49.50 s. Score: incomplete
+0/100. Bundle: `FAILED`, not accepted. Private source timestamps were not recorded,
+so a dropped contact sample cannot yet be distinguished from delayed delivery
+or timestamp misalignment. Do not synthesize missing contact evidence.
 
-Six stationary attempts were preserved. The first three exposed startup RPC,
+The actual moving flight touched down at 59.10 s, 8.7 mm from the pad center,
+and reported disarm at 61.05 s. It completed with 100/100 and independent
+artifact acceptance. Pad and vehicle truth have matching 1,800-sample grids;
+both 640x480/20 fps videos contain 1,800 frames and last 90 s. Pad speed stayed
+between 0.499999989 and 0.500008820 m/s through the full window, including
+touchdown and disarm. Its 44.975 m displacement confirms continued motion.
+All 25 artifacts, video hashes, both clean source identities, and seven image
+digests match the captured expectations. This also verifies chronological
+touchdown score events in an accepted full-window run.
+DataFlash confirms the guarded profile. Peak LAND roll fell from 14.541 degrees
+in the earlier Kalman moving flight to 4.110 degrees. Inferred pad east velocity
+stayed between 0.487 and 0.552 m/s, median 0.515 m/s; no GUIDED recovery followed
+LAND. These estimates use precision-relative velocity plus recorded navigation
+velocity, independently of the scorer's diagnostic below.
+
+The recorded touchdown-relative-speed diagnostic needs a frame-semantics fix:
+the adapter copies child-frame odometry twists while the scorer subtracts them
+as if they share a frame. Do not treat its 0.722 m/s value as physical relative
+speed. The 100-point rule checks deck contact, disarm, and remaining aboard;
+it does not gate on this velocity diagnostic. Preserve the accepted bundle and
+fix the diagnostic separately rather than rewriting recorded evidence.
+
+The supplemental motion-proof helper initially rejected contact-scale speed
+variation under a 1e-9 m/s tolerance. Its preserved second report uses 1e-5 m/s
+for the moving pad; canonical artifact acceptance passed unchanged in both
+checks. A passive private contact/odometry subscriber ran from native time
+about 68 s through teardown, outside the bundle, without sending flight commands.
+The stationary contact fault did not recur in the moving run.
+
+EKF3 manifest SHA-256 values: stationary
+`0ed43de8850e78d14f1c200625e6d16842bd287d5380371ffe46b6e969306e6b`;
+moving `645576c3759c7c6bdd1f5c9b5f8fb7f39a9ed2ec04594b615c456d9a2f638a51`.
+
+Earlier stationary attempts were preserved. The first three exposed startup RPC,
 contact-watermark, and shutdown defects, now covered by focused regressions.
 The fourth exposed acquisition initialization between camera frames; `c523af3`
 fixes that and increases the relative precision timeout to the full public run
@@ -104,11 +141,13 @@ budget without changing the absolute settle/acquisition deadlines.
 | `2a5f3972-c851-4d13-b92e-145ef34cedb6` | Moving pad; takeoff 7.05 s; waypoint 14.55 s; LAND about 49.08 s; tracking lost 51.55 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; abort-tail pad/vehicle grid mismatch; not accepted | `921e09b9eca6eaab9756d54a43994959eae5a867` |
 | `08113757-a7d3-4f5d-aa21-ca26ea0fa1be` | Moving pad, raw estimator; takeoff 7.05 s; waypoint 14.45 s; tracking lost 63.65 s; no touchdown/disarm | 0/100, incomplete | `FAILED`; not accepted | `2371e61cf497168e0e5c1cf9316c2194eff0dbf9` |
 | `2b5c9332-757a-4f75-a477-aef315427354` | Moving pad, raw estimator, gain 4; takeoff 7.05 s; waypoint 14.45 s; no touchdown/disarm in 90 s | 0/100, incomplete | `ABORTED` after recording window; pad/vehicle grid mismatch; not accepted | `a14347c5bcec4d134c725b909ff6cc9a8f15dc60` |
+| `8446a4e6-7b48-411b-89e5-794ea8d510ca` | Stationary pad, EKF3; touchdown 27.40 s; disarm 30.05 s | 0/100, incomplete | `FAILED`; missing contact sample at 49.50 s; not accepted | `faef600a4bd711c00619450c9eff1aa7f279f0a9` |
+| `a3f79da9-037d-4734-ac4d-e8381149f407` | Moving pad, EKF3; touchdown 59.10 s; disarm 61.05 s | 100/100, complete | `COMPLETED`; full 90 s; independent acceptance passed | `faef600a4bd711c00619450c9eff1aa7f279f0a9` |
 
 Each bundle lives at `runs/RUN_ID/` in the moving-pad worktree. Videos are
 `video/onboard.mp4` and `video/observer.mp4`; manifests contain both clean source
 revisions, all seven image digests, frozen configuration, and artifact hashes.
-Manifest SHA-256 values, in table order:
+Earlier manifest SHA-256 values, in the first six table rows' order:
 
 - `2e0d4998b47ad454e6b5329f84e9e29d0900f474ccb02cd768f1f6e5f6b756b7`
 - `ccfd1ae4b74a5c2709454ea2bc5e3b609918016db735be0e9d6d8e36633aeb93`
@@ -249,9 +288,9 @@ The approved bounded experiment uses stock EKF3 (`AHRS_EKF_TYPE=3`) in the
 moving profile, restoring Kalman precision estimation and the pre-gain-trial
 position gain. It preserves native LAND, camera, 0.5 m/s pad motion, and guards.
 This changes the aircraft's attitude/navigation estimate as well as the
-delta-velocity path, so a stationary check and moving flight remain necessary.
-The parameter change and readback gate are implemented. A firmware patch is another possible
-route, but is not required to test the stock EKF3 path.
+delta-velocity path. The fresh stationary check and accepted moving flight above
+support this profile; they do not prove the old frame error was the only possible
+source of instability. No firmware patch or companion descent controller was needed.
 
 The raw-run pad moved 31.825 m over 63.65 s at 0.5 m/s. Both videos contain
 1,273 frames at 640x480/20 Hz and last 63.65 s. Both source revisions, all seven
@@ -283,6 +322,11 @@ with the run bundles. `native-estimator-diagnosis/` contains the exact-source
 The superseded
 implementation checklist remains in Git at `63f9674`; the architecture now
 contains the implemented contract and this handoff owns remaining validation.
+The EKF3 snapshots, acceptance logs, and flight reports use `stationary-ekf3-*`
+and `moving-ekf3-*` names under the same ignored diagnostics directory. Use
+`moving-ekf3-acceptance-a3f79da9-v2.log` for the completed supplemental motion
+proof; preserve its first failed helper report too. The stationary contact
+diagnosis is under `native-estimator-diagnosis/stationary-ekf3-contact/`.
 
 ## Verified behavior and limits
 
@@ -358,25 +402,26 @@ scoped review fixes; no Critical, Important, or Minor findings remain.
 
 ## Image and runtime boundary
 
-Current Phase 3 tags point to the clean `a14347c` build used by the gain-4 moving
-attempt. Prelaunch expectations were captured in `provenance-moving-gain4.json`
-before that run. The Kalman moving and stationary images remain preserved separately.
+Current runtime tags point to the clean `faef600` build used by both EKF3 flights.
+Prelaunch expectations were captured separately in `provenance-stationary-ekf3.json`
+and `provenance-moving-ekf3.json`. All seven images are also preserved under
+`moving-pad-ekf3-faef600` tags. The earlier experiment images remain preserved separately.
 Subsequent documentation commits do not change those recorded source identities.
 Earlier images remain under preservation tags; never retag them as new evidence.
 Rebuild after runtime edits and capture new expectations before the next flight.
 
-Physical stationary landing: achieved. Score: 100/100, complete. Artifact acceptance:
-not passed. Moving flights: attempted, no landing. Images: rebuilt. No current competition flight was run in this task;
+Latest stationary landing: achieved. Score: incomplete 0/100 after the contact-stream
+failure; artifact acceptance failed. Latest moving landing: achieved, 100/100,
+independently accepted. Images: rebuilt. No current competition flight was run in this task;
 the accepted competition evidence above remains historical.
 
 ## Active priorities
 
-1. Test a native-LAND profile that avoids the diagnosed SIM delta-velocity frame
-   error. Stock EKF3 is implemented, with flight validation pending. Preserve all
-   three moving experiments and the existing tracking-loss guard.
-2. Require physical landing, 100/100, complete recordings, and independent artifact
-   acceptance before claiming the moving mission works. The new lag remains a
-   hypothesis until flight evidence supports it.
+1. Diagnose the intermittent private pad-contact gap exposed by the stationary
+   EKF3 control. Capture native and bridged timestamps plus tracker fault state
+   before changing transport or join behavior. Keep missing evidence fail-closed.
+2. Establish repeatability of the accepted EKF3 moving profile. Preserve the
+   failed controls, accepted bundle, source identities, and image digests.
 3. Resolve the configured-operation deadline beyond the capped public window.
    At 90 s the source finishes, but the host waits for mission completion while
    the precision timeout at 104.45 s is unreachable. Keep artifact-grid diagnosis

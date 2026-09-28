@@ -86,10 +86,10 @@ The current moving-only experiment requires `AHRS_EKF_TYPE=3`, restoring
 native precision `PLND_EST_TYPE=1` and the original `PSC_NE_POS_P=1` while
 retaining `PLND_OPTIONS=5` and `PLND_LAG=0.04`. Missing or mismatched values
 block readiness and flight commands. EKF3 avoids the diagnosed SIM attitude
-delta-velocity frame error; native LAND still owns tracking and descent. The prior
-Kalman moving flight lost tracking at 51.55 s. The raw follow-up also lost
-tracking, at 63.65 s without touchdown. The gain-4 trial tracked through the
-90-second window but did not land. This is not a validated moving profile. See the [current experiment](../docs/handoff.md#moving-pad-verification).
+delta-velocity frame error; native LAND still owns tracking and descent. This
+profile completed a 0.5 m/s moving landing with 100/100 and independent artifact
+acceptance. The stationary control also landed, but a later contact-stream fault
+invalidated that bundle. See the [flight evidence and limits](../docs/handoff.md#moving-pad-verification).
 
 ## Entry points and implementation seams
 
