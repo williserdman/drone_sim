@@ -58,6 +58,9 @@ and a mismatch fails without arming. Calibration values use the artifact's
 float32-aware relative/absolute tolerances; the moving precision profile keeps
 its stricter absolute tolerance. A single `calibration_parameters_verified`
 event records the accepted pre-arm values before mission execution starts.
+The shared adapter validates the required names, requests one complete MAVLink
+parameter list, and lets each host retain only its required replies. This avoids
+overflowing ArduPilot's bounded queue for individual parameter-read requests.
 Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
 the failed result. Another observed mode prevents that recovery command. Global

@@ -135,12 +135,10 @@ class MavlinkAdapter:
         for name in names:
             if not isinstance(name, str) or not name or len(name.encode("ascii")) > 16:
                 raise ValueError("parameter names must be nonempty MAVLink ASCII names")
-            self._connection.mav.param_request_read_send(
-                self._connection.target_system,
-                self._connection.target_component,
-                name.encode("ascii"),
-                -1,
-            )
+        self._connection.mav.param_request_list_send(
+            self._connection.target_system,
+            self._connection.target_component,
+        )
     def request_telemetry(self, *, rate_hz: int = 10) -> None:
         if not isinstance(rate_hz, int) or isinstance(rate_hz, bool) or rate_hz <= 0:
             raise ValueError("telemetry rate must be a positive integer")

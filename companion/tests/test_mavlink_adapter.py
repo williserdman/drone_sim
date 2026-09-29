@@ -25,6 +25,7 @@ class FakeMav:
     stream_calls: list[tuple[object, ...]] = field(default_factory=list)
     global_position_target_calls: list[tuple[object, ...]] = field(default_factory=list)
     parameter_calls: list[tuple[object, ...]] = field(default_factory=list)
+    parameter_list_calls: list[tuple[object, ...]] = field(default_factory=list)
     landing_target_calls: list[tuple[object, ...]] = field(default_factory=list)
 
     def command_long_send(self, *arguments: object) -> None:
@@ -38,6 +39,9 @@ class FakeMav:
 
     def param_request_read_send(self, *arguments: object) -> None:
         self.parameter_calls.append(arguments)
+
+    def param_request_list_send(self, *arguments: object) -> None:
+        self.parameter_list_calls.append(arguments)
 
     def landing_target_send(self, *arguments: object) -> None:
         self.landing_target_calls.append(arguments)
@@ -177,19 +181,18 @@ def test_telemetry_request_keeps_generic_stream_and_requests_landed_state() -> N
     ]
 
 
-def test_precision_profile_requests_and_parameter_observations_are_exposed() -> None:
+def test_required_parameters_use_one_complete_list_request_and_observations_are_exposed() -> None:
     connection = FakeConnection([
         Message("PARAM_VALUE", param_id=b"PLND_OPTIONS\x00", param_value=5.0),
     ])
     adapter = MavlinkAdapter(connection, mavutil())
 
-    adapter.request_parameters(("PLND_OPTIONS", "PLND_EST_TYPE"))
+    names = tuple(f"PARAM_{index:02d}" for index in range(34))
+    adapter.request_parameters(names)
     telemetry = adapter.poll(1_000_000_000)
 
-    assert connection.mav.parameter_calls == [
-        (1, 1, b"PLND_OPTIONS", -1),
-        (1, 1, b"PLND_EST_TYPE", -1),
-    ]
+    assert connection.mav.parameter_list_calls == [(1, 1)]
+    assert connection.mav.parameter_calls == []
     assert telemetry is not None
     assert (telemetry.parameter_name, telemetry.parameter_value) == ("PLND_OPTIONS", 5.0)
 

@@ -76,6 +76,15 @@ class FakeMav:
                 mavutil.mavlink.MAV_PARAM_TYPE_REAL32, 1, 0,
             ))
 
+    def param_request_list_send(self, *arguments):
+        self.connection.parameter_list_requests.append(arguments)
+        for name, value in self.connection.parameter_values.items():
+            self.connection.messages.append(mavutil.mavlink.MAVLink_param_value_message(
+                name.encode("ascii"), value,
+                mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+                len(self.connection.parameter_values), 0,
+            ))
+
 
 class FakeConnection:
     def __init__(self):
@@ -91,6 +100,7 @@ class FakeConnection:
         ])
         self.mav = FakeMav(self)
         self.parameter_requests = []
+        self.parameter_list_requests = []
         self.parameter_values = {}
         self.closed = False
 
@@ -299,7 +309,8 @@ def test_live_loop_requests_frozen_calibration_and_baseline_before_first_command
     )
 
     assert run_configured(config) == 0
-    assert set(connection.parameter_requests) == set(expected)
+    assert connection.parameter_list_requests == [(1, 1)]
+    assert connection.parameter_requests == []
     assert mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM in connection.mav.command_ids
 
 
@@ -329,7 +340,8 @@ def test_missing_calibration_readback_reaches_deadline_with_zero_flight_commands
     )
 
     assert run_configured(config) == 1
-    assert connection.parameter_requests == ["ATC_RAT_RLL_P"]
+    assert connection.parameter_list_requests == [(1, 1)]
+    assert connection.parameter_requests == []
     flight_commands = {
         mavutil.mavlink.MAV_CMD_DO_SET_MODE,
         mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
