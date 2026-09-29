@@ -36,7 +36,9 @@ resources as a substitute for public physical truth.
   `iris_flight`, `iris_moving_pad`, and `iris_competition` from one physical
   vehicle template. Each unloaded model is 1.66001 kg with ±3.4 motor limits,
   the competition camera/range hardware, and the payload hardpoint. Only
-  `iris_competition` receives mission payload attachment plugins.
+  `iris_competition` receives mission payload attachment plugins. The same
+  generator derives `vertical_descent_025.sdf` from the diagnostic world by
+  changing only its physics cadence; 0.1 runs retain `vertical_descent.sdf`.
 - [plugin/](plugin/) contains the clock decimator, payload coordinator, and the
   downstream-patched ArduPilot Gazebo integration. Its moving-pad controller
   drives a world-fixed prismatic rail with joint velocity; it never resets the

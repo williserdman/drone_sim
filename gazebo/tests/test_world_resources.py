@@ -49,6 +49,7 @@ EXPECTED_RESOURCE_PATHS = (
     "worlds/moving_pad_stationary.sdf",
     "worlds/phase3_foundation.sdf",
     "worlds/vertical_descent.sdf",
+    "worlds/vertical_descent_025.sdf",
 )
 
 

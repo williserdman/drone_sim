@@ -650,6 +650,32 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
     return world_path
 
 
+def _write_quarter_speed_diagnostic_world(
+    source_root: Path, output_root: Path
+) -> None:
+    source = source_root / "worlds/vertical_descent.sdf"
+    try:
+        root = ET.parse(source).getroot()
+    except (OSError, ET.ParseError) as error:
+        raise RuntimeError(
+            f"unable to parse diagnostic world {source}: {error}"
+        ) from error
+    world = root.find("world")
+    physics = world.find("physics") if world is not None else None
+    if world is None or world.attrib.get("name") != "vertical_descent":
+        raise RuntimeError("diagnostic world must be named vertical_descent")
+    if (
+        physics is None
+        or physics.findtext("max_step_size") != "0.001"
+        or physics.findtext("real_time_factor") != "0.1"
+        or physics.findtext("real_time_update_rate") != "100"
+    ):
+        raise RuntimeError("diagnostic world must expose the validated 0.1 cadence")
+    physics.find("real_time_factor").text = "0.25"
+    physics.find("real_time_update_rate").text = "250"
+    _write_xml(root, output_root / "worlds/vertical_descent_025.sdf")
+
+
 def prepare_assets(
     source_root: Path,
     output_root: Path,
@@ -662,6 +688,7 @@ def prepare_assets(
     course = load_course(course_path)
     scenario = load_scenario(scenario_path, course)
     _write_vehicles(source_root, output_root, scenario)
+    _write_quarter_speed_diagnostic_world(source_root, output_root)
     for payload in sorted(scenario.payloads, key=lambda item: item.aruco_id):
         _write_payload(output_root, payload, scenario.payload_geometry, generate_markers)
     return _write_world(output_root, course, scenario)
