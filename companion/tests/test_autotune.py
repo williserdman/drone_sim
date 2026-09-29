@@ -485,6 +485,10 @@ def test_all_axis_autotune_uses_native_land_and_exports_only_saved_disarm() -> N
     assert observe(
         12_000_000_000, telemetry_timestamp_ns=12_000_000_000, **stable
     ).actions == (calibration.Action.clear_overrides(), calibration.Action.mode("LAND"))
+    transition = observe(12_100_000_000, mode="LOITER", armed=True)
+    assert transition.state.phase is calibration.Phase.WAIT_LAND
+    transition = observe(12_200_000_000, mode="LAND", armed=True)
+    assert transition.state.phase is calibration.Phase.LANDING
     assert observe(
         13_000_000_000, mode="LAND", armed=True,
         status_text="AutoTune: Saved gains for Roll Pitch Yaw(E)",
@@ -594,3 +598,39 @@ def test_failed_airborne_autotune_uses_native_land_recovery_for_at_most_45_secon
     assert runtime_node.autotune_failure_recovery_complete(
         recovery_started_ns=10, timestamp_ns=11, armed=False
     )
+
+
+def test_parameter_readback_generation_requires_every_requested_parameter() -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    names = (*calibration.GAIN_PARAMETERS, *calibration.PRESERVED_PARAMETERS)
+    values = {name: 1.0 for name in names}
+    generations = {name: index + 1 for index, name in enumerate(names)}
+    assert calibration.parameter_readback_generation(values, generations, names) == 1
+
+    values.clear()
+    generations.clear()
+    for index, name in enumerate(names[:-1]):
+        values[name] = 2.0
+        generations[name] = 100 + index
+    assert calibration.parameter_readback_generation(values, generations, names) == 0
+
+
+def test_parameter_request_clears_session_before_mavlink_send() -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    session = {"old": 1.0}
+    observed: list[dict[str, float]] = []
+    vehicle = SimpleNamespace(_master=SimpleNamespace())
+
+    def request() -> None:
+        session.clear()
+        observed.append(dict(session))
+
+    calibration.execute_actions(
+        vehicle,
+        (calibration.Action.request_parameters(),),
+        mode_factory=lambda name: name,
+        export=lambda: None,
+        request_parameters=request,
+    )
+
+    assert observed == [{}]

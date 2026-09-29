@@ -1046,6 +1046,16 @@ def _run_autotune(config: RuntimeConfig) -> int:
             raise ValueError("saved DataFlash gains do not match post-disarm live readback")
         write_calibration_parameters(config.run_directory, config.run_id, saved)
 
+    def request_parameter_session() -> None:
+        """Clear stale replies and start one atomic full-parameter session."""
+        with locked:
+            parameter_values.clear()
+            parameter_generations.clear()
+            vehicle._master.mav.param_request_list_send(
+                vehicle._master.target_system,
+                vehicle._master.target_component,
+            )
+
     try:
         while rclpy.ok() and not stopped and not finalizing:
             rclpy.spin_once(node, timeout_sec=.02)
@@ -1059,7 +1069,9 @@ def _run_autotune(config: RuntimeConfig) -> int:
                     status = status_texts.popleft() if status_texts else None
                     parameters = dict(parameter_values)
                     generation_names = (*calibration_autotune.GAIN_PARAMETERS, *calibration_autotune.PRESERVED_PARAMETERS)
-                    generation = min((parameter_generations.get(name, 0) for name in generation_names), default=0)
+                    generation = calibration_autotune.parameter_readback_generation(
+                        parameters, parameter_generations, generation_names
+                    )
                     ack = aux_ack
                     pos, att = position_sample, attitude_sample
                 mode_value = getattr(vehicle, "mode", None); mode = getattr(mode_value, "name", str(mode_value))
@@ -1069,7 +1081,13 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 previous = state.phase
                 try:
                     transition = calibration_autotune.advance(state, observation)
-                    calibration_autotune.execute_actions(vehicle, transition.actions, mode_factory=VehicleMode, export=export_readback)
+                    calibration_autotune.execute_actions(
+                        vehicle,
+                        transition.actions,
+                        mode_factory=VehicleMode,
+                        export=export_readback,
+                        request_parameters=request_parameter_session,
+                    )
                     state = transition.state
                 except Exception as error: failure = f"all-axis AutoTune control failed: {error}"
                 if state.phase is not previous: lifecycle.emit("autotune_phase", stamp, {"phase": state.phase.value})

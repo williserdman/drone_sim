@@ -26,6 +26,7 @@ class Phase(str, Enum):
     WAIT_POST_TUNE_LOITER = "WAIT_POST_TUNE_LOITER"
     WAIT_GAIN_ACTIVATION = "WAIT_GAIN_ACTIVATION"
     SETTLING = "SETTLING"
+    WAIT_LAND = "WAIT_LAND"
     LANDING = "LANDING"
     POST_DISARM_READBACK = "POST_DISARM_READBACK"
     COMPLETE = "COMPLETE"
@@ -105,6 +106,7 @@ class AllAxisState:
     baseline_generation: int = 0
     activation_generation: int = 0
     settle_started_ns: int | None = None
+    landing_started_ns: int | None = None
     failure_reason: str = ""
 
     @classmethod
@@ -149,6 +151,17 @@ def _stable_sample(observation: Observation) -> bool:
     )
 
 
+def parameter_readback_generation(
+    values: Mapping[str, float],
+    generations: Mapping[str, int],
+    names: tuple[str, ...],
+) -> int:
+    """Return a complete readback generation, or zero for a mixed session."""
+    if not all(name in values and name in generations for name in names):
+        return 0
+    return min(generations[name] for name in names)
+
+
 def advance(state: AllAxisState, observation: Observation) -> Transition:
     if state.phase in {Phase.COMPLETE, Phase.FAILED}:
         return Transition(state)
@@ -161,7 +174,7 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
     if stamp >= state.public_deadline_ns - 60_000_000_000 and state.phase not in {Phase.LANDING}:
         return _failed(current, stamp, "AutoTune reserved landing window reached")
     wait_limit = 10_000_000_000
-    if state.phase in {Phase.WAIT_GUIDED, Phase.WAIT_PRE_TUNE_LOITER, Phase.WAIT_AUTOTUNE, Phase.WAIT_POST_TUNE_LOITER, Phase.WAIT_GAIN_ACTIVATION} and stamp - state.phase_started_ns > wait_limit:
+    if state.phase in {Phase.WAIT_GUIDED, Phase.WAIT_PRE_TUNE_LOITER, Phase.WAIT_AUTOTUNE, Phase.WAIT_POST_TUNE_LOITER, Phase.WAIT_GAIN_ACTIVATION, Phase.WAIT_LAND} and stamp - state.phase_started_ns > wait_limit:
         return _failed(current, stamp, f"{state.phase.value} timed out")
 
     if state.phase is Phase.WAIT_READY:
@@ -229,10 +242,17 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         started = state.settle_started_ns if state.settle_started_ns is not None else stamp
         current = replace(current, settle_started_ns=started)
         if stamp - started < 2_000_000_000: return Transition(current)
-        return Transition(_enter(current, Phase.LANDING, stamp), (Action.clear_overrides(), Action.mode("LAND")))
+        return Transition(_enter(current, Phase.WAIT_LAND, stamp, landing_started_ns=stamp), (Action.clear_overrides(), Action.mode("LAND")))
+    if state.phase is Phase.WAIT_LAND:
+        if observation.mode not in {"LOITER", "LAND"}:
+            return _failed(current, stamp, "unexpected mode while entering native LAND")
+        if observation.mode != "LAND":
+            return Transition(current)
+        return Transition(_enter(current, Phase.LANDING, stamp))
     if state.phase is Phase.LANDING:
         if observation.mode != "LAND": return _failed(current, stamp, "left native LAND before disarm")
-        if stamp - state.phase_started_ns > 45_000_000_000: return _failed(current, stamp, "native LAND timed out")
+        landing_started = state.landing_started_ns if state.landing_started_ns is not None else state.phase_started_ns
+        if stamp - landing_started > 45_000_000_000: return _failed(current, stamp, "native LAND timed out")
         saved = state.saved_status_observed or observation.status_text == "AutoTune: Saved gains for Roll Pitch Yaw(E)"
         current = replace(current, saved_status_observed=saved)
         if not (saved and observation.armed is False and observation.landed is True): return Transition(current)
@@ -272,7 +292,14 @@ class StatusTextAssembler:
         return complete.strip() or None
 
 
-def execute_actions(vehicle: Any, actions: tuple[Action, ...], *, mode_factory: Callable[[str], Any], export: Callable[[], None]) -> None:
+def execute_actions(
+    vehicle: Any,
+    actions: tuple[Action, ...],
+    *,
+    mode_factory: Callable[[str], Any],
+    export: Callable[[], None],
+    request_parameters: Callable[[], None] | None = None,
+) -> None:
     master = vehicle._master
     for action in actions:
         if action.kind is ActionKind.SET_PARAMETER:
@@ -284,5 +311,9 @@ def execute_actions(vehicle: Any, actions: tuple[Action, ...], *, mode_factory: 
         elif action.kind is ActionKind.CLEAR_OVERRIDES: vehicle.channels.overrides = {}
         elif action.kind is ActionKind.AUX_FUNCTION:
             master.mav.command_long_send(master.target_system, master.target_component, mavutil.mavlink.MAV_CMD_DO_AUX_FUNCTION, 0, float(action.value), float(action.second_value), 0, 0, 0, 0, 0)
-        elif action.kind is ActionKind.REQUEST_PARAMETERS: master.mav.param_request_list_send(master.target_system, master.target_component)
+        elif action.kind is ActionKind.REQUEST_PARAMETERS:
+            if request_parameters is not None:
+                request_parameters()
+            else:
+                master.mav.param_request_list_send(master.target_system, master.target_component)
         elif action.kind is ActionKind.EXPORT: export()
