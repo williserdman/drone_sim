@@ -135,6 +135,20 @@ def _matching_profile(parameters: Mapping[str, float] | None) -> tuple[tuple[str
     return values
 
 
+def _stable_sample(observation: Observation) -> bool:
+    stamp = observation.timestamp_ns
+    values = (observation.horizontal_speed_m_s, observation.vertical_speed_m_s, observation.roll_rad, observation.pitch_rad)
+    fresh = observation.telemetry_timestamp_ns is not None and 0 <= stamp - observation.telemetry_timestamp_ns <= 500_000_000
+    return bool(
+        fresh
+        and all(value is not None and math.isfinite(value) for value in values)
+        and abs(observation.horizontal_speed_m_s or 0) <= .2
+        and abs(observation.vertical_speed_m_s or 0) <= .2
+        and abs(observation.roll_rad or 0) <= math.radians(5)
+        and abs(observation.pitch_rad or 0) <= math.radians(5)
+    )
+
+
 def advance(state: AllAxisState, observation: Observation) -> Transition:
     if state.phase in {Phase.COMPLETE, Phase.FAILED}:
         return Transition(state)
@@ -154,13 +168,17 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         if not observation.heartbeat or observation.prearm_checks_healthy is not True:
             return Transition(current)
         return Transition(_enter(current, Phase.WAIT_GUIDED, stamp), (
-            Action.parameter("ATC_RATE_FF_ENAB", 1.0), Action.parameter("AUTOTUNE_AXES", 7.0),
+            Action.parameter("AUTOTUNE_AXES", 7.0),
             Action.mode("GUIDED"), Action.request_parameters(),
         ))
     if state.phase is Phase.WAIT_GUIDED:
         profile = observation.parameters or {}
-        if observation.mode != "GUIDED" or profile.get("ATC_RATE_FF_ENAB") != 1.0 or profile.get("AUTOTUNE_AXES") != 7.0 or not all(name in profile for name in (*GAIN_PARAMETERS, *PRESERVED_PARAMETERS)):
+        if observation.mode != "GUIDED" or not all(name in profile for name in (*GAIN_PARAMETERS, *PRESERVED_PARAMETERS, "AUTOTUNE_AXES")):
             return Transition(current)
+        if profile["ATC_RATE_FF_ENAB"] != 1.0:
+            return _failed(current, stamp, "body-rate feedforward must already be enabled")
+        if profile["AUTOTUNE_AXES"] != 7.0:
+            return _failed(current, stamp, "AUTOTUNE_AXES readback does not equal 7")
         preserved = tuple((name, float(profile[name])) for name in PRESERVED_PARAMETERS)
         return Transition(_enter(current, Phase.WAIT_ARMED, stamp, preserved_parameters=preserved, baseline_generation=observation.parameter_generation), (Action.arm(),))
     if state.phase is Phase.WAIT_ARMED:
@@ -174,7 +192,13 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
     if state.phase is Phase.WAIT_PRE_TUNE_LOITER:
         if observation.mode not in {"GUIDED", "LOITER"}: return _failed(current, stamp, "unexpected mode before tuning LOITER")
         if observation.mode != "LOITER": return Transition(current)
-        return Transition(_enter(current, Phase.WAIT_AUTOTUNE, stamp), (Action.mode("AUTOTUNE"),))
+        if not _stable_sample(observation):
+            return Transition(replace(current, settle_started_ns=None))
+        started = state.settle_started_ns if state.settle_started_ns is not None else stamp
+        current = replace(current, settle_started_ns=started)
+        if stamp - started < 2_000_000_000:
+            return Transition(current)
+        return Transition(_enter(current, Phase.WAIT_AUTOTUNE, stamp, settle_started_ns=None), (Action.mode("AUTOTUNE"),))
     if state.phase is Phase.WAIT_AUTOTUNE:
         if observation.mode not in {"LOITER", "AUTOTUNE"}: return _failed(current, stamp, "unexpected mode while entering AUTOTUNE")
         if observation.mode != "AUTOTUNE": return Transition(current)
@@ -197,14 +221,11 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         if not (acknowledged and testing and profile and observation.parameter_generation > state.baseline_generation): return Transition(current)
         if preserved != state.preserved_parameters:
             return _failed(current, stamp, "preserved parameters changed during AutoTune")
-        return Transition(_enter(current, Phase.SETTLING, stamp, activated_parameters=profile, activation_generation=observation.parameter_generation))
+        return Transition(_enter(current, Phase.SETTLING, stamp, activated_parameters=profile, activation_generation=observation.parameter_generation, settle_started_ns=None))
     if state.phase is Phase.SETTLING:
         if observation.mode != "LOITER": return _failed(current, stamp, "left LOITER while settling")
         if stamp - state.phase_started_ns > 20_000_000_000: return _failed(current, stamp, "settling timed out")
-        values = (observation.horizontal_speed_m_s, observation.vertical_speed_m_s, observation.roll_rad, observation.pitch_rad)
-        fresh = observation.telemetry_timestamp_ns is not None and 0 <= stamp - observation.telemetry_timestamp_ns <= 500_000_000
-        stable = fresh and all(value is not None and math.isfinite(value) for value in values) and abs(observation.horizontal_speed_m_s or 0) <= .2 and abs(observation.vertical_speed_m_s or 0) <= .2 and abs(observation.roll_rad or 0) <= math.radians(5) and abs(observation.pitch_rad or 0) <= math.radians(5)
-        if not stable: return Transition(replace(current, settle_started_ns=None))
+        if not _stable_sample(observation): return Transition(replace(current, settle_started_ns=None))
         started = state.settle_started_ns if state.settle_started_ns is not None else stamp
         current = replace(current, settle_started_ns=started)
         if stamp - started < 2_000_000_000: return Transition(current)

@@ -269,6 +269,13 @@ def autotune_control_timestamp_ns(
     return 0 if first_command_pending else None
 
 
+def autotune_failure_recovery_complete(
+    *, recovery_started_ns: int, timestamp_ns: int, armed: bool | None
+) -> bool:
+    """Bound failed-flight native-LAND recovery without changing its outcome."""
+    return armed is False or timestamp_ns - recovery_started_ns >= 45_000_000_000
+
+
 class _Comp2026ShutdownAdmission:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -1023,6 +1030,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
     aux_ack_event_emitted = False
     exit_code = 0
     overall_wall_deadline = time.monotonic() + config.max_wall_seconds
+    recovery_started_ns: int | None = None
 
     def export_readback() -> None:
         from artifacts.calibration import (
@@ -1045,6 +1053,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
             armable = getattr(vehicle, "is_armable", False) is True
             lifecycle.observe_mission_readiness(heartbeat_observed=heartbeat, prearm_checks_healthy=armable)
             stamp = autotune_control_timestamp_ns(mission_running=mission_running, latest_clock_ns=latest_clock_ns, first_command_pending=state.phase is calibration_autotune.Phase.WAIT_READY)
+            armed = getattr(vehicle, "armed", None)
             if stamp is not None and failure is None:
                 with locked:
                     status = status_texts.popleft() if status_texts else None
@@ -1054,7 +1063,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
                     ack = aux_ack
                     pos, att = position_sample, attitude_sample
                 mode_value = getattr(vehicle, "mode", None); mode = getattr(mode_value, "name", str(mode_value))
-                armed = getattr(vehicle, "armed", None); armed_seen = armed_seen or armed is True
+                armed_seen = armed_seen or armed is True
                 telemetry_stamp = min(pos[0], att[0]) if pos and att else None
                 observation = calibration_autotune.Observation(timestamp_ns=stamp, heartbeat=heartbeat, prearm_checks_healthy=armable, mode=mode, armed=armed, landed=armed is False and pos is not None and pos[3] <= .3, relative_altitude_m=pos[3] if pos else None, status_text=status, aux_ack=ack, parameters=parameters, parameter_generation=generation, telemetry_timestamp_ns=telemetry_stamp, horizontal_speed_m_s=pos[1] if pos else None, vertical_speed_m_s=pos[2] if pos else None, roll_rad=att[1] if att else None, pitch_rad=att[2] if att else None)
                 previous = state.phase
@@ -1087,7 +1096,25 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 if state.phase is calibration_autotune.Phase.COMPLETE: lifecycle.observe_terminal(MissionState(MissionPhase.LANDED, last_timestamp_ns=stamp))
                 elif state.phase is calibration_autotune.Phase.FAILED: failure = state.failure_reason
             if failure:
-                lifecycle.observe_terminal(MissionState(MissionPhase.FAILED, last_timestamp_ns=latest_clock_ns or 0, failure_reason=failure)); exit_code = 1; break
+                recovery_stamp = latest_clock_ns or 0
+                if armed is True and recovery_started_ns is None:
+                    try:
+                        calibration_autotune.execute_actions(
+                            vehicle,
+                            (calibration_autotune.Action.clear_overrides(), calibration_autotune.Action.mode("LAND")),
+                            mode_factory=VehicleMode,
+                            export=lambda: None,
+                        )
+                        recovery_started_ns = recovery_stamp
+                        lifecycle.emit("autotune_failure_recovery", recovery_stamp, {"mode": "LAND"})
+                    except Exception:
+                        recovery_started_ns = recovery_stamp - 45_000_000_000
+                if recovery_started_ns is None or autotune_failure_recovery_complete(
+                    recovery_started_ns=recovery_started_ns,
+                    timestamp_ns=recovery_stamp,
+                    armed=armed,
+                ) or time.monotonic() >= overall_wall_deadline:
+                    lifecycle.observe_terminal(MissionState(MissionPhase.FAILED, last_timestamp_ns=recovery_stamp, failure_reason=failure)); exit_code = 1; break
             heartbeat_failure = first_heartbeat_wall_failure(heartbeat_observed=heartbeat, wall_now=time.monotonic(), overall_wall_deadline=overall_wall_deadline)
             if heartbeat_failure: failure = heartbeat_failure
             if protocol.read_finalize_request() is not None: finalizing = True

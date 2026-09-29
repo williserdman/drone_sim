@@ -7,6 +7,7 @@ import stat
 from types import SimpleNamespace
 
 import pytest
+import drone_sim_companion.runtime_node as runtime_node
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -434,7 +435,6 @@ def test_all_axis_autotune_uses_native_land_and_exports_only_saved_disarm() -> N
         return transition
 
     assert observe(0, heartbeat=True, prearm_checks_healthy=True).actions == (
-        calibration.Action.parameter("ATC_RATE_FF_ENAB", 1.0),
         calibration.Action.parameter("AUTOTUNE_AXES", 7.0),
         calibration.Action.mode("GUIDED"),
         calibration.Action.request_parameters(),
@@ -451,21 +451,28 @@ def test_all_axis_autotune_uses_native_land_and_exports_only_saved_disarm() -> N
     assert observe(3, mode="GUIDED", armed=True, relative_altitude_m=4.5).actions == (
         calibration.Action.neutral_override(), calibration.Action.mode("LOITER")
     )
-    assert observe(4, mode="LOITER", armed=True).actions == (
-        calibration.Action.mode("AUTOTUNE"),
+    stable = dict(
+        mode="LOITER", armed=True, horizontal_speed_m_s=0.1,
+        vertical_speed_m_s=0.1, roll_rad=0.01, pitch_rad=-0.01,
     )
-    observe(5, mode="AUTOTUNE", armed=True)
-    assert observe(6, mode="AUTOTUNE", armed=True, status_text="AutoTune: Success").actions == (
+    assert observe(
+        4_000_000_000, telemetry_timestamp_ns=4_000_000_000, **stable
+    ).actions == ()
+    assert observe(
+        6_000_000_000, telemetry_timestamp_ns=6_000_000_000, **stable
+    ).actions == (calibration.Action.mode("AUTOTUNE"),)
+    observe(7_000_000_000, mode="AUTOTUNE", armed=True)
+    assert observe(8_000_000_000, mode="AUTOTUNE", armed=True, status_text="AutoTune: Success").actions == (
         calibration.Action.mode("LOITER"),
     )
-    assert observe(7, mode="LOITER", armed=True).actions == (
+    assert observe(9_000_000_000, mode="LOITER", armed=True).actions == (
         calibration.Action.aux_function(180, 2), calibration.Action.request_parameters()
     )
     # ACK alone cannot activate or land.
-    assert observe(8, mode="LOITER", armed=True, aux_ack=True).actions == ()
+    assert observe(9_100_000_000, mode="LOITER", armed=True, aux_ack=True).actions == ()
     tuned = {name: float(index + 1) for index, name in enumerate(calibration.GAIN_PARAMETERS)}
     transition = observe(
-        9, mode="LOITER", armed=True, aux_ack=True,
+        9_200_000_000, mode="LOITER", armed=True, aux_ack=True,
         status_text="AutoTune: Pilot Testing gains for Roll Pitch Yaw(E)",
         parameters={**baseline, **tuned}, parameter_generation=1,
     )
@@ -555,3 +562,35 @@ def test_all_axis_action_adapter_encodes_aux_and_clears_overrides() -> None:
     assert commands == [(7, 1, 218, 0, 180.0, 2.0, 0, 0, 0, 0, 0)]
     assert requests == [(7, 1)]
     assert vehicle.channels.overrides == {}
+
+
+def test_all_axis_autotune_rejects_disabled_feedforward_without_writing_it() -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.AllAxisState.initial(public_deadline_ns=600_000_000_000)
+    first = calibration.advance(
+        state, calibration.Observation(0, heartbeat=True, prearm_checks_healthy=True)
+    )
+    assert all(action.name != "ATC_RATE_FF_ENAB" for action in first.actions)
+    parameters = {
+        name: 1.0
+        for name in (*calibration.GAIN_PARAMETERS, *calibration.PRESERVED_PARAMETERS)
+    }
+    parameters.update({"ATC_RATE_FF_ENAB": 0.0, "AUTOTUNE_AXES": 7.0})
+    rejected = calibration.advance(
+        first.state,
+        calibration.Observation(1, mode="GUIDED", armed=False, parameters=parameters),
+    )
+    assert rejected.state.phase is calibration.Phase.FAILED
+    assert "feedforward" in rejected.state.failure_reason
+
+
+def test_failed_airborne_autotune_uses_native_land_recovery_for_at_most_45_seconds() -> None:
+    assert not runtime_node.autotune_failure_recovery_complete(
+        recovery_started_ns=10, timestamp_ns=45_000_000_009, armed=True
+    )
+    assert runtime_node.autotune_failure_recovery_complete(
+        recovery_started_ns=10, timestamp_ns=45_000_000_010, armed=True
+    )
+    assert runtime_node.autotune_failure_recovery_complete(
+        recovery_started_ns=10, timestamp_ns=11, armed=False
+    )
