@@ -51,7 +51,7 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
         )
     width_px, height_px, fps, encoding = geometry
     ruleset_id = document.get("scenario", "descent_v1")
-    if ruleset_id in {"competition_v1", "moving_pad_v1", "calibration_v1"} and (
+    if ruleset_id in {"competition_v1", "moving_pad_v1"} and (
         width_px,
         height_px,
     ) != (640, 480):
