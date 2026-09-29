@@ -190,6 +190,102 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 - A source edit is not an image update. Source provenance, image build identity,
   and runtime evidence must agree before claiming a verified result.
 
+## CI calibration design
+
+Design agreed in conversation on 2026-09-29; implementation and flight
+verification are pending. The immediate deliverable is a reusable calibration
+stage and a fresh-process validation flight. The eventual CI runner invokes this
+stage before the mission suite. Existing launch commands do not implement that
+dependency yet.
+
+```mermaid
+flowchart LR
+    T[Roll, pitch, yaw AutoTune] --> L[Native LAND and saved gains]
+    L --> A[Independent calibration acceptance]
+    A --> H[Fresh SITL: load gains, verify, hover and land]
+    H --> M[Mission suite uses the same frozen gains]
+```
+
+### Aircraft and calibration flight
+
+All suite scenarios use one competition airframe definition, including its
+inertia, motor limits, sensor hardware, and payload mount. Payload attachment and
+course geometry remain mission-specific. Calibration starts without a payload;
+the competition flights exercise the same gains with their specified loads.
+Existing diagnostic and competition models are not interchangeable calibration
+targets: their motor limits and fitted hardware currently differ.
+
+The companion takes off in GUIDED, settles in LOITER, then enters AUTOTUNE with
+`AUTOTUNE_AXES=7` for roll, pitch, and the pinned implementation's standard yaw
+error-filter tuning. Completion requires all three axes. A completed subset
+cannot release parameters to the suite. Require body-rate feedforward enabled
+before tuning so calibration does not silently change an unexported base setting.
+
+After tuning succeeds, the companion observes LOITER, invokes
+`MAV_CMD_DO_AUX_FUNCTION` with function 180 and position 2 to activate tuned
+gains, and waits for the matching testing status and live parameter readback.
+It then settles and commands native LAND. An ACK alone does not prove that
+AutoTune accepted the gain-selection command. Unexpected mode changes, failed
+tuning, stale telemetry, or expired simulation deadlines fail calibration.
+Recovery landing never converts failure into success.
+
+This order matters in the
+[pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):
+leaving AUTOTUNE restores original gains; activating tuned gains after that exit
+allows native LAND followed by gain saving at disarm. This sequence has source
+evidence, but no flight evidence yet. The existing
+[roll mission](../companion/src/drone_sim_companion/autotune.py) uses a different,
+throttle-only descent and must not be presented as this implementation.
+
+### Acceptance and parameter artifact
+
+Calibration gets its own acceptance contract. It requires completed tuning for
+all requested axes, independent airborne/contact/stable-landing evidence, safe
+preimpact speed, observed disarm, and a coherent saved-parameter artifact. It does
+not require touchdown at the origin marker. Its physical checks retain the
+airborne, preimpact-speed, and stable-contact thresholds from the existing
+[descent rules](../scorekeeper/rules/descent_v1.json). Existing descent and precision-land
+scoring contracts retain their location requirements. Terminal `COMPLETED`,
+physical score, and artifact acceptance remain separate results.
+
+The artifact contains 15 tuned values: rate P/I/D, angle P, and acceleration
+limit for roll and pitch; rate P/I, error filter, angle P, and acceleration limit
+for yaw. Validation follows the pinned
+[save routine](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune_Multi.cpp#L546):
+roll/pitch I equals P; yaw I equals 0.1 times P. Yaw D is preserved from the base
+profile and may be zero. Preserved feedforward and other filter settings also
+remain bound to that recorded profile.
+Values must match coherent post-disarm DataFlash evidence and fresh live readback;
+an earlier tuning snapshot or success text alone is insufficient.
+
+Freeze the source run ID, parameter values, artifact checksum, aircraft profile,
+base parameters, and firmware/image provenance with the calibration result.
+Each dependent run copies the exact artifact into its own configuration and
+loads its allowlisted gain keys after the base and scenario parameter overlays.
+Before arming, live readback must match that frozen input. This path does not
+rewrite the tracked baseline through
+[promote_roll_autotune.py](../scripts/promote_roll_autotune.py).
+
+### Delivery and verification
+
+1. Unify aircraft dynamics and implement all-axis AutoTune with the native
+   landing/save sequence and calibration-specific scoring and artifact checks.
+2. Load the accepted artifact into a fresh SITL process and verify parameter
+   readback, a stable hover, native landing, and independent artifact acceptance.
+   This is the first runnable end-to-end deliverable.
+3. Add the suite dependency: failed calibration or validation blocks dependent
+   missions. Each mission retains its own physical score and acceptance result;
+   the suite passes only when every required stage passes.
+
+Focused tests must cover incomplete-axis results, rejected or ineffectual gain
+selection, native landing followed by saved gains, preservation of zero yaw D, corrupted
+or mismatched artifacts, and downstream readback mismatch. Source tests do not
+prove calibration quality: rebuild matching images and preserve a fresh
+calibration/validation pair before claiming the stage works. The full suite then
+needs fresh flights with the shared airframe and gains, including payload cases.
+CI-provider integration, caching, parallel scheduling, and automatic promotion of
+tracked defaults are deferred.
+
 ## Moving-pad landing
 
 Implemented 2026-09-24. The stock EKF3 profile completed an independently accepted
