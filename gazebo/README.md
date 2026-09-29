@@ -32,6 +32,11 @@ resources as a substitute for public physical truth.
 - [resources/](resources/) contains the runtime-owned worlds, vehicle models,
   payload models, meshes, and marker textures. Resolution is local and
   fail-closed; remote model fallback is not part of the contract.
+- [prepare_competition_assets.py](scripts/prepare_competition_assets.py) generates
+  `iris_flight`, `iris_moving_pad`, and `iris_competition` from one physical
+  vehicle template. Each unloaded model is 1.66001 kg with ±3.4 motor limits,
+  the competition camera/range hardware, and the payload hardpoint. Only
+  `iris_competition` receives mission payload attachment plugins.
 - [plugin/](plugin/) contains the clock decimator, payload coordinator, and the
   downstream-patched ArduPilot Gazebo integration. Its moving-pad controller
   drives a world-fixed prismatic rail with joint velocity; it never resets the
@@ -80,8 +85,9 @@ The runtime publishes it through the
   eastward 0.5 m/s rail motion after the fixed 90 s native warmup.
   `moving_pad_stationary` places the same deck at `(35, 0)` with zero speed for
   the control run. Both use `iris_moving_pad`, a 640x480, 20 Hz, 0.6-radian
-  downward camera and range sensor without payload hardware. ArUco 7 is 0.1 m
-  square at the 0.2 m deck top; the observer covers the complete route.
+  downward camera and range sensor with the shared empty hardpoint but no
+  attached payload. ArUco 7 is 0.1 m square at the 0.2 m deck top; the observer
+  covers the complete route.
 - `/simulation/landing_pad_state` publishes measured deck pose/twist and only
   reports contact when a scoped Iris leg collision touches the scoped deck
   collision. Warmup samples are excluded, and missing native contact evidence

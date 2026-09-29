@@ -103,7 +103,7 @@ def test_pad_is_a_dynamic_three_meter_friction_surface_with_marker_seven():
     assert sensor.findtext("contact/topic") == "/gazebo/private/moving_pad/contact"
 
 
-def test_moving_iris_has_calibrated_camera_range_and_no_payload_hardware():
+def test_moving_iris_has_calibrated_camera_range_and_unloaded_hardpoint():
     model = ET.parse(IRIS_MODEL).getroot().find("model")
 
     assert model is not None
@@ -116,7 +116,9 @@ def test_moving_iris_has_calibrated_camera_range_and_no_payload_hardware():
     assert camera.findtext("camera/image/height") == "480"
     assert camera.findtext("topic") == "/gazebo/private/camera/competition_onboard/image"
     assert model.find("link[@name='competition_sensor_link']/sensor[@name='downward_range']") is not None
-    assert model.find("link[@name='payload_hardpoint']") is None
+    hardpoint = model.find("link[@name='payload_hardpoint']")
+    assert hardpoint is not None
+    assert hardpoint.findtext("inertial/mass") == "0.01"
     assert not any(
         plugin.attrib.get("filename", "").startswith("libcwru_payload")
         or "detachable_joint" in plugin.attrib.get("filename", "")

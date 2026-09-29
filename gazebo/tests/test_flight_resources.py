@@ -41,8 +41,10 @@ def test_flight_model_has_the_official_four_rotor_json_seam():
     model = ET.parse(MODEL).getroot().find("model")
 
     assert model.attrib["name"] == "iris_flight"
-    assert model.findtext("include/uri") == "model://iris_phase3"
-    assert model.findtext("include/name") == "airframe"
+    airframe = model.find("model[@name='airframe']")
+    assert airframe is not None
+    assert airframe.findtext("link[@name='base_link']/inertial/mass") == "1.5"
+    assert not model.findall("plugin[@name='gz::sim::systems::PosePublisher']")
 
     imu = model.find("link[@name='imu_link']/sensor[@name='imu_sensor']")
     assert imu is not None

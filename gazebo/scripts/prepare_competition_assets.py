@@ -32,6 +32,7 @@ PAYLOAD_COLORS = {
     "yellow": "0.95 0.80 0.05 1",
     "blue": "0.05 0.20 0.90 1",
 }
+VEHICLE_TEMPLATE = Path(__file__).parent / "templates/iris_competition_vehicle.sdf"
 PAYLOAD_MOTOR_TORQUE_NM = 3.4
 PAYLOAD_HARDPOINT_Z_M = -0.13
 VEHICLE_INITIAL_Z_M = 0.195
@@ -301,36 +302,80 @@ def _add_payload_joints(model: ET.Element, payloads: tuple[Payload, ...]) -> Non
         _text(detachable, "state_publish_period", "0.05")
 
 
-def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfig) -> None:
-    source = source_root / "models/iris_flight/model.sdf"
+def build_vehicle(
+    source_root: Path,
+    scenario: ScenarioConfig,
+    *,
+    name: str,
+    payloads: tuple[Payload, ...],
+) -> ET.Element:
+    """Build one shared competition-airframe variant under its native name."""
     try:
-        root = ET.parse(source).getroot()
+        root = ET.parse(VEHICLE_TEMPLATE).getroot()
     except (OSError, ET.ParseError) as error:
-        raise RuntimeError(f"unable to parse source Iris model {source}: {error}") from error
+        raise RuntimeError(
+            f"unable to parse competition vehicle template {VEHICLE_TEMPLATE}: {error}"
+        ) from error
     model = root.find("model")
     if model is None or model.attrib.get("name") != "iris_flight":
-        raise RuntimeError("source Iris model must be named iris_flight")
+        raise RuntimeError("competition vehicle template must be named iris_flight")
     if model.findtext("include/uri") != "model://iris_phase3" or model.findtext("include/name") != "airframe":
-        raise RuntimeError("iris_flight must include the validated iris_phase3 airframe")
+        raise RuntimeError(
+            "competition vehicle template must include the validated iris_phase3 airframe"
+        )
     _validate_motor_layout(model)
     for control in model.findall("plugin[@name='ArduPilotPlugin']/control"):
         control.find("cmd_max").text = _fmt(PAYLOAD_MOTOR_TORQUE_NM)
         control.find("cmd_min").text = _fmt(-PAYLOAD_MOTOR_TORQUE_NM)
-    model.attrib["name"] = "iris_competition"
+    model.attrib["name"] = name
     _embed_competition_airframe(source_root, model)
     _add_sensor_link(model, scenario.camera, scenario.range_sensor)
     _add_hardpoint(model)
-    _add_payload_joints(model, scenario.payloads)
-    _add_pose_publisher(model)
+    _add_payload_joints(model, payloads)
+    return root
 
-    target = output_root / "models/iris_competition"
-    target.mkdir(parents=True, exist_ok=True)
-    _write_xml(root, target / "model.sdf")
-    _write_model_config(
-        target / "model.config",
-        "Drone Sim Iris Competition",
-        "Validated Iris flight model with Comp2026 sensors and one payload hardpoint.",
+
+def _write_vehicles(
+    source_root: Path, output_root: Path, scenario: ScenarioConfig
+) -> None:
+    variants = (
+        (
+            "iris_flight",
+            (),
+            "Drone Sim Iris Flight",
+            "Unloaded competition airframe for diagnostic and calibration flights.",
+            False,
+        ),
+        (
+            "iris_moving_pad",
+            (),
+            "Drone Sim Iris Moving Pad",
+            "Unloaded competition airframe for moving-pad landing flights.",
+            True,
+        ),
+        (
+            "iris_competition",
+            scenario.payloads,
+            "Drone Sim Iris Competition",
+            "Competition airframe with mission-scoped payload attachment plugins.",
+            True,
+        ),
     )
+    for name, payloads, title, description, publish_pose in variants:
+        root = build_vehicle(
+            source_root,
+            scenario,
+            name=name,
+            payloads=payloads,
+        )
+        model = root.find("model")
+        if publish_pose:
+            _add_pose_publisher(model)
+
+        target = output_root / f"models/{name}"
+        target.mkdir(parents=True, exist_ok=True)
+        _write_xml(root, target / "model.sdf")
+        _write_model_config(target / "model.config", title, description)
 
 
 def _write_marker(path: Path, marker_id: int) -> None:
@@ -616,7 +661,7 @@ def prepare_assets(
     """Generate only Comp2026-owned outputs from validated source resources."""
     course = load_course(course_path)
     scenario = load_scenario(scenario_path, course)
-    _write_vehicle(source_root, output_root, scenario)
+    _write_vehicles(source_root, output_root, scenario)
     for payload in sorted(scenario.payloads, key=lambda item: item.aruco_id):
         _write_payload(output_root, payload, scenario.payload_geometry, generate_markers)
     return _write_world(output_root, course, scenario)
