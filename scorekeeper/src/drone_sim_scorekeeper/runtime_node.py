@@ -21,6 +21,8 @@ from .competition import (
     load_competition_rules,
 )
 from .competition_runtime import CompetitionScorekeeperRuntime
+from .calibration import CalibrationScorer, load_calibration_rules
+from .calibration_runtime import CalibrationScorekeeperRuntime
 from .descent import DescentScorer, GroundTruthSample, load_descent_rules
 from .models import ScoreEvent, ScoreResult
 from .moving_pad import (
@@ -51,9 +53,9 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
     if not isinstance(document, dict) or document.get("run_id") != canonical:
         raise ValueError("resolved scorekeeper configuration has the wrong run_id")
     scenario = document.get("scenario")
-    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
+    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1", "calibration_v1"}:
         raise ValueError(
-            "scorekeeper scenario must be descent_v1, competition_v1, or moving_pad_v1"
+            "scorekeeper scenario must be descent_v1, competition_v1, moving_pad_v1, or calibration_v1"
         )
     recording = document.get("recording")
     simulation = document.get("simulation")
@@ -84,7 +86,7 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
 
 def rules_path_for_scenario(path: Path | str, scenario: str) -> Path:
     """Resolve the selected ruleset beside either a rules directory or old file path."""
-    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
+    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1", "calibration_v1"}:
         raise ValueError("unsupported scoring scenario")
     configured = Path(path)
     directory = configured.parent if configured.suffix == ".json" else configured
@@ -370,7 +372,7 @@ def _create_ros_boundary(
         ScoreEvent,
     )
 
-    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
+    if scenario not in {"descent_v1", "competition_v1", "moving_pad_v1", "calibration_v1"}:
         raise ValueError("unsupported scoring scenario")
 
     if scenario == "moving_pad_v1":
@@ -536,7 +538,7 @@ def _create_ros_boundary(
             accept_mission_event,
             event_qos,
         )
-    else:
+    elif scenario == "descent_v1":
         node.create_subscription(
             ScenarioEvent,
             "/simulation/scenario_events",
@@ -613,6 +615,20 @@ def main() -> int:
                 run_id,
                 rules,
                 settings.expected_ground_truth_samples,
+            ),
+            run_directory=run_directory,
+            protocol=protocol,
+            publish=boundary.publish,
+            flush=boundary.flush,
+        )
+    elif settings.scenario == "calibration_v1":
+        rules = load_calibration_rules(rules_path)
+        runtime = CalibrationScorekeeperRuntime(
+            run_id,
+            CalibrationScorer(
+                run_id,
+                rules,
+                expected_ground_truth_samples=settings.expected_ground_truth_samples,
             ),
             run_directory=run_directory,
             protocol=protocol,

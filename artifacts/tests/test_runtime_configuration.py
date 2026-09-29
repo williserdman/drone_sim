@@ -90,6 +90,18 @@ def test_moving_pad_profile_selects_its_physical_evidence_inventory_explicitly()
     assert contract.topics == MOVING_PAD_TOPICS
 
 
+def test_calibration_profile_preserves_ruleset_identity_and_base_topics():
+    from artifacts._adapters.rosbag import BASE_TOPICS
+
+    contract = resolve_recording_runtime_config({
+        "runtime_profile": "phase3", "scenario": "calibration_v1",
+        "recording": {"width_px": 640, "height_px": 480, "fps": 20, "encoding": "rgb8"},
+        "simulation": {"duration_sim_seconds": 1},
+    })
+    assert contract.ruleset_id == "calibration_v1"
+    assert contract.topics == BASE_TOPICS
+
+
 @pytest.mark.parametrize("duration", [0, 0.075, True, float("nan")])
 def test_physical_profile_rejects_nonpositive_or_off_grid_duration(duration):
     """Rounding an invalid duration could certify the wrong camera inventory."""

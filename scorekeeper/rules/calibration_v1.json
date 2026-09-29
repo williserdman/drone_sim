@@ -1,0 +1,15 @@
+{
+  "ruleset_id": "calibration_v1",
+  "schema_version": 1,
+  "sample_interval_ns": 50000000,
+  "rise_height_m": 0.5,
+  "safe_preimpact_downward_speed_mps": 1.0,
+  "settled_duration_ns": 500000000,
+  "settled_linear_speed_mps": 0.1,
+  "settled_max_tilt_degrees": 10.0,
+  "rules": [
+    {"id": "airborne_then_contact", "points": 20.0},
+    {"id": "safe_preimpact_speed", "points": 40.0},
+    {"id": "stable_contact", "points": 40.0}
+  ]
+}

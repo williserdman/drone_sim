@@ -3,8 +3,9 @@
 [Project README](../README.md) · [Architecture](../docs/architecture.md) · [Runbook](../docs/runbook.md)
 
 This module owns deterministic, run-scoped evaluation of authoritative physical
-evidence for the frozen `descent_v1`, three-payload `competition_v1`, and
-`moving_pad_v1` policies, then persists and publishes their score results.
+evidence for the frozen `descent_v1`, `calibration_v1`, three-payload
+`competition_v1`, and `moving_pad_v1` policies, then persists and publishes
+their score results.
 
 It is read-only with respect to the simulated system: it does **not** command the
 aircraft, electromagnet, Gazebo, mission phases, or retry behavior. A mission
@@ -20,10 +21,13 @@ whether the evidence bundle is complete and valid.
 - [competition.py](src/drone_sim_scorekeeper/competition.py) is the pure competition
   evidence model and scorer.
 - [descent.py](src/drone_sim_scorekeeper/descent.py) is the pure descent scorer.
+- [calibration.py](src/drone_sim_scorekeeper/calibration.py) applies the descent
+  landing thresholds without a touchdown-position rule.
 - [moving_pad.py](src/drone_sim_scorekeeper/moving_pad.py) pairs vehicle and pad
   truth and evaluates the physical moving-pad landing.
 - [competition_runtime.py](src/drone_sim_scorekeeper/competition_runtime.py) and
-  [runtime.py](src/drone_sim_scorekeeper/runtime.py), together with
+  [runtime.py](src/drone_sim_scorekeeper/runtime.py),
+  [calibration_runtime.py](src/drone_sim_scorekeeper/calibration_runtime.py), and
   [moving_pad_runtime.py](src/drone_sim_scorekeeper/moving_pad_runtime.py), bind
   scorers to persistence, publication, failure, and quiescence through the private shared
   [_finalization.py](src/drone_sim_scorekeeper/_finalization.py) lifecycle.
@@ -51,7 +55,8 @@ Topic selection and QoS live in
 
 The exact scoring data authorities are
 [competition_v1.json](rules/competition_v1.json) and
-[descent_v1.json](rules/descent_v1.json), plus
+[descent_v1.json](rules/descent_v1.json),
+[calibration_v1.json](rules/calibration_v1.json), plus
 [moving_pad_v1.json](rules/moving_pad_v1.json), enforced by their loaders and scorers.
 Do not duplicate point allocations, timing windows, or physical thresholds in
 documentation. The persisted schema is defined by
@@ -64,6 +69,8 @@ documentation. The persisted schema is defined by
 
 - Score derives from ordered Gazebo truth plus confirmed payload and mission
   events, never from the flight controller's estimate or success text.
+- Calibration scores airborne/contact, safe preimpact speed, and stable contact.
+  It deliberately does not score distance from the origin marker.
 - Competition vehicle and payload streams must remain contiguous on the ruleset's
   simulation-time grid after mission start. A gap, duplicate, regression,
   conflicting physical order, or missing terminal evidence makes scoring

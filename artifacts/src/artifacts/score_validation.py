@@ -413,6 +413,16 @@ def validate_score_outputs(
             deadline_check=deadline_check,
             physical_evidence=physical_evidence,
         )
+    if ruleset_id == "calibration_v1":
+        from .calibration_score_validation import validate_calibration_score_outputs
+
+        return validate_calibration_score_outputs(
+            run_directory,
+            run_id=run_id,
+            rules_path=rules_path,
+            deadline_check=deadline_check,
+            physical_evidence=physical_evidence,
+        )
     raise ScoreValidationError("score ruleset is unsupported")
 
 

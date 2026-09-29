@@ -642,7 +642,23 @@ def _timestamp_ns(stamp: Any) -> int:
     return seconds * 1_000_000_000 + nanoseconds
 
 
-def _ground_truth_evidence(message: Any, timestamp_ns: int) -> GroundTruthEvidence:
+def _rotate_body_to_world(
+    orientation_xyzw: tuple[float, float, float, float],
+    vector_xyz: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    x, y, z, w = orientation_xyzw
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    x, y, z, w = x / norm, y / norm, z / norm, w / norm
+    vx, vy, vz = vector_xyz
+    tx, ty, tz = 2.0 * (y * vz - z * vy), 2.0 * (z * vx - x * vz), 2.0 * (x * vy - y * vx)
+    return (
+        vx + w * tx + y * tz - z * ty,
+        vy + w * ty + z * tx - x * tz,
+        vz + w * tz + x * ty - y * tx,
+    )
+
+
+def _ground_truth_evidence(message: Any, timestamp_ns: int, *, rotate_velocity: bool = False) -> GroundTruthEvidence:
     position = message.pose.position
     orientation = message.pose.orientation
     linear = message.twist.linear
@@ -675,13 +691,19 @@ def _ground_truth_evidence(message: Any, timestamp_ns: int) -> GroundTruthEviden
         raise ValueError("ground truth vehicle_id is invalid")
     if not isinstance(message.in_contact, bool):
         raise ValueError("ground truth contact flag is invalid")
+    orientation_tuple = tuple(float(value) for value in values[3:7])
+    linear_tuple = tuple(float(value) for value in values[7:10])
+    angular_tuple = tuple(float(value) for value in values[10:13])
+    if rotate_velocity:
+        linear_tuple = _rotate_body_to_world(orientation_tuple, linear_tuple)
+        angular_tuple = _rotate_body_to_world(orientation_tuple, angular_tuple)
     return GroundTruthEvidence(
         timestamp_ns,
         message.vehicle_id,
         tuple(float(value) for value in values[:3]),
-        tuple(float(value) for value in values[3:7]),
-        tuple(float(value) for value in values[7:10]),
-        tuple(float(value) for value in values[10:13]),
+        orientation_tuple,
+        linear_tuple,
+        angular_tuple,
         message.in_contact,
     )
 
@@ -843,7 +865,7 @@ class RosbagValidator:
             or any(character not in "0123456789abcdef" for character in config_sha256)
         ):
             raise ValueError("physical_run requires a lowercase config SHA-256")
-        if ruleset_id not in {"descent_v1", "competition_v1", "moving_pad_v1"}:
+        if ruleset_id not in {"descent_v1", "competition_v1", "moving_pad_v1", "calibration_v1"}:
             raise ValueError("ruleset_id is unsupported")
         if (
             type(width_px) is not int
@@ -962,7 +984,7 @@ class RosbagValidator:
                     f"rosbag topic {topic} has wrong type {topic_metadata.message_type!r}",
                 )
             if topic_metadata.message_count <= 0 and not (
-                self.ruleset_id in {"competition_v1", "moving_pad_v1"}
+                self.ruleset_id in {"competition_v1", "moving_pad_v1", "calibration_v1"}
                 and topic == "/simulation/scenario_events"
             ):
                 return self._result(
@@ -1052,7 +1074,11 @@ class RosbagValidator:
                         run_states.append(message)
                     elif record.topic == "/simulation/ground_truth" and self.physical_run:
                         ground_truth_samples.append(
-                            _ground_truth_evidence(message, sim_timestamp_ns)
+                            _ground_truth_evidence(
+                                message,
+                                sim_timestamp_ns,
+                                rotate_velocity=self.ruleset_id == "calibration_v1",
+                            )
                         )
                     elif record.topic == "/simulation/scenario_events":
                         scenario_events.append(message)
@@ -1210,6 +1236,13 @@ class RosbagValidator:
                     "descent.touchdown_precision",
                     "descent.safe_preimpact_speed",
                     "descent.stable_contact",
+                    "score.finalized",
+                )
+            elif self.ruleset_id == "calibration_v1":
+                expected_event_types = (
+                    "calibration.airborne_then_contact",
+                    "calibration.safe_preimpact_speed",
+                    "calibration.stable_contact",
                     "score.finalized",
                 )
             elif self.ruleset_id == "competition_v1":
