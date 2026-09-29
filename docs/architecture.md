@@ -192,8 +192,9 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 
 ## CI calibration design
 
-Implemented 2026-09-29; calibration flight acceptance passed, and fresh-process
-validation is pending. The immediate
+Implemented 2026-09-29; calibration flight acceptance passed, but fresh-process
+validation failed stable-contact scoring at 80/100. The two-run milestone remains
+unaccepted; see [current verification](handoff.md). The immediate
 deliverable is a reusable calibration stage and a fresh-process validation
 flight. The eventual CI runner invokes this stage before the mission suite.
 Existing launch commands do not implement that suite dependency yet.

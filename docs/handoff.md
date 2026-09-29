@@ -3,7 +3,7 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-29. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-09-30. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
@@ -11,8 +11,9 @@ PR and imported `companion/comp2026` source remain unchanged.
 The new CI calibration implementation shares aircraft dynamics across the three
 vehicle variants, tunes all axes and saves gains after native LAND. It adds
 independent calibration acceptance and a fresh-SITL validation consumer.
-Calibration passed independent acceptance; fresh-SITL validation is pending.
-The sweep below used the older
+Calibration passed independent acceptance. Fresh-SITL validation flew and landed,
+but its 80/100 score failed the required stable-contact rule: this milestone is
+not accepted and cannot release dependent CI missions. The sweep below used the older
 `33da957` profile; its passes do not establish compatibility with the new body
 or gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
 
@@ -22,8 +23,8 @@ DataFlash shows neutral throttle expiring from 1500 to 1000 exactly three second
 after its one-time override. The driver also failed to terminate on that disarm.
 The run was stopped normally and preserved as ABORTED; validation never started.
 It is not a calibration pass. Commit `304f966` refreshes neutral input and rejects
-unexpected disarm; 233 companion tests pass, with fresh flight verification still
-pending. An earlier startup-only failure,
+unexpected disarm; the following calibration verified that fix in flight.
+An earlier startup-only failure,
 `21d8ffe8-b2ac-409e-99c9-f4731386487a`, exposed recorder-geometry and diagnostic
 world-speed mismatches; both contracts now have focused tests and fixes.
 
@@ -33,9 +34,41 @@ scoring and independent artifact acceptance both passed at 100/100. Its first
 validation consumer, `21f989f6-eb18-4257-9d42-f0c1a089c72e`, never armed: a burst
 of 34 parameter-read requests exceeded ArduPilot's 20-entry request queue, and
 missing replies blocked execution readiness. That consumer was preserved as
-ABORTED. The accepted calibration remains reusable while a companion-only
-readback fix is verified; aircraft, base parameters, SITL and Gazebo identities
-must still match before import.
+ABORTED. Commit `bfec619` replaces the burst with one complete-list request,
+retaining the same strict required-value checks.
+
+Validation retry `308969fb-c2ca-4225-959b-70c1a51ffa6b`, built from clean
+`045e3f5`, reused the accepted source with byte-identical gain and manifest files.
+SITL/Gazebo image identities, aircraft and base parameters stayed unchanged; only
+the companion image changed. All 34 effective parameters matched before arming.
+The five configured operations succeeded, including the 5 m takeoff, 10-second
+hold and native LAND; observed landing/disarm completed at public 30.05 seconds.
+Independent provenance, recordings, readback and five-second stable-hover checks
+passed before acceptance rejected the final 80/100 score. Airborne/contact,
+touchdown precision and safe preimpact speed passed; stable contact failed.
+CLI `COMPLETED` therefore does not mean this calibration/validation pair passed.
+
+Bag replay isolates the failure to the first contact sample at public 27.450 s:
+speed 0.1994064 m/s exceeds the stable-contact limit of 0.1 m/s. The remaining ten
+samples through 27.950 s stay in contact at at most 0.001 m/s; maximum tilt across
+all eleven samples is 0.004544 degrees. Preimpact descent at 27.400 s is
+0.4997697 m/s, within the 1 m/s safety limit. The current
+[descent scorer](../scorekeeper/src/drone_sim_scorekeeper/descent.py) starts its
+half-second stability window at first contact, including that impact sample.
+The vehicle settles immediately afterward; this evidence does not establish a
+sustained oscillation or loss of contact.
+
+Both bundles retain observer/onboard videos under `runs/RUN_ID/video/`, source
+flight logs and immutable manifests. No score threshold or evidence was changed.
+Further fixes are stopped after three correction rounds. The assumption to
+revisit is whether the impact sample belongs in the settled-contact window.
+The present rule and acceptance result remain unchanged.
+
+Focused companion verification after `bfec619`: 233 passed. Earlier integration
+at `4414103`: 2,123 passed, 27 skipped; later startup-contract checks also passed.
+Other missions remain unrun with the new common airframe and gains. Full-suite
+dependencies, Comp2026 consumption/packaging repair, CI-provider setup and run-time
+optimization remain deferred; the accepted calibration alone does not clear them.
 
 The latest [scenario sweep](#scenario-regression-sweep) attempted all eight
 unattended templates and controls from one frozen build. Controlled descent,
