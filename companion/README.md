@@ -133,6 +133,8 @@ AUTOTUNE with neutral sticks. After ArduPilot reports success, the companion
 returns to LOITER and sends `MAV_CMD_DO_AUX_FUNCTION` function 180 at HIGH.
 The command ACK, the complete pilot-testing status, and matching live gain
 readback are all required before a two-second stable settle and native LAND.
+The runtime refreshes neutral RC overrides twice per wall second until LAND
+owns descent; an earlier disarm fails immediately.
 
 Completion requires the all-axis saved-gains status, observed disarm, and a
 post-disarm readback matching the tested values. Flight decisions use only the

@@ -162,6 +162,18 @@ def parameter_readback_generation(
     return min(generations[name] for name in names)
 
 
+def neutral_override_required(phase: Phase) -> bool:
+    """Keep all four pilot inputs neutral until native LAND owns descent."""
+    return phase in {
+        Phase.WAIT_PRE_TUNE_LOITER,
+        Phase.WAIT_AUTOTUNE,
+        Phase.TUNING,
+        Phase.WAIT_POST_TUNE_LOITER,
+        Phase.WAIT_GAIN_ACTIVATION,
+        Phase.SETTLING,
+    }
+
+
 def advance(state: AllAxisState, observation: Observation) -> Transition:
     if state.phase in {Phase.COMPLETE, Phase.FAILED}:
         return Transition(state)
@@ -169,6 +181,17 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
     if state.last_timestamp_ns is not None and stamp < state.last_timestamp_ns:
         return _failed(state, stamp, "simulation timestamp regressed")
     current = replace(state, last_timestamp_ns=stamp)
+    if state.phase in {
+        Phase.WAIT_ALTITUDE,
+        Phase.WAIT_PRE_TUNE_LOITER,
+        Phase.WAIT_AUTOTUNE,
+        Phase.TUNING,
+        Phase.WAIT_POST_TUNE_LOITER,
+        Phase.WAIT_GAIN_ACTIVATION,
+        Phase.SETTLING,
+        Phase.WAIT_LAND,
+    } and observation.armed is False:
+        return _failed(current, stamp, "vehicle disarmed before native LAND")
     if observation.status_text and observation.status_text.startswith("AutoTune: Failed"):
         return _failed(current, stamp, observation.status_text)
     if stamp >= state.public_deadline_ns - 60_000_000_000 and state.phase not in {Phase.LANDING}:

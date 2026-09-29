@@ -276,6 +276,15 @@ def autotune_failure_recovery_complete(
     return armed is False or timestamp_ns - recovery_started_ns >= 45_000_000_000
 
 
+def autotune_neutral_refresh_due(
+    *, phase: calibration_autotune.Phase, last_refresh_wall: float, wall_now: float
+) -> bool:
+    return (
+        calibration_autotune.neutral_override_required(phase)
+        and wall_now - last_refresh_wall >= 0.5
+    )
+
+
 class _Comp2026ShutdownAdmission:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -1031,6 +1040,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
     exit_code = 0
     overall_wall_deadline = time.monotonic() + config.max_wall_seconds
     recovery_started_ns: int | None = None
+    last_neutral_refresh_wall = 0.0
 
     def export_readback() -> None:
         from artifacts.calibration import (
@@ -1113,6 +1123,22 @@ def _run_autotune(config: RuntimeConfig) -> int:
                     disarm_event_emitted = True
                 if state.phase is calibration_autotune.Phase.COMPLETE: lifecycle.observe_terminal(MissionState(MissionPhase.LANDED, last_timestamp_ns=stamp))
                 elif state.phase is calibration_autotune.Phase.FAILED: failure = state.failure_reason
+            wall_now = time.monotonic()
+            if failure is None and autotune_neutral_refresh_due(
+                phase=state.phase,
+                last_refresh_wall=last_neutral_refresh_wall,
+                wall_now=wall_now,
+            ):
+                try:
+                    calibration_autotune.execute_actions(
+                        vehicle,
+                        (calibration_autotune.Action.neutral_override(),),
+                        mode_factory=VehicleMode,
+                        export=lambda: None,
+                    )
+                    last_neutral_refresh_wall = wall_now
+                except Exception as error:
+                    failure = f"all-axis AutoTune RC override failed: {error}"
             if failure:
                 recovery_stamp = latest_clock_ns or 0
                 if armed is True and recovery_started_ns is None:

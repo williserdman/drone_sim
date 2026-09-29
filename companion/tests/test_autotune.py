@@ -634,3 +634,61 @@ def test_parameter_request_clears_session_before_mavlink_send() -> None:
     )
 
     assert observed == [{}]
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "WAIT_PRE_TUNE_LOITER",
+        "WAIT_AUTOTUNE",
+        "TUNING",
+        "WAIT_POST_TUNE_LOITER",
+        "WAIT_GAIN_ACTIVATION",
+        "SETTLING",
+    ],
+)
+def test_all_axis_autotune_keeps_neutral_rc_override_alive(phase: str) -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    assert calibration.neutral_override_required(calibration.Phase[phase])
+
+
+def test_all_axis_autotune_fails_immediately_on_unexpected_disarm() -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.AllAxisState(
+        phase=calibration.Phase.TUNING,
+        phase_started_ns=1,
+        public_deadline_ns=600_000_000_000,
+    )
+    transition = calibration.advance(
+        state,
+        calibration.Observation(2, mode="AUTOTUNE", armed=False),
+    )
+    assert transition.state.phase is calibration.Phase.FAILED
+    assert transition.state.failure_reason == "vehicle disarmed before native LAND"
+
+
+def test_runtime_refreshes_neutral_override_twice_per_wall_second() -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    assert not runtime_node.autotune_neutral_refresh_due(
+        phase=calibration.Phase.TUNING, last_refresh_wall=10.0, wall_now=10.49
+    )
+    assert runtime_node.autotune_neutral_refresh_due(
+        phase=calibration.Phase.TUNING, last_refresh_wall=10.0, wall_now=10.5
+    )
+    assert not runtime_node.autotune_neutral_refresh_due(
+        phase=calibration.Phase.WAIT_LAND, last_refresh_wall=10.0, wall_now=11.0
+    )
+    assert not runtime_node.autotune_neutral_refresh_due(
+        phase=calibration.Phase.FAILED, last_refresh_wall=10.0, wall_now=11.0
+    )
+    last = 0.0
+    refreshes = 0
+    for wall_now in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5):
+        if runtime_node.autotune_neutral_refresh_due(
+            phase=calibration.Phase.TUNING,
+            last_refresh_wall=last,
+            wall_now=wall_now,
+        ):
+            refreshes += 1
+            last = wall_now
+    assert refreshes == 7
