@@ -86,6 +86,11 @@ that SITL exited, and it always attempts to close the protocol.
   scenarios keep the base profile. The companion reads back every expected
   value, including the aircraft estimator, before sending a flight command.
   Moving landing remains experimental; see the [moving-pad evidence](../docs/handoff.md#moving-pad-verification).
+- A configured validation run with accepted calibration verifies the exact
+  checksum-bound `configuration/calibration.parm` and its 15 allowlisted gains,
+  then loads it last after the base and scenario overlays. Missing, changed, or
+  mismatched frozen input fails before ArduCopter starts. Older runs without a
+  calibration object retain their existing overlay order.
 - Offline diagnosis found that the pinned `AHRS_EKF_TYPE=10` path returns body
   delta velocity through the NED interface consumed by precision landing.
   Native Kalman landing is affected. The EKF3 experiment avoids that return

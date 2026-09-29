@@ -50,6 +50,11 @@ bounds stalled infrastructure. An ACK alone does not establish flight completion
 execution readiness after passive readiness, matching RUNNING, and public clock.
 This releases physics during operator waiting without issuing a flight command.
 The whole sequence must finish landed/disarmed to publish mission success.
+When the frozen run configuration contains accepted calibration, the host
+requests fresh MAVLink readback for all 15 gains and the profile's preserved
+baseline parameters. Every value must match before execution readiness or the
+first flight command; missing values remain bounded by the run wall deadline,
+and a mismatch fails without arming.
 Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
 the failed result. Another observed mode prevents that recovery command. Global
@@ -115,6 +120,23 @@ invalidated that bundle. See the [flight evidence and limits](../docs/handoff.md
   [protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 
 ## Interfaces
+
+### All-axis flight-controller tuning
+
+The `autotune` mission is the calibration path for roll, pitch, and yaw. It
+requires normal ArduPilot prearm checks, reads back `AUTOTUNE_AXES=7` and
+`ATC_RATE_FF_ENAB=1`, takes off in GUIDED, settles in LOITER, and enters
+AUTOTUNE with neutral sticks. After ArduPilot reports success, the companion
+returns to LOITER and sends `MAV_CMD_DO_AUX_FUNCTION` function 180 at HIGH.
+The command ACK, the complete pilot-testing status, and matching live gain
+readback are all required before a two-second stable settle and native LAND.
+
+Completion requires the all-axis saved-gains status, observed disarm, and a
+post-disarm readback matching the tested values. Flight decisions use only the
+public clock and MAVLink telemetry. The historical `autotune_roll` and
+`hover_roll` diagnostic missions keep their existing behavior. Start the new
+mission with [autotune-run.json](../config/autotune-run.json); its 600-second
+public window reserves the final 60 seconds for landing or failure recovery.
 
 The runtime consumes the public clock and run state, onboard images, competition
 downward range, and ArduPilot MAVLink telemetry. Production MAVLink is fixed to

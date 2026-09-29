@@ -37,12 +37,13 @@ class Vehicle:
         self.commands.append(("waypoint", latitude, longitude, altitude, yaw_rad))
 
 
-def host_for(steps):
+def host_for(steps, *, calibration_parameters=None):
     protocol = Protocol()
     vehicle = Vehicle()
     lifecycle = CompanionLifecycle(run_id=RUN_ID, protocol=protocol, stream=StringIO())
     host = ConfiguredHost(parse_mission_plan({"schema_version": 1, "steps": steps}),
-                          vehicle, lifecycle, protocol, RUN_ID)
+                          vehicle, lifecycle, protocol, RUN_ID,
+                          calibration_parameters=calibration_parameters)
     return host, vehicle, protocol
 
 
@@ -171,6 +172,39 @@ def test_ordinary_configured_plan_ignores_moving_profile_parameter_values():
 
     assert host.error is None
     assert vehicle.commands == []
+
+
+def test_calibration_readback_blocks_first_flight_command_until_all_values_match():
+    expected = {"ATC_RAT_RLL_P": 0.041, "ATC_RAT_YAW_FLTE": 2.0}
+    host, vehicle, protocol = host_for(
+        [{"tool": "set_mode", "args": {"mode": "GUIDED"}}],
+        calibration_parameters=expected,
+    )
+    host.observe(Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False,
+                           landed=True, prearm_checks_healthy=True))
+    host.observe(Telemetry(0, parameter_name="ATC_RAT_RLL_P", parameter_value=0.041))
+    host.tick(0, mission_running=True)
+    assert vehicle.commands == []
+    assert "mission-execution-ready" not in protocol.statuses
+
+    host.observe(Telemetry(1, parameter_name="ATC_RAT_YAW_FLTE", parameter_value=2.0))
+    host.tick(1, mission_running=True)
+    assert vehicle.commands == [(CommandKind.SET_GUIDED, None)]
+
+
+def test_calibration_readback_mismatch_emits_zero_flight_commands():
+    host, vehicle, protocol = host_for(
+        [{"tool": "arm", "args": {}}],
+        calibration_parameters={"ATC_RAT_RLL_P": 0.041},
+    )
+    host.observe(Telemetry(0, heartbeat=True, mode="GUIDED", armed=False,
+                           landed=True, prearm_checks_healthy=True))
+    host.observe(Telemetry(0, parameter_name="ATC_RAT_RLL_P", parameter_value=0.05))
+    host.tick(0, mission_running=True)
+
+    assert host.error == "effective required parameter ATC_RAT_RLL_P is 0.05, expected 0.041"
+    assert vehicle.commands == []
+    assert "mission-execution-ready" not in protocol.statuses
 
 
 def test_moving_profile_gate_needs_no_image_before_first_flight_command():

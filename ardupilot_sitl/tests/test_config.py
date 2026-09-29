@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
-from drone_sim_ardupilot.config import RuntimeConfig, resolve_gazebo_address
+from drone_sim_ardupilot.config import (
+    CALIBRATION_PARAMETERS,
+    RuntimeConfig,
+    parameter_files_from_environment,
+    resolve_gazebo_address,
+)
 
 
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
@@ -208,6 +215,54 @@ def test_moving_profile_overlays_ekf3_and_native_precision_estimator(tmp_path: P
         "PLND_LAG": "0.04",
         "PSC_NE_POS_P": "1",
     }
+
+
+def test_frozen_calibration_is_verified_and_loaded_after_scenario(tmp_path: Path) -> None:
+    values = {name: index / 1000 for index, name in enumerate(CALIBRATION_PARAMETERS, 1)}
+    calibration = "".join(f"{name} {value}\n" for name, value in values.items()).encode()
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    calibration_path = configuration / "calibration.parm"
+    calibration_path.write_bytes(calibration)
+    config_path = configuration / "run.json"
+    config_path.write_text(json.dumps({
+        "run_id": RUN_ID, "scenario": "moving_pad_v1",
+        "calibration_json": {"schema_version": 1, "source_run_id": "source",
+            "source_manifest_sha256": "0" * 64,
+            "source_artifact_sha256": hashlib.sha256(calibration).hexdigest(),
+            "gains": values, "profile": {"baseline_parameters": {}}},
+    }), encoding="utf-8")
+
+    overlay, frozen = parameter_files_from_environment(
+        {"SIM_CONFIG_PATH": str(config_path)}, run_id=RUN_ID, run_directory=tmp_path,
+    )
+    runtime = RuntimeConfig(run_id=RUN_ID, run_directory=tmp_path,
+                            parameter_overlay_file=overlay, calibration_file=frozen)
+
+    assert runtime.argv[runtime.argv.index("--defaults") + 1].split(",") == [
+        "/opt/drone_sim/ardupilot/params/descent.parm",
+        "/opt/drone_sim/ardupilot/params/moving-pad.parm",
+        str(calibration_path),
+    ]
+
+
+def test_frozen_calibration_rejects_changed_bytes(tmp_path: Path) -> None:
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    (configuration / "calibration.parm").write_text("changed\n", encoding="utf-8")
+    config_path = configuration / "run.json"
+    config_path.write_text(json.dumps({
+        "run_id": RUN_ID,
+        "calibration_json": {"schema_version": 1, "source_run_id": "source",
+            "source_manifest_sha256": "1" * 64, "source_artifact_sha256": "0" * 64,
+            "gains": {name: 0.1 for name in CALIBRATION_PARAMETERS},
+            "profile": {"baseline_parameters": {}}},
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="calibration artifact checksum"):
+        parameter_files_from_environment(
+            {"SIM_CONFIG_PATH": str(config_path)}, run_id=RUN_ID, run_directory=tmp_path,
+        )
 
 
 @pytest.mark.parametrize(

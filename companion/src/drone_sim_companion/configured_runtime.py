@@ -6,6 +6,7 @@ import signal
 import sys
 import time
 import math
+import json
 from pathlib import Path
 import threading
 
@@ -47,6 +48,7 @@ class ConfiguredHost:
         protocol,
         run_id,
         *,
+        calibration_parameters=None,
         moving_vision=None,
         publish_mission_event=None,
     ) -> None:
@@ -82,6 +84,10 @@ class ConfiguredHost:
         self._success_reported = False
         self._clock_ns = 0
         self._moving_vision = moving_vision
+        self._calibration_required = bool(calibration_parameters)
+        self._required_parameters = dict(calibration_parameters or {})
+        if self._moving_required:
+            self._required_parameters.update(MOVING_PRECISION_PARAMETERS)
         self._parameters: dict[str, float] = {}
         self._publish_mission_event = publish_mission_event
         self._next_event_id = 0
@@ -93,14 +99,14 @@ class ConfiguredHost:
 
     def observe(self, telemetry) -> None:
         if (
-            self._moving_required
-            and telemetry.parameter_name in MOVING_PRECISION_PARAMETERS
+            telemetry.parameter_name in self._required_parameters
         ):
-            expected = MOVING_PRECISION_PARAMETERS[telemetry.parameter_name]
+            expected = self._required_parameters[telemetry.parameter_name]
             value = telemetry.parameter_value
             if value is None or not math.isclose(value, expected, rel_tol=0.0, abs_tol=1e-6):
+                kind = "required" if self._calibration_required else "precision"
                 self.fail(
-                    f"effective precision parameter {telemetry.parameter_name} is {value}, expected {expected}",
+                    f"effective {kind} parameter {telemetry.parameter_name} is {value}, expected {expected}",
                     attempt_recovery=False,
                 )
                 return
@@ -128,7 +134,11 @@ class ConfiguredHost:
 
     @property
     def precision_profile_ready(self) -> bool:
-        return not self._moving_required or set(self._parameters) == set(MOVING_PRECISION_PARAMETERS)
+        return set(self._parameters) == set(self._required_parameters)
+
+    @property
+    def required_parameter_names(self) -> tuple[str, ...]:
+        return tuple(self._required_parameters)
 
     def tick(self, timestamp_ns: int | None, *, mission_running: bool) -> None:
         if timestamp_ns is None:
@@ -204,6 +214,16 @@ class ConfiguredHost:
                 )
             )
         self.lifecycle.finalize(self._clock_ns)
+
+
+def _calibration_parameters(config) -> dict[str, float]:
+    raw = getattr(config, "calibration_json", None)
+    if raw is None:
+        return {}
+    document = json.loads(raw)
+    gains = document["gains"]
+    baseline = document["profile"]["baseline_parameters"]
+    return {**baseline, **gains}
 
 
 def run_configured(config) -> int:
@@ -385,6 +405,7 @@ def run_configured(config) -> int:
             lifecycle,
             protocol,
             config.run_id,
+            calibration_parameters=_calibration_parameters(config),
             moving_vision=moving_vision,
             publish_mission_event=publish_event,
         )
@@ -411,8 +432,12 @@ def run_configured(config) -> int:
                 if telemetry.heartbeat and not telemetry_requested:
                     vehicle.request_telemetry(rate_hz=10)
                     telemetry_requested = True
-                if telemetry.heartbeat and moving_required and not parameters_requested:
-                    vehicle.request_parameters(tuple(MOVING_PRECISION_PARAMETERS))
+                if (
+                    telemetry.heartbeat
+                    and host.required_parameter_names
+                    and not parameters_requested
+                ):
+                    vehicle.request_parameters(host.required_parameter_names)
                     parameters_requested = True
             now = time.monotonic()
             if callback_error is not None or now >= overall_deadline:

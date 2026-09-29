@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import signal
@@ -67,7 +68,13 @@ class FakeMav:
         pass
 
     def param_request_read_send(self, *arguments):
-        pass
+        name = arguments[2].decode("ascii")
+        self.connection.parameter_requests.append(name)
+        if name in self.connection.parameter_values:
+            self.connection.messages.append(mavutil.mavlink.MAVLink_param_value_message(
+                name.encode("ascii"), self.connection.parameter_values[name],
+                mavutil.mavlink.MAV_PARAM_TYPE_REAL32, 1, 0,
+            ))
 
 
 class FakeConnection:
@@ -83,6 +90,8 @@ class FakeConnection:
                 0, mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND),
         ])
         self.mav = FakeMav(self)
+        self.parameter_requests = []
+        self.parameter_values = {}
         self.closed = False
 
     def recv_match(self, *, blocking):
@@ -260,6 +269,77 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
     assert fake_ros.node.destroyed and fake_ros.node.callbacks == {}
     assert fake_ros.initialized is False and not connection.messages
     assert {item: signal.getsignal(item) for item in previous_handlers} == previous_handlers
+
+
+def test_live_loop_requests_frozen_calibration_and_baseline_before_first_command(monkeypatch):
+    protocol = Protocol()
+    connection = FakeConnection()
+    expected = {"ATC_RAT_RLL_P": 0.041, "INS_GYRO_FILTER": 20.0}
+    connection.parameter_values = expected
+    fake_ros = FakeRos(None)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission_plan=parse_mission_plan({"schema_version": 1, "steps": [
+            {"tool": "set_mode", "args": {"mode": "GUIDED"}},
+            {"tool": "arm", "args": {}},
+            {"tool": "takeoff", "args": {"altitude_m": 2}},
+            {"tool": "land", "args": {}},
+        ]}),
+        calibration_json=json.dumps({
+            "gains": {"ATC_RAT_RLL_P": expected["ATC_RAT_RLL_P"]},
+            "profile": {"baseline_parameters": {"INS_GYRO_FILTER": expected["INS_GYRO_FILTER"]}},
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+    )
+
+    assert run_configured(config) == 0
+    assert set(connection.parameter_requests) == set(expected)
+    assert mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM in connection.mav.command_ids
+
+
+def test_missing_calibration_readback_reaches_deadline_with_zero_flight_commands(monkeypatch):
+    protocol = Protocol()
+    connection = FakeConnection()
+    fake_ros = FakeRos(None)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    monotonic_values = iter((0.0, 2.0))
+    monkeypatch.setattr(configured_runtime.time, "monotonic", lambda: next(monotonic_values))
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission_plan=parse_mission_plan({
+            "schema_version": 1,
+            "steps": [{"tool": "arm", "args": {}}],
+        }),
+        calibration_json=json.dumps({
+            "gains": {"ATC_RAT_RLL_P": 0.041},
+            "profile": {"baseline_parameters": {}},
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=1.0,
+        finalization_wall_seconds=1.0,
+    )
+
+    assert run_configured(config) == 1
+    assert connection.parameter_requests == ["ATC_RAT_RLL_P"]
+    flight_commands = {
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+        mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+        mavutil.mavlink.MAV_CMD_NAV_LAND,
+    }
+    assert not flight_commands.intersection(connection.mav.command_ids)
+    assert protocol.statuses["runtime-failure"]["reason"] == (
+        "configured mission wall deadline expired"
+    )
 
 
 def test_global_finalization_does_not_start_recovery_land(monkeypatch):
