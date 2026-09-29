@@ -1,4 +1,5 @@
 from io import StringIO
+import json
 from pathlib import Path
 
 import pytest
@@ -205,6 +206,31 @@ def test_calibration_readback_mismatch_emits_zero_flight_commands():
     assert host.error == "effective required parameter ATC_RAT_RLL_P is 0.05, expected 0.041"
     assert vehicle.commands == []
     assert "mission-execution-ready" not in protocol.statuses
+
+
+def test_calibration_readback_accepts_float32_rounding_and_emits_verified_event_once():
+    expected = {"ATC_ACC_R_MAX": 123456.789}
+    host, vehicle, protocol = host_for(
+        [{"tool": "set_mode", "args": {"mode": "GUIDED"}}],
+        calibration_parameters=expected,
+    )
+    host.observe(Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False,
+                           landed=True, prearm_checks_healthy=True))
+    host.observe(Telemetry(
+        0, parameter_name="ATC_ACC_R_MAX", parameter_value=123456.79,
+    ))
+    host.tick(0, mission_running=True)
+    host.tick(1, mission_running=True)
+
+    events = [json.loads(line) for line in host.lifecycle._stream.getvalue().splitlines()]
+    verified = [event for event in events
+                if event["event"] == "calibration_parameters_verified"]
+    assert len(verified) == 1
+    assert verified[0]["fields"] == {
+        "stage": "pre_arm", "parameters": {"ATC_ACC_R_MAX": 123456.79},
+    }
+    assert vehicle.commands == [(CommandKind.SET_GUIDED, None)]
+    assert protocol.statuses["mission-execution-ready"]["ready"] is True
 
 
 def test_moving_profile_gate_needs_no_image_before_first_flight_command():

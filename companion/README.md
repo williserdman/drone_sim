@@ -54,7 +54,10 @@ When the frozen run configuration contains accepted calibration, the host
 requests fresh MAVLink readback for all 15 gains and the profile's preserved
 baseline parameters. Every value must match before execution readiness or the
 first flight command; missing values remain bounded by the run wall deadline,
-and a mismatch fails without arming.
+and a mismatch fails without arming. Calibration values use the artifact's
+float32-aware relative/absolute tolerances; the moving precision profile keeps
+its stricter absolute tolerance. A single `calibration_parameters_verified`
+event records the accepted pre-arm values before mission execution starts.
 Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
 the failed result. Another observed mode prevents that recovery command. Global

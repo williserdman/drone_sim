@@ -17,6 +17,11 @@ from drone_sim_ardupilot.config import (
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 
 
+def _with_config_sha256(document: dict[str, object]) -> dict[str, object]:
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    return {**document, "config_sha256": hashlib.sha256(encoded).hexdigest()}
+
+
 def _descent_parameters() -> dict[str, str]:
     parameter_file = Path(__file__).parents[1] / "params/descent.parm"
     return {
@@ -225,13 +230,13 @@ def test_frozen_calibration_is_verified_and_loaded_after_scenario(tmp_path: Path
     calibration_path = configuration / "calibration.parm"
     calibration_path.write_bytes(calibration)
     config_path = configuration / "run.json"
-    config_path.write_text(json.dumps({
+    config_path.write_text(json.dumps(_with_config_sha256({
         "run_id": RUN_ID, "scenario": "moving_pad_v1",
         "calibration_json": {"schema_version": 1, "source_run_id": "source",
             "source_manifest_sha256": "0" * 64,
             "source_artifact_sha256": hashlib.sha256(calibration).hexdigest(),
             "gains": values, "profile": {"baseline_parameters": {}}},
-    }), encoding="utf-8")
+    })), encoding="utf-8")
 
     overlay, frozen = parameter_files_from_environment(
         {"SIM_CONFIG_PATH": str(config_path)}, run_id=RUN_ID, run_directory=tmp_path,
@@ -251,15 +256,40 @@ def test_frozen_calibration_rejects_changed_bytes(tmp_path: Path) -> None:
     configuration.mkdir()
     (configuration / "calibration.parm").write_text("changed\n", encoding="utf-8")
     config_path = configuration / "run.json"
-    config_path.write_text(json.dumps({
+    config_path.write_text(json.dumps(_with_config_sha256({
         "run_id": RUN_ID,
         "calibration_json": {"schema_version": 1, "source_run_id": "source",
             "source_manifest_sha256": "1" * 64, "source_artifact_sha256": "0" * 64,
             "gains": {name: 0.1 for name in CALIBRATION_PARAMETERS},
             "profile": {"baseline_parameters": {}}},
-    }), encoding="utf-8")
+    })), encoding="utf-8")
 
     with pytest.raises(ValueError, match="calibration artifact checksum"):
+        parameter_files_from_environment(
+            {"SIM_CONFIG_PATH": str(config_path)}, run_id=RUN_ID, run_directory=tmp_path,
+        )
+
+
+def test_frozen_calibration_rejects_changed_run_configuration(tmp_path: Path) -> None:
+    values = {name: 0.1 for name in CALIBRATION_PARAMETERS}
+    calibration = "".join(f"{name} {value}\n" for name, value in values.items()).encode()
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    (configuration / "calibration.parm").write_bytes(calibration)
+    document = _with_config_sha256({
+        "run_id": RUN_ID,
+        "calibration_json": {
+            "schema_version": 1, "source_run_id": "source",
+            "source_manifest_sha256": "1" * 64,
+            "source_artifact_sha256": hashlib.sha256(calibration).hexdigest(),
+            "gains": values, "profile": {"baseline_parameters": {}},
+        },
+    })
+    document["scenario"] = "changed-after-freeze"
+    config_path = configuration / "run.json"
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="config_sha256"):
         parameter_files_from_environment(
             {"SIM_CONFIG_PATH": str(config_path)}, run_id=RUN_ID, run_directory=tmp_path,
         )

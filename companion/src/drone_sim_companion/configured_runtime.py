@@ -85,6 +85,8 @@ class ConfiguredHost:
         self._clock_ns = 0
         self._moving_vision = moving_vision
         self._calibration_required = bool(calibration_parameters)
+        self._calibration_parameter_names = set(calibration_parameters or {})
+        self._calibration_verified_reported = False
         self._required_parameters = dict(calibration_parameters or {})
         if self._moving_required:
             self._required_parameters.update(MOVING_PRECISION_PARAMETERS)
@@ -103,7 +105,17 @@ class ConfiguredHost:
         ):
             expected = self._required_parameters[telemetry.parameter_name]
             value = telemetry.parameter_value
-            if value is None or not math.isclose(value, expected, rel_tol=0.0, abs_tol=1e-6):
+            calibration_value = (
+                telemetry.parameter_name in self._calibration_parameter_names
+                and telemetry.parameter_name not in MOVING_PRECISION_PARAMETERS
+            )
+            matches = value is not None and math.isclose(
+                value,
+                expected,
+                rel_tol=1e-5 if calibration_value else 0.0,
+                abs_tol=1e-7 if calibration_value else 1e-6,
+            )
+            if not matches:
                 kind = "required" if self._calibration_required else "precision"
                 self.fail(
                     f"effective {kind} parameter {telemetry.parameter_name} is {value}, expected {expected}",
@@ -173,6 +185,13 @@ class ConfiguredHost:
             self.protocol.write_status(
                 MissionExecutionReadyStatus(self.run_id, timestamp_ns)
             )
+            if self._calibration_required and not self._calibration_verified_reported:
+                self.lifecycle.emit(
+                    "calibration_parameters_verified",
+                    timestamp_ns,
+                    {"stage": "pre_arm", "parameters": dict(self._parameters)},
+                )
+                self._calibration_verified_reported = True
             self.started = True
         self.mission.tick(timestamp_ns)
         if self.mission.state in {"failed", "cancelled"}:

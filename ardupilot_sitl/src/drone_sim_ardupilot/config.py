@@ -88,6 +88,20 @@ def parameter_files_from_environment(
         raise ValueError("SIM_CONFIG_PATH must contain readable JSON") from error
     if not isinstance(document, dict) or document.get("run_id") != run_id:
         raise ValueError("frozen configuration run_id does not match SIM_RUN_ID")
+    if "calibration_json" in document:
+        expected_checksum = document.get("config_sha256")
+        without_checksum = {
+            key: value for key, value in document.items() if key != "config_sha256"
+        }
+        actual_checksum = hashlib.sha256(
+            json.dumps(
+                without_checksum, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        if expected_checksum != actual_checksum:
+            raise ValueError(
+                "config_sha256 does not match the frozen configuration"
+            )
     overlay = (
         MOVING_PAD_PARAMETERS if document.get("scenario") == "moving_pad_v1" else None
     )
