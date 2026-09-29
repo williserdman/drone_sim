@@ -31,6 +31,19 @@ def test_moving_pad_v1_emits_inactive_event_with_its_scenario_identity() -> None
     assert policy.observe_clock(50_000_000) is None
 
 
+def test_calibration_v1_emits_inactive_event_with_no_payload_authority() -> None:
+    policy = ScenarioPolicy(
+        run_id="00000000-0000-4000-8000-000000000001",
+        scenario="calibration_v1",
+    )
+
+    event = policy.observe_clock(0)
+
+    assert event is not None
+    assert event.magnet_id == "calibration-v1-magnet"
+    assert event.state == "INACTIVE"
+
+
 def test_clock_regression_fails_and_cannot_repair_or_republish() -> None:
     policy = ScenarioPolicy(run_id="00000000-0000-4000-8000-000000000001")
     policy.observe_clock(50_000_000)

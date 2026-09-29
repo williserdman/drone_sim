@@ -23,9 +23,10 @@ class ScenarioPolicy:
             raise ValueError("run_id must be a canonical UUID") from error
         if str(parsed) != run_id:
             raise ValueError("run_id must be a canonical UUID")
-        if scenario not in {"descent_v1", "moving_pad_v1"}:
+        if scenario not in {"descent_v1", "moving_pad_v1", "calibration_v1"}:
             raise ValueError(
-                "inactive scenario runtime requires descent_v1 or moving_pad_v1"
+                "inactive scenario runtime requires descent_v1, moving_pad_v1, "
+                "or calibration_v1"
             )
         self._run_id = run_id
         self._magnet_id = f"{scenario.replace('_', '-')}-magnet"
