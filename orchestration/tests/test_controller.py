@@ -1390,6 +1390,38 @@ def test_phase3_compose_binds_nested_revision_label_before_launch(tmp_path):
     ]
 
 
+def test_rejected_calibration_source_never_allocates_or_calls_compose(tmp_path):
+    template = json.loads(_template(tmp_path).read_text(encoding="utf-8"))
+    template.update(
+        world="vertical_descent",
+        vehicle="iris_flight",
+        mission="configured",
+        scenario="descent_v1",
+        runtime_profile="phase3",
+        simulation={
+            "seed": 1,
+            "duration_sim_seconds": 30,
+            "public_epoch_native_sim_seconds": 90,
+            "target_real_time_factor": 0.1,
+        },
+        mission_plan={"schema_version": 1, "steps": [{"tool": "land", "args": {}}]},
+    )
+    template["calibration"] = {"source_run_directory": "rejected"}
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps(template), encoding="utf-8")
+    calls = []
+    controller = RunController(
+        project_directory=tmp_path,
+        calibration_importer=lambda _path: (_ for _ in ()).throw(ValueError("source rejected")),
+        status_store_factory=lambda _root: calls.append("allocate") or pytest.fail("allocated"),
+        compose_factory=lambda *_args: calls.append("compose") or pytest.fail("compose"),
+    )
+
+    with pytest.raises(ControllerError, match="source rejected"):
+        controller.start(path)
+    assert calls == []
+
+
 def test_completed_controller_executes_frozen_order_commits_manifest_then_tears_down(tmp_path):
     controller, trace, _clock, holder = _controller(tmp_path)
 

@@ -26,7 +26,9 @@
     "runtime_profile": {"enum": ["phase2", "phase3"]},
     "simulation": {"$ref": "#/$defs/simulation"},
     "competition": {"$ref": "#/$defs/competition"},
-    "mission_plan": {"$ref": "#/$defs/mission_plan"}
+    "mission_plan": {"$ref": "#/$defs/mission_plan"},
+    "calibration": {"$ref": "#/$defs/calibration_source"},
+    "calibration_profile": {"type": "object"}
   },
   "allOf": [
     {
@@ -57,7 +59,16 @@
         "required": ["runtime_profile", "mission_plan"],
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
-      "else": {"not": {"required": ["mission_plan"]}}
+      "else": {
+        "allOf": [
+          {"not": {"required": ["mission_plan"]}},
+          {"not": {"required": ["calibration"]}}
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"mission": {"const": "autotune"}}},
+      "else": {"not": {"required": ["calibration_profile"]}}
     },
     {
       "if": {"anyOf": [
@@ -80,6 +91,12 @@
     }
   ],
   "$defs": {
+    "calibration_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_run_directory"],
+      "properties": {"source_run_directory": {"type": "string", "minLength": 1}}
+    },
     "recording": {
       "type": "object",
       "additionalProperties": false,

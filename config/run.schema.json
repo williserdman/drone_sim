@@ -30,6 +30,8 @@
     "simulation": {"$ref": "#/$defs/simulation"},
     "competition": {"$ref": "#/$defs/competition"},
     "mission_plan": {"$ref": "#/$defs/mission_plan"},
+    "calibration_json": {"$ref": "#/$defs/calibration_json"},
+    "calibration_profile": {"type": "object"},
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [
@@ -61,7 +63,16 @@
         "required": ["runtime_profile", "mission_plan"],
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
-      "else": {"not": {"required": ["mission_plan"]}}
+      "else": {
+        "allOf": [
+          {"not": {"required": ["mission_plan"]}},
+          {"not": {"required": ["calibration_json"]}}
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"mission": {"const": "autotune"}}},
+      "else": {"not": {"required": ["calibration_profile"]}}
     },
     {
       "if": {"anyOf": [
@@ -84,6 +95,19 @@
     }
   ],
   "$defs": {
+    "calibration_json": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "source_run_id", "source_manifest_sha256", "source_artifact_sha256", "gains", "profile"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "source_run_id": {"type": "string", "format": "uuid"},
+        "source_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "gains": {"type": "object", "minProperties": 1},
+        "profile": {"type": "object"}
+      }
+    },
     "recording": {
       "type": "object",
       "additionalProperties": false,

@@ -54,6 +54,19 @@ validated by the companion. Examples are
 [automatic descent](../config/configured-descent-run.json) and
 [operator waiting](../config/configured-operator-run.json).
 
+An `autotune` run receives a host-generated `calibration_profile` in its resolved
+configuration before Compose starts. The profile binds the unloaded
+`iris_flight` model, base parameter file, ArduPilot revision, and immutable
+Gazebo/SITL image IDs. A configured validation template may declare
+`calibration.source_run_directory`; relative paths resolve from the template.
+Before allocating the new run, orchestration independently accepts the source at
+maximum score, checks that profile against the current runtime, and freezes the
+15 gains plus preserved baseline readback. It then copies the exact source bytes
+to `configuration/calibration.parm` and
+`configuration/calibration-manifest.json`. See the
+[calibration validation template](../config/calibration-validation-run.json);
+replace `SOURCE_RUN_ID` with an accepted `autotune` run ID before launch.
+
 The [moving-pad template](../config/configured-moving-pad-run.json) binds
 `configured`, `iris_moving_pad`, and `moving_pad_v1` to the moving-pad world,
 640x480 recording, and a 90-second native warmup. Resolution rejects mismatched
@@ -108,7 +121,7 @@ Run from the project root:
 
 ```bash
 uv run pytest orchestration/tests/test_cli.py orchestration/tests/test_config.py \
-  orchestration/tests/test_lifecycle.py -q
+  orchestration/tests/test_calibration.py orchestration/tests/test_lifecycle.py -q
 uv run pytest orchestration/tests/test_controller.py \
   orchestration/tests/test_runtime_node.py orchestration/tests/test_status_store.py -q
 ```
