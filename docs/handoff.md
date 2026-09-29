@@ -10,8 +10,9 @@ PR and imported `companion/comp2026` source remain unchanged.
 
 The new CI calibration implementation shares aircraft dynamics across the three
 vehicle variants, tunes all axes and saves gains after native LAND. It adds
-independent calibration acceptance and a fresh-SITL validation consumer. Flight
-verification of this new profile is pending. The sweep below used the older
+independent calibration acceptance and a fresh-SITL validation consumer.
+Calibration passed independent acceptance; fresh-SITL validation is pending.
+The sweep below used the older
 `33da957` profile; its passes do not establish compatibility with the new body
 or gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
 
@@ -25,6 +26,16 @@ unexpected disarm; 233 companion tests pass, with fresh flight verification stil
 pending. An earlier startup-only failure,
 `21d8ffe8-b2ac-409e-99c9-f4731386487a`, exposed recorder-geometry and diagnostic
 world-speed mismatches; both contracts now have focused tests and fixes.
+
+The next calibration, `51ed33d0-7747-42f7-82a2-3f2653d2585e` from clean
+`4a092d3`, completed all three axes, native LAND and saved-gain export. Physical
+scoring and independent artifact acceptance both passed at 100/100. Its first
+validation consumer, `21f989f6-eb18-4257-9d42-f0c1a089c72e`, never armed: a burst
+of 34 parameter-read requests exceeded ArduPilot's 20-entry request queue, and
+missing replies blocked execution readiness. That consumer was preserved as
+ABORTED. The accepted calibration remains reusable while a companion-only
+readback fix is verified; aircraft, base parameters, SITL and Gazebo identities
+must still match before import.
 
 The latest [scenario sweep](#scenario-regression-sweep) attempted all eight
 unattended templates and controls from one frozen build. Controlled descent,

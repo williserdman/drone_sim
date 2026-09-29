@@ -192,7 +192,8 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 
 ## CI calibration design
 
-Implemented 2026-09-29; fresh flight verification is pending. The immediate
+Implemented 2026-09-29; calibration flight acceptance passed, and fresh-process
+validation is pending. The immediate
 deliverable is a reusable calibration stage and a fresh-process validation
 flight. The eventual CI runner invokes this stage before the mission suite.
 Existing launch commands do not implement that suite dependency yet.
@@ -238,7 +239,8 @@ This order matters in the
 [pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):
 leaving AUTOTUNE restores original gains; activating tuned gains after that exit
 allows native LAND followed by gain saving at disarm. This sequence has source
-evidence, but no flight evidence yet. The existing
+evidence and an independently accepted calibration flight; see
+[current verification](handoff.md). The existing
 [roll mission](../companion/src/drone_sim_companion/autotune.py) uses a different,
 throttle-only descent and must not be presented as this implementation.
 
