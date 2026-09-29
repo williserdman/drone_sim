@@ -106,9 +106,65 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
 
 The automatic example targets 90 simulated seconds of warmup plus 30 recorded
 seconds at one-tenth real time, about 20 wall minutes before startup overhead.
-The operator example waits for external arming and GUIDED selection through an
-existing connection; it does not provision one. Its 60-second public window must
-cover the wait and flight, and targets 25 wall minutes including warmup.
+The operator example waits for external arming and GUIDED selection, but the
+shipped topology has no independent operator connection: companion owns the sole
+single-client MAVLink endpoint. Provision another endpoint or router before
+flying this template. Its 60-second public window must cover the wait and flight.
+
+### Calibrate and validate saved gains
+
+This two-run workflow is the first CI calibration stage. Whole-suite dependency
+execution is not implemented. Use a clean checkout and build all seven images
+with the [build command](#build-runtime-images); capture expected provenance using
+the [acceptance block](#moving-pad-landing) before either run. Keep that checkout
+and those image tags fixed through both flights and acceptance.
+
+1. Run roll, pitch and yaw AutoTune on the unloaded competition airframe:
+
+   ```bash
+   uv run --locked drone-sim start --config config/autotune-run.json
+   ```
+
+   The mission settles in LOITER, tunes all axes, reactivates the tuned gains,
+   settles again and uses native LAND. The public/warmup windows total 690
+   simulated seconds at target RTF 0.25, about 46 wall minutes plus startup.
+   A failed tune or landing cannot release accepted parameters.
+
+2. Save its UUID and prepare a temporary validation template:
+
+   ```bash
+   calibration_run=REPLACE_WITH_RUN_UUID
+   validation_config=$(mktemp /tmp/drone-sim-validation.XXXXXX.json)
+   python3 - "$calibration_run" "$validation_config" <<'PY'
+   import json
+   from pathlib import Path
+   import sys
+   template = json.loads(Path("config/calibration-validation-run.json").read_text())
+   template["calibration"]["source_run_directory"] = str((Path("runs") / sys.argv[1]).resolve())
+   Path(sys.argv[2]).write_text(json.dumps(template, indent=2) + "\n")
+   PY
+   uv run --locked drone-sim start --config "$validation_config"
+   ```
+
+   Before launching, the importer independently accepts the source at 100/100
+   and checks aircraft, base parameters, firmware and image compatibility. It
+   copies the exact gain file and source manifest into the new run. Fresh SITL
+   loads the gains last, and companion verifies readback before arming. This
+   flight takes off to 5 m, holds 10 seconds and lands. Its 210 simulated seconds
+   including warmup target about 14 wall minutes plus startup.
+
+3. Independently inspect both bundles with the captured provenance. Use
+   `scorekeeper/rules/calibration_v1.json` for AutoTune and
+   `scorekeeper/rules/descent_v1.json` for validation, retaining
+   `--require-maximum-score`. Report physical outcome, score and artifact
+   acceptance separately. The validation inspector checks recorded hover
+   stability as well as landing and loaded-gain evidence.
+
+The source artifact is `runs/RUN_ID/ardupilot_sitl/autotune.parm`. The validation
+copy is `runs/RUN_ID/configuration/calibration.parm`; its source identity is frozen
+in `configuration/run.json`. This workflow does not edit tracked defaults.
+Other scenarios need fresh flights with the shared aircraft before claiming no
+regressions. The old `autotune-roll-run.json` remains a historical diagnostic.
 
 ### Run all automatic templates
 
@@ -132,11 +188,15 @@ templates, stops on the first failure or abort, and retains each normal run bund
 )
 ```
 
-Run `configured-operator-run.json` separately with an operator present. The batch
+The operator template is excluded until its connection gap above is resolved. The batch
 includes the existing AutoTune experiment and both competition timing variants;
 allow several hours. It checks process exit codes, not independent physical
 acceptance. Inspect each bundle and use [competition acceptance](#independent-competition-acceptance)
 for competition runs. AutoTune records candidates without promoting parameters.
+
+The [latest sweep](handoff.md#scenario-regression-sweep) records known image-packaging
+and diagnostic-acceptance failures. A completed process or image build does not
+establish that all templates can fly or pass independent acceptance.
 
 ## Run and monitor
 

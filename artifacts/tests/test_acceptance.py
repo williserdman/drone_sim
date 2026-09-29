@@ -59,6 +59,7 @@ def _completed_bundle(
     with_optional_artifact: bool = False,
     log_mutator=None,
     source_revisions: tuple[SourceRevision, ...] | None = None,
+    configuration_updates: dict | None = None,
 ) -> None:
     modules = tuple(Path(path).stem for path in MODULE_LOGS)
     for relative_path in REQUIRED_ARTIFACT_PATHS:
@@ -107,6 +108,7 @@ def _completed_bundle(
             "target_real_time_factor": 0.1,
         },
     }
+    configuration.update(configuration_updates or {})
     config_sha = hashlib.sha256(
         json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -347,6 +349,40 @@ def _physical_evidence(run_directory: Path, *, achieved: float) -> PhysicalBagEv
             for event in events
         ),
     )
+
+
+def test_configured_bundle_uses_its_plan_for_canonical_acceptance(tmp_path):
+    from artifacts.acceptance import inspect_phase3_semantics
+
+    plan = {"schema_version": 1, "steps": [
+        {"tool": "set_mode", "args": {"mode": "GUIDED"}},
+        {"tool": "arm", "args": {}},
+        {"tool": "takeoff", "args": {"altitude_m": 1.5}},
+        {"tool": "land", "args": {}},
+    ]}
+
+    def configured_logs(directory):
+        path = directory / "logs/companion.jsonl"
+        existing = [json.loads(line) for line in path.read_text().splitlines()]
+        rows = [existing[0]]
+        for index, step in enumerate(plan["steps"]):
+            rows.extend([
+                {**existing[0], "event": "operation_started", "sim_timestamp": index / 10,
+                 "fields": {"operation_id": str(index), **step}},
+                {**existing[0], "event": "operation_finished", "sim_timestamp": index / 10,
+                 "fields": {"operation_id": str(index), "tool": step["tool"], "state": "succeeded"}},
+            ])
+        rows.append(existing[-1])
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    _completed_bundle(tmp_path, achieved=100.0, log_mutator=configured_logs,
+                      configuration_updates={"mission": "configured", "scenario": "descent_v1",
+                                             "mission_plan": plan})
+    report = inspect_phase3_semantics(
+        tmp_path, rules_path=RULES_PATH, require_maximum_score=True,
+        semantic_check=lambda *_: _physical_evidence(tmp_path, achieved=100.0),
+        **_expected_provenance_kwargs())
+    assert report.achieved_score == 100.0
 
 
 def test_acceptance_inspector_accepts_complete_partial_bundle_read_only(tmp_path):

@@ -15,10 +15,9 @@ validated run bundle establish what actually happened.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
-**Current caveat:** a physical three-payload flight and return home have been
-verified, but the latest documented verification run failed later in the
-recording window. A score of 150/150 alone does not mean the run passed.
-See the [evidence and limitations](docs/handoff.md#verified-behavior-and-limits).
+**Current caveat:** the latest regression sweep is not fully accepted. Both
+competition templates fail before takeoff because the image excludes required
+Comp2026 modules. See the [current results and limits](docs/handoff.md#scenario-regression-sweep).
 
 ## First local check
 
@@ -61,12 +60,17 @@ covers rebuilding changed code, running one template, and running the automatic 
 
 [configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds a
 camera-guided landing on a deck traveling at 0.5 m/s. The stock EKF3 profile
-completed an independently accepted moving landing with 100/100 and full
-90-second recordings. A separate stationary run landed but exposed an
-intermittent contact-stream fault; repeatability remains a limitation. Use the
+completed two independently accepted moving landings with 100/100 and full
+90-second recordings. The latest stationary control also passed. An earlier
+intermittent contact-stream fault did not recur, but remains unresolved. Use the
 [moving-pad workflow](docs/runbook.md#moving-pad-landing) for the stationary
 control, moving flight, and independent acceptance. Current verification is
 recorded in [handoff](docs/handoff.md).
+
+[autotune-run.json](config/autotune-run.json) tunes roll, pitch and yaw on the
+shared unloaded aircraft. The [calibration workflow](docs/runbook.md#calibrate-and-validate-saved-gains)
+then loads accepted gains into fresh SITL for a hover/landing validation.
+Whole-suite calibration dependencies are future work.
 
 Read [AGENTS.md](AGENTS.md) for contribution rules, then the affected module
 README. For a mission, start with [companion](companion/README.md): define its

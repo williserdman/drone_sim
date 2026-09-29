@@ -192,11 +192,10 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
 
 ## CI calibration design
 
-Design agreed in conversation on 2026-09-29; implementation and flight
-verification are pending. The immediate deliverable is a reusable calibration
-stage and a fresh-process validation flight. The eventual CI runner invokes this
-stage before the mission suite. Existing launch commands do not implement that
-dependency yet.
+Implemented 2026-09-29; fresh flight verification is pending. The immediate
+deliverable is a reusable calibration stage and a fresh-process validation
+flight. The eventual CI runner invokes this stage before the mission suite.
+Existing launch commands do not implement that suite dependency yet.
 
 ```mermaid
 flowchart LR
@@ -212,8 +211,10 @@ All suite scenarios use one competition airframe definition, including its
 inertia, motor limits, sensor hardware, and payload mount. Payload attachment and
 course geometry remain mission-specific. Calibration starts without a payload;
 the competition flights exercise the same gains with their specified loads.
-Existing diagnostic and competition models are not interchangeable calibration
-targets: their motor limits and fitted hardware currently differ.
+The [shared generator](../gazebo/scripts/prepare_competition_assets.py) produces
+the diagnostic, moving-pad and competition variants from the same physical body.
+The first calibration importer supports the unloaded diagnostic variant only;
+whole-suite import and payload validation remain a separate delivery step.
 
 The companion takes off in GUIDED, settles in LOITER, then enters AUTOTUNE with
 `AUTOTUNE_AXES=7` for roll, pitch, and the pinned implementation's standard yaw
@@ -265,6 +266,13 @@ loads its allowlisted gain keys after the base and scenario parameter overlays.
 Before arming, live readback must match that frozen input. This path does not
 rewrite the tracked baseline through
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py).
+
+[calibration_v1](../scorekeeper/rules/calibration_v1.json) awards 20 points for
+airborne/contact, 40 for safe preimpact speed and 40 for stable contact. Acceptance
+requires all 100 plus the saved-parameter evidence. The fresh validation flight
+uses the existing descent rules and requires five continuous seconds within
+0.5 m of its commanded 5 m altitude, horizontal/vertical speed at most 0.2 m/s,
+and roll/pitch within 5 degrees during the configured 10-second hold.
 
 ### Delivery and verification
 

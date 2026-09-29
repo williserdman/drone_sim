@@ -3,18 +3,26 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-28. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-09-29. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
 
-The stock EKF3 moving run `a3f79da9-037d-4734-ac4d-e8381149f407` landed on the
-0.5 m/s deck, disarmed, and passed independent acceptance with 100/100 and full
-90-second recordings. Native ArduPilot LAND, camera, pad speed, and tracking
-guards were unchanged. This is the first accepted moving-pad recording.
-The stationary control also landed, but a later missing contact sample stopped
-its recording at 49.5 s. That bundle failed acceptance; repeatability remains
-unproven. Earlier failed experiments are preserved below.
+The new CI calibration implementation shares aircraft dynamics across the three
+vehicle variants, tunes all axes and saves gains after native LAND. It adds
+independent calibration acceptance and a fresh-SITL validation consumer. Flight
+verification of this new profile is pending. The sweep below used the older
+`33da957` profile; its passes do not establish compatibility with the new body
+or gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
+
+The latest [scenario sweep](#scenario-regression-sweep) attempted all eight
+unattended templates and controls from one frozen build. Controlled descent,
+stationary-pad landing, and moving-pad landing passed independent acceptance.
+The sweep is not fully accepted: three diagnostic runs expose an existing log
+validation mismatch, AutoTune also scores 40/100, and both competition templates
+fail before takeoff because required Comp2026 files are absent from their image.
+Native ArduPilot LAND, camera, pad speed, and tracking guards remain unchanged.
+Earlier failed experiments and the first accepted moving flight are preserved below.
 
 The subsequent offline diagnosis identifies a frame error in the pinned
 ArduPilot SIM attitude path used by `AHRS_EKF_TYPE=10`. It returns body-frame
@@ -62,10 +70,104 @@ score alone is not a pass.
   Keep missing contact evidence fail-closed, and fix velocity-frame diagnostics
   separately without rewriting accepted recordings.
 
-The detailed evidence and limitations follow. A full scenario regression sweep
-was requested on 2026-09-28 after the accepted moving flight. Each checked-in
-automatic run template, the stationary control, and the operator-wait template
-must get a fresh run with frozen provenance; results are not yet established.
+The full scenario sweep below records the subsequent results and coverage gaps.
+Detailed evidence from the earlier landing experiments follows it.
+
+### Scenario regression sweep
+
+The 2026-09-28 UTC sweep rebuilt all seven images from clean
+`33da9578ea696047ce55845884d870452a91111c` and attempted the seven automatic
+templates plus the stationary control sequentially. Source, image digests,
+configurations, and scoring rules stayed frozen through launch and acceptance.
+All eight attempts have terminal bundles; no run-scoped Compose resources remain.
+
+| Template / control | Run UUID | Physical outcome | Score | Artifact acceptance |
+| --- | --- | --- | --- | --- |
+| Configured descent | `5a569645-c0dd-4948-9639-b0b9b4e5d886` | Landing/disarm confirmed at 13.05 s | 100/100 | Failed: legacy log predicate |
+| Controlled descent | `85e5a4bb-1154-436a-b8e5-5b744b78aff0` | Landing/disarm confirmed at 11.05 s | 100/100 | Passed |
+| Hover/roll | `af6c2f6f-88a7-4bc4-becd-0491c013f85b` | Ten-second hover; landing/disarm confirmed at 38.00 s | 100/100 | Failed: legacy log predicate |
+| Roll AutoTune | `08f47ef9-2095-4c95-8752-5735faf54d0e` | Tuned, saved gains, landed/disarmed; complete at 56.00 s | 40/100 | Failed: legacy log predicate; also below maximum score |
+| Stationary pad | `f8524a02-4d46-43c1-a870-40b823321904` | Touchdown 27.35 s, 8.1 mm offset; disarm observed 30.05 s | 100/100 | Passed; full 90 s |
+| Moving pad | `03853b04-7b91-4b9c-ad82-89da47ac8689` | Touchdown 59.10 s, 8.0 mm offset; disarm observed 61.10 s | 100/100 | Passed; full 90 s |
+| Competition default | `42cd23b8-e06f-4a5b-8c7e-758a8c92659a` | Startup failed; no flight | 0/150, incomplete | Failed; incomplete bundle |
+| Competition realtime | `da90025d-d83a-4205-a40e-33655d41bb9d` | Startup failed; no flight | 0/150, incomplete | Failed; incomplete bundle |
+
+Both pad runs have 1,800 matching vehicle/pad truth samples and 1,800 frames in
+each video. The moving pad stayed at 0.5 m/s within 1e-5 m/s through touchdown,
+disarm, and the remaining recording window. The earlier stationary contact gap
+did not recur; its cause remains unresolved. DataFlash confirms EKF3 only in the
+pad scenarios. The four descent/hover/AutoTune runs retained the base SIM/raw
+precision profile.
+
+The three diagnostic acceptance failures are preexisting. The `descent_v1`
+validator requires controlled-descent command and event logs, while configured,
+hover, and AutoTune missions emit different events. Supplemental bag/video checks
+and independent score recomputation passed without changing canonical acceptance.
+AutoTune's 40/100 is real: touchdown was 16.88 m from the target with 1.052 m/s
+preimpact speed, exceeding the 0.5 m and 1.0 m/s limits. It finished tuning and
+saved gains, but failed landing quality and independent acceptance. No comparable
+historical flight establishes a score regression.
+
+Offline diagnosis on 2026-09-29 traced the AutoTune result to two mission choices:
+
+- The [mission](../companion/src/drone_sim_companion/autotune.py) enters
+  `AUTOTUNE` from `ALT_HOLD`. The
+  [pinned ArduPilot implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/ArduCopter/mode_autotune.cpp#L24)
+  enables tuning position hold only when entered from `LOITER` or `POSHOLD`.
+  Recorded mode changes therefore select no position hold. Ground truth shows
+  displacement growing from 0.003 m at 15.00 s to 12.20 m at tune success,
+  48.30 s.
+- Success triggers throttle override 1300 while retaining `AUTOTUNE` through
+  landing/disarm to save gains. There is no centering step or native `LAND`
+  approach. Touchdown follows at 53.95 s, 16.88 m away. Mission completion checks
+  saved gains, disarm, and low altitude; it does not check touchdown position or
+  descent speed.
+
+The throttle override requests a nominal 0.9375 m/s descent with the recorded
+RC calibration. DataFlash shows the corrected vertical target and actual descent
+near 1.052 m/s; the native LAND speed setting of 0.5 m/s does not apply in
+`AUTOTUNE`. The hover control enters `LAND` and descends near 0.5 m/s. Detailed
+control timing and pinned-source references are in the diagnosis `REPORT.md`.
+
+`COMPLETED` and the start command's zero exit code describe lifecycle completion,
+not physical acceptance. The batch command checks that exit code. Calling this
+AutoTune run a regression pass would be incorrect; the saved sweep result has
+`accepted: false`. The separate log-validator mismatch must also be fixed before
+this mission can pass canonical acceptance, even after improving its landing.
+
+The ground-truth adapter also copies body-frame odometry velocity without rotating
+it into world coordinates. That existing frame defect does not explain this
+score: replaying all 2,400 samples with world-rotated velocity still gives 40/100.
+Preimpact downward speed changes from 1.05162 to 1.05183 m/s; world-position
+differences independently give 1.05169 m/s. Diagnosis scripts and outputs are
+preserved in `.superpowers/sdd/autotune-diagnosis-2026-09-29/`. This was read-only
+flight analysis; no runtime fix, gain promotion, or new flight was performed.
+
+Both competition failures originate in [.dockerignore](../.dockerignore): it
+excludes tracked control and LiDAR modules imported by `DroneControl`, first
+failing on `drone.control.flight_state`. The mismatch already exists in the
+monorepo import `23111e9c`; the moving branch did not change the affected files.
+The fix needs the complete import closure, a companion rebuild, and an in-image
+import check before repeating these flights. Finalization exhausted its budget;
+the first failure also left a stopped Gazebo container and network. Their state
+was backed up before scoped cleanup and resuming the last case.
+
+Coverage gaps: `configured-operator-run.json` was not flown. Companion owns the
+only single-client MAVLink TCP endpoint; the shipped topology has no independent
+operator endpoint or router. Focused configured-runner/config checks reported
+159 passed in 5.24 s, including waiting without sending arm/mode commands. That
+terminal-only test observation has no saved log and is not flight evidence.
+Historical search-and-deliver is absent from the current supported templates.
+These gaps prevent a blanket claim of no regressions.
+
+Evidence remains under `runs/RUN_ID/`. The ignored
+`.superpowers/sdd/regression-2026-09-28/` directory contains `snapshot.json`,
+`final-summary.json` with all manifest hashes, per-case diagnoses, startup-log
+and container backups, and `session-20260928T190116Z-753316/` with launch and
+canonical acceptance logs. Preserve these with the bundles. Runtime code and
+acceptance policy were not changed to obtain the results.
+
+### Earlier landing experiments
 
 Completed diagnostic: one stationary flight with `PLND_OPTIONS=4`, retaining
 `PLND_EST_TYPE=1`, `PLND_LAG=0.08`, all gains, geometry, and tracking-loss policy.
@@ -424,33 +526,38 @@ scoped review fixes; no Critical, Important, or Minor findings remain.
 
 ## Image and runtime boundary
 
-Current runtime tags point to the clean `faef600` build used by both EKF3 flights.
-Prelaunch expectations were captured separately in `provenance-stationary-ekf3.json`
-and `provenance-moving-ekf3.json`. All seven images are also preserved under
-`moving-pad-ekf3-faef600` tags. The earlier experiment images remain preserved separately.
+Current runtime tags point to the clean `33da957` regression build. All seven
+images are preserved under `regression-33da957` tags; prelaunch expectations
+are in `.superpowers/sdd/regression-2026-09-28/snapshot.json`.
+The earlier `faef600` EKF3 images remain under `moving-pad-ekf3-faef600` tags,
+with their original `provenance-stationary-ekf3.json` and
+`provenance-moving-ekf3.json` snapshots. Earlier experiment images are preserved too.
 Subsequent documentation commits do not change those recorded source identities.
 Earlier images remain under preservation tags; never retag them as new evidence.
 Rebuild after runtime edits and capture new expectations before the next flight.
 
-Latest stationary landing: achieved. Score: incomplete 0/100 after the contact-stream
-failure; artifact acceptance failed. Latest moving landing: achieved, 100/100,
-independently accepted. Images: rebuilt. No current competition flight was run in this task;
-the accepted competition evidence above remains historical.
+Latest stationary and moving landings: achieved, each 100/100 and independently
+accepted. Both competition attempts failed at startup; earlier accepted
+competition flights remain historical evidence.
 
 ## Active priorities
 
-1. Diagnose the intermittent private pad-contact gap exposed by the stationary
+1. Repair the Comp2026 Docker-context allowlist and verify imports in the built
+   image, then rerun both competition templates. Preserve the failed bundles.
+2. Reconcile diagnostic mission logs with independent acceptance, and define
+   appropriate AutoTune scoring expectations without relabeling its 40/100.
+3. Diagnose the intermittent private pad-contact gap exposed by the earlier stationary
    EKF3 control. Capture native and bridged timestamps plus tracker fault state
    before changing transport or join behavior. Keep missing evidence fail-closed.
-2. Establish repeatability of the accepted EKF3 moving profile. Preserve the
-   failed controls, accepted bundle, source identities, and image digests.
-3. Resolve the configured-operation deadline beyond the capped public window.
+4. Resolve the configured-operation deadline beyond the capped public window.
    At 90 s the source finishes, but the host waits for mission completion while
    the precision timeout at 104.45 s is unreachable. Keep artifact-grid diagnosis
    separate; do not weaken acceptance.
-4. Separately diagnose historical competition range-stream loss before claiming
-   a fresh full-window competition baseline.
+5. Correct the touchdown-velocity diagnostic's frame semantics separately from
+   the physical landing rule; retain recorded evidence unchanged.
 
+Deferred work includes an independent operator MAVLink endpoint, startup-failure
+finalization/cleanup, and historical competition range-stream diagnosis.
 Lower-priority work remains deferred: structured precision-phase diagnostics; improve zero-budget Compose timeout
 diagnostics; freeze final flight-exchange counters; investigate rare process and
 session races; expand malformed-input, network, and multi-vehicle stress tests;

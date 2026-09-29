@@ -90,6 +90,17 @@ manifest inventory, DataFlash save, activation readback, post-disarm readback,
 and unchanged preserved settings to agree. Historical roll-only
 `autotune-roll.parm` artifacts retain their existing format and parser.
 
+Independent acceptance also replays `calibration_v1` physical scoring, rotating
+recorded body velocity into world coordinates. Its 100 points cover airborne
+contact, safe preimpact speed and stable contact; it has no origin-radius rule.
+Both the parameter file and DataFlash log have manifest checksums.
+
+Configured missions validate their ordered successful operations against the
+frozen plan. A calibration validation run additionally requires matching
+pre-arm gain/baseline readback and five continuous seconds of recorded stable
+hover during its 5 m, 10 s hold. Native descent scoring remains 100/100.
+Historical descent and moving-pad replay semantics remain unchanged.
+
 ## Constraints worth preserving
 
 - Recorder readiness precedes public simulation output. A readiness message is
