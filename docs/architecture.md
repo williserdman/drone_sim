@@ -229,6 +229,10 @@ It then settles and commands native LAND. An ACK alone does not prove that
 AutoTune accepted the gain-selection command. Unexpected mode changes, failed
 tuning, stale telemetry, or expired simulation deadlines fail calibration.
 Recovery landing never converts failure into success.
+Neutral RC overrides must be refreshed throughout LOITER and tuning: the pinned
+ArduPilot default expires them after three simulated seconds. An unexpected
+disarm before native landing fails immediately, even if the mode still reports
+AUTOTUNE. Overrides are cleared when commanding LAND.
 
 This order matters in the
 [pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):

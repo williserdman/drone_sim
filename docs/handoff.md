@@ -15,6 +15,17 @@ verification of this new profile is pending. The sweep below used the older
 `33da957` profile; its passes do not establish compatibility with the new body
 or gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
 
+Calibration attempt `840fc850-63b0-44f5-b124-af892e2d9b76`, built from clean
+`e9272ca`, reached AUTOTUNE at public 9.35 seconds but disarmed at 14.45 seconds.
+DataFlash shows neutral throttle expiring from 1500 to 1000 exactly three seconds
+after its one-time override. The driver also failed to terminate on that disarm.
+The run was stopped normally and preserved as ABORTED; validation never started.
+It is not a calibration pass. Commit `304f966` refreshes neutral input and rejects
+unexpected disarm; 233 companion tests pass, with fresh flight verification still
+pending. An earlier startup-only failure,
+`21d8ffe8-b2ac-409e-99c9-f4731386487a`, exposed recorder-geometry and diagnostic
+world-speed mismatches; both contracts now have focused tests and fixes.
+
 The latest [scenario sweep](#scenario-regression-sweep) attempted all eight
 unattended templates and controls from one frozen build. Controlled descent,
 stationary-pad landing, and moving-pad landing passed independent acceptance.
