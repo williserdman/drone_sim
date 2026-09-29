@@ -76,6 +76,20 @@ Manifest paths use portable POSIX-relative syntax. The executable contract is
 [`is_manifest_relative_path`](src/artifacts/manifest.py), with its JSON form in
 the [`manifest.json` schema](schemas/manifest.schema.json).
 
+## AutoTune calibration parameters
+
+[`calibration.py`](src/artifacts/calibration.py) owns the versioned axes-7
+parameter artifact at `ardupilot_sitl/autotune.parm`. It validates exactly 15
+roll, pitch, and yaw values, extracts one post-disarm native save from DataFlash,
+and compares the artifact with ordered live parameter evidence. Roll and pitch
+I equal P; yaw I equals 0.1 times P. Yaw D and the other preserved controller
+settings are recorded separately and may be zero.
+
+`validate_calibration_artifact()` requires the completed calibration mission,
+manifest inventory, DataFlash save, activation readback, post-disarm readback,
+and unchanged preserved settings to agree. Historical roll-only
+`autotune-roll.parm` artifacts retain their existing format and parser.
+
 ## Constraints worth preserving
 
 - Recorder readiness precedes public simulation output. A readiness message is
