@@ -12,7 +12,7 @@ from .control.drone_control import DroneControl
 import time
 from .sensors.camera.camera import Camera
 from .sensors.lidar.lidar import Lidar
-from .sensors.servo.servo import Dropper
+#from .sensors.servo.servo import Dropper
 from .utils.position_smoother import RelPosSmoother
 import math
 from typing import Optional, Tuple
@@ -207,7 +207,7 @@ def fm3(
     controller: DroneControl,
     camera: Camera,
     lidar: Lidar,
-    dropper: Dropper,
+    #dropper: Dropper,
     possible_ids: set,
     pickup_point: GPSCoord,
     target_point: GPSCoord,
@@ -255,7 +255,7 @@ def fm3(
                     drop_target.alt += desired_drop_height_m - lidar_alt
                     controller.goto_waypoint(drop_target)
                 controller.hold_waypoint_until_stable(drop_target)
-                dropper.drop()
+                print("simulated drop!!")   #dropper.drop()
             else:
                 print(f"Skipping drop for ID {id} because pickup failed.")
                 controller.climb(10)
@@ -280,14 +280,14 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[ERR] LiDAR initialization failed: {e}")
         raise SystemExit(1)
-    dropper = Dropper()
+    #dropper = Dropper()
 
     # controller.takeoff(10)
     original_gps = controller.get_current_gps()
     original_gps.alt = 10
     controller.force_arm_takeoff(10)
 
-    fm3(mt, controller, camera, lidar, dropper, {6, 7}, ARUCO_PICKUP, DROP_POINT)
+    fm3(mt, controller, camera, lidar, {6, 7}, ARUCO_PICKUP, DROP_POINT)
 
     val = controller.goto_waypoint(original_gps)
 
