@@ -11,11 +11,11 @@ PR and imported `companion/comp2026` source remain unchanged.
 The new CI calibration implementation shares aircraft dynamics across the three
 vehicle variants, tunes all axes and saves gains after native LAND. It adds
 independent calibration acceptance and a fresh-SITL validation consumer.
-Calibration passed independent acceptance. Fresh-SITL validation flew and landed,
-but its 80/100 score failed the required stable-contact rule: this milestone is
-not accepted and cannot release dependent CI missions. The sweep below used the older
-`33da957` profile; its passes do not establish compatibility with the new body
-or gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
+Calibration and fresh-SITL validation both passed independent acceptance at
+100/100. This completes the first calibration/reload milestone; whole-suite
+dependency execution remains unimplemented. The sweep below used the older
+`33da957` profile; its passes do not establish compatibility with the new body or
+gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
 
 Calibration attempt `840fc850-63b0-44f5-b124-af892e2d9b76`, built from clean
 `e9272ca`, reached AUTOTUNE at public 9.35 seconds but disarmed at 14.45 seconds.
@@ -46,15 +46,15 @@ hold and native LAND; observed landing/disarm completed at public 30.05 seconds.
 Independent provenance, recordings, readback and five-second stable-hover checks
 passed before acceptance rejected the final 80/100 score. Airborne/contact,
 touchdown precision and safe preimpact speed passed; stable contact failed.
-CLI `COMPLETED` therefore does not mean this calibration/validation pair passed.
+That retry failed acceptance despite CLI `COMPLETED`.
 
 Bag replay isolates the failure to the first contact sample at public 27.450 s:
 speed 0.1994064 m/s exceeds the stable-contact limit of 0.1 m/s. The remaining ten
 samples through 27.950 s stay in contact at at most 0.001 m/s; maximum tilt across
 all eleven samples is 0.004544 degrees. Preimpact descent at 27.400 s is
-0.4997697 m/s, within the 1 m/s safety limit. The current
-[descent scorer](../scorekeeper/src/drone_sim_scorekeeper/descent.py) starts its
-half-second stability window at first contact, including that impact sample.
+0.4997697 m/s, within the 1 m/s safety limit. The original
+[descent policy](../scorekeeper/rules/descent_v1_legacy.json) starts its half-second
+stability window at first contact, including that impact sample.
 The vehicle settles immediately afterward; this evidence does not establish a
 sustained oscillation or loss of contact.
 
@@ -63,15 +63,35 @@ flight logs and immutable manifests. Their recorded acceptance results remain
 unchanged. After reviewing the touchdown recording, the operator approved descent
 settling-policy version 2: continuous contact and acceptable tilt must lead to a
 qualifying stable interval before the configured deadline. Original version 1
-rules remain available for historical replay. Revised replay and a fresh
-validation flight are pending; the calibration/validation milestone remains
-unaccepted until those checks pass.
+rules remain available for historical replay. Full recorded-truth replay gives
+80/100 under the original policy and 100/100 under version 2 in both runtime and
+independent scorers. Its qualifying interval is 27.500–28.000 seconds. This is
+derivative evidence; the historical bundle remains 80/100 and rejected.
+
+Fresh validation `474b7b49-a814-4c7b-a7a5-aaa12a9e47d4`, built from clean
+`9fb7c56`, passed independent acceptance at 100/100. It reused the accepted source
+gains and manifest byte-for-byte, with identical SITL/Gazebo images and all 34
+effective parameters verified before arm. All five operations succeeded; landing
+and disarm completed at public 30.05 seconds. Physical touchdown was at 27.450
+seconds, with preimpact downward speed 0.4990884 m/s, contact speed 0.0990265 m/s
+and tilt 0.008252 degrees. Continuous settled contact qualified from 27.450 to
+27.950 seconds. Independent acceptance also passed the required stable-hover
+check during the 5 m, 10-second hold.
+
+The new run records 1,200 public samples and both 60-second videos after its
+90-second native warmup. CLI outcome is `COMPLETED`, physical score is 100/100,
+and independent artifact acceptance is true. Its manifest SHA-256 is
+`5ec36f73b6cd7e14c4e2af2879a03779bf581517ccba3cb501d0c93fbe9aebbe`.
+All run resources were removed after finalization.
 
 Focused companion verification after `bfec619`: 233 passed. Earlier integration
 at `4414103`: 2,123 passed, 27 skipped; later startup-contract checks also passed.
+Settling-policy verification at `9fb7c56`: 223 focused checks passed, covering
+deadline boundaries, bounce, tilt, speed oscillation, hard impact, incomplete
+settlement and legacy replay. No broad suite was repeated for this bounded change.
 Other missions remain unrun with the new common airframe and gains. Full-suite
 dependencies, Comp2026 consumption/packaging repair, CI-provider setup and run-time
-optimization remain deferred; the accepted calibration alone does not clear them.
+optimization remain deferred; this accepted pair does not clear them.
 
 The latest [scenario sweep](#scenario-regression-sweep) attempted all eight
 unattended templates and controls from one frozen build. Controlled descent,
