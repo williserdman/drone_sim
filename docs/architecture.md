@@ -251,8 +251,8 @@ Calibration gets its own acceptance contract. It requires completed tuning for
 all requested axes, independent airborne/contact/stable-landing evidence, safe
 preimpact speed, observed disarm, and a coherent saved-parameter artifact. It does
 not require touchdown at the origin marker. Its physical checks retain the
-airborne, preimpact-speed, and stable-contact thresholds from the existing
-[descent rules](../scorekeeper/rules/descent_v1.json). Existing descent and precision-land
+airborne, preimpact-speed, and stable-contact thresholds from the original
+[descent rules](../scorekeeper/rules/descent_v1_legacy.json). Existing descent and precision-land
 scoring contracts retain their location requirements. Terminal `COMPLETED`,
 physical score, and artifact acceptance remain separate results.
 
@@ -280,6 +280,15 @@ requires all 100 plus the saved-parameter evidence. The fresh validation flight
 uses the existing descent rules and requires five continuous seconds within
 0.5 m of its commanded 5 m altitude, horizontal/vertical speed at most 0.2 m/s,
 and roll/pitch within 5 degrees during the configured 10-second hold.
+
+Descent validation now uses settling-policy version 2 in the
+[current rules](../scorekeeper/rules/descent_v1.json): its half-second interval at
+at most 0.1 m/s must finish within one second of first contact. Contact must remain
+continuous and tilt at most 10 degrees from first contact until qualification;
+the preimpact safety limit remains 1 m/s. Runtime scoring and independent replay
+both enforce this contract. The scenario identity remains `descent_v1`; the
+explicit policy version and rule-file checksum distinguish results. Historical
+scores retain their original rules and evidence.
 
 ### Delivery and verification
 

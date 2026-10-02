@@ -99,7 +99,12 @@ Configured missions validate their ordered successful operations against the
 frozen plan. A calibration validation run additionally requires matching
 pre-arm gain/baseline readback and five continuous seconds of recorded stable
 hover during its 5 m, 10 s hold. Native descent scoring remains 100/100.
-Historical descent and moving-pad replay semantics remain unchanged.
+Descent replay independently applies the settling-policy version in the
+checksum-bound rule file. Use
+[descent_v1_legacy.json](../scorekeeper/rules/descent_v1_legacy.json) for historical
+first-contact results; revised-policy replay is derivative evidence and cannot
+replace a frozen bundle's score, bag events, or manifest. Calibration and
+moving-pad replay semantics remain unchanged.
 
 ## Constraints worth preserving
 

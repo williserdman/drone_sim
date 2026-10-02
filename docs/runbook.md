@@ -160,6 +160,13 @@ and those image tags fixed through both flights and acceptance.
    acceptance separately. The validation inspector checks recorded hover
    stability as well as landing and loaded-gain evidence.
 
+   Current descent rules use settling-policy version 2. Inspect older descent
+   bundles with `scorekeeper/rules/descent_v1_legacy.json` when their scoring
+   checksum matches that file. A replay under revised rules is a separate
+   diagnostic; it does not change historical acceptance. Accepted calibration
+   gains may be reused for validation when the importer confirms physical-profile
+   compatibility, without rerunning AutoTune.
+
 The source artifact is `runs/RUN_ID/ardupilot_sitl/autotune.parm`. The validation
 copy is `runs/RUN_ID/configuration/calibration.parm`; its source identity is frozen
 in `configuration/run.json`. This workflow does not edit tracked defaults.

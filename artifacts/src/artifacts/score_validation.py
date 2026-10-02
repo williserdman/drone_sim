@@ -190,6 +190,23 @@ def _rules_document(payload: bytes) -> dict[str, Any]:
         _RULE_IDS
     ):
         raise ScoreValidationError("committed descent rule identities are incompatible")
+    version = document.get("settled_contact_policy_version", 1)
+    if isinstance(version, bool) or not isinstance(version, int) or version not in (1, 2):
+        raise ScoreValidationError("unsupported settled-contact policy version")
+    if version == 2:
+        deadline = document.get("settled_deadline_ns")
+        duration = document.get("settled_duration_ns")
+        if (
+            isinstance(deadline, bool)
+            or not isinstance(deadline, int)
+            or not isinstance(duration, int)
+            or isinstance(duration, bool)
+            or duration < document["sample_interval_ns"]
+            or duration % document["sample_interval_ns"]
+            or deadline < duration
+            or deadline % document["sample_interval_ns"]
+        ):
+            raise ScoreValidationError("settled deadline must cover the duration on the sample grid")
     return document
 
 
@@ -242,15 +259,34 @@ def _independent_descent_score(
             -ground_truth[first_contact - 1].linear_velocity_xyz[2],
         ) <= float(rules["safe_preimpact_downward_speed_mps"])
         required_samples = int(rules["settled_duration_ns"]) // interval + 1
-        contact_window = ground_truth[first_contact : first_contact + required_samples]
-        stable_contact = len(contact_window) == required_samples and all(
-            sample.in_contact
-            and math.sqrt(sum(value * value for value in sample.linear_velocity_xyz))
-            <= float(rules["settled_linear_speed_mps"])
-            and _tilt_degrees(sample.orientation_xyzw)
-            <= float(rules["settled_max_tilt_degrees"])
-            for sample in contact_window
-        )
+        if rules.get("settled_contact_policy_version", 1) == 1:
+            contact_window = ground_truth[first_contact : first_contact + required_samples]
+            stable_contact = len(contact_window) == required_samples and all(
+                sample.in_contact
+                and math.sqrt(sum(value * value for value in sample.linear_velocity_xyz))
+                <= float(rules["settled_linear_speed_mps"])
+                and _tilt_degrees(sample.orientation_xyzw)
+                <= float(rules["settled_max_tilt_degrees"])
+                for sample in contact_window
+            )
+        else:
+            stable_contact = False
+            consecutive = 0
+            deadline = touchdown.sim_timestamp_ns + rules["settled_deadline_ns"]
+            for sample in ground_truth[first_contact:]:
+                if sample.sim_timestamp_ns > deadline:
+                    break
+                if (
+                    not sample.in_contact
+                    or _tilt_degrees(sample.orientation_xyzw)
+                    > float(rules["settled_max_tilt_degrees"])
+                ):
+                    break
+                speed = math.sqrt(sum(value * value for value in sample.linear_velocity_xyz))
+                consecutive = consecutive + 1 if speed <= float(rules["settled_linear_speed_mps"]) else 0
+                if consecutive == required_samples:
+                    stable_contact = True
+                    break
         outcomes = (
             airborne_then_contact,
             touchdown_precision,

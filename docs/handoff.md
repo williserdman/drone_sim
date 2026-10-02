@@ -3,7 +3,7 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-30. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-10-02. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
@@ -59,10 +59,13 @@ The vehicle settles immediately afterward; this evidence does not establish a
 sustained oscillation or loss of contact.
 
 Both bundles retain observer/onboard videos under `runs/RUN_ID/video/`, source
-flight logs and immutable manifests. No score threshold or evidence was changed.
-Further fixes are stopped after three correction rounds. The assumption to
-revisit is whether the impact sample belongs in the settled-contact window.
-The present rule and acceptance result remain unchanged.
+flight logs and immutable manifests. Their recorded acceptance results remain
+unchanged. After reviewing the touchdown recording, the operator approved descent
+settling-policy version 2: continuous contact and acceptable tilt must lead to a
+qualifying stable interval before the configured deadline. Original version 1
+rules remain available for historical replay. Revised replay and a fresh
+validation flight are pending; the calibration/validation milestone remains
+unaccepted until those checks pass.
 
 Focused companion verification after `bfec619`: 233 passed. Earlier integration
 at `4414103`: 2,123 passed, 27 skipped; later startup-contract checks also passed.

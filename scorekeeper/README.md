@@ -65,6 +65,14 @@ documentation. The persisted schema is defined by
 [output.py](src/drone_sim_scorekeeper/output.py). The runtime writes the typed
 `score-finished` status only after it persists score evidence.
 
+Descent's `settled_contact_policy_version` distinguishes impact from settled
+contact. Version 2 permits a bounded settling period, while requiring continuous
+contact and acceptable tilt until the stable interval qualifies. The rule-file
+checksum binds that policy to each result. Archived
+[descent_v1_legacy.json](rules/descent_v1_legacy.json) retains version 1's
+first-contact interval for historical replay. Calibration and moving-pad policies
+retain their existing semantics.
+
 ## Constraints worth preserving
 
 - Score derives from ordered Gazebo truth plus confirmed payload and mission

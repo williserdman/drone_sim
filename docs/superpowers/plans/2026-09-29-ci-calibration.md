@@ -1,10 +1,11 @@
 # CI calibration implementation plan
 
-Status 2026-09-30: implementation delivered, final two-run acceptance incomplete.
+Status 2026-10-02: implementation delivered, final two-run acceptance incomplete.
 Calibration passed at 100/100; the fresh-process consumer landed but scored 80/100
-because stable contact failed. Further fixes are stopped after three correction
-rounds; see [current evidence and limits](../../handoff.md). Retain this plan until
-the final acceptance requirement is resolved.
+because stable contact included impact motion. The approved versioned settling
+policy is implemented; recorded replay and fresh validation remain pending.
+See [current evidence and limits](../../handoff.md). Retain this plan until the
+final acceptance requirement is resolved.
 
 > Execution: use `superpowers:executing-plans` for integration, with bounded
 > subagents for independent model and scoring changes. No review cycles unless

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,78 @@ from artifacts.validation import validate_tree
 
 RUN_ID = "00000000-0000-4000-8000-000000000606"
 RULES_PATH = Path(__file__).parents[2] / "scorekeeper/rules/descent_v1.json"
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("impact-transient", 100.0),
+        ("exact-deadline", 100.0),
+        ("late-settlement", 80.0),
+        ("bounce", 80.0),
+        ("tilt", 80.0),
+        ("oscillation", 80.0),
+        ("short-recording", 80.0),
+        ("hard-impact", 80.0),
+        ("legacy-impact", 80.0),
+    ],
+)
+def test_independent_settling_policy_preserves_landing_safety(case, expected):
+    from artifacts.score_validation import _independent_descent_score, _rules_document
+
+    rules = json.loads(RULES_PATH.read_bytes())
+    rules.update(settled_contact_policy_version=2, settled_deadline_ns=1_000_000_000)
+    if case == "legacy-impact":
+        rules.pop("settled_contact_policy_version")
+        rules.pop("settled_deadline_ns")
+    count = 10 if case == "short-recording" else 31
+    samples = []
+    for index in range(count + 3):
+        contact_index = index - 3
+        speed = 0.1994064 if contact_index == 0 else 0.001
+        if case == "exact-deadline" and 0 <= contact_index < 10:
+            speed = 0.2
+        if case == "late-settlement" and 0 <= contact_index < 11:
+            speed = 0.2
+        if case == "oscillation" and contact_index >= 0:
+            speed = 0.2 if contact_index % 2 == 0 else 0.001
+        angle = math.radians(11) if case == "tilt" and contact_index == 1 else 0
+        samples.append(GroundTruthEvidence(
+            sim_timestamp_ns=index * 50_000_000,
+            vehicle_id="iris",
+            position_xyz=(0.0, 0.0, 1.0 if index in (1, 2) else 0.0),
+            orientation_xyzw=(math.sin(angle / 2), 0.0, 0.0, math.cos(angle / 2)),
+            linear_velocity_xyz=(0.0, 0.0,
+                (-1.01 if case == "hard-impact" else -0.5) if index == 2 else -speed),
+            angular_velocity_xyz=(0.0, 0.0, 0.0),
+            in_contact=(index == 0 or index >= 3)
+                and not (case == "bounce" and contact_index == 1),
+        ))
+    result = _independent_descent_score(tuple(samples), _rules_document(json.dumps(rules).encode()))
+    assert result.achieved_score == expected
+    if case == "hard-impact":
+        assert result.awarded_points == (20.0, 40.0, 0.0, 20.0)
+    elif expected == 80.0:
+        assert result.awarded_points == (20.0, 40.0, 20.0, 0.0)
+
+
+@pytest.mark.parametrize("fields", [
+    {"settled_contact_policy_version": True},
+    {"settled_contact_policy_version": 3},
+    {"settled_contact_policy_version": 2},
+    {"settled_contact_policy_version": 2, "settled_deadline_ns": True},
+    {"settled_contact_policy_version": 2, "settled_deadline_ns": 499_999_999},
+    {"settled_contact_policy_version": 2, "settled_deadline_ns": 999_999_999},
+])
+def test_independent_settling_policy_rejects_invalid_version_or_deadline(fields):
+    from artifacts.score_validation import ScoreValidationError, _rules_document
+
+    rules = json.loads(RULES_PATH.read_bytes())
+    rules.pop("settled_contact_policy_version", None)
+    rules.pop("settled_deadline_ns", None)
+    rules.update(fields)
+    with pytest.raises(ScoreValidationError):
+        _rules_document(json.dumps(rules).encode())
 
 
 def _write_valid_partial_score(run_directory: Path) -> None:
