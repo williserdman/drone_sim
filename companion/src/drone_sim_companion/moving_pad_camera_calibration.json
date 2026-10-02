@@ -1,0 +1,13 @@
+{
+    "camera_matrix": [
+        [1034.4730060050647, 0.0, 320.0],
+        [0.0, 1034.4730060050647, 240.0],
+        [0.0, 0.0, 1.0]
+    ],
+    "dist_coeff": [[0.0, 0.0, 0.0, 0.0, 0.0]],
+    "dimensions_verified": true,
+    "image_width_px": 640,
+    "image_height_px": 480,
+    "horizontal_fov_rad": 0.6,
+    "source": "iris_moving_pad/downward_camera SDF pinhole model and rendered marker verification"
+}

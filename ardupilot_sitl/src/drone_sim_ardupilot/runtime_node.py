@@ -11,7 +11,7 @@ from typing import Any
 from artifacts.runtime_protocol import RuntimeProtocol
 from artifacts.runtime_status import ArduPilotReadyStatus, RuntimeFailureStatus
 
-from .config import RuntimeConfig, resolve_gazebo_address
+from .config import RuntimeConfig, parameter_files_from_environment, resolve_gazebo_address
 from .runtime import (
     DiagnosticInventory,
     EventWriter,
@@ -136,10 +136,15 @@ def main() -> int:
     run_id = os.environ["SIM_RUN_ID"]
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"])
     gazebo_service = os.environ.get("SIM_GAZEBO_HOST", "gazebo-runtime")
+    parameter_overlay_file, calibration_file = parameter_files_from_environment(
+        os.environ, run_id=run_id, run_directory=run_directory,
+    )
     config = RuntimeConfig(
         run_id=run_id,
         run_directory=run_directory,
         gazebo_host=resolve_gazebo_address(gazebo_service),
+        parameter_overlay_file=parameter_overlay_file,
+        calibration_file=calibration_file,
     )
     work = run_directory / "ardupilot_sitl"
     work.mkdir(parents=True, exist_ok=True)

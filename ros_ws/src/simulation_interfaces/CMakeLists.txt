@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RunState.msg"
   "msg/FrameMetadata.msg"
   "msg/GroundTruth.msg"
+  "msg/LandingPadState.msg"
   "msg/ScenarioEvent.msg"
   "msg/ScoreEvent.msg"
   "msg/ArtifactStatus.msg"

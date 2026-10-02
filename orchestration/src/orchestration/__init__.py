@@ -1,6 +1,7 @@
 """Run orchestration domain contracts."""
 
 from .config import (
+    CalibrationImport,
     RecordingConfig,
     RunConfig,
     RunTemplate,
@@ -18,6 +19,7 @@ from .controller import ControllerError, RunController, RunResult
 from .status_store import OperatorStatus, ProtocolFileError, StatusStore, TerminalCause
 
 __all__ = [
+    "CalibrationImport",
     "InvalidTransition",
     "LifecycleEvent",
     "LifecycleState",

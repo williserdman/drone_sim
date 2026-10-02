@@ -189,7 +189,16 @@ class PublicEpochRendezvous:
 
     def _unpause(self) -> None:
         try:
-            self._transport.set_paused(False)
+            last_error: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    self._transport.set_paused(False)
+                    return
+                except Exception as error:
+                    last_error = error
+                if self._transport.paused_sim_time_ns() is None:
+                    return
+            self._unpause_error = last_error
         except Exception as error:
             self._unpause_error = error
         finally:
@@ -219,16 +228,21 @@ class PublicEpochRendezvous:
         self._prepare_output()
         # Gazebo may stop before its terminal clock sample crosses the ROS bridge.
         # Stay well inside the 50 ms camera grid while making the epoch observable.
-        try:
-            self._transport.run_to_sim_time(
-                self._target_ns + _EPOCH_CLOCK_LOOKAHEAD_NS
-            )
-        except TransportError:
-            # Gazebo may execute a long run-to request but reject or omit the
-            # service reply under load.  The adapter's independently observed
-            # native clock remains the authority for whether the epoch was hit.
-            pass
-        self._run_to_requested = True
+        target_ns = self._target_ns + _EPOCH_CLOCK_LOOKAHEAD_NS
+        last_error: TransportError | None = None
+        for _attempt in range(2):
+            try:
+                self._transport.run_to_sim_time(target_ns)
+                self._run_to_requested = True
+                return
+            except TransportError as error:
+                last_error = error
+            paused_at = self._transport.paused_sim_time_ns()
+            if paused_at is None or paused_at >= target_ns:
+                self._run_to_requested = True
+                return
+        assert last_error is not None
+        raise last_error
 
     def release_if_delivered(self) -> bool:
         if not self._begun or self._released:
@@ -243,18 +257,17 @@ class PublicEpochRendezvous:
         if not self._unpause_done.is_set():
             return False
         epoch_reached = self._epoch_reached()
-        if self._unpause_error is not None and not epoch_reached:
+        if self._unpause_error is not None:
             raise self._unpause_error
         if self._unpause_attempts_started == 1:
             if not epoch_reached:
                 return False
             # Gazebo can apply world control but fail to answer its service call
             # under load.  Reaching the epoch proves the first request took
-            # effect.  The scheduled run-to pauses there, so issue the final
-            # unpause and release without waiting for another unreliable reply.
+            # effect.  The scheduled run-to pauses there, so issue and confirm
+            # the final unpause before releasing public execution.
             self._start_unpause()
-            self._released = True
-            return True
+            return False
         self._released = True
         return True
 
@@ -317,7 +330,10 @@ def main() -> int:
         world_name=resolved.world_name,
         width_px=config.recording.width_px,
         height_px=config.recording.height_px,
-        require_competition_recorders=config.scenario == "competition_v1",
+        require_competition_recorders=config.scenario in {
+            "competition_v1",
+            "moving_pad_v1",
+        },
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
         on_fault=lambda reason: _record_adapter_fault(run_id, inbox, reason),
     )

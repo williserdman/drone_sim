@@ -26,6 +26,7 @@ from orchestration.config import SimulationConfig
 RUN_ID = "00000000-0000-4000-8000-000000000505"
 WORLD_DIGEST = "a" * 64
 MODEL_DIGEST = "b" * 64
+QUARTER_WORLD_DIGEST = "c" * 64
 
 
 def _run_directory(tmp_path: Path) -> Path:
@@ -63,6 +64,8 @@ def _resolved_flight_world(tmp_path: Path) -> ResolvedWorld:
     worlds.mkdir()
     world = worlds / "vertical_descent.sdf"
     world.write_text("<sdf version='1.10'/>", encoding="utf-8")
+    quarter_world = worlds / "vertical_descent_025.sdf"
+    quarter_world.write_text("<sdf version='1.10'/>", encoding="utf-8")
     return ResolvedWorld(
         path=world.resolve(),
         world_name="vertical_descent",
@@ -72,6 +75,7 @@ def _resolved_flight_world(tmp_path: Path) -> ResolvedWorld:
         resource_sha256s=(
             ("models/iris_flight/model.sdf", MODEL_DIGEST),
             ("worlds/vertical_descent.sdf", WORLD_DIGEST),
+            ("worlds/vertical_descent_025.sdf", QUARTER_WORLD_DIGEST),
         ),
     )
 
@@ -326,6 +330,18 @@ def test_flight_server_spec_adds_only_the_pinned_plugin_directory(tmp_path: Path
     assert spec.environment["GZ_SIM_SYSTEM_PLUGIN_PATH"] == (
         "/opt/drone_sim/gazebo/plugins"
     )
+
+
+def test_flight_server_selects_quarter_speed_world_for_calibration(tmp_path: Path):
+    spec = server_spec(
+        run_id=RUN_ID,
+        run_directory=_run_directory(tmp_path),
+        resolved_world=_resolved_flight_world(tmp_path),
+        config=SimulationConfig(2026, 600_000_000_000, 0.25),
+    )
+
+    assert spec.argv[-1].endswith("/worlds/vertical_descent_025.sdf")
+    assert spec.world_sha256 == QUARTER_WORLD_DIGEST
 
 
 def test_competition_server_accepts_quarter_speed_and_loads_physical_plugins(tmp_path: Path):

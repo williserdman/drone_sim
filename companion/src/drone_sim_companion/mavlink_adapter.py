@@ -44,7 +44,12 @@ class MavlinkAdapter:
         )
 
     def send_waypoint(
-        self, latitude_deg: float, longitude_deg: float, altitude_m: float
+        self,
+        latitude_deg: float,
+        longitude_deg: float,
+        altitude_m: float,
+        *,
+        yaw_rad: float | None = None,
     ) -> None:
         values = (latitude_deg, longitude_deg, altitude_m)
         if any(
@@ -58,6 +63,10 @@ class MavlinkAdapter:
             raise ValueError("waypoint latitude must be between -90 and 90 degrees")
         if not -180.0 <= longitude_deg <= 180.0:
             raise ValueError("waypoint longitude must be between -180 and 180 degrees")
+        if yaw_rad is not None and (
+            type(yaw_rad) not in (int, float) or not math.isfinite(yaw_rad)
+        ):
+            raise ValueError("waypoint yaw must be finite")
         mavlink = self._mavutil.mavlink
         type_mask = (
             mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE
@@ -66,9 +75,10 @@ class MavlinkAdapter:
             | mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE
             | mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE
             | mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE
-            | mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
             | mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
         )
+        if yaw_rad is None:
+            type_mask |= mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
         self._connection.mav.set_position_target_global_int_send(
             0,
             self._connection.target_system,
@@ -84,10 +94,51 @@ class MavlinkAdapter:
             0.0,
             0.0,
             0.0,
-            0.0,
+            0.0 if yaw_rad is None else float(yaw_rad),
             0.0,
         )
 
+    def send_landing_target(
+        self,
+        forward_m: float,
+        right_m: float,
+        down_m: float,
+        *,
+        exposure_timestamp_ns: int,
+    ) -> None:
+        values = (forward_m, right_m, down_m)
+        if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+            raise ValueError("landing target vector must contain finite numbers")
+        if down_m <= 0:
+            raise ValueError("landing target down distance must be positive")
+        distance = math.sqrt(forward_m**2 + right_m**2 + down_m**2)
+        self._connection.mav.landing_target_send(
+            exposure_timestamp_ns // 1_000,
+            0,
+            self._mavutil.mavlink.MAV_FRAME_BODY_FRD,
+            math.atan2(forward_m, down_m),
+            math.atan2(right_m, down_m),
+            distance,
+            0.0,
+            0.0,
+            float(forward_m),
+            float(right_m),
+            float(down_m),
+            (1.0, 0.0, 0.0, 0.0),
+            0,
+            1,
+        )
+
+    def request_parameters(self, names: tuple[str, ...]) -> None:
+        if not isinstance(names, tuple) or not names:
+            raise ValueError("parameter names must be a nonempty tuple")
+        for name in names:
+            if not isinstance(name, str) or not name or len(name.encode("ascii")) > 16:
+                raise ValueError("parameter names must be nonempty MAVLink ASCII names")
+        self._connection.mav.param_request_list_send(
+            self._connection.target_system,
+            self._connection.target_component,
+        )
     def request_telemetry(self, *, rate_hz: int = 10) -> None:
         if not isinstance(rate_hz, int) or isinstance(rate_hz, bool) or rate_hz <= 0:
             raise ValueError("telemetry rate must be a positive integer")
@@ -154,6 +205,13 @@ class MavlinkAdapter:
         if kind == "GLOBAL_POSITION_INT":
             latitude = getattr(message, "lat", None)
             longitude = getattr(message, "lon", None)
+            vx = getattr(message, "vx", None)
+            vy = getattr(message, "vy", None)
+            horizontal_speed = (
+                math.hypot(float(vx), float(vy)) / 100.0
+                if vx is not None and vy is not None
+                else None
+            )
             return Telemetry(
                 timestamp_ns,
                 mode=self._mode,
@@ -163,6 +221,30 @@ class MavlinkAdapter:
                 vertical_speed_m_s=-float(message.vz) / 100.0,
                 latitude_deg=float(latitude) / 1e7 if latitude is not None else None,
                 longitude_deg=float(longitude) / 1e7 if longitude is not None else None,
+                horizontal_speed_m_s=horizontal_speed,
+            )
+        if kind == "ATTITUDE":
+            attitude = (float(message.roll), float(message.pitch), float(message.yaw))
+            if not all(math.isfinite(value) for value in attitude):
+                raise ValueError("ATTITUDE contains a non-finite angle")
+            return Telemetry(
+                timestamp_ns,
+                attitude_rpy_rad=attitude,
+                attitude_timestamp_ns=timestamp_ns,
+            )
+        if kind == "PARAM_VALUE":
+            raw_name = message.param_id
+            if isinstance(raw_name, bytes):
+                name = raw_name.split(b"\0", 1)[0].decode("ascii")
+            else:
+                name = str(raw_name).split("\0", 1)[0]
+            value = float(message.param_value)
+            if not name or not math.isfinite(value):
+                raise ValueError("PARAM_VALUE is malformed")
+            return Telemetry(
+                timestamp_ns,
+                parameter_name=name,
+                parameter_value=value,
             )
         if kind == "EXTENDED_SYS_STATE":
             self._landed = int(message.landed_state) == mavlink.MAV_LANDED_STATE_ON_GROUND

@@ -1,4 +1,4 @@
-"""Pure policy for the inactive descent_v1 electromagnet scenario."""
+"""Pure policy for scenarios with an inactive electromagnet."""
 
 from __future__ import annotations
 
@@ -23,9 +23,13 @@ class ScenarioPolicy:
             raise ValueError("run_id must be a canonical UUID") from error
         if str(parsed) != run_id:
             raise ValueError("run_id must be a canonical UUID")
-        if scenario != "descent_v1":
-            raise ValueError("only descent_v1 is supported by the inactive scenario runtime")
+        if scenario not in {"descent_v1", "moving_pad_v1", "calibration_v1"}:
+            raise ValueError(
+                "inactive scenario runtime requires descent_v1, moving_pad_v1, "
+                "or calibration_v1"
+            )
         self._run_id = run_id
+        self._magnet_id = f"{scenario.replace('_', '-')}-magnet"
         self._last_timestamp_ns: int | None = None
         self._published = False
         self._failed = False
@@ -47,7 +51,11 @@ class ScenarioPolicy:
         if self._published:
             return None
         self._published = True
-        return InactiveScenarioEvent(self._run_id, timestamp_ns)
+        return InactiveScenarioEvent(
+            self._run_id,
+            timestamp_ns,
+            magnet_id=self._magnet_id,
+        )
 
 
 __all__ = ["InactiveScenarioEvent", "ScenarioPolicy"]

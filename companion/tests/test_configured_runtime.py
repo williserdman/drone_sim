@@ -81,7 +81,7 @@ def test_runtime_config_loads_resolved_configured_plan(
     ) * len(expected_tools)
 
 
-def test_unsupported_precision_plan_fails_before_configured_runtime_dispatch(
+def test_malformed_precision_plan_fails_before_configured_runtime_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     template = json.loads(
@@ -108,7 +108,7 @@ def test_unsupported_precision_plan_fails_before_configured_runtime_dispatch(
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
 
-    with pytest.raises(ValueError, match="unsupported tool.*precision_land"):
+    with pytest.raises(ValueError, match="precision_land args have missing or unknown fields"):
         runtime_node.main()
 
     assert dispatched == []

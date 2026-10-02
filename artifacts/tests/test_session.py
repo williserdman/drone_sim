@@ -77,6 +77,16 @@ def test_default_session_preserves_phase2_synthetic_gazebo_evidence(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["terminal_status"] == "COMPLETED"
 
 
+def test_session_inventories_calibration_parameters_and_dataflash(tmp_path):
+    _complete_run_directory(tmp_path)
+    _write(tmp_path, "ardupilot_sitl/autotune.parm", b"# saved gains\n")
+    _write(tmp_path, "ardupilot_sitl/logs/00000001.BIN", b"dataflash")
+    path = ArtifactSession(tmp_path).finalize(_finalization_input())
+    records = {record["relative_path"]: record for record in json.loads(path.read_text())["artifacts"]}
+    assert records["ardupilot_sitl/autotune.parm"]["validation"] == "valid"
+    assert records["ardupilot_sitl/logs/00000001.BIN"]["validation"] == "valid"
+
+
 def _finalization_input(**changes):
     values = {
         "run_id": "run-7",

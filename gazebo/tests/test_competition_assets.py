@@ -28,6 +28,138 @@ def _prepare_assets(output_root: Path) -> Path:
     return prepare_assets(RESOURCES, output_root, COURSE, SCENARIO)
 
 
+def _vehicle_model(output_root: Path, name: str) -> ET.Element:
+    return ET.parse(
+        output_root / f"models/{name}/model.sdf"
+    ).getroot().find("model")
+
+
+def _unloaded_physical_signature(model: ET.Element) -> tuple[object, ...]:
+    airframe = model.find("model[@name='airframe']")
+    assert airframe is not None
+    physical_links = airframe.findall("link") + model.findall("link")
+    inertials = tuple(
+        sorted(
+            (
+                link.attrib["name"],
+                link.findtext("inertial/mass"),
+                tuple(
+                    link.findtext(f"inertial/inertia/{key}")
+                    for key in ("ixx", "ixy", "ixz", "iyy", "iyz", "izz")
+                ),
+            )
+            for link in physical_links
+        )
+    )
+    controls = tuple(
+        (
+            control.attrib["channel"],
+            control.findtext("jointName"),
+            control.findtext("cmd_min"),
+            control.findtext("cmd_max"),
+        )
+        for control in model.findall("plugin[@name='ArduPilotPlugin']/control")
+    )
+    contact = airframe.find(
+        "link[@name='base_link']/sensor[@name='vehicle_leg_contact']"
+    )
+    assert contact is not None
+    camera = model.find(
+        "link[@name='competition_sensor_link']/sensor[@name='downward_camera']"
+    )
+    range_sensor = model.find(
+        "link[@name='competition_sensor_link']/sensor[@name='downward_range']"
+    )
+    hardpoint = model.find("link[@name='payload_hardpoint']")
+    assert camera is not None and range_sensor is not None and hardpoint is not None
+    return (
+        inertials,
+        controls,
+        tuple(node.text for node in contact.findall("contact/collision")),
+        contact.findtext("contact/topic"),
+        camera.findtext("pose"),
+        camera.findtext("topic"),
+        camera.findtext("camera/horizontal_fov"),
+        range_sensor.findtext("pose"),
+        range_sensor.findtext("topic"),
+        hardpoint.findtext("pose"),
+    )
+
+
+def test_all_variants_share_unloaded_physics(tmp_path):
+    _prepare_assets(tmp_path)
+    models = {
+        name: _vehicle_model(tmp_path, name)
+        for name in ("iris_flight", "iris_moving_pad", "iris_competition")
+    }
+
+    assert {name: model.attrib["name"] for name, model in models.items()} == {
+        name: name for name in models
+    }
+    signatures = {
+        name: _unloaded_physical_signature(model)
+        for name, model in models.items()
+    }
+    assert signatures["iris_flight"] == signatures["iris_moving_pad"]
+    assert signatures["iris_flight"] == signatures["iris_competition"]
+
+    for model in models.values():
+        masses = [
+            float(link.findtext("inertial/mass"))
+            for link in model.findall("model[@name='airframe']/link")
+            + model.findall("link")
+        ]
+        assert sum(masses) == pytest.approx(1.66001)
+        assert {
+            joint.attrib["name"]
+            for joint in model.findall("joint")
+            if joint.attrib["name"].startswith("rotor_")
+        } == {f"rotor_{index}_joint" for index in range(4)}
+        assert [
+            (control.findtext("cmd_min"), control.findtext("cmd_max"))
+            for control in model.findall("plugin[@name='ArduPilotPlugin']/control")
+        ] == [("-3.4", "3.4")] * 4
+
+
+def test_only_competition_vehicle_has_payload_attachment_plugins(tmp_path):
+    _prepare_assets(tmp_path)
+    models = {
+        name: _vehicle_model(tmp_path, name)
+        for name in ("iris_flight", "iris_moving_pad", "iris_competition")
+    }
+
+    for name in ("iris_flight", "iris_moving_pad"):
+        assert models[name].find("link[@name='payload_hardpoint']") is not None
+        assert not models[name].findall(
+            "plugin[@name='drone_sim::gazebo::PayloadCommandCoordinator']"
+        )
+        assert not models[name].findall(
+            "plugin[@name='drone_sim::gazebo::DetachableJoint']"
+        )
+
+    joints = models["iris_competition"].findall(
+        "plugin[@name='drone_sim::gazebo::DetachableJoint']"
+    )
+    assert {
+        joint.findtext("child_model"): joint.findtext("initially_attached")
+        for joint in joints
+    } == {"payload_2": "true", "payload_3": "false", "payload_4": "false"}
+
+
+def test_pose_publishers_remain_variant_specific(tmp_path):
+    _prepare_assets(tmp_path)
+
+    assert not _vehicle_model(tmp_path, "iris_flight").findall(
+        "plugin[@name='gz::sim::systems::PosePublisher']"
+    )
+    for name in ("iris_moving_pad", "iris_competition"):
+        assert len(
+            _vehicle_model(tmp_path, name).findall(
+                "plugin[@name='gz::sim::systems::PosePublisher']"
+            )
+        ) == 1
+
+
 def test_strict_config_is_immutable_and_home_relative():
     """A mutable or non-H origin could silently move every physical target."""
     from drone_sim_gazebo.competition_config import (

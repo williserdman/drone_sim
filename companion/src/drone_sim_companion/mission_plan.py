@@ -16,6 +16,7 @@ def _number(*, minimum=0, maximum=None, exclusive=False):
 
 
 _POSITIVE = _number(exclusive=True)
+_MARKER_ID = {"type": "integer", "minimum": 0}
 _GUIDED = {"type": "string", "enum": ["GUIDED"]}
 _ARGUMENTS = {
     "set_mode": ({"mode": _GUIDED}, ["mode"]),
@@ -34,6 +35,11 @@ _ARGUMENTS = {
     }, ["latitude_deg", "longitude_deg", "altitude_m"]),
     "hold": ({"duration_sim_s": _POSITIVE}, ["duration_sim_s"]),
     "land": ({}, []),
+    "precision_land": ({
+        "marker_id": _MARKER_ID,
+        "settle_by_sim_s": _POSITIVE,
+        "acquire_by_sim_s": _POSITIVE,
+    }, ["marker_id", "settle_by_sim_s", "acquire_by_sim_s"]),
 }
 
 
@@ -49,7 +55,9 @@ def tool_definitions() -> list[dict]:
 
 
 def positive_seconds(value: object, name: str) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be finite and positive")
+    if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be finite and positive")
     return float(value)
 
@@ -68,12 +76,15 @@ def validate_arguments(tool: object, args: object) -> dict:
         schema = properties[name]
         valid = {
             "number": type(value) in (int, float),
+            "integer": type(value) is int,
             "boolean": type(value) is bool,
             "string": isinstance(value, str) and bool(value),
         }[schema["type"]]
         if not valid:
             raise ValueError(f"{tool}.{name} must be a {schema['type']}")
-        if schema["type"] == "number":
+        if schema["type"] in {"number", "integer"}:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{tool}.{name} must be numeric")
             if not math.isfinite(value):
                 raise ValueError(f"{tool}.{name} must be finite")
             for key, invalid in (
@@ -87,6 +98,8 @@ def validate_arguments(tool: object, args: object) -> dict:
             raise ValueError(f"unsupported {tool}.{name}: {value!r}")
     if tool == "takeoff" and args.get("tolerance_m", 0) >= args["altitude_m"]:
         raise ValueError("takeoff tolerance_m must be less than altitude_m")
+    if tool == "precision_land" and args["settle_by_sim_s"] >= args["acquire_by_sim_s"]:
+        raise ValueError("precision_land settlement deadline must precede acquisition")
     return dict(args)
 
 

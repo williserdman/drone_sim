@@ -106,13 +106,76 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
 
 The automatic example targets 90 simulated seconds of warmup plus 30 recorded
 seconds at one-tenth real time, about 20 wall minutes before startup overhead.
-The operator example waits for external arming and GUIDED selection through an
-existing connection; it does not provision one. Its 60-second public window must
-cover the wait and flight, and targets 25 wall minutes including warmup.
+The operator example waits for external arming and GUIDED selection, but the
+shipped topology has no independent operator connection: companion owns the sole
+single-client MAVLink endpoint. Provision another endpoint or router before
+flying this template. Its 60-second public window must cover the wait and flight.
+
+### Calibrate and validate saved gains
+
+This two-run workflow is the first CI calibration stage. Whole-suite dependency
+execution is not implemented. Use a clean checkout and build all seven images
+with the [build command](#build-runtime-images); capture expected provenance using
+the [acceptance block](#moving-pad-landing) before either run. Keep that checkout
+and those image tags fixed through both flights and acceptance.
+
+1. Run roll, pitch and yaw AutoTune on the unloaded competition airframe:
+
+   ```bash
+   uv run --locked drone-sim start --config config/autotune-run.json
+   ```
+
+   The mission settles in LOITER, tunes all axes, reactivates the tuned gains,
+   settles again and uses native LAND. The public/warmup windows total 690
+   simulated seconds at target RTF 0.25, about 46 wall minutes plus startup.
+   A failed tune or landing cannot release accepted parameters.
+
+2. Save its UUID and prepare a temporary validation template:
+
+   ```bash
+   calibration_run=REPLACE_WITH_RUN_UUID
+   validation_config=$(mktemp /tmp/drone-sim-validation.XXXXXX.json)
+   python3 - "$calibration_run" "$validation_config" <<'PY'
+   import json
+   from pathlib import Path
+   import sys
+   template = json.loads(Path("config/calibration-validation-run.json").read_text())
+   template["calibration"]["source_run_directory"] = str((Path("runs") / sys.argv[1]).resolve())
+   Path(sys.argv[2]).write_text(json.dumps(template, indent=2) + "\n")
+   PY
+   uv run --locked drone-sim start --config "$validation_config"
+   ```
+
+   Before launching, the importer independently accepts the source at 100/100
+   and checks aircraft, base parameters, firmware and image compatibility. It
+   copies the exact gain file and source manifest into the new run. Fresh SITL
+   loads the gains last, and companion verifies readback before arming. This
+   flight takes off to 5 m, holds 10 seconds and lands. Its 210 simulated seconds
+   including warmup target about 14 wall minutes plus startup.
+
+3. Independently inspect both bundles with the captured provenance. Use
+   `scorekeeper/rules/calibration_v1.json` for AutoTune and
+   `scorekeeper/rules/descent_v1.json` for validation, retaining
+   `--require-maximum-score`. Report physical outcome, score and artifact
+   acceptance separately. The validation inspector checks recorded hover
+   stability as well as landing and loaded-gain evidence.
+
+   Current descent rules use settling-policy version 2. Inspect older descent
+   bundles with `scorekeeper/rules/descent_v1_legacy.json` when their scoring
+   checksum matches that file. A replay under revised rules is a separate
+   diagnostic; it does not change historical acceptance. Accepted calibration
+   gains may be reused for validation when the importer confirms physical-profile
+   compatibility, without rerunning AutoTune.
+
+The source artifact is `runs/RUN_ID/ardupilot_sitl/autotune.parm`. The validation
+copy is `runs/RUN_ID/configuration/calibration.parm`; its source identity is frozen
+in `configuration/run.json`. This workflow does not edit tracked defaults.
+Other scenarios need fresh flights with the shared aircraft before claiming no
+regressions. The old `autotune-roll-run.json` remains a historical diagnostic.
 
 ### Run all automatic templates
 
-There is no `run-all` command. This Bash sequence attempts all six automatic
+There is no `run-all` command. This Bash sequence attempts all seven automatic
 templates, stops on the first failure or abort, and retains each normal run bundle:
 
 ```bash
@@ -120,6 +183,7 @@ templates, stops on the first failure or abort, and retains each normal run bund
   set -euo pipefail
   for mission_config in \
     config/configured-descent-run.json \
+    config/configured-moving-pad-run.json \
     config/vertical-descent-run.json \
     config/hover-roll-run.json \
     config/autotune-roll-run.json \
@@ -131,11 +195,15 @@ templates, stops on the first failure or abort, and retains each normal run bund
 )
 ```
 
-Run `configured-operator-run.json` separately with an operator present. The batch
+The operator template is excluded until its connection gap above is resolved. The batch
 includes the existing AutoTune experiment and both competition timing variants;
 allow several hours. It checks process exit codes, not independent physical
 acceptance. Inspect each bundle and use [competition acceptance](#independent-competition-acceptance)
 for competition runs. AutoTune records candidates without promoting parameters.
+
+The [latest sweep](handoff.md#scenario-regression-sweep) records known image-packaging
+and diagnostic-acceptance failures. A completed process or image build does not
+establish that all templates can fly or pass independent acceptance.
 
 ## Run and monitor
 
@@ -180,6 +248,7 @@ mission logs alone as a stopped process.
 | Template | Purpose | Public duration / warmup / target RTF |
 | --- | --- | --- |
 | [configured-descent-run.json](../config/configured-descent-run.json) | Fixed automatic takeoff/hold/land | 30 s / 90 s / 0.1 |
+| [configured-moving-pad-run.json](../config/configured-moving-pad-run.json) | Takeoff/transit/camera-guided moving-deck landing | 90 s / 90 s / 0.1 |
 | [configured-operator-run.json](../config/configured-operator-run.json) | Operator arms/selects GUIDED, then takeoff/hold/land | 60 s / 90 s / 0.1 |
 | [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
@@ -297,6 +366,80 @@ retagging images can reject an old bundle on provenance alone. Preserve its
 original checkout/images when establishing a baseline; never edit historical
 evidence to match today's checkout. `collect-results` is not this full semantic
 competition acceptance check.
+
+### Moving-pad landing
+
+Read the [current flight evidence](handoff.md#moving-pad-verification) before a demo.
+The EKF3 moving run passed independent acceptance with 100/100 and full recordings.
+A separate stationary flight landed but its recording failed on a missing pad
+contact sample. That intermittent evidence-stream failure remains unresolved.
+The current moving-only experiment selects stock `AHRS_EKF_TYPE=3`, native
+precision `PLND_EST_TYPE=1`, and the original `PSC_NE_POS_P=1`. It retains
+option 5 and 40 ms lag with exposure-stamped target messages. EKF3 avoids the
+diagnosed SIM attitude delta-velocity frame error. Native LAND controls the
+accepted moving descent; the camera and pad speed were unchanged.
+
+Build from a committed checkout using [the image-build command](#build-runtime-images).
+The configured mission takes off to 5 m, flies 35 m east, then watches marker 7
+and precision-lands. The 3 m deck moves east at 0.5 m/s from public time zero,
+including after disarm. Camera observation continues during transit. The mission
+must settle by 45 s and acquire two seconds of fresh observations by 60 s;
+failure ends the attempt. The [architecture contract](architecture.md#moving-pad-landing)
+defines tracking loss and final touchdown behavior.
+
+Use the stationary fixture for controller isolation and the moving configuration
+for the actual mission. These commands launch different courses:
+
+```bash
+uv run --locked drone-sim start --config tests/fixtures/configured-stationary-pad-run.json
+uv run --locked drone-sim start --config config/configured-moving-pad-run.json
+```
+
+If public time reaches 90 s without mission completion, the current runtime can
+wait for its wall deadline: the precision-operation deadline exceeds the capped
+public clock. Use `uv run --locked drone-sim abort RUN_ID` to finalize a stalled
+experiment and preserve evidence. That result is `ABORTED`, never an accepted
+mission. A deadline/recording-boundary fix remains separate work.
+
+Run each command separately and inspect its result before continuing. Each
+includes 90 s of warmup and 90 s of public simulation at target RTF 0.1:
+30 wall minutes at that rate, plus startup/finalization. On the validation host,
+90 s of warmup took about 18 wall minutes; allow about 36 minutes for the full run.
+The stationary fixture
+uses the same deck, camera, landing controller, and scoring, with its pad held at
+the approach point. It is a control experiment, not part of the automatic batch.
+
+For independent acceptance, capture expected provenance **before launching**,
+in the same Bash session used to inspect the result:
+
+```bash
+mission_revision=$(git rev-parse HEAD)
+mission_acceptance_args=(
+  --rules-path "$PWD/scorekeeper/rules/moving_pad_v1.json"
+  --require-maximum-score
+  --expected-source "drone_sim=$mission_revision"
+  --expected-source-dirty-entry drone_sim=false
+  --expected-source "comp2026=$mission_revision"
+  --expected-source-dirty-entry comp2026=false
+)
+while IFS= read -r mission_image; do
+  mission_digest=$(docker image inspect --format '{{.Id}}' "$mission_image")
+  mission_acceptance_args+=(--expected-image-digest "$mission_image=${mission_digest#sha256:}")
+done < <(docker compose --profile phase3 config --images | sort -u)
+
+# After the run finishes, replace RUN_ID with its UUID:
+uv run --locked python -m artifacts.acceptance "$PWD/runs/RUN_ID" \
+  "${mission_acceptance_args[@]}"
+```
+
+Keep the checkout clean and image tags unchanged between capture, flight, and
+acceptance. The inspector runs ROS-dependent checks inside the artifacts image
+and verifies Compose teardown on the host. A physical pass requires deck contact,
+observed disarm, and two continuous simulated seconds aboard. Acceptance
+independently recomputes the 100-point result from recorded vehicle/pad truth
+and arm transitions, then validates both recordings and provenance. Inspect
+`video/onboard.mp4`, `video/observer.mp4`, and `scoring/result.json` under the run
+directory. Report physical landing, score, and artifact validity separately.
 
 ## Test without a full flight
 

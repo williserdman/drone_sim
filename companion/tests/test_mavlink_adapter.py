@@ -24,6 +24,9 @@ class FakeMav:
     calls: list[tuple[object, ...]] = field(default_factory=list)
     stream_calls: list[tuple[object, ...]] = field(default_factory=list)
     global_position_target_calls: list[tuple[object, ...]] = field(default_factory=list)
+    parameter_calls: list[tuple[object, ...]] = field(default_factory=list)
+    parameter_list_calls: list[tuple[object, ...]] = field(default_factory=list)
+    landing_target_calls: list[tuple[object, ...]] = field(default_factory=list)
 
     def command_long_send(self, *arguments: object) -> None:
         self.calls.append(arguments)
@@ -33,6 +36,15 @@ class FakeMav:
 
     def set_position_target_global_int_send(self, *arguments: object) -> None:
         self.global_position_target_calls.append(arguments)
+
+    def param_request_read_send(self, *arguments: object) -> None:
+        self.parameter_calls.append(arguments)
+
+    def param_request_list_send(self, *arguments: object) -> None:
+        self.parameter_list_calls.append(arguments)
+
+    def landing_target_send(self, *arguments: object) -> None:
+        self.landing_target_calls.append(arguments)
 
 
 class FakeConnection:
@@ -62,6 +74,7 @@ def mavutil() -> SimpleNamespace:
         MAV_DATA_STREAM_ALL=0,
         MAV_SYS_STATUS_PREARM_CHECK=0x10000000,
         MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+        MAV_FRAME_BODY_FRD=12,
         POSITION_TARGET_TYPEMASK_VX_IGNORE=8,
         POSITION_TARGET_TYPEMASK_VY_IGNORE=16,
         POSITION_TARGET_TYPEMASK_VZ_IGNORE=32,
@@ -123,6 +136,17 @@ def test_waypoint_translates_to_relative_home_global_position_target() -> None:
     ]
 
 
+def test_moving_waypoint_holds_north_yaw_for_long_camera_axis_along_east() -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    adapter.send_waypoint(37.4003371, -122.079639322083, 5.0, yaw_rad=0.0)
+
+    call = connection.mav.global_position_target_calls[0]
+    assert call[4] == 2552
+    assert call[-2:] == (0.0, 0.0)
+
+
 @pytest.mark.parametrize(
     ("latitude_deg", "longitude_deg", "altitude_m"),
     [
@@ -155,6 +179,58 @@ def test_telemetry_request_keeps_generic_stream_and_requests_landed_state() -> N
     assert connection.mav.calls == [
         (1, 1, 511, 0, 245, 100_000, 0, 0, 0, 0, 0),
     ]
+
+
+def test_required_parameters_use_one_complete_list_request_and_observations_are_exposed() -> None:
+    connection = FakeConnection([
+        Message("PARAM_VALUE", param_id=b"PLND_OPTIONS\x00", param_value=5.0),
+    ])
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    names = tuple(f"PARAM_{index:02d}" for index in range(34))
+    adapter.request_parameters(names)
+    telemetry = adapter.poll(1_000_000_000)
+
+    assert connection.mav.parameter_list_calls == [(1, 1)]
+    assert connection.mav.parameter_calls == []
+    assert telemetry is not None
+    assert (telemetry.parameter_name, telemetry.parameter_value) == ("PLND_OPTIONS", 5.0)
+
+
+def test_attitude_and_horizontal_velocity_keep_public_exposure_timestamp() -> None:
+    connection = FakeConnection([
+        Message("ATTITUDE", roll=0.1, pitch=-0.2, yaw=0.3),
+        Message("GLOBAL_POSITION_INT", lat=0, lon=0, relative_alt=1000, vx=30, vy=40, vz=0),
+    ])
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    attitude = adapter.poll(2_000_000_000)
+    position = adapter.poll(2_050_000_000)
+
+    assert attitude is not None
+    assert attitude.attitude_rpy_rad == (0.1, -0.2, 0.3)
+    assert attitude.attitude_timestamp_ns == 2_000_000_000
+    assert position is not None and position.horizontal_speed_m_s == pytest.approx(0.5)
+
+
+def test_landing_target_uses_exposure_time_and_position_valid_body_frd_encoding() -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    adapter.send_landing_target(
+        1.0,
+        -2.0,
+        4.0,
+        exposure_timestamp_ns=12_345_678_901,
+    )
+
+    assert connection.mav.landing_target_calls == [(
+        12_345_678, 0, 12,
+        pytest.approx(0.2449786631), pytest.approx(-0.4636476090), pytest.approx(4.582575695),
+        0.0, 0.0,
+        1.0, -2.0, 4.0,
+        (1.0, 0.0, 0.0, 0.0), 0, 1,
+    )]
 
 
 def test_mavlink_messages_are_stamped_with_current_simulation_time() -> None:

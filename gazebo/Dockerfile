@@ -103,6 +103,8 @@ RUN test "${ARDUPILOT_GAZEBO_COMMIT}" = "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f
         /opt/drone_sim/gazebo/plugins/libcwru_payload_command_coordinator.so \
     && cp /tmp/ardupilot_gazebo/build/libdrone_sim_detachable_joint_system.so \
         /opt/drone_sim/gazebo/plugins/libdrone_sim_detachable_joint_system.so \
+    && cp /tmp/ardupilot_gazebo/build/libdrone_sim_moving_pad_controller.so \
+        /opt/drone_sim/gazebo/plugins/libdrone_sim_moving_pad_controller.so \
     && printf '%s\n' "${ARDUPILOT_GAZEBO_COMMIT}" \
         > /opt/drone_sim/gazebo/plugins/ardupilot_gazebo-revision.txt \
     && rm -rf /tmp/ardupilot_gazebo
@@ -120,6 +122,7 @@ RUN mkdir -p /opt/drone_sim/gazebo /etc/drone_sim \
     && cp /opt/drone_sim/source/config/bridge.yaml /etc/drone_sim/gazebo-bridge.yaml \
     && cp /opt/drone_sim/source/config/bridge-flight.yaml /etc/drone_sim/gazebo-bridge-flight.yaml \
     && cp /opt/drone_sim/source/config/bridge-competition.yaml /etc/drone_sim/gazebo-bridge-competition.yaml \
+    && cp /opt/drone_sim/source/config/bridge-moving-pad.yaml /etc/drone_sim/gazebo-bridge-moving-pad.yaml \
     && python3 -m venv --system-site-packages /opt/drone_sim/venv \
     && /opt/drone_sim/venv/bin/pip install \
         --no-cache-dir \

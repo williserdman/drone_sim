@@ -32,7 +32,8 @@ required evidence is missing or invalid.
   adapter over the strict, descriptor-safe persistence mechanics in
   [`protocol_files.py`](src/artifacts/protocol_files.py).
 - [`acceptance.py`](src/artifacts/acceptance.py) and
-  [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
+  the scenario score validators, including
+  [`moving_pad_score_validation.py`](src/artifacts/moving_pad_score_validation.py),
   implement independent semantic acceptance for completed physical runs.
 
 The shared status contract includes `MissionExecutionReadyStatus`, published by
@@ -51,9 +52,15 @@ inventory into prose.
 
 The bag is deliberately metadata-only for cameras: it stores frame IDs and
 timestamps, not raw image pixels. Pixel recordings are `video/onboard.mp4` and
-`video/observer.mp4`; losing an MP4 cannot be repaired from the bag. Competition
-runs extend the base bag with their physical/scoring evidence as selected by
+`video/observer.mp4`; losing an MP4 cannot be repaired from the bag.
+Scenario-specific runs extend the base bag with their physical/scoring evidence as selected by
 [`RecordingRuntimeConfig.topics`](src/artifacts/runtime_configuration.py).
+Moving-pad acceptance joins recorded pad and vehicle samples by exact timestamp
+and independently recomputes touchdown, disarm, and continued physical support
+under the [moving-pad rules](../scorekeeper/rules/moving_pad_v1.json) before it
+trusts the persisted result. It requires touchdown diagnostics to precede the
+final-time physical result in nondecreasing simulation timestamp order, with
+contiguous IDs and matching evidence references.
 
 The deployed private rosbag QoS overrides are
 [`recording-qos.yaml`](recording-qos.yaml), copied into the runtime image by the
@@ -68,6 +75,36 @@ records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
 Manifest paths use portable POSIX-relative syntax. The executable contract is
 [`is_manifest_relative_path`](src/artifacts/manifest.py), with its JSON form in
 the [`manifest.json` schema](schemas/manifest.schema.json).
+
+## AutoTune calibration parameters
+
+[`calibration.py`](src/artifacts/calibration.py) owns the versioned axes-7
+parameter artifact at `ardupilot_sitl/autotune.parm`. It validates exactly 15
+roll, pitch, and yaw values, extracts one post-disarm native save from DataFlash,
+and compares the artifact with ordered live parameter evidence. Roll and pitch
+I equal P; yaw I equals 0.1 times P. Yaw D and the other preserved controller
+settings are recorded separately and may be zero.
+
+`validate_calibration_artifact()` requires the completed calibration mission,
+manifest inventory, DataFlash save, activation readback, post-disarm readback,
+and unchanged preserved settings to agree. Historical roll-only
+`autotune-roll.parm` artifacts retain their existing format and parser.
+
+Independent acceptance also replays `calibration_v1` physical scoring, rotating
+recorded body velocity into world coordinates. Its 100 points cover airborne
+contact, safe preimpact speed and stable contact; it has no origin-radius rule.
+Both the parameter file and DataFlash log have manifest checksums.
+
+Configured missions validate their ordered successful operations against the
+frozen plan. A calibration validation run additionally requires matching
+pre-arm gain/baseline readback and five continuous seconds of recorded stable
+hover during its 5 m, 10 s hold. Native descent scoring remains 100/100.
+Descent replay independently applies the settling-policy version in the
+checksum-bound rule file. Use
+[descent_v1_legacy.json](../scorekeeper/rules/descent_v1_legacy.json) for historical
+first-contact results; revised-policy replay is derivative evidence and cannot
+replace a frozen bundle's score, bag events, or manifest. Calibration and
+moving-pad replay semantics remain unchanged.
 
 ## Constraints worth preserving
 
@@ -104,4 +141,5 @@ uv run pytest artifacts/tests/test_protocol_files.py \
 uv run pytest artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
 uv run pytest artifacts/tests/test_manifest.py artifacts/tests/test_session.py \
   artifacts/tests/test_acceptance.py -q
+uv run pytest artifacts/tests/test_moving_pad_score_validation.py -q
 ```

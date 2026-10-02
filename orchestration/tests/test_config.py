@@ -10,6 +10,8 @@ from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 import orchestration.config as config_module
 from orchestration.config import (
+    CALIBRATION_PARAMETERS,
+    CalibrationImport,
     RecordingConfig,
     RunConfig,
     RunTemplate,
@@ -145,6 +147,48 @@ def _configured_document() -> dict:
         ],
     }
     return document
+
+
+def _moving_pad_document() -> dict:
+    document = _configured_document()
+    document.update(
+        world="moving_pad_landing", vehicle="iris_moving_pad", scenario="moving_pad_v1"
+    )
+    document["recording"].update(width_px=640, height_px=480)
+    return document
+
+
+@pytest.mark.parametrize("world", ["moving_pad_landing", "moving_pad_stationary"])
+def test_moving_pad_configuration_round_trips_calibrated_scene(tmp_path, world):
+    document = _moving_pad_document()
+    document["world"] = world
+    _load_validator("run-template.schema.json").validate(document)
+    resolved = resolve_run_config(_write_template(tmp_path, document))
+    assert resolved.recording == RecordingConfig(640, 480, 20, "rgb8")
+    assert resolved.simulation.public_epoch_native_ns == 90_000_000_000
+    path = write_resolved_config(tmp_path / "run", resolved)
+    _load_validator("run.schema.json").validate(json.loads(path.read_text()))
+    assert load_run_config(path) == resolved
+
+
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda d: d.update(world="vertical_descent"), id="wrong-world"),
+    pytest.param(lambda d: d.update(vehicle="iris_flight"), id="wrong-vehicle"),
+    pytest.param(lambda d: d.update(scenario="descent_v1"), id="wrong-rules"),
+    pytest.param(lambda d: (d.update(mission="descent"), d.pop("mission_plan")), id="wrong-mission"),
+    pytest.param(lambda d: d["simulation"].update(public_epoch_native_sim_seconds=15), id="wrong-epoch"),
+    pytest.param(lambda d: d.update(competition={"course": "course.yaml", "scenario": "scenario.yaml"}), id="unrelated-course"),
+])
+def test_moving_pad_rejects_mismatched_scene_before_launch(tmp_path, mutate):
+    document = _moving_pad_document()
+    mutate(document)
+    with pytest.raises(ValueError, match="moving.pad"):
+        resolve_run_config(_write_template(tmp_path, document))
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(document)
+    document.update(run_id=str(FIXED_RUN_ID), config_sha256="a" * 64)
+    with pytest.raises(ValidationError):
+        _load_validator("run.schema.json").validate(document)
 
 
 def _competition_document() -> dict:
@@ -987,3 +1031,97 @@ def test_other_missions_reject_mission_plan(tmp_path):
     document["mission"] = "controlled_descent"
     with pytest.raises(ValueError, match="mission_plan.*configured"):
         resolve_run_config(_write_template(tmp_path, document), run_id_factory=lambda: FIXED_RUN_ID)
+
+
+def _calibration_document() -> dict:
+    return {
+        "schema_version": 1,
+        "source_run_id": str(FIXED_RUN_ID),
+        "source_manifest_sha256": "a" * 64,
+        "source_artifact_sha256": "b" * 64,
+        "gains": {name: 0.1 for name in CALIBRATION_PARAMETERS},
+        "profile": {
+            "id": "competition-unloaded-v1",
+            "baseline_parameters": {"ATC_RAT_YAW_D": 0.0},
+            "profile_sha256": "c" * 64,
+        },
+    }
+
+
+def test_calibration_source_resolves_relative_and_freezes_canonical_json(tmp_path):
+    source = tmp_path / "accepted"
+    source.mkdir()
+    document = _configured_document()
+    document["calibration"] = {"source_run_directory": "accepted"}
+    calls = []
+
+    def importer(path: Path) -> CalibrationImport:
+        calls.append(path)
+        return CalibrationImport(
+            json.dumps(_calibration_document(), sort_keys=True, separators=(",", ":")),
+            source / "ardupilot_sitl/autotune.parm",
+            source / "manifest.json",
+        )
+
+    resolved = resolve_run_config(
+        _write_template(tmp_path, document),
+        run_id_factory=lambda: FIXED_RUN_ID,
+        calibration_importer=importer,
+    )
+
+    assert calls == [source]
+    assert json.loads(resolved.calibration_json) == _calibration_document()
+    with pytest.raises(FrozenInstanceError):
+        resolved.calibration_json = "{}"
+
+
+def test_calibration_rejects_unsupported_consumer_before_import(tmp_path):
+    document = _configured_document()
+    document["mission"] = "controlled_descent"
+    document.pop("mission_plan")
+    document["calibration"] = {"source_run_directory": "/accepted"}
+
+    with pytest.raises(ValueError, match="only supported"):
+        resolve_run_config(
+            _write_template(tmp_path, document),
+            run_id_factory=lambda: FIXED_RUN_ID,
+            calibration_importer=lambda _path: pytest.fail("import must not run"),
+        )
+
+
+def test_calibration_snapshot_copies_exact_bytes_and_rejects_changed_source(tmp_path):
+    source = tmp_path / "accepted"
+    artifact = source / "ardupilot_sitl/autotune.parm"
+    manifest = source / "manifest.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"ATC_RAT_RLL_P 0.1\n")
+    manifest.write_bytes(b'{"source":"accepted"}\n')
+    document = _configured_document()
+    document["calibration"] = {"source_run_directory": str(source)}
+    calibration = _calibration_document()
+    calibration["source_artifact_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    calibration["source_manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    resolved = resolve_run_config(
+        _write_template(tmp_path, document),
+        run_id_factory=lambda: FIXED_RUN_ID,
+        calibration_importer=lambda _path: CalibrationImport(
+            json.dumps(calibration, sort_keys=True, separators=(",", ":")),
+            artifact,
+            manifest,
+        ),
+    )
+
+    written = write_resolved_config(tmp_path / "run", resolved)
+    assert (written.parent / "calibration.parm").read_bytes() == artifact.read_bytes()
+    assert (written.parent / "calibration-manifest.json").read_bytes() == manifest.read_bytes()
+    assert load_run_config(written).calibration_json == resolved.calibration_json
+
+    changed = replace(resolved, run_id="00000000-0000-4000-8000-000000000223")
+    changed = replace(
+        changed,
+        config_sha256=config_module._checksum(config_module._document_without_checksum(changed)),
+    )
+    artifact.write_bytes(b"ATC_RAT_RLL_P 0.2\n")
+    with pytest.raises(ValueError, match="calibration artifact source changed"):
+        write_resolved_config(tmp_path / "changed", changed)
+    assert not (tmp_path / "changed/configuration/run.json").exists()

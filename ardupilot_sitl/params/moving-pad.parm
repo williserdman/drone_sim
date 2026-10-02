@@ -1,0 +1,7 @@
+# Native precision landing with EKF3, layered after descent.parm for moving_pad_v1.
+# Avoid the pinned SIM AHRS body-frame delta velocity returned as NED.
+AHRS_EKF_TYPE 3
+PLND_OPTIONS 5
+PLND_EST_TYPE 1
+PLND_LAG 0.04
+PSC_NE_POS_P 1

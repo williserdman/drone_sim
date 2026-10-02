@@ -196,6 +196,7 @@ def _install_fake_ros(monkeypatch, *, spin=None):
     interface_module = ModuleType("simulation_interfaces.msg")
     for name in (
         "GroundTruth",
+        "LandingPadState",
         "MissionEvent",
         "PayloadEvent",
         "PayloadState",

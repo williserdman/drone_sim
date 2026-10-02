@@ -2,7 +2,13 @@
 
 
 PAYLOAD_IDS = (2, 3, 4)
-_WORLDS = {"phase3_foundation", "vertical_descent", "competition_mission"}
+_MOVING_PAD_WORLDS = {"moving_pad_landing", "moving_pad_stationary"}
+_WORLDS = {
+    "phase3_foundation",
+    "vertical_descent",
+    "competition_mission",
+    *_MOVING_PAD_WORLDS,
+}
 _ONBOARD_CAMERA_TOPIC = "/gazebo/private/camera/onboard/image"
 _COMPETITION_ONBOARD_CAMERA_TOPIC = (
     "/gazebo/private/camera/competition_onboard/image"
@@ -18,7 +24,7 @@ def _world(world_name: str) -> str:
 
 def contact_topic_for_world(world_name: str) -> str:
     world_name = _world(world_name)
-    if world_name == "competition_mission":
+    if world_name == "competition_mission" or world_name in _MOVING_PAD_WORLDS:
         return "/gazebo/private/iris/contact"
     return (
         f"/world/{world_name}/model/ground_plane/link/ground_link/sensor/"
@@ -30,7 +36,7 @@ def camera_topics_for_world(world_name: str) -> tuple[str, str]:
     world_name = _world(world_name)
     onboard = (
         _COMPETITION_ONBOARD_CAMERA_TOPIC
-        if world_name == "competition_mission"
+        if world_name == "competition_mission" or world_name in _MOVING_PAD_WORLDS
         else _ONBOARD_CAMERA_TOPIC
     )
     return onboard, _OBSERVER_CAMERA_TOPIC
@@ -52,6 +58,13 @@ def private_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
         "/gazebo/private/iris/odometry",
         contact_topic_for_world(world_name),
     )
+    if world_name in _MOVING_PAD_WORLDS:
+        return (
+            *topics,
+            "/gazebo/private/range/downward",
+            "/gazebo/private/moving_pad/odometry",
+            "/gazebo/private/moving_pad/contact",
+        )
     if world_name != "competition_mission":
         return topics
     competition = ["/gazebo/private/range/downward"]
@@ -75,7 +88,7 @@ def readiness_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
     and supervised bridge children establish that side of readiness instead.
     """
     world_name = _world(world_name)
-    if world_name in {"vertical_descent", "competition_mission"}:
+    if world_name in {"vertical_descent", "competition_mission", *_MOVING_PAD_WORLDS}:
         return ()
     cameras = set(camera_topics_for_world(world_name))
     return tuple(
@@ -96,6 +109,8 @@ def recorder_topics_for_world(
         "/camera/observer/frame_metadata",
         "/simulation/ground_truth",
     )
+    if world_name in _MOVING_PAD_WORLDS and competition_evidence:
+        return (*topics, "/simulation/landing_pad_state", "/competition/range/downward")
     if world_name == "competition_mission" and competition_evidence:
         return (*topics, "/simulation/payload_state", "/competition/range/downward")
     return topics
@@ -103,6 +118,8 @@ def recorder_topics_for_world(
 
 def private_command_topics_for_world(world_name: str) -> tuple[str, ...]:
     world_name = _world(world_name)
+    if world_name in _MOVING_PAD_WORLDS:
+        return ()
     if world_name != "competition_mission":
         return ()
     return tuple(
@@ -120,6 +137,13 @@ def gazebo_topics_for_world(world_name: str) -> tuple[str, ...]:
         "/gazebo/private/iris/odometry",
         contact_topic_for_world(world_name),
     )
+    if world_name in _MOVING_PAD_WORLDS:
+        return (
+            *topics,
+            "/gazebo/private/range/downward",
+            "/gazebo/private/moving_pad/odometry",
+            "/gazebo/private/moving_pad/contact",
+        )
     if world_name != "competition_mission":
         return topics
     competition = ["/gazebo/private/range/downward"]

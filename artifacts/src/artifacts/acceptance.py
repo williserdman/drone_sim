@@ -14,7 +14,7 @@ import subprocess
 import time
 from typing import Any
 
-from ._adapters.rosbag import PhysicalBagEvidence, RosbagValidator
+from ._adapters.rosbag import GroundTruthEvidence, PhysicalBagEvidence, RosbagValidator
 from ._adapters.video import VideoValidator
 from .manifest import (
     MODULE_LOGS,
@@ -141,6 +141,20 @@ def _parse_image_digest(value: str) -> tuple[str, str]:
     ):
         raise argparse.ArgumentTypeError("expected IMAGE=64-lowercase-hex-digest")
     return name, digest
+
+
+def _parse_named_source(value: str) -> tuple[str, str]:
+    name, separator, revision = value.partition("=")
+    if not separator or not name or not revision:
+        raise argparse.ArgumentTypeError("expected SOURCE=REVISION")
+    return name, revision
+
+
+def _parse_named_dirty(value: str) -> tuple[str, bool]:
+    name, separator, dirty = value.partition("=")
+    if not separator or not name:
+        raise argparse.ArgumentTypeError("expected SOURCE=true|false")
+    return name, _parse_boolean(dirty)
 
 
 def _exact_dict(value: object, keys: set[str], label: str) -> dict[str, Any]:
@@ -385,8 +399,9 @@ def _validate_manifest_inventory(run_directory: Path, manifest: dict[str, Any]) 
 
 
 def _validate_module_logs(
-    run_directory: Path, run_id: str, *, ruleset_id: str
-) -> None:
+    run_directory: Path, run_id: str, *, ruleset_id: str,
+    mission: str = "controlled_descent", mission_plan: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     logs_directory = run_directory / "logs"
     expected_names = {Path(path).name for path in MODULE_LOGS}
     try:
@@ -419,13 +434,152 @@ def _validate_module_logs(
         ):
             raise BundleAcceptanceError(f"module log contract is invalid: {relative_path}")
         documents_by_module[module] = documents
-    _validate_production_log_evidence(documents_by_module, ruleset_id=ruleset_id)
+    _validate_production_log_evidence(
+        documents_by_module, ruleset_id=ruleset_id, mission=mission,
+        mission_plan=mission_plan,
+    )
+    return documents_by_module["companion"]
+
+
+def _configured_operation_pairs(companion, mission_plan):
+    steps = mission_plan.get("steps", []) if isinstance(mission_plan, Mapping) else []
+    rows = [row for row in companion if row["event"] in {
+        "operation_started", "operation_finished"}]
+    if not steps or len(rows) != 2 * len(steps):
+        raise BundleAcceptanceError("configured operation evidence is incomplete")
+    pairs = []
+    previous_end = -1.0
+    identities = set()
+    for step, start, finish in zip(steps, rows[::2], rows[1::2], strict=True):
+        started, finished = start["fields"], finish["fields"]
+        start_time, end_time = start["sim_timestamp"], finish["sim_timestamp"]
+        valid = (
+            isinstance(started, dict) and isinstance(finished, dict)
+            and start["event"] == "operation_started"
+            and finish["event"] == "operation_finished"
+            and started.get("tool") == finished.get("tool") == step["tool"]
+            and started.get("args") == step["args"]
+            and isinstance(started.get("operation_id"), str)
+            and started["operation_id"] not in identities
+            and started["operation_id"] == finished.get("operation_id")
+            and finished.get("state") == "succeeded"
+            and all(type(value) in (float, int) and math.isfinite(value)
+                    for value in (start_time, end_time))
+            and previous_end <= start_time <= end_time
+        )
+        if not valid:
+            raise BundleAcceptanceError("configured operation sequence does not match the plan")
+        identities.add(started["operation_id"])
+        previous_end = end_time
+        pairs.append((step, start_time, end_time))
+    return pairs
+
+
+def _validate_calibration_hover(
+    samples: Sequence[GroundTruthEvidence], *, hold_start_ns: int,
+    hold_end_ns: int, altitude_m: float,
+) -> None:
+    """Require five seconds of stable world-frame motion in the recorded hold."""
+    if not samples:
+        raise BundleAcceptanceError("calibration validation hover has no ground truth")
+    origin_z = samples[0].position_xyz[2]
+    stable_start = previous = None
+    for sample in samples:
+        stamp = sample.sim_timestamp_ns
+        if stamp < hold_start_ns or stamp > hold_end_ns:
+            continue
+        x, y, z, w = sample.orientation_xyzw
+        norm = math.sqrt(x*x + y*y + z*z + w*w)
+        if norm == 0:
+            stable_start = previous = None
+            continue
+        x, y, z, w = (value / norm for value in (x, y, z, w))
+        roll = math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
+        pitch = math.asin(max(-1.0, min(1.0, 2*(w*y - z*x))))
+        # descent_v1 keeps its historical body-frame evidence. Rotate here only.
+        vx, vy, vz = sample.linear_velocity_xyz
+        world_x = (1-2*(y*y+z*z))*vx + 2*(x*y-z*w)*vy + 2*(x*z+y*w)*vz
+        world_y = 2*(x*y+z*w)*vx + (1-2*(x*x+z*z))*vy + 2*(y*z-x*w)*vz
+        world_z = 2*(x*z-y*w)*vx + 2*(y*z+x*w)*vy + (1-2*(x*x+y*y))*vz
+        stable = (
+            not sample.in_contact
+            and abs(sample.position_xyz[2] - origin_z - altitude_m) <= 0.5
+            and math.hypot(world_x, world_y) <= 0.2
+            and abs(world_z) <= 0.2
+            and abs(roll) <= math.radians(5) and abs(pitch) <= math.radians(5)
+        )
+        if not stable:
+            stable_start = previous = None
+            continue
+        if previous is None or stamp - previous != _FRAME_INTERVAL_NS:
+            stable_start = stamp
+        previous = stamp
+        if stamp - stable_start >= 5_000_000_000:
+            return
+    raise BundleAcceptanceError("calibration validation hover was not stable for five seconds")
+
+
+def _validate_calibration_inputs(run_directory, calibration, companion):
+    for relative, field in (
+        ("configuration/calibration.parm", "source_artifact_sha256"),
+        ("configuration/calibration-manifest.json", "source_manifest_sha256"),
+    ):
+        checked, payload = read_regular_file_bytes(run_directory, relative)
+        if payload is None or checked.sha256 != calibration.get(field):
+            raise BundleAcceptanceError(f"calibration input checksum mismatch: {relative}")
+    from .calibration import read_calibration_parameters
+
+    try:
+        source_id, gains = read_calibration_parameters(run_directory / "configuration/calibration.parm")
+        source_manifest, _ = _read_json(run_directory, "configuration/calibration-manifest.json")
+        if (source_id != calibration["source_run_id"]
+                or source_manifest["run_id"] != source_id or gains != calibration["gains"]):
+            raise ValueError("frozen source identity or gain values differ")
+        expected = {**calibration["profile"]["baseline_parameters"], **gains}
+    except (OSError, KeyError, ValueError) as error:
+        raise BundleAcceptanceError(f"calibration input is invalid: {error}") from error
+    # Match a durable readback before any arm operation, never after touchdown.
+    for row in companion:
+        fields = row["fields"]
+        if row["event"] == "operation_started" and fields.get("tool") == "arm":
+            break
+        if (row["event"] == "calibration_parameters_verified"
+                and fields.get("stage") == "pre_arm"):
+            observed = fields.get("parameters")
+            if (isinstance(observed, dict) and set(observed) == set(expected)
+                    and all(type(observed[key]) in (int, float)
+                            and math.isclose(observed[key], value, rel_tol=1e-5, abs_tol=1e-7)
+                            for key, value in expected.items())):
+                return
+    raise BundleAcceptanceError("calibration validation lacks matching pre-arm parameter readback")
+
+
+def _validate_calibration_profile(run_directory, profile, manifest):
+    if not isinstance(profile, dict):
+        raise BundleAcceptanceError("calibration aircraft profile is missing")
+    payload = {key: value for key, value in profile.items() if key != "profile_sha256"}
+    checksum = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if profile.get("profile_sha256") != checksum:
+        raise BundleAcceptanceError("calibration aircraft profile checksum differs")
+    checked, contents = read_regular_file_bytes(run_directory, "gazebo/server.log")
+    try:
+        preamble = json.loads(contents.splitlines()[0]) if contents else {}
+        model = dict(preamble["resource_sha256s"])["models/iris_flight/model.sdf"]
+        images = {row["name"]: row["digest"] for row in manifest["image_digests"]}
+        if (model != profile["physical_model_sha256"]
+                or not profile["image_digests"]
+                or any(images.get(name) != digest for name, digest in profile["image_digests"].items())):
+            raise ValueError("runtime aircraft/image identity differs")
+    except (KeyError, TypeError, ValueError, IndexError) as error:
+        raise BundleAcceptanceError(f"calibration aircraft profile differs from recorded runtime: {error}") from error
 
 
 def _validate_production_log_evidence(
     documents_by_module: dict[str, list[dict[str, Any]]],
     *,
     ruleset_id: str,
+    mission: str = "controlled_descent",
+    mission_plan: Mapping[str, Any] | None = None,
 ) -> None:
     companion = documents_by_module["companion"]
     companion_events = {row["event"] for row in companion}
@@ -459,9 +613,27 @@ def _validate_production_log_evidence(
         and acknowledged == commands
     )
     if not mission_finished or (
-        ruleset_id == "descent_v1" and not descent_evidence_valid
+        ruleset_id == "descent_v1" and mission != "configured" and not descent_evidence_valid
     ):
         raise BundleAcceptanceError("companion flight evidence is incomplete")
+    if mission == "configured":
+        _configured_operation_pairs(companion, mission_plan)
+    if ruleset_id == "calibration_v1":
+        statuses = [row["fields"].get("text") for row in companion
+                    if row["event"] == "ardupilot_status_text"]
+        required = ("AutoTune: Success", "AutoTune: Pilot Testing gains for Roll Pitch Yaw(E)",
+                    "AutoTune: Saved gains for Roll Pitch Yaw(E)")
+        next_required = iter(required)
+        expected = next(next_required)
+        for status in statuses:
+            if status == expected:
+                expected = next(next_required, None)
+        phases = [row["fields"].get("phase") for row in companion
+                  if row["event"] == "autotune_phase"]
+        if (mission != "autotune" or expected is not None
+                or not {"autotune_aux_ack", "autotune_disarmed"}.issubset(companion_events)
+                or "LANDING" not in phases or not phases or phases[-1] != "COMPLETE"):
+            raise BundleAcceptanceError("all-axis AutoTune flight evidence is incomplete")
 
     ardupilot = documents_by_module["ardupilot_sitl"]
     if not (
@@ -562,13 +734,37 @@ def semantic_container_command(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
-    expected_source_revision: str,
-    expected_source_dirty: bool,
+    expected_source_revision: str | None = None,
+    expected_source_dirty: bool | Mapping[str, bool] | None = None,
+    expected_source_revisions: Mapping[str, str] | None = None,
     expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
 ) -> tuple[str, ...]:
     if set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES):
         raise ValueError("expected_image_digests must contain exact Phase 3 image names")
+    source_revisions, source_dirty = _expected_sources(
+        expected_source_revision=expected_source_revision,
+        expected_source_dirty=expected_source_dirty,
+        expected_source_revisions=expected_source_revisions,
+    )
+    if expected_source_revisions is None:
+        provenance_arguments = (
+            "--expected-source-revision",
+            source_revisions["drone_sim"],
+            "--expected-source-dirty",
+            str(source_dirty["drone_sim"]).lower(),
+        )
+    else:
+        provenance_arguments = tuple(
+            argument
+            for name in source_revisions
+            for argument in (
+                "--expected-source",
+                f"{name}={source_revisions[name]}",
+                "--expected-source-dirty-entry",
+                f"{name}={str(source_dirty[name]).lower()}",
+            )
+        )
     command = (
         "docker",
         "run",
@@ -579,19 +775,16 @@ def semantic_container_command(
         "--mount",
         f"type=bind,src={Path(run_directory).resolve()},dst=/bundle,readonly",
         "--mount",
-        f"type=bind,src={Path(rules_path).resolve()},dst=/rules/descent_v1.json,readonly",
+        f"type=bind,src={Path(rules_path).resolve()},dst=/rules/rules.json,readonly",
         _ARTIFACTS_RUNTIME_IMAGE,
         "python3",
         "-m",
         "artifacts.acceptance",
         "/bundle",
         "--rules-path",
-        "/rules/descent_v1.json",
+        "/rules/rules.json",
         "--semantic-only",
-        "--expected-source-revision",
-        expected_source_revision,
-        "--expected-source-dirty",
-        str(expected_source_dirty).lower(),
+        *provenance_arguments,
         *(
             argument
             for name in _PHASE3_IMAGE_NAMES
@@ -608,8 +801,9 @@ def inspect_phase3_via_container(
     run_directory: Path | str,
     *,
     rules_path: Path | str,
-    expected_source_revision: str,
-    expected_source_dirty: bool,
+    expected_source_revision: str | None = None,
+    expected_source_dirty: bool | Mapping[str, bool] | None = None,
+    expected_source_revisions: Mapping[str, str] | None = None,
     expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
     runner: Callable[..., Any] = subprocess.run,
@@ -622,6 +816,7 @@ def inspect_phase3_via_container(
                 rules_path=rules_path,
                 expected_source_revision=expected_source_revision,
                 expected_source_dirty=expected_source_dirty,
+                expected_source_revisions=expected_source_revisions,
                 expected_image_digests=expected_image_digests,
                 require_maximum_score=require_maximum_score,
             )
@@ -760,20 +955,34 @@ def inspect_phase3_semantics(
     configuration, expected_frames = _validate_config(directory, run_id)
     _validate_simulation_timing(manifest, expected_frames)
     configurations = manifest.get("configurations")
-    if configurations != [
+    expected_configurations = [
         {
             "relative_path": "configuration/run.json",
             "sha256": configuration["config_sha256"],
         }
-    ]:
+    ]
+    calibration = configuration.get("calibration_json")
+    if calibration is not None:
+        expected_configurations.extend([
+            {"relative_path": "configuration/calibration.parm",
+             "sha256": calibration.get("source_artifact_sha256")},
+            {"relative_path": "configuration/calibration-manifest.json",
+             "sha256": calibration.get("source_manifest_sha256")},
+        ])
+    if configurations != expected_configurations:
         raise BundleAcceptanceError("manifest configuration provenance is invalid")
     _validate_manifest_inventory(directory, manifest)
+    scenario = configuration.get("scenario", "descent_v1")
     ruleset_id = (
-        "competition_v1"
-        if configuration.get("scenario") == "competition_v1"
+        scenario
+        if scenario in {"descent_v1", "competition_v1", "moving_pad_v1", "calibration_v1"}
         else "descent_v1"
     )
-    _validate_module_logs(directory, run_id, ruleset_id=ruleset_id)
+    companion_logs = _validate_module_logs(
+        directory, run_id, ruleset_id=ruleset_id,
+        mission=configuration.get("mission", "controlled_descent"),
+        mission_plan=configuration.get("mission_plan"),
+    )
     physical_evidence = semantic_check(
         directory,
         run_id,
@@ -782,6 +991,32 @@ def inspect_phase3_semantics(
     )
     if not isinstance(physical_evidence, PhysicalBagEvidence):
         raise BundleAcceptanceError("semantic inspection returned no physical evidence")
+    if ruleset_id == "calibration_v1":
+        from .calibration import validate_calibration_artifact
+
+        _validate_calibration_profile(directory, configuration.get("calibration_profile"), manifest)
+        try:
+            validate_calibration_artifact(directory)
+        except (OSError, ValueError) as error:
+            raise BundleAcceptanceError(f"calibration artifact is invalid: {error}") from error
+    if calibration is not None:
+        _validate_calibration_inputs(directory, calibration, companion_logs)
+        _validate_calibration_profile(directory, calibration.get("profile"), manifest)
+        pairs = _configured_operation_pairs(companion_logs, configuration.get("mission_plan"))
+        altitude = None
+        verified_hover = False
+        for step, start, end in pairs:
+            if step["tool"] == "takeoff":
+                altitude = step["args"].get("altitude_m")
+            if (step["tool"] == "hold" and altitude == 5.0
+                    and step["args"].get("duration_sim_s") == 10.0):
+                _validate_calibration_hover(
+                    physical_evidence.ground_truth, hold_start_ns=round(start * 1e9),
+                    hold_end_ns=round(end * 1e9), altitude_m=altitude,
+                )
+                verified_hover = True
+        if not verified_hover:
+            raise BundleAcceptanceError("calibration validation requires a recorded 5 m, 10 s hover")
 
     try:
         score = validate_score_outputs(
@@ -800,7 +1035,7 @@ def inspect_phase3_semantics(
         "evidence_paths": list(score.evidence_paths),
     }:
         raise BundleAcceptanceError("manifest scoring provenance does not match score evidence")
-    if require_maximum_score and not math.isclose(
+    if (require_maximum_score or ruleset_id == "calibration_v1" or calibration is not None) and not math.isclose(
         score.achieved_score, score.maximum_available_score
     ):
         required = "150/150" if ruleset_id == "competition_v1" else "100/100"
@@ -857,6 +1092,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--expected-source-revision")
     parser.add_argument("--expected-source-dirty", type=_parse_boolean)
     parser.add_argument(
+        "--expected-source", type=_parse_named_source, action="append", default=[]
+    )
+    parser.add_argument(
+        "--expected-source-dirty-entry",
+        type=_parse_named_dirty,
+        action="append",
+        default=[],
+    )
+    parser.add_argument(
         "--expected-image-digest", type=_parse_image_digest, action="append", default=[]
     )
     modes = parser.add_mutually_exclusive_group()
@@ -887,29 +1131,63 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.rules_path is None:
             parser.error("--rules-path is required for semantic acceptance")
         expected_image_digests = dict(arguments.expected_image_digest)
+        named_revisions = dict(arguments.expected_source)
+        named_dirty = dict(arguments.expected_source_dirty_entry)
+        named_mode = bool(arguments.expected_source or arguments.expected_source_dirty_entry)
+        legacy_valid = (
+            arguments.expected_source_revision is not None
+            and arguments.expected_source_dirty is not None
+        )
+        named_valid = (
+            named_mode
+            and len(named_revisions) == len(arguments.expected_source)
+            and len(named_dirty) == len(arguments.expected_source_dirty_entry)
+            and tuple(named_revisions) == tuple(named_dirty)
+            and arguments.expected_source_revision is None
+            and arguments.expected_source_dirty is None
+        )
         if (
-            arguments.expected_source_revision is None
-            or arguments.expected_source_dirty is None
+            not (legacy_valid or named_valid)
             or len(arguments.expected_image_digest) != len(_PHASE3_IMAGE_NAMES)
             or set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES)
         ):
             parser.error(
-                "semantic acceptance requires the expected source revision, dirty "
-                "state, and exact seven Phase 3 image digests"
+                "semantic acceptance requires matching source revision/dirty "
+                "expectations and exact seven Phase 3 image digests"
             )
-        inspector = (
-            inspect_phase3_semantics
-            if arguments.semantic_only
-            else inspect_phase3_via_container
-        )
-        report = inspector(
-            arguments.run_directory,
-            rules_path=arguments.rules_path,
-            expected_source_revision=arguments.expected_source_revision,
-            expected_source_dirty=arguments.expected_source_dirty,
-            expected_image_digests=expected_image_digests,
-            require_maximum_score=arguments.require_maximum_score,
-        )
+        common = {
+            "rules_path": arguments.rules_path,
+            "expected_image_digests": expected_image_digests,
+            "require_maximum_score": arguments.require_maximum_score,
+        }
+        if arguments.semantic_only and named_valid:
+            report = inspect_phase3_semantics(
+                arguments.run_directory,
+                expected_source_revisions=named_revisions,
+                expected_source_dirty=named_dirty,
+                **common,
+            )
+        elif arguments.semantic_only:
+            report = inspect_phase3_semantics(
+                arguments.run_directory,
+                expected_source_revision=arguments.expected_source_revision,
+                expected_source_dirty=arguments.expected_source_dirty,
+                **common,
+            )
+        elif named_valid:
+            report = inspect_phase3_via_container(
+                arguments.run_directory,
+                expected_source_revisions=named_revisions,
+                expected_source_dirty=named_dirty,
+                **common,
+            )
+        else:
+            report = inspect_phase3_via_container(
+                arguments.run_directory,
+                expected_source_revision=arguments.expected_source_revision,
+                expected_source_dirty=arguments.expected_source_dirty,
+                **common,
+            )
     except BundleAcceptanceError as error:
         print(json.dumps({"accepted": False, "detail": str(error)}, sort_keys=True))
         return 1

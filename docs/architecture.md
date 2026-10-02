@@ -164,7 +164,7 @@ guides before changing this ordering. A landed vehicle is not a terminal run.
 | What are the wire schemas? | [ROS messages/services](../ros_ws/src/simulation_interfaces), with QoS at the actual publisher/subscriber and [recording overrides](../artifacts/recording-qos.yaml) |
 | What counts for points? | [versioned rules](../scorekeeper/rules) and scorer implementation; never the mission's success print alone |
 | Which code/images produced an old result? | That run's `configuration/run.json`, manifest source revisions/image digests, and logs; mutable local Docker tags and today's Git HEAD are not historical evidence |
-| Which topics are actually in the bag? | `BASE_TOPICS` / `COMPETITION_TOPICS` in the [bag adapter](../artifacts/src/artifacts/_adapters/rosbag.py) |
+| Which topics are actually in the bag? | `BASE_TOPICS`, `COMPETITION_TOPICS`, and `MOVING_PAD_TOPICS` in the [bag adapter](../artifacts/src/artifacts/_adapters/rosbag.py) |
 
 The bag stores camera **metadata**, not raw image pixels. The MP4s are the image
 recordings; a bag cannot recreate a lost recording. Private Gazebo topics also
@@ -189,3 +189,249 @@ and [competition_config.py](../gazebo/src/drone_sim_gazebo/competition_config.py
   turn a diagnostic failure into a passing run.
 - A source edit is not an image update. Source provenance, image build identity,
   and runtime evidence must agree before claiming a verified result.
+
+## CI calibration design
+
+Implemented 2026-09-29; calibration and fresh-process validation both passed
+independent acceptance at 100/100 by 2026-10-02. The first deliverable is a reusable
+calibration stage and a fresh-process validation flight; see
+[current verification](handoff.md). The eventual CI runner invokes this stage
+before the mission suite.
+Existing launch commands do not implement that suite dependency yet.
+
+```mermaid
+flowchart LR
+    T[Roll, pitch, yaw AutoTune] --> L[Native LAND and saved gains]
+    L --> A[Independent calibration acceptance]
+    A --> H[Fresh SITL: load gains, verify, hover and land]
+    H --> M[Mission suite uses the same frozen gains]
+```
+
+### Aircraft and calibration flight
+
+All suite scenarios use one competition airframe definition, including its
+inertia, motor limits, sensor hardware, and payload mount. Payload attachment and
+course geometry remain mission-specific. Calibration starts without a payload;
+the competition flights exercise the same gains with their specified loads.
+The [shared generator](../gazebo/scripts/prepare_competition_assets.py) produces
+the diagnostic, moving-pad and competition variants from the same physical body.
+The first calibration importer supports the unloaded diagnostic variant only;
+whole-suite import and payload validation remain a separate delivery step.
+
+The companion takes off in GUIDED, settles in LOITER, then enters AUTOTUNE with
+`AUTOTUNE_AXES=7` for roll, pitch, and the pinned implementation's standard yaw
+error-filter tuning. Completion requires all three axes. A completed subset
+cannot release parameters to the suite. Require body-rate feedforward enabled
+before tuning so calibration does not silently change an unexported base setting.
+
+After tuning succeeds, the companion observes LOITER, invokes
+`MAV_CMD_DO_AUX_FUNCTION` with function 180 and position 2 to activate tuned
+gains, and waits for the matching testing status and live parameter readback.
+It then settles and commands native LAND. An ACK alone does not prove that
+AutoTune accepted the gain-selection command. Unexpected mode changes, failed
+tuning, stale telemetry, or expired simulation deadlines fail calibration.
+Recovery landing never converts failure into success.
+Neutral RC overrides must be refreshed throughout LOITER and tuning: the pinned
+ArduPilot default expires them after three simulated seconds. An unexpected
+disarm before native landing fails immediately, even if the mode still reports
+AUTOTUNE. Overrides are cleared when commanding LAND.
+
+This order matters in the
+[pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):
+leaving AUTOTUNE restores original gains; activating tuned gains after that exit
+allows native LAND followed by gain saving at disarm. This sequence has source
+evidence and an independently accepted calibration flight; see
+[current verification](handoff.md). The existing
+[roll mission](../companion/src/drone_sim_companion/autotune.py) uses a different,
+throttle-only descent and must not be presented as this implementation.
+
+### Acceptance and parameter artifact
+
+Calibration gets its own acceptance contract. It requires completed tuning for
+all requested axes, independent airborne/contact/stable-landing evidence, safe
+preimpact speed, observed disarm, and a coherent saved-parameter artifact. It does
+not require touchdown at the origin marker. Its physical checks retain the
+airborne, preimpact-speed, and stable-contact thresholds from the original
+[descent rules](../scorekeeper/rules/descent_v1_legacy.json). Existing descent and precision-land
+scoring contracts retain their location requirements. Terminal `COMPLETED`,
+physical score, and artifact acceptance remain separate results.
+
+The artifact contains 15 tuned values: rate P/I/D, angle P, and acceleration
+limit for roll and pitch; rate P/I, error filter, angle P, and acceleration limit
+for yaw. Validation follows the pinned
+[save routine](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune_Multi.cpp#L546):
+roll/pitch I equals P; yaw I equals 0.1 times P. Yaw D is preserved from the base
+profile and may be zero. Preserved feedforward and other filter settings also
+remain bound to that recorded profile.
+Values must match coherent post-disarm DataFlash evidence and fresh live readback;
+an earlier tuning snapshot or success text alone is insufficient.
+
+Freeze the source run ID, parameter values, artifact checksum, aircraft profile,
+base parameters, and firmware/image provenance with the calibration result.
+Each dependent run copies the exact artifact into its own configuration and
+loads its allowlisted gain keys after the base and scenario parameter overlays.
+Before arming, live readback must match that frozen input. This path does not
+rewrite the tracked baseline through
+[promote_roll_autotune.py](../scripts/promote_roll_autotune.py).
+
+[calibration_v1](../scorekeeper/rules/calibration_v1.json) awards 20 points for
+airborne/contact, 40 for safe preimpact speed and 40 for stable contact. Acceptance
+requires all 100 plus the saved-parameter evidence. The fresh validation flight
+uses the existing descent rules and requires five continuous seconds within
+0.5 m of its commanded 5 m altitude, horizontal/vertical speed at most 0.2 m/s,
+and roll/pitch within 5 degrees during the configured 10-second hold.
+
+Descent validation now uses settling-policy version 2 in the
+[current rules](../scorekeeper/rules/descent_v1.json): its half-second interval at
+at most 0.1 m/s must finish within one second of first contact. Contact must remain
+continuous and tilt at most 10 degrees from first contact until qualification;
+the preimpact safety limit remains 1 m/s. Runtime scoring and independent replay
+both enforce this contract. The scenario identity remains `descent_v1`; the
+explicit policy version and rule-file checksum distinguish results. Historical
+scores retain their original rules and evidence.
+
+### Delivery and verification
+
+1. Unify aircraft dynamics and implement all-axis AutoTune with the native
+   landing/save sequence and calibration-specific scoring and artifact checks.
+2. Load the accepted artifact into a fresh SITL process and verify parameter
+   readback, a stable hover, native landing, and independent artifact acceptance.
+   This is the first runnable end-to-end deliverable.
+3. Add the suite dependency: failed calibration or validation blocks dependent
+   missions. Each mission retains its own physical score and acceptance result;
+   the suite passes only when every required stage passes.
+
+Focused tests must cover incomplete-axis results, rejected or ineffectual gain
+selection, native landing followed by saved gains, preservation of zero yaw D, corrupted
+or mismatched artifacts, and downstream readback mismatch. Source tests do not
+prove calibration quality: rebuild matching images and preserve a fresh
+calibration/validation pair before claiming the stage works. The full suite then
+needs fresh flights with the shared airframe and gains, including payload cases.
+CI-provider integration, caching, parallel scheduling, and automatic promotion of
+tracked defaults are deferred.
+
+## Moving-pad landing
+
+Implemented 2026-09-24. The stock EKF3 profile completed an independently accepted
+0.5 m/s moving landing on 2026-09-28 with native velocity feedforward enabled.
+This is the contract for one regression mission: takeoff, transit, and camera-guided landing on a
+platform moving straight at 0.5 m/s from public simulation time zero through
+touchdown. The platform continues moving after disarm. ArUco 7 identifies the
+landing target; this mission does not pick up or deliver a payload.
+
+### Course and acquisition
+
+The course has a 3 m square deck, 0.2 m above the floor, with
+a centered 0.1 m marker. The vehicle starts at local ENU (0, 0); the pad starts
+at (10, 0) and travels east. The vehicle takes off to 5 m above home and transits
+to (35, 0), ahead of the pad. The pad reaches that waypoint at 50 simulated
+seconds. The automatic example must arrive and settle by 45 seconds; a late
+arrival fails this attempt rather than starting an unbounded pursuit.
+
+The downward camera reuses competition geometry, with matching
+[intrinsics](../companion/src/drone_sim_companion/moving_pad_camera_calibration.json)
+and [mount metadata](../companion/src/drone_sim_companion/moving_pad_camera_mounting.json).
+The configured host subscribes to images and range for precision-landing plans.
+Unverified calibration or mounting prevents precision readiness.
+Its 0.6-radian horizontal field of view at 640x480 covers approximately 3.1 by
+2.3 m at 5 m above a level surface. The usable marker-detection region is smaller;
+vehicle tilt, the camera offset, deck height, marker size, and frame age affect
+acquisition. With this deck and camera offset, coverage is about 2.9 by
+2.2 m. Align the route with the image's long axis and hold yaw during acquisition.
+The course creates an arrival window. Actual rendered images must establish
+target lock; reaching a waypoint alone does not authorize descent.
+
+Camera acquisition and detection run throughout takeoff, transit, and landing.
+A bounded camera worker publishes the latest timestamped observation; image
+processing cannot block the flight owner or accumulate stale frames. There is
+one active flight operation. Watching the camera does not cancel or redirect
+the waypoint operation in this first version.
+The accepted observation keeps its camera exposure timestamp through the policy
+and flight owner into `LANDING_TARGET.time_usec`, converted from public
+simulation nanoseconds to microseconds. Send time and host wall time must not
+replace exposure time.
+
+At the approach waypoint, the vehicle holds while the pad enters view. The
+precision-landing operation accepts only fresh observations of marker 7 and
+must establish continuous usable observations for two simulated seconds before
+requesting LAND. Accepted camera offsets can initialize ArduPilot's target
+estimator during GUIDED without changing the waypoint command. Observations
+older than 0.25 simulated seconds cannot authorize descent. Acquisition must
+finish by public time 60 seconds; a missed pass or camera timeout fails the run.
+The precision operation has a 90-second relative timeout so it cannot preempt
+those absolute deadlines or descent; the public run window still ends at 90 seconds.
+
+### Landing and module boundaries
+
+Keep explicit mode and arm calls, followed by takeoff, waypoint, and one new
+precision-landing operation. The config remains a fixed sequence. The new
+operation owns acquisition and tracking; ArduPilot owns flight stabilization
+and descent. Pad pose, velocity, and contact truth are available to evaluation
+and recording only. Autonomy uses camera, range, and vehicle telemetry.
+
+Use a dedicated moving-target parameter profile, initially `PLND_OPTIONS=5`
+and `PLND_EST_TYPE=1`, retaining the 0.5 m/s final descent setting. Bit 0 enables
+moving-target support; bit 2 preserves final descent speed. Raw estimation
+supplies no target-velocity estimate. These are initial settings to
+verify in simulation, not a validated tuning claim. See
+[ArduPilot's landing documentation](https://ardupilot.org/copter/docs/precision-landing-and-loiter.html)
+and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp#L460).
+
+The stationary option-4 diagnostic isolated target-velocity feedforward and
+landed, but does not establish moving-pad support. The next moving flight used
+option 5 and `PLND_LAG=0.04`; its velocity estimate diverged and tracking failed.
+The raw-estimator experiment changed only `PLND_EST_TYPE` to 0, preserving
+that lag, options, gains, geometry, and loss policy. Raw mode sends zero target
+velocity to the position controller; a moving option bit alone does not prove
+velocity feedforward is active. Following camera positions may retain enough
+lag to lose the shrinking field of view. The raw moving trial also failed
+tracking at 63.65 s. The gain experiment set `PSC_NE_POS_P=4` only
+in the moving profile and added it to the preflight readback gate. It retained
+raw estimation, camera geometry, pad speed, and all loss/handoff rules. The
+stronger horizontal response also affects transit and initial target capture.
+The gain-4 trial tracked through the 90-second window but did not land.
+The current experiment uses stock `AHRS_EKF_TYPE=3` to avoid the diagnosed SIM
+delta-velocity frame error, restores `PLND_EST_TYPE=1` and `PSC_NE_POS_P=1`,
+and retains option 5 and 40 ms lag. The aircraft estimator is also required by
+the preflight readback gate. Native LAND ownership, camera, pad motion, and
+loss/handoff rules stay fixed. Both stationary and moving flights landed; the
+moving run passed physical scoring and independent artifact acceptance. A later
+contact-stream fault invalidated the stationary recording, so repeatability
+remains unproven.
+See the [recorded outcome](handoff.md#moving-pad-verification).
+
+The moving operation must accept coherent target motion instead of applying
+the existing fixed-anchor drift rejection. Continue feeding valid observations
+near the deck. Above 0.75 m clearance, tracking loss lasting 0.5 simulated seconds
+ends the landing attempt and requests GUIDED hold before bounded host recovery.
+Below that height, permit
+ArduPilot's final touchdown handoff after recent valid tracking; touchdown must
+follow within three simulated seconds. Recovery cannot turn a failed attempt
+into success. Existing stationary landing behavior and its profile stay intact.
+
+Gazebo moves the pad collision surface and marker together with physical surface
+velocity. Contact must carry the aircraft after landing. Publish pad pose/twist
+and pad-specific contact evidence on the same 20 Hz public clock as vehicle
+truth. The scorer checks touchdown on the deck, disarm, and two continuous
+simulated seconds aboard the moving platform. Record touchdown offset and
+relative velocity as diagnostics. Ground contact elsewhere is not a pass.
+Score events are emitted in nondecreasing simulation timestamp order with
+contiguous IDs and matching evidence references. Touchdown diagnostics keep
+their occurrence time and precede the final-time physical result and score.
+
+### Verification and scope
+
+Focused checks cover concurrent transit/observation, stale or wrong marker
+rejection, missed acquisition, and pad-relative touchdown evaluation. A rendered
+camera check establishes marker detection at approach height. Then rebuild
+matching images and run a stationary control followed by the 0.5 m/s mission.
+Report physical outcome, evaluation, and artifact validity separately, with
+onboard and observer recordings. The accepted EKF3 moving run and the separate
+stationary recording failure are documented in the
+[current evidence and remaining limits](handoff.md#moving-pad-verification).
+
+Implementation affects companion vision/operations, Gazebo world/motion and
+truth, the SITL profile, configuration, and scoring/recording. Their module
+guides and the runbook describe the executable entry points. Turns,
+search sweeps, replanning the intercept during transit, payload handling, and
+agent transport are deferred. This design is separate from the core-runner PR.

@@ -11,6 +11,7 @@ from drone_sim_scorekeeper.models import RuleResult, ScoreEvent, ScoreResult
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 RULES = Path(__file__).parents[1] / "rules/descent_v1.json"
+LEGACY_RULES = Path(__file__).parents[1] / "rules/descent_v1_legacy.json"
 DT = 50_000_000
 
 
@@ -49,6 +50,17 @@ def perfect_descent() -> list[GroundTruthSample]:
 def score(values):
     scorer = DescentScorer(
         RUN_ID, load_descent_rules(RULES), expected_ground_truth_samples=len(values)
+    )
+    for value in values:
+        scorer.accept(value)
+    return scorer.finalize()
+
+
+def score_with_rules(values, rules_path):
+    scorer = DescentScorer(
+        RUN_ID,
+        load_descent_rules(rules_path),
+        expected_ground_truth_samples=len(values),
     )
     for value in values:
         scorer.accept(value)
@@ -181,6 +193,111 @@ def test_stability_requires_full_half_second_on_exact_grid():
 
     assert result.achieved_score == 80.0
     assert result.rule_results[3].passed is False
+
+
+def test_v2_impact_transient_can_settle_before_deadline():
+    values = perfect_descent() + [sample(31, x=0.1, contact=True)]
+    values[20] = sample(20, x=0.1, contact=True, vz=-0.199)
+
+    result = score(values)
+
+    assert result.achieved_score == 100.0
+    assert result.rule_results[3].passed is True
+
+
+def test_v2_settling_interval_may_complete_exactly_at_deadline():
+    values = perfect_descent() + [sample(index, x=0.1, contact=True) for index in range(31, 41)]
+    for index in range(20, 30):
+        values[index] = sample(index, x=0.1, contact=True, speed_x=0.11)
+
+    result = score(values)
+
+    assert result.achieved_score == 100.0
+    assert result.rule_results[3].passed is True
+
+
+def test_v2_settling_interval_completed_after_deadline_fails():
+    values = perfect_descent() + [sample(index, x=0.1, contact=True) for index in range(31, 42)]
+    for index in range(20, 31):
+        values[index] = sample(index, x=0.1, contact=True, speed_x=0.11)
+
+    result = score(values)
+
+    assert result.achieved_score == 80.0
+    assert result.rule_results[3].passed is False
+
+
+def test_v2_contact_loss_before_qualification_latches_failure():
+    values = perfect_descent() + [sample(index, x=0.1, contact=True) for index in range(31, 42)]
+    values[22] = sample(22, x=0.1, contact=False)
+
+    result = score(values)
+
+    assert result.achieved_score == 80.0
+    assert result.rule_results[3].passed is False
+
+
+def test_v2_tilt_violation_before_qualification_latches_failure():
+    values = perfect_descent() + [sample(index, x=0.1, contact=True) for index in range(31, 42)]
+    values[22] = sample(
+        22,
+        x=0.1,
+        contact=True,
+        orientation=(0.1305261922, 0.0, 0.0, 0.9914448614),
+    )
+
+    result = score(values)
+
+    assert result.achieved_score == 80.0
+    assert result.rule_results[3].passed is False
+
+
+def test_v2_speed_oscillation_never_forms_qualifying_interval():
+    values = perfect_descent() + [sample(index, x=0.1, contact=True) for index in range(31, 42)]
+    for index in range(20, 41):
+        values[index] = sample(
+            index,
+            x=0.1,
+            contact=True,
+            speed_x=0.11 if index % 2 == 0 else 0.05,
+        )
+
+    result = score(values)
+
+    assert result.achieved_score == 80.0
+    assert result.rule_results[3].passed is False
+
+
+def test_v2_insufficient_samples_before_qualification_fails():
+    values = perfect_descent()[:25]
+    values[20] = sample(20, x=0.1, contact=True, speed_x=0.11)
+
+    result = score(values)
+
+    assert result.achieved_score == 80.0
+    assert result.rule_results[3].passed is False
+
+
+def test_legacy_rules_keep_exact_first_contact_window_semantics():
+    values = perfect_descent()
+    values[20] = sample(20, x=0.1, contact=True, vz=-0.199)
+
+    result = score_with_rules(values, LEGACY_RULES)
+
+    assert result.achieved_score == 80.0
+    assert result.rule_results[3].passed is False
+
+
+def test_v2_rules_reject_off_grid_or_short_settling_deadline(tmp_path):
+    import json
+
+    document = json.loads(RULES.read_text())
+    for deadline in (499_999_999, 525_000_000):
+        document["settled_deadline_ns"] = deadline
+        path = tmp_path / f"rules-{deadline}.json"
+        path.write_text(json.dumps(document))
+        with pytest.raises(ValueError, match="deadline"):
+            load_descent_rules(path)
 
 
 def test_descent_exports_the_scorer_neutral_result_models_unchanged():

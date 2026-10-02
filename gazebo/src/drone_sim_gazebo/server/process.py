@@ -371,6 +371,8 @@ def _validate_world(value: object) -> ResolvedWorld:
         ("phase3_foundation", "iris"),
         ("vertical_descent", "iris_flight"),
         ("competition_mission", "iris_competition"),
+        ("moving_pad_landing", "iris_moving_pad"),
+        ("moving_pad_stationary", "iris_moving_pad"),
     }:
         raise ValueError("server supports only approved local Iris worlds")
     path = _safe_existing_path(value.path, field="world path", directory=False)
@@ -416,8 +418,11 @@ class ServerSpec:
         flight = bool(self.argv) and self.argv[-1].endswith(
             (
                 "/vertical_descent.sdf",
+                "/vertical_descent_025.sdf",
                 "/competition_mission.sdf",
                 "/competition_mission_1x.sdf",
+                "/moving_pad_landing.sdf",
+                "/moving_pad_stationary.sdf",
             )
         )
         expected_environment_keys = (
@@ -477,8 +482,11 @@ class ServerSpec:
             not in {
                 "phase3_foundation.sdf",
                 "vertical_descent.sdf",
+                "vertical_descent_025.sdf",
                 "competition_mission.sdf",
                 "competition_mission_1x.sdf",
+                "moving_pad_landing.sdf",
+                "moving_pad_stationary.sdf",
             }
             or world_path.parent.name != "worlds"
             or world_path.parent.parent != resource_path.parent
@@ -531,9 +539,10 @@ def server_spec(
         raise ValueError("run directory name must match run_id")
     resolved_world = _validate_world(resolved_world)
     config = _validate_config(config)
-    expected_factors = (
-        {0.25, 1.0} if resolved_world.world_name == "competition_mission" else {0.1}
-    )
+    expected_factors = {
+        "competition_mission": {0.25, 1.0},
+        "vertical_descent": {0.1, 0.25},
+    }.get(resolved_world.world_name, {0.1})
     if config.target_real_time_factor not in expected_factors:
         raise ValueError(
             f"{resolved_world.world_name} target_real_time_factor must be "
@@ -541,6 +550,19 @@ def server_spec(
         )
     world_path = resolved_world.path
     world_sha256 = resolved_world.world_sha256
+    if (
+        resolved_world.world_name == "vertical_descent"
+        and config.target_real_time_factor == 0.25
+    ):
+        world_path = _safe_existing_path(
+            resolved_world.resource_path.parent / "worlds/vertical_descent_025.sdf",
+            field="world path",
+            directory=False,
+        )
+        world_sha256 = dict(resolved_world.resource_sha256s).get(
+            "worlds/vertical_descent_025.sdf", ""
+        )
+        _digest(world_sha256, field="world_sha256")
     if (
         resolved_world.world_name == "competition_mission"
         and config.target_real_time_factor == 1.0
@@ -561,7 +583,12 @@ def server_spec(
         "GZ_PARTITION": "drone_sim_" + canonical_run_id.replace("-", "_"),
         "GZ_SIM_RESOURCE_PATH": str(resolved_world.resource_path),
     }
-    if resolved_world.world_name in {"vertical_descent", "competition_mission"}:
+    if resolved_world.world_name in {
+        "vertical_descent",
+        "competition_mission",
+        "moving_pad_landing",
+        "moving_pad_stationary",
+    }:
         environment_values["GZ_SIM_SYSTEM_PLUGIN_PATH"] = _FLIGHT_PLUGIN_PATH
     environment = MappingProxyType(environment_values)
     return ServerSpec(

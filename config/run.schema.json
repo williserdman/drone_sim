@@ -30,6 +30,8 @@
     "simulation": {"$ref": "#/$defs/simulation"},
     "competition": {"$ref": "#/$defs/competition"},
     "mission_plan": {"$ref": "#/$defs/mission_plan"},
+    "calibration_json": {"$ref": "#/$defs/calibration_json"},
+    "calibration_profile": {"type": "object"},
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [
@@ -43,9 +45,10 @@
     },
     {
       "if": {
-        "properties": {
-          "mission": {"const": "comp2026_auto"}
-        }
+        "anyOf": [
+          {"properties": {"mission": {"const": "comp2026_auto"}}},
+          {"properties": {"scenario": {"const": "moving_pad_v1"}}}
+        ]
       },
       "then": {"properties": {"recording": {"$ref": "#/$defs/competition_recording"}}},
       "else": {"properties": {"recording": {"$ref": "#/$defs/baseline_recording"}}}
@@ -60,10 +63,51 @@
         "required": ["runtime_profile", "mission_plan"],
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
-      "else": {"not": {"required": ["mission_plan"]}}
+      "else": {
+        "allOf": [
+          {"not": {"required": ["mission_plan"]}},
+          {"not": {"required": ["calibration_json"]}}
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"mission": {"const": "autotune"}}},
+      "else": {"not": {"required": ["calibration_profile"]}}
+    },
+    {
+      "if": {"anyOf": [
+        {"properties": {"world": {"enum": ["moving_pad_landing", "moving_pad_stationary"]}}},
+        {"properties": {"vehicle": {"const": "iris_moving_pad"}}},
+        {"properties": {"scenario": {"const": "moving_pad_v1"}}}
+      ]},
+      "then": {
+        "required": ["runtime_profile", "simulation"],
+        "not": {"required": ["competition"]},
+        "properties": {
+          "world": {"enum": ["moving_pad_landing", "moving_pad_stationary"]},
+          "vehicle": {"const": "iris_moving_pad"},
+          "mission": {"const": "configured"},
+          "scenario": {"const": "moving_pad_v1"},
+          "runtime_profile": {"const": "phase3"},
+          "simulation": {"properties": {"public_epoch_native_sim_seconds": {"const": 90}}}
+        }
+      }
     }
   ],
   "$defs": {
+    "calibration_json": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "source_run_id", "source_manifest_sha256", "source_artifact_sha256", "gains", "profile"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "source_run_id": {"type": "string", "format": "uuid"},
+        "source_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "gains": {"type": "object", "minProperties": 1},
+        "profile": {"type": "object"}
+      }
+    },
     "recording": {
       "type": "object",
       "additionalProperties": false,

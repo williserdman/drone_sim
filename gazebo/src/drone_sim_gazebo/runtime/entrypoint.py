@@ -77,10 +77,17 @@ class GazeboTransport:
             "phase3_foundation",
             "vertical_descent",
             "competition_mission",
+            "moving_pad_landing",
+            "moving_pad_stationary",
         }:
             raise ValueError("world_name must identify an approved local world")
         self._environment = dict(environment)
-        self._flight = world_name in {"vertical_descent", "competition_mission"}
+        self._flight = world_name in {
+            "vertical_descent",
+            "competition_mission",
+            "moving_pad_landing",
+            "moving_pad_stationary",
+        }
         self._topics = gazebo_topics_for_world(world_name)
         self._control_service = f"/world/{world_name}/control"
         self._stats_topic = f"/world/{world_name}/stats"
@@ -106,7 +113,10 @@ class GazeboTransport:
             raise TransportUnavailable(
                 f"Gazebo Transport command failed: {error}"
             ) from error
-        if result.returncode != 0:
+        if (
+            result.returncode != 0
+            or result.stderr.strip() == "Service call timed out"
+        ):
             raise TransportUnavailable(
                 f"Gazebo Transport command failed: {result.stderr.strip()}"
             )

@@ -37,6 +37,7 @@ numbers fail before ROS or MAVLink resources open.
 | `goto_waypoint` | `latitude_deg`, `longitude_deg`, positive `altitude_m`, optional `tolerance_m`; waits for position within tolerance. |
 | `hold` | Positive `duration_sim_s` shorter than its timeout; maintains the current GUIDED target. |
 | `land` | Empty arguments; waits for touchdown and disarm. Already landed/disarmed succeeds. |
+| `precision_land` | Integer `marker_id` and positive absolute `settle_by_sim_s` / `acquire_by_sim_s` deadlines; settles, acquires, tracks, and lands from bounded image, range, and attitude evidence. |
 
 Coordinates are WGS84 degrees; altitudes are metres above ArduPilot home.
 [operations.py](src/drone_sim_companion/operations.py) exposes `start()`,
@@ -49,15 +50,57 @@ bounds stalled infrastructure. An ACK alone does not establish flight completion
 execution readiness after passive readiness, matching RUNNING, and public clock.
 This releases physics during operator waiting without issuing a flight command.
 The whole sequence must finish landed/disarmed to publish mission success.
+When the frozen run configuration contains accepted calibration, the host
+requests fresh MAVLink readback for all 15 gains and the profile's preserved
+baseline parameters. Every value must match before execution readiness or the
+first flight command; missing values remain bounded by the run wall deadline,
+and a mismatch fails without arming. Calibration values use the artifact's
+float32-aware relative/absolute tolerances; the moving precision profile keeps
+its stricter absolute tolerance. A single `calibration_parameters_verified`
+event records the accepted pre-arm values before mission execution starts.
+The shared adapter validates the required names, requests one complete MAVLink
+parameter list, and lets each host retain only its required replies. This avoids
+overflowing ArduPilot's bounded queue for individual parameter-read requests.
 Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
-the failed result. Another observed mode prevents that recovery command.
+the failed result. Another observed mode prevents that recovery command. Global
+finalization cancels a pending recovery and never starts a new one, allowing
+teardown to finish when simulation time and the vehicle transport have stopped.
 
 These templates exercise the parent operation runner, not Comp2026's mission
 classes. Existing competition missions retain their own execution path.
-Precision landing, payload tools, agent transport, sensor-read tools, branching,
-and retries are deferred. For local commands, see the
+Payload tools, agent transport, general sensor-read tools, branching, and retries
+are deferred. For local commands, see the
 [runbook](../docs/runbook.md#local-developer-workflow).
+
+For `moving_pad_v1`, a bounded latest-frame worker starts before the first
+flight operation and detects DICT_4X4_250 marker 7 throughout transit. The
+flight-owner thread alone forwards fresh BODY_FRD targets and applies LAND or
+GUIDED effects. Settlement requires fresh horizontal speed at or below 0.2 m/s
+for 0.5 simulated seconds. LAND requires two continuous seconds of unique,
+coherent observations no older than 0.25 simulated seconds. Above 0.75 m target
+clearance, 0.5 seconds of tracking loss fails and requests GUIDED. Below that
+clearance, touchdown has three simulated seconds while valid observations keep
+flowing. Each forwarded target retains its accepted camera exposure time;
+`LANDING_TARGET.time_usec` uses public simulation microseconds rather than the
+later owner-loop send time or host wall time.
+
+The host reads back the full effective precision profile before any flight
+command. Marker detection is not an execution-readiness condition, which avoids
+a paused-physics startup deadlock. The moving plan holds north yaw during the
+eastbound waypoint so the route follows the camera image's long axis. Observed
+arm and disarm transitions publish mission events in phase `MOVING_PAD`.
+The companion's expected profile is a live command gate, while the two SITL
+parameter files remain the launch inputs. A focused test merges those inputs and
+requires the gated values to match, preventing silent drift between them.
+The current moving-only experiment requires `AHRS_EKF_TYPE=3`, restoring
+native precision `PLND_EST_TYPE=1` and the original `PSC_NE_POS_P=1` while
+retaining `PLND_OPTIONS=5` and `PLND_LAG=0.04`. Missing or mismatched values
+block readiness and flight commands. EKF3 avoids the diagnosed SIM attitude
+delta-velocity frame error; native LAND still owns tracking and descent. This
+profile completed a 0.5 m/s moving landing with 100/100 and independent artifact
+acceptance. The stationary control also landed, but a later contact-stream fault
+invalidated that bundle. See the [flight evidence and limits](../docs/handoff.md#moving-pad-verification).
 
 ## Entry points and implementation seams
 
@@ -69,6 +112,9 @@ and retries are deferred. For local commands, see the
   controlled-descent policy and its command side-effect boundary.
 - [mavlink_adapter.py](src/drone_sim_companion/mavlink_adapter.py) is the only
   PyMAVLink translation boundary.
+- [moving_vision.py](src/drone_sim_companion/moving_vision.py) owns bounded image
+  processing; [moving_precision.py](src/drone_sim_companion/moving_precision.py)
+  owns the moving-target policy and returns effects to the flight owner.
 - [comp2026_host.py](src/drone_sim_companion/comp2026_host.py) adapts simulation
   clock, images, range, payload calls, waypoints, events, and failure recovery
   for the bundled [Comp2026 mission](comp2026/README.md).
@@ -80,6 +126,27 @@ and retries are deferred. For local commands, see the
   [protocol adapter](../artifacts/src/artifacts/runtime_protocol.py).
 
 ## Interfaces
+
+### All-axis flight-controller tuning
+
+The `autotune` mission is the calibration path for roll, pitch, and yaw. It
+requires normal ArduPilot prearm checks, reads back `AUTOTUNE_AXES=7` and
+`ATC_RATE_FF_ENAB=1`, takes off in GUIDED, settles in LOITER, and enters
+AUTOTUNE with neutral sticks. After ArduPilot reports success, the companion
+returns to LOITER and sends `MAV_CMD_DO_AUX_FUNCTION` function 180 at HIGH.
+The command ACK, the complete pilot-testing status, and matching live gain
+readback are all required before a two-second stable settle and native LAND.
+The runtime refreshes neutral RC overrides twice per wall second until LAND
+owns descent; an earlier disarm fails immediately.
+
+Completion requires the all-axis saved-gains status, observed disarm, and a
+post-disarm readback matching the tested values. Flight decisions use only the
+public clock and MAVLink telemetry. The historical `autotune_roll` and
+`hover_roll` diagnostic missions keep their existing behavior. Start the new
+mission with [autotune-run.json](../config/autotune-run.json); its 600-second
+public window reserves the final 60 seconds for landing or failure recovery.
+An airborne failure clears overrides and requests native LAND for at most 45
+simulated seconds; landing recovery does not change the failed mission result.
 
 The runtime consumes the public clock and run state, onboard images, competition
 downward range, and ArduPilot MAVLink telemetry. Production MAVLink is fixed to
@@ -94,6 +161,16 @@ Camera identity is recorded through
 although autonomy consumes the image itself rather than subscribing to the
 redundant metadata stream. The ownership, ordering, timing, and durable-status
 contracts are centralized in the [architecture guide](../docs/architecture.md).
+
+The moving camera contract is pinned in
+[moving_pad_camera_calibration.json](src/drone_sim_companion/moving_pad_camera_calibration.json)
+and [moving_pad_camera_mounting.json](src/drone_sim_companion/moving_pad_camera_mounting.json).
+It is pinned to the 640x480, 0.6-radian Gazebo camera at body-FLU pose
+`0 0 -0.1 0 1.570796327 0`. OpenCV vectors map to body FRD as
+`forward=-camera_y`, `right=camera_x`; target down uses the fresh downward range
+plus the 0.1 m body offset. The metadata remains fail-closed until a rendered
+marker verifies the complete camera path. The moving-pad render fixtures provide
+the current verification evidence.
 
 The companion provides MAVLink commands, correlated payload service requests,
 ordered mission events, structured diagnostics, and its own readiness,

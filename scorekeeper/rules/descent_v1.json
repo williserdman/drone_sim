@@ -7,6 +7,8 @@
   "touchdown_radius_m": 0.5,
   "safe_preimpact_downward_speed_mps": 1.0,
   "settled_duration_ns": 500000000,
+  "settled_contact_policy_version": 2,
+  "settled_deadline_ns": 1000000000,
   "settled_linear_speed_mps": 0.1,
   "settled_max_tilt_degrees": 10.0,
   "rules": [

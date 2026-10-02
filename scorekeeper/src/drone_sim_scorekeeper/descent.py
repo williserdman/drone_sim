@@ -97,6 +97,8 @@ class DescentRules:
     settled_linear_speed_mps: float
     settled_max_tilt_degrees: float
     points: tuple[float, float, float, float]
+    settled_contact_policy_version: int = 1
+    settled_deadline_ns: int | None = None
 
     @property
     def maximum_available_score(self) -> float:
@@ -128,6 +130,7 @@ def load_descent_rules(path: Path | str) -> DescentRules:
         raise ValueError("unsupported descent ruleset")
     interval = document.get("sample_interval_ns")
     settled_duration = document.get("settled_duration_ns")
+    settled_policy_version = document.get("settled_contact_policy_version", 1)
     if interval != 50_000_000 or isinstance(interval, bool):
         raise ValueError("descent_v1 sample interval must be 50000000 ns")
     if (
@@ -137,6 +140,17 @@ def load_descent_rules(path: Path | str) -> DescentRules:
         or settled_duration % interval
     ):
         raise ValueError("settled duration must be a positive sample-grid duration")
+    if type(settled_policy_version) is not int or settled_policy_version not in (1, 2):
+        raise ValueError("settled contact policy version must be 1 or 2")
+    settled_deadline = document.get("settled_deadline_ns")
+    if settled_policy_version == 2 and (
+        type(settled_deadline) is not int
+        or settled_deadline < settled_duration
+        or settled_deadline % interval
+    ):
+        raise ValueError(
+            "settled deadline must be a sample-grid duration at least as long as settling"
+        )
     marker = document.get("marker_center_xy_m")
     if not isinstance(marker, list):
         raise ValueError("marker_center_xy_m must contain two finite values")
@@ -167,6 +181,8 @@ def load_descent_rules(path: Path | str) -> DescentRules:
             document, "settled_max_tilt_degrees"
         ),
         points=(points[0], points[1], points[2], points[3]),
+        settled_contact_policy_version=settled_policy_version,
+        settled_deadline_ns=(settled_deadline if settled_policy_version == 2 else None),
     )
 
 
@@ -272,17 +288,56 @@ class DescentScorer:
             0.0, -self._samples[first_contact - 1].linear_velocity_xyz[2]
         ) <= self.rules.safe_preimpact_downward_speed_mps
 
-        required_samples = self.rules.settled_duration_ns // self.rules.sample_interval_ns + 1
-        contact_window = self._samples[first_contact : first_contact + required_samples]
-        stable_contact = len(contact_window) == required_samples and all(
-            sample.in_contact
-            and math.sqrt(sum(value * value for value in sample.linear_velocity_xyz))
-            <= self.rules.settled_linear_speed_mps
-            and _tilt_degrees(sample.orientation_xyzw)
-            <= self.rules.settled_max_tilt_degrees
-            for sample in contact_window
-        )
+        if self.rules.settled_contact_policy_version == 2:
+            stable_contact = self._stable_contact_v2(first_contact)
+        else:
+            required_samples = (
+                self.rules.settled_duration_ns // self.rules.sample_interval_ns + 1
+            )
+            contact_window = self._samples[
+                first_contact : first_contact + required_samples
+            ]
+            stable_contact = len(contact_window) == required_samples and all(
+                sample.in_contact
+                and math.sqrt(
+                    sum(value * value for value in sample.linear_velocity_xyz)
+                )
+                <= self.rules.settled_linear_speed_mps
+                and _tilt_degrees(sample.orientation_xyzw)
+                <= self.rules.settled_max_tilt_degrees
+                for sample in contact_window
+            )
         return airborne_then_contact, touchdown_precision, safe_preimpact, stable_contact
+
+    def _stable_contact_v2(self, first_contact: int) -> bool:
+        deadline = self.rules.settled_deadline_ns
+        if deadline is None:
+            return False
+        first_timestamp = self._samples[first_contact].sim_timestamp_ns
+        settled_start_ns: int | None = None
+        for sample in self._samples[first_contact:]:
+            if sample.sim_timestamp_ns > first_timestamp + deadline:
+                break
+            if (
+                not sample.in_contact
+                or _tilt_degrees(sample.orientation_xyzw)
+                > self.rules.settled_max_tilt_degrees
+            ):
+                return False
+            speed = math.sqrt(
+                sum(value * value for value in sample.linear_velocity_xyz)
+            )
+            if speed <= self.rules.settled_linear_speed_mps:
+                if settled_start_ns is None:
+                    settled_start_ns = sample.sim_timestamp_ns
+                if (
+                    sample.sim_timestamp_ns - settled_start_ns
+                    >= self.rules.settled_duration_ns
+                ):
+                    return True
+            else:
+                settled_start_ns = None
+        return False
 
     def finalize(self) -> ScoreResult:
         if self._result is not None:

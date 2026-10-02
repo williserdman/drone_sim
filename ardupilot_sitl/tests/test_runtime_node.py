@@ -112,6 +112,36 @@ def test_main_publishes_ready_and_quiescence_through_one_closed_protocol(
     assert protocol.closed
 
 
+def test_main_selects_moving_overlay_only_from_frozen_scenario(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    config_path = tmp_path / "configuration/run.json"
+    _write(config_path, {"run_id": RUN_ID, "scenario": "moving_pad_v1"})
+    _install_fake_process(monkeypatch, tmp_path)
+    _install_recording_protocol(monkeypatch)
+    monkeypatch.setenv("SIM_CONFIG_PATH", str(config_path))
+    commands: list[tuple[str, ...]] = []
+
+    class CapturingProcess:
+        def __init__(self, command: tuple[str, ...], _work: Path) -> None:
+            commands.append(command)
+            self.reads = 0
+
+        def start(self) -> None: pass
+        def read_line(self, _timeout_seconds: float):
+            self.reads += 1
+            return ("stdout", "JSON received:")
+        @property
+        def return_code(self): return None
+        def stop(self, _timeout_seconds: float): return -15
+
+    monkeypatch.setattr(runtime_node, "SITLProcess", CapturingProcess)
+    assert runtime_node.main() == 0
+    defaults = commands[0][commands[0].index("--defaults") + 1]
+    assert defaults.endswith("descent.parm,/opt/drone_sim/ardupilot/params/moving-pad.parm")
+
+
 def test_main_preserves_private_failure_and_publishes_shared_failure(
     tmp_path: Path,
     monkeypatch: Any,

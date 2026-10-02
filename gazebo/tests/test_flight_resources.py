@@ -13,6 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 RESOURCES = ROOT / "gazebo/resources"
 WORLD = RESOURCES / "worlds/vertical_descent.sdf"
+QUARTER_SPEED_WORLD = RESOURCES / "worlds/vertical_descent_025.sdf"
 MODEL = RESOURCES / "models/iris_flight/model.sdf"
 PLUGIN_PROVENANCE = ROOT / "gazebo/provenance/ardupilot_gazebo-plugin.json"
 PLUGIN_PATCH = ROOT / "gazebo/plugin/0001-paused-initial-json.patch"
@@ -36,13 +37,79 @@ def test_resolver_selects_the_separate_local_flight_world():
     )
 
 
+def test_generated_quarter_speed_world_only_changes_physics_cadence(tmp_path):
+    import sys
+
+    scripts = ROOT / "gazebo/scripts"
+    sys.path.insert(0, str(scripts))
+    try:
+        from prepare_competition_assets import prepare_assets
+    finally:
+        sys.path.remove(str(scripts))
+
+    prepare_assets(
+        RESOURCES,
+        tmp_path,
+        ROOT / "config/course.yaml",
+        ROOT / "config/scenario.yaml",
+    )
+    original = ET.parse(WORLD).getroot()
+    quarter_speed = ET.parse(
+        tmp_path / "worlds/vertical_descent_025.sdf"
+    ).getroot()
+    physics = quarter_speed.find("world/physics")
+    assert quarter_speed.find("world").attrib["name"] == "vertical_descent"
+    assert physics.findtext("max_step_size") == "0.001"
+    assert physics.findtext("real_time_factor") == "0.25"
+    assert physics.findtext("real_time_update_rate") == "250"
+
+    physics.find("real_time_factor").text = "0.1"
+    physics.find("real_time_update_rate").text = "100"
+    assert ET.canonicalize(ET.tostring(quarter_speed), strip_text=True) == (
+        ET.canonicalize(ET.tostring(original), strip_text=True)
+    )
+
+
+def test_autotune_template_selects_quarter_speed_physics_world(tmp_path):
+    from drone_sim_gazebo.server import server_spec
+    from drone_sim_gazebo.worlds import WorldConfig, resolve_world
+    from orchestration.config import SimulationConfig
+
+    document = json.loads((ROOT / "config/autotune-run.json").read_text())
+    simulation = document["simulation"]
+    resolved = resolve_world(
+        WorldConfig(document["world"], document["vehicle"]),
+        package_root=RESOURCES,
+    )
+    run_id = "00000000-0000-4000-8000-000000000509"
+    run_directory = tmp_path / run_id
+    run_directory.mkdir()
+    spec = server_spec(
+        run_id=run_id,
+        run_directory=run_directory,
+        resolved_world=resolved,
+        config=SimulationConfig(
+            simulation["seed"],
+            int(simulation["duration_sim_seconds"] * 1_000_000_000),
+            simulation["target_real_time_factor"],
+        ),
+    )
+
+    assert spec.argv[-1] == str(QUARTER_SPEED_WORLD.resolve())
+    assert spec.world_sha256 == hashlib.sha256(
+        QUARTER_SPEED_WORLD.read_bytes()
+    ).hexdigest()
+
+
 def test_flight_model_has_the_official_four_rotor_json_seam():
     """Missing rotor dynamics or a wrong JSON channel would leave the Iris passive."""
     model = ET.parse(MODEL).getroot().find("model")
 
     assert model.attrib["name"] == "iris_flight"
-    assert model.findtext("include/uri") == "model://iris_phase3"
-    assert model.findtext("include/name") == "airframe"
+    airframe = model.find("model[@name='airframe']")
+    assert airframe is not None
+    assert airframe.findtext("link[@name='base_link']/inertial/mass") == "1.5"
+    assert not model.findall("plugin[@name='gz::sim::systems::PosePublisher']")
 
     imu = model.find("link[@name='imu_link']/sensor[@name='imu_sensor']")
     assert imu is not None

@@ -32,8 +32,17 @@ resources as a substitute for public physical truth.
 - [resources/](resources/) contains the runtime-owned worlds, vehicle models,
   payload models, meshes, and marker textures. Resolution is local and
   fail-closed; remote model fallback is not part of the contract.
+- [prepare_competition_assets.py](scripts/prepare_competition_assets.py) generates
+  `iris_flight`, `iris_moving_pad`, and `iris_competition` from one physical
+  vehicle template. Each unloaded model is 1.66001 kg with ±3.4 motor limits,
+  the competition camera/range hardware, and the payload hardpoint. Only
+  `iris_competition` receives mission payload attachment plugins. The same
+  generator derives `vertical_descent_025.sdf` from the diagnostic world by
+  changing only its physics cadence; 0.1 runs retain `vertical_descent.sdf`.
 - [plugin/](plugin/) contains the clock decimator, payload coordinator, and the
-  downstream-patched ArduPilot Gazebo integration.
+  downstream-patched ArduPilot Gazebo integration. Its moving-pad controller
+  drives a world-fixed prismatic rail with joint velocity; it never resets the
+  deck pose or attaches a landed vehicle.
 
 ## Interfaces
 
@@ -45,7 +54,8 @@ It publishes public `/clock`, onboard and observer images plus metadata,
 vehicle ground truth, and—during competition—payload state and downward range.
 Read the exact schemas in
 [FrameMetadata.msg](../ros_ws/src/simulation_interfaces/msg/FrameMetadata.msg),
-[GroundTruth.msg](../ros_ws/src/simulation_interfaces/msg/GroundTruth.msg), and
+[GroundTruth.msg](../ros_ws/src/simulation_interfaces/msg/GroundTruth.msg),
+[LandingPadState.msg](../ros_ws/src/simulation_interfaces/msg/LandingPadState.msg), and
 [PayloadState.msg](../ros_ws/src/simulation_interfaces/msg/PayloadState.msg).
 The full producer/consumer and lifecycle rules are in the
 [architecture guide](../docs/architecture.md), not duplicated here.
@@ -67,10 +77,23 @@ The runtime publishes it through the
   armed before the exact target; late activation or a skipped target faults
   closed. Public zero precedes buffered output, and the server is not reset.
   Configured missions release the paused epoch on `mission-execution-ready`;
-  other missions retain `mission-command-delivered`.
+  other missions retain `mission-command-delivered`. A timed-out world-control
+  reply is accepted only when world statistics prove the requested effect;
+  otherwise the runtime retries once and faults closed.
 - Camera and aligned physical-truth samples advance at the configured 20 Hz.
   Invalid, duplicate, regressing, misaligned, or excess samples latch the first
   adapter fault; later input cannot repair it.
+- `moving_pad_landing` starts a 3 m deck at ENU `(10, 0)` and releases its
+  eastward 0.5 m/s rail motion after the fixed 90 s native warmup.
+  `moving_pad_stationary` places the same deck at `(35, 0)` with zero speed for
+  the control run. Both use `iris_moving_pad`, a 640x480, 20 Hz, 0.6-radian
+  downward camera and range sensor with the shared empty hardpoint but no
+  attached payload. ArUco 7 is 0.1 m square at the 0.2 m deck top; the observer
+  covers the complete route.
+- `/simulation/landing_pad_state` publishes measured deck pose/twist and only
+  reports contact when a scoped Iris leg collision touches the scoped deck
+  collision. Warmup samples are excluded, and missing native contact evidence
+  is a fault rather than an airborne sample.
 - Flight readiness requires a paused ArduPilot/Gazebo round trip with servo,
   motor-update, and JSON-send progress and no frame gaps or send errors.
 - The passive `phase3_foundation` world has no ArduPilot exchange, so the typed
@@ -91,6 +114,13 @@ Run from the project root:
 
 ```bash
 uv run --locked pytest gazebo/tests -q
+```
+
+The physical carriage gate runs inside the Gazebo build:
+
+```bash
+ctest --test-dir /tmp/ardupilot_gazebo/build \
+  -R moving_pad_controller_integration_test --output-on-failure
 ```
 
 ROS-dependent cases may skip on a host without ROS Jazzy. This suite does not

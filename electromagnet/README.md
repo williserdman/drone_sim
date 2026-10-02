@@ -6,8 +6,9 @@
 This module owns payload-request policy and the handoff to Gazebo for physical
 attach/detach operations. In `competition_v1` it validates a request against
 current physical facts, sends one coordinator command, waits for confirmation,
-and publishes a truthful payload event. In `descent_v1` it only publishes the
-deterministic inactive scenario event.
+and publishes a truthful payload event. In `descent_v1`, `moving_pad_v1`, and
+`calibration_v1` it only publishes the deterministic inactive scenario event,
+identified with the resolved scenario, and never starts payload authority.
 
 It does **not** fly the aircraft, mutate a pose or joint itself, calculate score,
 or decide whether a whole run succeeded. Mission intent belongs to the companion,
@@ -17,14 +18,15 @@ terminal status to orchestration and the validated manifest.
 ## Code map
 
 - [runtime_node.py](src/drone_sim_electromagnet/runtime_node.py) is the process
-  entry point and selects the resolved `descent_v1` or `competition_v1` path.
+  entry point and selects the resolved inactive (`descent_v1`, `moving_pad_v1`,
+  or `calibration_v1`) or `competition_v1` path.
 - [payload.py](src/drone_sim_electromagnet/payload.py) is the stateless ROS-free
   policy for request validation, capacity rules, and pickup eligibility.
 - [controller.py](src/drone_sim_electromagnet/controller.py) joins physical facts,
   serializes operations, owns the sole process-lifetime command-ID ledger, waits
   for coordinator results, and publishes confirmed events.
-- [scenario.py](src/drone_sim_electromagnet/scenario.py) contains the preserved
-  inactive descent policy.
+- [scenario.py](src/drone_sim_electromagnet/scenario.py) contains the shared
+  inactive-scenario policy.
 - The installed command is defined in [pyproject.toml](pyproject.toml); Compose
   starts it in the [`electromagnet-runtime` service](../compose.yaml).
 - Runtime readiness, failure, and quiescence use the shared
@@ -38,7 +40,7 @@ The competition path consumes [GroundTruth](../ros_ws/src/simulation_interfaces/
 [RunState](../ros_ws/src/simulation_interfaces/msg/RunState.msg). It provides the
 [PayloadCommand service](../ros_ws/src/simulation_interfaces/srv/PayloadCommand.srv)
 and publishes [PayloadEvent](../ros_ws/src/simulation_interfaces/msg/PayloadEvent.msg).
-The descent path publishes [ScenarioEvent](../ros_ws/src/simulation_interfaces/msg/ScenarioEvent.msg).
+The inactive paths publish [ScenarioEvent](../ros_ws/src/simulation_interfaces/msg/ScenarioEvent.msg).
 Topic names and QoS are authoritative in
 [runtime_node.py](src/drone_sim_electromagnet/runtime_node.py).
 

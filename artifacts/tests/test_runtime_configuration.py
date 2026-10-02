@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from artifacts.runtime_configuration import (
@@ -66,6 +69,44 @@ def test_competition_profile_preserves_resolved_640x480_geometry_and_topics():
     assert contract.image_payload_bytes == 640 * 480 * 3
     assert contract.ruleset_id == "competition_v1"
     assert contract.topics == COMPETITION_TOPICS
+
+
+def test_moving_pad_profile_selects_its_physical_evidence_inventory_explicitly():
+    """Moving-pad truth must not fall through to stationary descent evidence."""
+    from artifacts._adapters.rosbag import MOVING_PAD_TOPICS
+
+    contract = resolve_recording_runtime_config(
+        {
+            "runtime_profile": "phase3",
+            "scenario": "moving_pad_v1",
+            "recording": {
+                "width_px": 640,
+                "height_px": 480,
+                "fps": 20,
+                "encoding": "rgb8",
+            },
+            "simulation": {"duration_sim_seconds": 90},
+        }
+    )
+
+    assert contract.ruleset_id == "moving_pad_v1"
+    assert contract.topics == MOVING_PAD_TOPICS
+
+
+def test_real_autotune_config_selects_320_calibration_recorder_contract(tmp_path):
+    from artifacts._adapters.rosbag import BASE_TOPICS, RosbagRecorder
+
+    document = json.loads(
+        (Path(__file__).parents[2] / "config/autotune-run.json").read_text()
+    )
+    contract = resolve_recording_runtime_config(document)
+    recorder = RosbagRecorder(tmp_path, topics=contract.topics)
+
+    assert contract.ruleset_id == "calibration_v1"
+    assert (contract.width_px, contract.height_px) == (320, 240)
+    assert contract.expected_camera_frames == 12_000
+    assert contract.topics == BASE_TOPICS
+    assert recorder.topics == BASE_TOPICS
 
 
 @pytest.mark.parametrize("duration", [0, 0.075, True, float("nan")])

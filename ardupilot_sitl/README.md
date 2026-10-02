@@ -25,8 +25,10 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
   readiness output, writes events, and inventories diagnostics.
 - [json_peer.py](src/drone_sim_ardupilot/json_peer.py) is a bounded test peer for
   the upstream UDP protocol; production does not use it.
-- [descent.parm](params/descent.parm) is the image-baked parameter overlay, and
-  [Dockerfile](Dockerfile) pins the upstream build and runtime layout.
+- [descent.parm](params/descent.parm) is the image-baked base parameter overlay.
+  [moving-pad.parm](params/moving-pad.parm) is the moving-target
+  profile, and [Dockerfile](Dockerfile) pins the upstream build and runtime
+  layout.
 
 ## Interfaces
 
@@ -75,6 +77,26 @@ that SITL exited, and it always attempts to close the protocol.
   missed pickup through the scorer or by silently overriding these values at
   runtime; inspect [descent.parm](params/descent.parm) and its executable
   assertions in [test_config.py](tests/test_config.py).
+- A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
+  comma-separated `--defaults` argument. The current moving-only experiment
+  selects stock `AHRS_EKF_TYPE=3` and native precision `PLND_EST_TYPE=1`, with
+  `PLND_OPTIONS=5`, `PLND_LAG=0.04`, and the original `PSC_NE_POS_P=1`.
+  Against the earlier Kalman moving run, only the aircraft estimator changes.
+  This changes attitude/navigation estimation throughout the flight. Other
+  scenarios keep the base profile. The companion reads back every expected
+  value, including the aircraft estimator, before sending a flight command.
+  Moving landing remains experimental; see the [moving-pad evidence](../docs/handoff.md#moving-pad-verification).
+- A configured validation run with accepted calibration verifies the exact
+  checksum-bound `configuration/run.json`, exact
+  `configuration/calibration.parm`, and its 15 allowlisted gains,
+  then loads it last after the base and scenario overlays. Missing, changed, or
+  mismatched frozen input fails before ArduCopter starts. Older runs without a
+  calibration object retain their existing overlay order.
+- Offline diagnosis found that the pinned `AHRS_EKF_TYPE=10` path returns body
+  delta velocity through the NED interface consumed by precision landing.
+  Native Kalman landing is affected. The EKF3 experiment avoids that return
+  path. Stationary and moving flights landed; the moving bundle passed
+  independent acceptance. See the [native-estimator findings and limits](../docs/handoff.md#native-estimator-findings).
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is

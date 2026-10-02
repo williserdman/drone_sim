@@ -184,6 +184,11 @@ def test_flight_exchange_status_requires_real_bidirectional_zero_gap_counts():
             (),
             {"returncode": 1, "stdout": "", "stderr": "service unavailable"},
         )(),
+        type(
+            "TimedOutResult",
+            (),
+            {"returncode": 0, "stdout": "", "stderr": "Service call timed out\n"},
+        )(),
     ),
 )
 def test_flight_exchange_command_unavailability_is_retryable_not_ready(failure):

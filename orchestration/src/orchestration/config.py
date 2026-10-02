@@ -26,7 +26,10 @@ _TEMPLATE_FIELDS = {
     "recording",
 }
 _RESOLVED_FIELDS = _TEMPLATE_FIELDS | {"run_id", "config_sha256"}
-_OPTIONAL_FIELDS = {"runtime_profile", "simulation", "competition", "mission_plan"}
+_OPTIONAL_FIELDS = {
+    "runtime_profile", "simulation", "competition", "mission_plan",
+    "calibration", "calibration_json", "calibration_profile",
+}
 _STRING_FIELDS = ("world", "vehicle", "mission", "scenario", "output_root")
 _DEADLINE_FIELDS = (
     "max_wall_seconds",
@@ -49,6 +52,11 @@ _RESOLVED_COMPETITION_FIELDS = {
 }
 CAMERA_INTERVAL_NS = 50_000_000
 PUBLIC_EPOCH_DEFAULT_NS = 90_000_000_000
+CALIBRATION_PARAMETERS = (
+    "ATC_ANG_RLL_P", "ATC_RAT_RLL_P", "ATC_RAT_RLL_I", "ATC_RAT_RLL_D", "ATC_ACC_R_MAX",
+    "ATC_ANG_PIT_P", "ATC_RAT_PIT_P", "ATC_RAT_PIT_I", "ATC_RAT_PIT_D", "ATC_ACC_P_MAX",
+    "ATC_ANG_YAW_P", "ATC_RAT_YAW_P", "ATC_RAT_YAW_I", "ATC_RAT_YAW_FLTE", "ATC_ACC_Y_MAX",
+)
 
 PHASE2_OWNERSHIP = (
     ("orchestration-runtime", "orchestration"),
@@ -84,6 +92,13 @@ class CompetitionSources:
     scenario_source: Path
     course_sha256: str
     scenario_sha256: str
+
+
+@dataclass(frozen=True)
+class CalibrationImport:
+    calibration_json: str
+    artifact_source: Path
+    manifest_source: Path
 
 
 @dataclass(frozen=True)
@@ -133,6 +148,8 @@ class RunTemplate:
     simulation: SimulationConfig | None
     competition: CompetitionSources | None = None
     mission_plan_json: str | None = None
+    calibration_source_directory: Path | None = None
+    calibration_profile_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +169,9 @@ class RunConfig:
     config_sha256: str
     competition: CompetitionSources | None = None
     mission_plan_json: str | None = None
+    calibration_json: str | None = None
+    calibration_sources: CalibrationImport | None = None
+    calibration_profile_json: str | None = None
 
     @property
     def expected_camera_frames(self) -> int:
@@ -175,7 +195,7 @@ def _read_document(path: str | Path) -> dict[str, Any]:
     return document
 
 
-def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
+def _validate_recording(document: Any, *, mission: str, scenario: str) -> RecordingConfig:
     if not isinstance(document, dict) or set(document) != _RECORDING_FIELDS:
         raise ValueError("recording configuration has missing or unknown keys")
     width = document["width_px"]
@@ -188,7 +208,7 @@ def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
         raise ValueError("recording dimensions must be 320x240 or 640x480")
     required_dimensions = (
         (640, 480)
-        if mission == "comp2026_auto"
+        if mission == "comp2026_auto" or scenario == "moving_pad_v1"
         else (320, 240)
     )
     if (width, height) != required_dimensions:
@@ -315,6 +335,44 @@ def _validate_mission_plan(document: Any) -> str:
         raise ValueError("mission_plan args must contain valid JSON values") from exc
 
 
+def _canonical_json(document: Any, *, field: str) -> str:
+    if not isinstance(document, dict):
+        raise ValueError(f"{field} must be a JSON object")
+    try:
+        return json.dumps(document, allow_nan=False, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"))
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise ValueError(f"{field} must contain valid JSON values") from exc
+
+
+def _validate_calibration_json(document: Any) -> str:
+    required = {
+        "schema_version", "source_run_id", "source_manifest_sha256",
+        "source_artifact_sha256", "gains", "profile",
+    }
+    if not isinstance(document, dict) or set(document) != required:
+        raise ValueError("calibration_json has missing or unknown keys")
+    if document["schema_version"] != 1 or isinstance(document["schema_version"], bool):
+        raise ValueError("calibration_json schema_version must be 1")
+    try:
+        UUID(document["source_run_id"])
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("calibration_json source_run_id must be a UUID") from exc
+    for field in ("source_manifest_sha256", "source_artifact_sha256"):
+        value = document[field]
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError(f"calibration_json {field} must be a SHA-256 digest")
+    gains = document["gains"]
+    if not isinstance(gains, dict) or set(gains) != set(CALIBRATION_PARAMETERS):
+        raise ValueError("calibration_json gains must contain exactly 15 approved keys")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+           for value in gains.values()):
+        raise ValueError("calibration_json gains must be finite numbers")
+    if not isinstance(document["profile"], dict):
+        raise ValueError("calibration_json profile must be an object")
+    return _canonical_json(document, field="calibration_json")
+
+
 def _duration_seconds(duration_ns: int) -> int | float:
     seconds, remainder_ns = divmod(duration_ns, 1_000_000_000)
     if remainder_ns == 0:
@@ -348,6 +406,12 @@ def _validate_common(
         _validate_mission_plan(document["mission_plan"])
     elif "mission_plan" in document:
         raise ValueError("mission_plan is only valid for the configured mission")
+    if "calibration" in document and document["mission"] != "configured":
+        raise ValueError("calibration import is only supported by the configured mission")
+    if "calibration_json" in document and document["mission"] != "configured":
+        raise ValueError("calibration_json is only supported by the configured mission")
+    if "calibration_profile" in document and document["mission"] != "autotune":
+        raise ValueError("calibration_profile is only supported by the autotune mission")
     if runtime_profile == "phase3":
         if "simulation" not in document:
             raise ValueError("phase3 requires simulation configuration")
@@ -356,8 +420,29 @@ def _validate_common(
         if "simulation" in document:
             raise ValueError("simulation configuration requires runtime_profile phase3")
         simulation = None
+    moving_worlds = {"moving_pad_landing", "moving_pad_stationary"}
+    if (
+        document["world"] in moving_worlds
+        or document["vehicle"] == "iris_moving_pad"
+        or document["scenario"] == "moving_pad_v1"
+    ) and not (
+        document["world"] in moving_worlds
+        and document["vehicle"] == "iris_moving_pad"
+        and document["scenario"] == "moving_pad_v1"
+        and document["mission"] == "configured"
+        and runtime_profile == "phase3"
+        and simulation is not None
+        and simulation.public_epoch_native_ns == PUBLIC_EPOCH_DEFAULT_NS
+        and "competition" not in document
+    ):
+        raise ValueError(
+            "moving-pad scenes require configured/iris_moving_pad/moving_pad_v1, "
+            "phase3, a 90-second native epoch, and no competition course"
+        )
     return (
-        _validate_recording(document["recording"], mission=document["mission"]),
+        _validate_recording(
+            document["recording"], mission=document["mission"], scenario=document["scenario"]
+        ),
         runtime_profile,
         simulation,
     )
@@ -521,6 +606,8 @@ def _competition_from_resolved(
 
 
 def _template_from_document(document: dict[str, Any], template_dir: Path) -> RunTemplate:
+    if "calibration_json" in document:
+        raise ValueError("calibration_json is resolved configuration only")
     recording, runtime_profile, simulation = _validate_common(
         document, _TEMPLATE_FIELDS
     )
@@ -542,7 +629,25 @@ def _template_from_document(document: dict[str, Any], template_dir: Path) -> Run
             if "mission_plan" in document
             else None
         ),
+        calibration_source_directory=(
+            _calibration_source(document["calibration"], template_dir)
+            if "calibration" in document else None
+        ),
+        calibration_profile_json=(
+            _canonical_json(document["calibration_profile"], field="calibration_profile")
+            if "calibration_profile" in document else None
+        ),
     )
+
+
+def _calibration_source(document: Any, template_dir: Path) -> Path:
+    if not isinstance(document, dict) or set(document) != {"source_run_directory"}:
+        raise ValueError("calibration must contain exactly source_run_directory")
+    value = document["source_run_directory"]
+    if not isinstance(value, str) or not value:
+        raise ValueError("calibration source_run_directory must be a nonempty path")
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (template_dir / path).resolve()
 
 
 def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
@@ -585,6 +690,10 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
             document["mission_plan"] = json.loads(config.mission_plan_json)
         except json.JSONDecodeError as exc:
             raise ValueError("mission_plan_json must contain valid JSON") from exc
+    if config.calibration_json is not None:
+        document["calibration_json"] = json.loads(config.calibration_json)
+    if config.calibration_profile_json is not None:
+        document["calibration_profile"] = json.loads(config.calibration_profile_json)
     return document
 
 
@@ -594,17 +703,38 @@ def _checksum(document: dict[str, Any]) -> str:
 
 
 def resolve_run_config(
-    path: str | Path, run_id_factory: Callable[[], UUID] = uuid4
+    path: str | Path, run_id_factory: Callable[[], UUID] = uuid4,
+    calibration_importer: Callable[[Path], CalibrationImport] | None = None,
+    calibration_profile_factory: Callable[[], dict[str, Any]] | None = None,
 ) -> RunConfig:
     """Validate an operator template and bind it to one generated run identity."""
     source = Path(path).resolve()
     document = _read_document(source)
     template = _template_from_document(document, source.parent)
+    calibration_profile_json = template.calibration_profile_json
+    if template.mission == "autotune" and calibration_profile_json is None:
+        if calibration_profile_factory is None:
+            raise ValueError("autotune requires a preflight calibration profile")
+        calibration_profile_json = _canonical_json(
+            calibration_profile_factory(), field="calibration_profile"
+        )
     if template.mission == "comp2026_auto" and template.competition is None:
         raise ValueError("comp2026_auto requires competition source configuration")
     generated = run_id_factory()
     if not isinstance(generated, UUID):
         raise ValueError("run_id_factory must return a UUID")
+    calibration: CalibrationImport | None = None
+    calibration_json: str | None = None
+    if template.calibration_source_directory is not None:
+        if calibration_importer is None:
+            raise ValueError("calibration import requires an accepted-source importer")
+        calibration = calibration_importer(template.calibration_source_directory)
+        if not isinstance(calibration, CalibrationImport):
+            raise ValueError("calibration importer returned an invalid result")
+        try:
+            calibration_json = _validate_calibration_json(json.loads(calibration.calibration_json))
+        except json.JSONDecodeError as exc:
+            raise ValueError("calibration importer returned invalid JSON") from exc
     unresolved = RunConfig(
         run_id=str(generated),
         world=template.world,
@@ -621,6 +751,9 @@ def resolve_run_config(
         config_sha256="",
         competition=template.competition,
         mission_plan_json=template.mission_plan_json,
+        calibration_json=calibration_json,
+        calibration_sources=calibration,
+        calibration_profile_json=calibration_profile_json,
     )
     return replace(
         unresolved,
@@ -632,6 +765,8 @@ def load_run_config(path: str | Path) -> RunConfig:
     """Load and verify a resolved immutable run configuration snapshot."""
     source = Path(path).resolve()
     document = _read_document(source)
+    if "calibration" in document:
+        raise ValueError("calibration source path is template configuration only")
     recording, runtime_profile, simulation = _validate_common(
         document, _RESOLVED_FIELDS
     )
@@ -668,6 +803,21 @@ def load_run_config(path: str | Path) -> RunConfig:
             if "mission_plan" in document
             else None
         ),
+        calibration_json=(
+            _validate_calibration_json(document["calibration_json"])
+            if "calibration_json" in document else None
+        ),
+        calibration_sources=(
+            CalibrationImport(
+                _validate_calibration_json(document["calibration_json"]),
+                source.parent / "calibration.parm",
+                source.parent / "calibration-manifest.json",
+            ) if "calibration_json" in document else None
+        ),
+        calibration_profile_json=(
+            _canonical_json(document["calibration_profile"], field="calibration_profile")
+            if "calibration_profile" in document else None
+        ),
     )
 
 
@@ -680,6 +830,10 @@ def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
     targets = [target]
     if config.competition is not None:
         targets.extend((course_target, scenario_target))
+    calibration_target = configuration_dir / "calibration.parm"
+    calibration_manifest_target = configuration_dir / "calibration-manifest.json"
+    if config.calibration_sources is not None:
+        targets.extend((calibration_target, calibration_manifest_target))
     for candidate in targets:
         if candidate.exists() or candidate.is_symlink():
             raise FileExistsError(candidate)
@@ -707,6 +861,18 @@ def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
         source_payloads = (
             (course_target, course_payload),
             (scenario_target, scenario_payload),
+        )
+    if config.calibration_sources is not None:
+        artifact = config.calibration_sources.artifact_source.read_bytes()
+        manifest = config.calibration_sources.manifest_source.read_bytes()
+        calibration = json.loads(config.calibration_json or "null")
+        if hashlib.sha256(artifact).hexdigest() != calibration["source_artifact_sha256"]:
+            raise ValueError("calibration artifact source changed after run configuration resolution")
+        if hashlib.sha256(manifest).hexdigest() != calibration["source_manifest_sha256"]:
+            raise ValueError("calibration manifest source changed after run configuration resolution")
+        source_payloads += (
+            (calibration_target, artifact),
+            (calibration_manifest_target, manifest),
         )
 
     configuration_dir.mkdir(parents=True, exist_ok=True)

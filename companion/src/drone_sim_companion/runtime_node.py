@@ -35,6 +35,7 @@ from artifacts.runtime_status import (
 from .autotune import Observation as AutoTuneObservation
 from .autotune import Phase as AutoTunePhase
 from .autotune import RollAutoTuneDriver
+from . import calibration_autotune
 from .hover import Observation as HoverObservation
 from .hover import Phase as HoverPhase
 from .hover import RollHoverDriver
@@ -91,6 +92,9 @@ class RuntimeConfig:
     course_path: Path | None = None
     scenario_path: Path | None = None
     mission_plan: MissionPlan | None = None
+    scenario: str = ""
+    public_duration_ns: int = 0
+    calibration_json: str | None = None
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "RuntimeConfig":
@@ -146,6 +150,7 @@ class RuntimeConfig:
             "controlled_descent",
             "comp2026_auto",
             "autotune_roll",
+            "autotune",
             "hover_roll",
             "configured",
         }:
@@ -180,6 +185,20 @@ class RuntimeConfig:
             _verify_competition_source(course_path, course_digest, "course")
             _verify_competition_source(scenario_path, scenario_digest, "scenario")
         timeout = override if timeout_override is not None else float(startup_wall_seconds)
+        simulation = document.get("simulation")
+        duration_seconds = simulation.get("duration_sim_seconds", 0) if isinstance(simulation, dict) else 0
+        if mission == "autotune" and (
+            isinstance(duration_seconds, bool)
+            or not isinstance(duration_seconds, (int, float))
+            or not math.isfinite(duration_seconds)
+            or duration_seconds <= 60
+        ):
+            raise ValueError("autotune requires a simulation duration above 60 seconds")
+        calibration_json = document.get("calibration_json")
+        if calibration_json is not None and not isinstance(calibration_json, str):
+            # Source calibration runs carry a structured profile, while dependent
+            # runs carry the immutable compact accepted-calibration document.
+            calibration_json = json.dumps(calibration_json, sort_keys=True, separators=(",", ":"))
         endpoint = environment.get("SIM_MAVLINK_ENDPOINT", "tcp:ardupilot-sitl:5760")
         if endpoint != "tcp:ardupilot-sitl:5760":
             raise ValueError("production MAVLink endpoint must be tcp:ardupilot-sitl:5760")
@@ -194,6 +213,9 @@ class RuntimeConfig:
             course_path=course_path,
             scenario_path=scenario_path,
             mission_plan=mission_plan,
+            scenario=str(document.get("scenario", "")),
+            public_duration_ns=int(float(duration_seconds) * 1_000_000_000),
+            calibration_json=calibration_json,
         )
 
 
@@ -245,6 +267,22 @@ def autotune_control_timestamp_ns(
     if latest_clock_ns is not None:
         return latest_clock_ns
     return 0 if first_command_pending else None
+
+
+def autotune_failure_recovery_complete(
+    *, recovery_started_ns: int, timestamp_ns: int, armed: bool | None
+) -> bool:
+    """Bound failed-flight native-LAND recovery without changing its outcome."""
+    return armed is False or timestamp_ns - recovery_started_ns >= 45_000_000_000
+
+
+def autotune_neutral_refresh_due(
+    *, phase: calibration_autotune.Phase, last_refresh_wall: float, wall_now: float
+) -> bool:
+    return (
+        calibration_autotune.neutral_override_required(phase)
+        and wall_now - last_refresh_wall >= 0.5
+    )
 
 
 class _Comp2026ShutdownAdmission:
@@ -898,6 +936,242 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     return exit_code
 
 
+def _run_autotune(config: RuntimeConfig) -> int:
+    """Run all-axis AutoTune, activate its gains, settle, and use native LAND."""
+    protocol = _ProductionProtocol(config)
+    lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
+    lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
+    _enable_dronekit_python312_compatibility()
+    import rclpy
+    from dronekit import VehicleMode, connect
+    from rclpy.node import Node
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from rosgraph_msgs.msg import Clock
+    from simulation_interfaces.msg import RunState
+
+    rclpy.init()
+    node = Node("drone_sim_companion")
+    latest_clock_ns: int | None = None
+    mission_running = False
+    finalizing = False
+    stopped = False
+    failure: str | None = None
+
+    def stop(_signum: int, _frame: Any) -> None:
+        nonlocal stopped
+        stopped = True
+    def clock_callback(message: Any) -> None:
+        nonlocal latest_clock_ns, failure
+        if not mission_running: return
+        value = stamp_ns(message.clock)
+        if latest_clock_ns is not None and value < latest_clock_ns:
+            failure = "authoritative simulation clock regressed"
+        else: latest_clock_ns = value
+    def state_callback(message: Any) -> None:
+        nonlocal mission_running, finalizing
+        if message.run_id != config.run_id: return
+        if message.state == RunState.RUNNING: mission_running = True
+        elif message.state == RunState.FINALIZING: finalizing = True
+
+    node.create_subscription(Clock, "/clock", clock_callback, QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE))
+    run_state_subscription = node.create_subscription(RunState, "/simulation/run_state", state_callback, QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+    try:
+        vehicle = connect_autotune_vehicle(connect, config.mavlink_endpoint, heartbeat_timeout=config.startup_timeout_seconds, run_state_subscription=run_state_subscription)
+    except Exception as error:
+        lifecycle.observe_terminal(MissionState(MissionPhase.FAILED, last_timestamp_ns=0, failure_reason=f"DroneKit connection failed: {error}"))
+        lifecycle.finalize(None); node.destroy_node(); rclpy.shutdown(); protocol.close()
+        return 1
+
+    lifecycle.mark_transport_ready()
+    state = calibration_autotune.AllAxisState.initial(public_deadline_ns=config.public_duration_ns)
+    status_texts: collections.deque[str] = collections.deque()
+    status_assembler = calibration_autotune.StatusTextAssembler()
+    parameter_values: dict[str, float] = {}
+    parameter_generations: dict[str, int] = {}
+    parameter_generation_counter = 0
+    aux_ack = False
+    position_sample: tuple[int, float, float, float] | None = None
+    attitude_sample: tuple[int, float, float] | None = None
+    locked = threading.Lock()
+
+    def status_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        raw = getattr(message, "text", "")
+        if isinstance(raw, bytes): raw = raw.decode("utf-8", errors="replace")
+        complete = status_assembler.push(int(getattr(message, "id", 0)), int(getattr(message, "chunk_seq", 0)), str(raw))
+        if complete:
+            with locked: status_texts.append(complete)
+    def parameter_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal parameter_generation_counter
+        raw_name = getattr(message, "param_id", "")
+        if isinstance(raw_name, bytes): raw_name = raw_name.decode("ascii", errors="ignore")
+        name = str(raw_name).rstrip("\x00")
+        value = getattr(message, "param_value", None)
+        if name and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            with locked:
+                parameter_generation_counter += 1
+                parameter_values[name] = float(value)
+                parameter_generations[name] = parameter_generation_counter
+    def ack_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal aux_ack
+        if getattr(message, "command", None) == calibration_autotune.mavutil.mavlink.MAV_CMD_DO_AUX_FUNCTION and getattr(message, "result", None) == calibration_autotune.mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            with locked: aux_ack = True
+    def position_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal position_sample
+        stamp = latest_clock_ns
+        if stamp is None: return
+        values = (getattr(message, "vx", None), getattr(message, "vy", None), getattr(message, "vz", None), getattr(message, "relative_alt", None))
+        if all(isinstance(value, (int, float)) for value in values):
+            with locked: position_sample = (stamp, math.hypot(float(values[0]), float(values[1])) / 100.0, abs(float(values[2])) / 100.0, float(values[3]) / 1000.0)
+    def attitude_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal attitude_sample
+        stamp = latest_clock_ns
+        if stamp is None: return
+        roll, pitch = getattr(message, "roll", None), getattr(message, "pitch", None)
+        if isinstance(roll, (int, float)) and isinstance(pitch, (int, float)):
+            with locked: attitude_sample = (stamp, float(roll), float(pitch))
+
+    listeners = (("STATUSTEXT", status_callback), ("PARAM_VALUE", parameter_callback), ("COMMAND_ACK", ack_callback), ("GLOBAL_POSITION_INT", position_callback), ("ATTITUDE", attitude_callback))
+    for name, callback in listeners: vehicle.add_message_listener(name, callback)
+    signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop)
+    command_delivered = False
+    armed_seen = False
+    disarm_event_emitted = False
+    aux_ack_event_emitted = False
+    exit_code = 0
+    overall_wall_deadline = time.monotonic() + config.max_wall_seconds
+    recovery_started_ns: int | None = None
+    last_neutral_refresh_wall = 0.0
+
+    def export_readback() -> None:
+        from artifacts.calibration import (
+            read_saved_calibration_parameters,
+            write_calibration_parameters,
+        )
+        saved = read_saved_calibration_parameters(config.run_directory)
+        live = dict(state.activated_parameters)
+        if set(saved) != set(live) or any(
+            not math.isclose(saved[name], live[name], rel_tol=1e-5, abs_tol=1e-7)
+            for name in saved
+        ):
+            raise ValueError("saved DataFlash gains do not match post-disarm live readback")
+        write_calibration_parameters(config.run_directory, config.run_id, saved)
+
+    def request_parameter_session() -> None:
+        """Clear stale replies and start one atomic full-parameter session."""
+        with locked:
+            parameter_values.clear()
+            parameter_generations.clear()
+            vehicle._master.mav.param_request_list_send(
+                vehicle._master.target_system,
+                vehicle._master.target_component,
+            )
+
+    try:
+        while rclpy.ok() and not stopped and not finalizing:
+            rclpy.spin_once(node, timeout_sec=.02)
+            heartbeat = isinstance(getattr(vehicle, "last_heartbeat", None), (int, float)) and not isinstance(vehicle.last_heartbeat, bool) and math.isfinite(vehicle.last_heartbeat) and 0 <= vehicle.last_heartbeat <= 60
+            armable = getattr(vehicle, "is_armable", False) is True
+            lifecycle.observe_mission_readiness(heartbeat_observed=heartbeat, prearm_checks_healthy=armable)
+            stamp = autotune_control_timestamp_ns(mission_running=mission_running, latest_clock_ns=latest_clock_ns, first_command_pending=state.phase is calibration_autotune.Phase.WAIT_READY)
+            armed = getattr(vehicle, "armed", None)
+            if stamp is not None and failure is None:
+                with locked:
+                    status = status_texts.popleft() if status_texts else None
+                    parameters = dict(parameter_values)
+                    generation_names = (*calibration_autotune.GAIN_PARAMETERS, *calibration_autotune.PRESERVED_PARAMETERS)
+                    generation = calibration_autotune.parameter_readback_generation(
+                        parameters, parameter_generations, generation_names
+                    )
+                    ack = aux_ack
+                    pos, att = position_sample, attitude_sample
+                mode_value = getattr(vehicle, "mode", None); mode = getattr(mode_value, "name", str(mode_value))
+                armed_seen = armed_seen or armed is True
+                telemetry_stamp = min(pos[0], att[0]) if pos and att else None
+                observation = calibration_autotune.Observation(timestamp_ns=stamp, heartbeat=heartbeat, prearm_checks_healthy=armable, mode=mode, armed=armed, landed=armed is False and pos is not None and pos[3] <= .3, relative_altitude_m=pos[3] if pos else None, status_text=status, aux_ack=ack, parameters=parameters, parameter_generation=generation, telemetry_timestamp_ns=telemetry_stamp, horizontal_speed_m_s=pos[1] if pos else None, vertical_speed_m_s=pos[2] if pos else None, roll_rad=att[1] if att else None, pitch_rad=att[2] if att else None)
+                previous = state.phase
+                try:
+                    transition = calibration_autotune.advance(state, observation)
+                    calibration_autotune.execute_actions(
+                        vehicle,
+                        transition.actions,
+                        mode_factory=VehicleMode,
+                        export=export_readback,
+                        request_parameters=request_parameter_session,
+                    )
+                    state = transition.state
+                except Exception as error: failure = f"all-axis AutoTune control failed: {error}"
+                if state.phase is not previous: lifecycle.emit("autotune_phase", stamp, {"phase": state.phase.value})
+                evidence_stage = None
+                if previous is calibration_autotune.Phase.WAIT_GUIDED and state.phase is calibration_autotune.Phase.WAIT_ARMED:
+                    evidence_stage = "baseline"
+                elif previous is calibration_autotune.Phase.WAIT_GAIN_ACTIVATION and state.phase is calibration_autotune.Phase.SETTLING:
+                    evidence_stage = "activation"
+                elif previous is calibration_autotune.Phase.POST_DISARM_READBACK and state.phase is calibration_autotune.Phase.COMPLETE:
+                    evidence_stage = "post_disarm"
+                if evidence_stage is not None:
+                    names = (*calibration_autotune.GAIN_PARAMETERS, *calibration_autotune.PRESERVED_PARAMETERS)
+                    lifecycle.emit("calibration_parameters_verified", stamp, {"stage": evidence_stage, "parameters": {name: parameters[name] for name in names if name in parameters}})
+                if previous is calibration_autotune.Phase.WAIT_READY and not command_delivered:
+                    lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, stamp)
+                    command_delivered = True
+                if status: lifecycle.emit("ardupilot_status_text", stamp, {"text": status})
+                if ack and previous is calibration_autotune.Phase.WAIT_GAIN_ACTIVATION and not aux_ack_event_emitted:
+                    lifecycle.emit("autotune_aux_ack", stamp, {"function": 180, "position": 2})
+                    aux_ack_event_emitted = True
+                if armed_seen and armed is False and not disarm_event_emitted:
+                    lifecycle.emit("autotune_disarmed", stamp, {})
+                    disarm_event_emitted = True
+                if state.phase is calibration_autotune.Phase.COMPLETE: lifecycle.observe_terminal(MissionState(MissionPhase.LANDED, last_timestamp_ns=stamp))
+                elif state.phase is calibration_autotune.Phase.FAILED: failure = state.failure_reason
+            wall_now = time.monotonic()
+            if failure is None and autotune_neutral_refresh_due(
+                phase=state.phase,
+                last_refresh_wall=last_neutral_refresh_wall,
+                wall_now=wall_now,
+            ):
+                try:
+                    calibration_autotune.execute_actions(
+                        vehicle,
+                        (calibration_autotune.Action.neutral_override(),),
+                        mode_factory=VehicleMode,
+                        export=lambda: None,
+                    )
+                    last_neutral_refresh_wall = wall_now
+                except Exception as error:
+                    failure = f"all-axis AutoTune RC override failed: {error}"
+            if failure:
+                recovery_stamp = latest_clock_ns or 0
+                if armed is True and recovery_started_ns is None:
+                    try:
+                        calibration_autotune.execute_actions(
+                            vehicle,
+                            (calibration_autotune.Action.clear_overrides(), calibration_autotune.Action.mode("LAND")),
+                            mode_factory=VehicleMode,
+                            export=lambda: None,
+                        )
+                        recovery_started_ns = recovery_stamp
+                        lifecycle.emit("autotune_failure_recovery", recovery_stamp, {"mode": "LAND"})
+                    except Exception:
+                        recovery_started_ns = recovery_stamp - 45_000_000_000
+                if recovery_started_ns is None or autotune_failure_recovery_complete(
+                    recovery_started_ns=recovery_started_ns,
+                    timestamp_ns=recovery_stamp,
+                    armed=armed,
+                ) or time.monotonic() >= overall_wall_deadline:
+                    lifecycle.observe_terminal(MissionState(MissionPhase.FAILED, last_timestamp_ns=recovery_stamp, failure_reason=failure)); exit_code = 1; break
+            heartbeat_failure = first_heartbeat_wall_failure(heartbeat_observed=heartbeat, wall_now=time.monotonic(), overall_wall_deadline=overall_wall_deadline)
+            if heartbeat_failure: failure = heartbeat_failure
+            if protocol.read_finalize_request() is not None: finalizing = True
+    finally:
+        try:
+            vehicle.channels.overrides = {}
+            for name, callback in listeners: vehicle.remove_message_listener(name, callback)
+            vehicle.close()
+        finally:
+            lifecycle.finalize(latest_clock_ns); node.destroy_node(); protocol.close(); rclpy.shutdown()
+    return exit_code
+
+
 def _create_simulator_camera(
     camera_manager_type: Any,
     camera_type: Any,
@@ -1309,6 +1583,8 @@ def main() -> int:
         return run_configured(config)
     if config.mission == "controlled_descent":
         return _run_controlled_descent(config)
+    if config.mission == "autotune":
+        return _run_autotune(config)
     if config.mission in {"autotune_roll", "hover_roll"}:
         return _run_autotune_roll(config)
     return _run_comp2026(config)

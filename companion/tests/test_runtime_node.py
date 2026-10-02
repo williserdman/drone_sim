@@ -917,6 +917,30 @@ def test_runtime_config_accepts_roll_autotune_without_competition_sources(
     assert config.scenario_path is None
 
 
+def test_runtime_config_accepts_all_axis_autotune_and_public_deadline(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory, mission="autotune")
+    document = json.loads(config_path.read_text())
+    document["simulation"] = {
+        "seed": 2026,
+        "duration_sim_seconds": 600.0,
+        "public_epoch_native_sim_seconds": 90.0,
+        "target_real_time_factor": 0.25,
+    }
+    document["calibration_json"] = '{"schema_version":1}'
+    config_path.write_text(json.dumps(document))
+
+    config = RuntimeConfig.from_environment({
+        "SIM_RUN_ID": RUN_ID,
+        "SIM_RUN_DIRECTORY": str(run_directory),
+        "SIM_CONFIG_PATH": str(config_path),
+    })
+
+    assert config.mission == "autotune"
+    assert config.public_duration_ns == 600_000_000_000
+    assert config.calibration_json == '{"schema_version":1}'
+
+
 def test_runtime_config_accepts_roll_hover_without_competition_sources(
     tmp_path: Path,
 ) -> None:
@@ -1069,6 +1093,24 @@ def test_runtime_selects_roll_autotune_host(tmp_path: Path, monkeypatch: pytest.
 
     assert runtime_node.main() == 0
     assert selected == ["autotune"]
+
+
+def test_runtime_selects_all_axis_autotune_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory, mission="autotune")
+    document = json.loads(config_path.read_text())
+    document["simulation"] = {"duration_sim_seconds": 600.0}
+    config_path.write_text(json.dumps(document))
+    selected: list[str] = []
+    monkeypatch.setattr(runtime_node, "_run_autotune", lambda _config: selected.append("all-axis") or 0)
+    monkeypatch.setattr(runtime_node.os, "environ", {
+        "SIM_RUN_ID": RUN_ID,
+        "SIM_RUN_DIRECTORY": str(run_directory),
+        "SIM_CONFIG_PATH": str(config_path),
+    })
+
+    assert runtime_node.main() == 0
+    assert selected == ["all-axis"]
 
 
 def test_first_heartbeat_ignores_startup_wall_deadline_after_transport_connects() -> None:

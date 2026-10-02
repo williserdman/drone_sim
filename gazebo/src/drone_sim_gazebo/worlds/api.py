@@ -374,13 +374,23 @@ def resolve_world(
             "competition_mission",
             "iris_competition",
         ),
+        WorldConfig("moving_pad_landing", "iris_moving_pad"): (
+            "moving_pad_landing",
+            "iris_moving_pad",
+        ),
+        WorldConfig("moving_pad_stationary", "iris_moving_pad"): (
+            "moving_pad_stationary",
+            "iris_moving_pad",
+        ),
     }
     try:
         world_name, vehicle_id = supported_worlds[config]
     except KeyError:
         raise ValueError(
             "Phase 3 supports only phase3_foundation/iris or "
-            "vertical_descent/iris_flight or competition_mission/iris_competition"
+            "vertical_descent/iris_flight, competition_mission/iris_competition, "
+            "moving_pad_landing/iris_moving_pad, or "
+            "moving_pad_stationary/iris_moving_pad"
         )
 
     requested_root = (

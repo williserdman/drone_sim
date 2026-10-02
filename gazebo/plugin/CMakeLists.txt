@@ -44,6 +44,14 @@ target_link_libraries(cwru_payload_command_coordinator PRIVATE
 add_library(drone_sim_detachable_joint_system SHARED
   vendor/gz_sim_8_11_0/DetachableJoint.cc
 )
+
+add_library(drone_sim_moving_pad_controller SHARED
+  MovingPadController.cc
+)
+target_link_libraries(drone_sim_moving_pad_controller PRIVATE
+  gz-plugin2::gz-plugin2
+  gz-sim8::gz-sim8
+)
 target_link_libraries(drone_sim_detachable_joint_system PRIVATE
   gz-plugin2::gz-plugin2
   gz-sim8::gz-sim8
@@ -98,6 +106,21 @@ if(BUILD_TESTING)
       $<TARGET_FILE:drone_sim_detachable_joint_system>
   )
   set_tests_properties(detachable_joint_contact_integration_test PROPERTIES
+    TIMEOUT 30
+  )
+
+  add_executable(moving_pad_controller_integration_test
+    test/MovingPadControllerIntegrationTest.cc
+  )
+  target_link_libraries(moving_pad_controller_integration_test PRIVATE
+    gz-sim8::gz-sim8
+  )
+  add_test(
+    NAME moving_pad_controller_integration_test
+    COMMAND moving_pad_controller_integration_test
+      $<TARGET_FILE:drone_sim_moving_pad_controller>
+  )
+  set_tests_properties(moving_pad_controller_integration_test PROPERTIES
     TIMEOUT 30
   )
 endif()

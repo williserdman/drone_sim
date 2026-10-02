@@ -35,7 +35,7 @@ from artifacts import (
 )
 from artifacts.score_validation import (
     ScoreValidationError,
-    validate_descent_score_outputs,
+    validate_score_outputs,
 )
 from artifacts.runtime_status import (
     ArduPilotReadyStatus,
@@ -56,11 +56,13 @@ from artifacts.runtime_status import (
 )
 from ._adapters.compose import ComposeCommandResult, ComposeRuntime
 from .config import (
+    CalibrationImport,
     RunConfig,
     RuntimeTopology,
     resolve_run_config,
     write_resolved_config,
 )
+from .calibration import build_source_calibration_profile, freeze_calibration_import
 from .lifecycle import LifecycleEvent, LifecycleState, RunLifecycle
 from .status_store import (
     OperatorStatus,
@@ -322,6 +324,7 @@ class RunController:
         event_stream: TextIO | None = None,
         poll_interval: float = 0.1,
         source_runner: Callable[..., Any] = subprocess.run,
+        calibration_importer: Callable[[Path], CalibrationImport] | None = None,
     ) -> None:
         self.project_directory = Path(
             project_directory
@@ -342,6 +345,11 @@ class RunController:
             raise ValueError("poll_interval must be positive")
         self.poll_interval = float(poll_interval)
         self.source_runner = source_runner
+        self.calibration_importer = calibration_importer or (
+            lambda source: freeze_calibration_import(
+                source, project_directory=self.project_directory
+            )
+        )
 
     def _default_compose(self, config: RunConfig, run_directory: Path) -> ComposeRuntime:
         return ComposeRuntime(
@@ -689,7 +697,14 @@ class RunController:
 
     def start(self, config_path: Path | str) -> RunResult:
         try:
-            config = resolve_run_config(config_path, run_id_factory=self.uuid_factory)
+            config = resolve_run_config(
+                config_path,
+                run_id_factory=self.uuid_factory,
+                calibration_importer=self.calibration_importer,
+                calibration_profile_factory=lambda: build_source_calibration_profile(
+                    self.project_directory
+                ),
+            )
         except (OSError, ValueError) as exc:
             raise ControllerError(str(exc)) from exc
         topology = config.topology
@@ -1082,12 +1097,16 @@ class RunController:
                         and config.runtime_profile == "phase3"
                         and config.scenario != "competition_v1"
                     ):
-                        score = validate_descent_score_outputs(
+                        ruleset = {
+                            "moving_pad_v1": "moving_pad_v1",
+                            "calibration_v1": "calibration_v1",
+                        }.get(config.scenario, "descent_v1")
+                        score = validate_score_outputs(
                             run_directory,
                             run_id=config.run_id,
                             rules_path=(
                                 self.project_directory
-                                / "scorekeeper/rules/descent_v1.json"
+                                / f"scorekeeper/rules/{ruleset}.json"
                             ),
                             deadline_check=work_deadline_check,
                         )
@@ -1134,6 +1153,19 @@ class RunController:
                     image_digests=image_digests,
                     configuration_records=(
                         ConfigurationRecord("configuration/run.json", config.config_sha256),
+                        *(
+                            (
+                                ConfigurationRecord(
+                                    "configuration/calibration.parm",
+                                    json.loads(config.calibration_json)["source_artifact_sha256"],
+                                ),
+                                ConfigurationRecord(
+                                    "configuration/calibration-manifest.json",
+                                    json.loads(config.calibration_json)["source_manifest_sha256"],
+                                ),
+                            )
+                            if config.calibration_json is not None else ()
+                        ),
                     ),
                     achieved_score=achieved,
                     maximum_available_score=maximum,

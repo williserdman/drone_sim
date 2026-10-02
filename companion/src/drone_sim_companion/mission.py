@@ -52,6 +52,11 @@ class Telemetry:
     prearm_checks_healthy: bool | None = None
     latitude_deg: float | None = None
     longitude_deg: float | None = None
+    horizontal_speed_m_s: float | None = None
+    attitude_rpy_rad: tuple[float, float, float] | None = None
+    attitude_timestamp_ns: int | None = None
+    parameter_name: str | None = None
+    parameter_value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +130,8 @@ def _validate(event: Telemetry) -> str | None:
     for name, value in (
         ("relative altitude", event.relative_altitude_m),
         ("vertical speed", event.vertical_speed_m_s),
+        ("horizontal speed", event.horizontal_speed_m_s),
+        ("parameter value", event.parameter_value),
     ):
         if value is not None and (not isinstance(value, (int, float)) or not math.isfinite(value)):
             return f"invalid {name}"

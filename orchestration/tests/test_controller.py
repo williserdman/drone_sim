@@ -1084,6 +1084,149 @@ def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
     assert result.reason == "scoring_provenance_invalid"
 
 
+def test_moving_pad_run_cannot_complete_with_descent_scoring(tmp_path):
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        statuses=(
+            ArtifactsReadyStatus, GazeboReadyStatus, RuntimeRunningStatus,
+            ArduPilotReadyStatus, CompanionReadyStatus, MissionReadyStatus,
+            SourceFinishedStatus, MissionFinishedStatus, ScoreFinishedStatus,
+            RuntimeFrozenStatus, TerminalNotifiedStatus,
+        ),
+    )
+    result = controller.start(_template(
+        tmp_path, world="moving_pad_landing", vehicle="iris_moving_pad",
+        scenario="moving_pad_v1", mission="configured", runtime_profile="phase3",
+        mission_plan={"schema_version": 1, "steps": [{"tool": "land", "args": {}}]},
+        recording={"width_px": 640, "height_px": 480, "fps": 20, "encoding": "rgb8"},
+        simulation={
+            "seed": 1, "duration_sim_seconds": 2.0,
+            "public_epoch_native_sim_seconds": 90.0, "target_real_time_factor": 0.1,
+        },
+    ))
+    assert result.state == "FAILED"
+    assert result.reason == "scoring_provenance_invalid"
+
+
+def test_moving_pad_run_completes_with_scorer_produced_physical_pass(
+    tmp_path, monkeypatch
+):
+    from drone_sim_scorekeeper.descent import GroundTruthSample
+    from drone_sim_scorekeeper.moving_pad import (
+        LandingPadSample,
+        MovingPadScorer,
+        load_moving_pad_rules,
+    )
+    from drone_sim_scorekeeper.output import persist_score_outputs
+
+    rules_path = Path(__file__).parents[2] / "scorekeeper/rules/moving_pad_v1.json"
+    rules = load_moving_pad_rules(rules_path)
+    finish_ns = 2_050_000_000
+
+    def replace_score_with_moving_pad_pass(run_directory: Path) -> None:
+        (run_directory / "scoring/events.jsonl").unlink()
+        (run_directory / "scoring/result.json").unlink()
+        scorer = MovingPadScorer(RUN_ID, rules, 42)
+        for index in range(42):
+            timestamp_ns = index * 50_000_000
+            pad_x = 10.0 + 0.5 * timestamp_ns / 1_000_000_000
+            airborne = index == 0
+            scorer.accept_frame(
+                GroundTruthSample(
+                    RUN_ID,
+                    timestamp_ns,
+                    (pad_x + 0.1, 0.0, 5.0 if airborne else 0.3),
+                    (0.0, 0.0, 0.0, 1.0),
+                    (0.5, 0.0, 0.0),
+                    (0.0, 0.0, 0.0),
+                    not airborne,
+                ),
+                LandingPadSample(
+                    RUN_ID,
+                    timestamp_ns,
+                    7,
+                    (pad_x, 0.0, 0.0),
+                    (0.0, 0.0, 0.0, 1.0),
+                    (0.5, 0.0, 0.0),
+                    (0.0, 0.0, 0.0),
+                    not airborne,
+                ),
+            )
+        scorer.accept_disarmed(50_000_000)
+        score = scorer.finalize()
+        assert score.complete is True
+        assert score.achieved_score == 100.0
+        persist_score_outputs(run_directory, score)
+
+    original_up = FakeCompose.up
+
+    def moving_pad_up(self, timeout):
+        result = original_up(self, timeout)
+        for status in (
+            SourceFinishedStatus(RUN_ID, finish_ns),
+            ScoreFinishedStatus(RUN_ID, finish_ns),
+        ):
+            _write_json(
+                self.run_directory / f".status/{status_name(type(status))}.json",
+                status_document(status),
+            )
+        return result
+
+    monkeypatch.setattr(FakeCompose, "up", moving_pad_up)
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        runtime_mutator=replace_score_with_moving_pad_pass,
+        statuses=(
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            RuntimeRunningStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
+        ),
+    )
+
+    result = controller.start(
+        _template(
+            tmp_path,
+            world="moving_pad_landing",
+            vehicle="iris_moving_pad",
+            scenario="moving_pad_v1",
+            mission="configured",
+            runtime_profile="phase3",
+            mission_plan={
+                "schema_version": 1,
+                "steps": [{"tool": "land", "args": {}}],
+            },
+            recording={
+                "width_px": 640,
+                "height_px": 480,
+                "fps": 20,
+                "encoding": "rgb8",
+            },
+            simulation={
+                "seed": 1,
+                "duration_sim_seconds": 2.05,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        )
+    )
+
+    manifest = json.loads(
+        (tmp_path / "runs" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert result.state == "COMPLETED", result.reason
+    assert manifest["scoring"]["achieved_score"] == 100.0
+    assert manifest["scoring"]["maximum_available_score"] == 100.0
+    assert manifest["scoring"]["scoring_checksum"] == rules.scoring_checksum
+
+
 def test_phase3_completed_run_requires_native_state_tlog(tmp_path):
     def remove_native_state(run: Path) -> None:
         (run / "gazebo/state/state.tlog.zst").unlink()
@@ -1245,6 +1388,38 @@ def test_phase3_compose_binds_nested_revision_label_before_launch(tmp_path):
             4.0,
         )
     ]
+
+
+def test_rejected_calibration_source_never_allocates_or_calls_compose(tmp_path):
+    template = json.loads(_template(tmp_path).read_text(encoding="utf-8"))
+    template.update(
+        world="vertical_descent",
+        vehicle="iris_flight",
+        mission="configured",
+        scenario="descent_v1",
+        runtime_profile="phase3",
+        simulation={
+            "seed": 1,
+            "duration_sim_seconds": 30,
+            "public_epoch_native_sim_seconds": 90,
+            "target_real_time_factor": 0.1,
+        },
+        mission_plan={"schema_version": 1, "steps": [{"tool": "land", "args": {}}]},
+    )
+    template["calibration"] = {"source_run_directory": "rejected"}
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps(template), encoding="utf-8")
+    calls = []
+    controller = RunController(
+        project_directory=tmp_path,
+        calibration_importer=lambda _path: (_ for _ in ()).throw(ValueError("source rejected")),
+        status_store_factory=lambda _root: calls.append("allocate") or pytest.fail("allocated"),
+        compose_factory=lambda *_args: calls.append("compose") or pytest.fail("compose"),
+    )
+
+    with pytest.raises(ControllerError, match="source rejected"):
+        controller.start(path)
+    assert calls == []
 
 
 def test_completed_controller_executes_frozen_order_commits_manifest_then_tears_down(tmp_path):
