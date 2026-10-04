@@ -287,8 +287,7 @@ def start_repl():
                 for wp_name in sorted(ALL_CLEARABLE_WAYPOINT_KEYS):
                     clear_waypoint(wp_name)
             elif cmd == CMD_SERVO_TEST:
-		dropper.drop()
-
+                dropper.drop()
 		
 
             else:
