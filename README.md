@@ -15,3 +15,16 @@ Top-level (under `src/`):
     - `sensors/camera/camera.py` — camera interface abstractions.
     - `sensors/lidar/lidar.py` — lidar sensor wrapper and helpers.
     - `utils/position_smoother.py` — helper for smoothing position estimates.
+
+## Running
+
+- have conenction to pi 
+- pi is connected to pixhawk
+- waypoints have been set
+```
+/vtol_team: source .venv/bin/activate
+cd comp2026
+python -m src.drone.control.listener
+```
+
+
