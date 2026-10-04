@@ -30,6 +30,7 @@ CMD_UPDATE_WM5 = 31008
 CMD_UPDATE_WM6 = 31009
 CMD_UPDATE_L = 31010
 CMD_UPDATE_TARGET = 31011
+CMD_SERVO_TEST = 31015
 
 CMD_CLEAR_ALL_PICKUP_WPS = 31013
 CMD_CLEAR_ALL_WAYPOINTS = 31014
@@ -285,6 +286,9 @@ def start_repl():
             elif cmd == CMD_CLEAR_ALL_WAYPOINTS:
                 for wp_name in sorted(ALL_CLEARABLE_WAYPOINT_KEYS):
                     clear_waypoint(wp_name)
+	    elif cmd == CMD_SERVO_TEST:
+		dropper.drop()
+		
 
             else:
                 print(f">> UNKNOWN: Unmapped COMMAND ID: {cmd}")

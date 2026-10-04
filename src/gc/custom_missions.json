@@ -98,6 +98,12 @@
             "description": "Clears all waypoints on the RPi",
             "mavCmd": 31013,
             "compId": 191
+        },
+	{
+            "label": "test servos",
+            "description": "sends drop command to servos",
+            "mavCmd": 31015,
+            "compId": 191
         }
     ]
 }
