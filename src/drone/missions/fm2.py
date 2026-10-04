@@ -40,4 +40,7 @@ def fm2(
     # TODO: Figure out what to do at the end of fm2. Land and proceed with FM3?
 
     log("fm2: payload dropped", controller.vehicle._master)
+
+    controller.simple_land()
+    controller.disarm()
     return
