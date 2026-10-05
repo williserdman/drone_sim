@@ -37,6 +37,9 @@ The companion connects over Compose-only MAVLink TCP at
 telemetry, modes, state, acknowledgements, and `STATUSTEXT` diagnostics.
 Native SERIAL1 adds private TCP `5762` for the suite's external operator. It has
 a distinct GCS system ID and no host-published port; SERIAL0 remains `5760`.
+Native TCP server arguments use `tcp:<port>`, without a bind-address field.
+The pinned UART parser treats `tcp:0.0.0.0:<port>` as port zero, falling back to
+5760 and causing SERIAL1 to collide with the primary channel.
 
 The upstream JSON backend exchanges servo outputs and simulated sensor/dynamics
 data with `gazebo-runtime:9002` over UDP. Sensor replies retain

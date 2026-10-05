@@ -193,9 +193,9 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "--sim-port-out",
         "9002",
         "--serial0",
-        "tcp:0.0.0.0:5760",
+        "tcp:5760",
         "--serial1",
-        "tcp:0.0.0.0:5762",
+        "tcp:5762",
         "--defaults",
         "/opt/drone_sim/ardupilot/params/descent.parm",
         "--home",
@@ -212,8 +212,8 @@ def test_operator_port_preserves_the_primary_endpoint(tmp_path: Path) -> None:
         gazebo_host="127.0.0.1",
     )
 
-    assert config.argv[config.argv.index("--serial0") + 1] == "tcp:0.0.0.0:5760"
-    assert config.argv[config.argv.index("--serial1") + 1] == "tcp:0.0.0.0:5762"
+    assert config.argv[config.argv.index("--serial0") + 1] == "tcp:5760"
+    assert config.argv[config.argv.index("--serial1") + 1] == "tcp:5762"
 
 
 def test_operator_port_must_be_distinct_from_the_primary_endpoint(tmp_path: Path) -> None:

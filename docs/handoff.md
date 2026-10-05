@@ -25,9 +25,19 @@ different orders; the suite compared ordered tuples. The suite now compares
 name/digest mappings and still rejects changed or missing images. The failed
 setup report is retained under `runs/local-ci/20261005-8f628be/suites/`.
 
+Retry suite `793556e0-f809-48f8-b172-986816a301c1` from clean `f5a4411` passed
+preflight, then calibration run `ee4bb972-5d94-4575-be42-90e7236e0864` failed
+during startup before arming. Malformed TCP server arguments bound both native
+UART channels to 5760; SITL exited and DroneKit's connection failed. Teardown
+completed with no diagnostics, and the gate blocked all ten remaining cases.
+The native arguments now use `tcp:5760` and `tcp:5762`; 49 SITL module tests
+passed, and a pinned-binary smoke observed both distinct listeners and connected
+both sockets. Failed evidence remains under `runs/local-ci/20261005-f5a4411/`.
+
 The manual Actions workflow is implemented. Official runner v2.337.0 is
-registered as `drone-sim-workstation` with label `drone-sim`, but remains offline:
-noninteractive sudo is unavailable, so vendor service installation/start requires
+registered as `drone-sim-workstation` with label `drone-sim`. A temporary user
+listener connected at 16:33 UTC and GitHub reports online. The persistent service
+remains pending: noninteractive sudo is unavailable, so installation/start requires
 the operator steps in the [runbook](runbook.md#manual-workstation-ci).
 Actions dispatch remains unrun until the workflow exists on default branch
 `main` and the runner service is online. No current end-to-end pass is claimed.
