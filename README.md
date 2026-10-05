@@ -70,9 +70,10 @@ recorded in [handoff](docs/handoff.md).
 [autotune-run.json](config/autotune-run.json) tunes roll, pitch and yaw on the
 shared unloaded aircraft. The [calibration workflow](docs/runbook.md#calibrate-and-validate-saved-gains)
 then loads accepted gains into fresh SITL for a hover/landing validation.
-Whole-suite calibration dependencies are specified in the
-[manual CI suite design](docs/superpowers/specs/2026-10-05-full-ci-suite-design.md)
-and are not implemented yet.
+Run every setup with `uv run --locked drone-sim suite --config config/ci-suite.json`.
+The [local suite workflow](docs/runbook.md#run-the-full-mission-suite) covers
+calibration gates, reports and recordings. Its current end-to-end verification
+and remaining provider setup are recorded in [handoff](docs/handoff.md).
 
 Read [AGENTS.md](AGENTS.md) for contribution rules, then the affected module
 README. For a mission, start with [companion](companion/README.md): define its

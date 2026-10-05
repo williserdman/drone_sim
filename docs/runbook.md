@@ -120,15 +120,15 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
 
 The automatic example targets 90 simulated seconds of warmup plus 30 recorded
 seconds at one-tenth real time, about 20 wall minutes before startup overhead.
-The operator example waits for external arming and GUIDED selection, but the
-shipped topology has no independent operator connection: companion owns the sole
-single-client MAVLink endpoint. Provision another endpoint or router before
-flying this template. Its 60-second public window must cover the wait and flight.
+The operator example waits for external arming and GUIDED selection. Native
+SERIAL1 exposes private TCP 5762 for that operator; the suite supplies the
+external actor while direct `start` retains manual operation. Its 60-second
+public window must cover the wait and flight.
 
 ### Calibrate and validate saved gains
 
-This two-run workflow is the first CI calibration stage. Whole-suite dependency
-execution is not implemented. Use a clean checkout and build all seven images
+This two-run workflow runs the calibration gates individually. The
+[full suite](#run-the-full-mission-suite) applies these dependencies automatically. Use a clean checkout and build all seven images
 with the [build command](#build-runtime-images); capture expected provenance using
 the [acceptance block](#moving-pad-landing) before either run. Keep that checkout
 and those image tags fixed through both flights and acceptance.
@@ -187,37 +187,48 @@ in `configuration/run.json`. This workflow does not edit tracked defaults.
 Other scenarios need fresh flights with the shared aircraft before claiming no
 regressions. The old `autotune-roll-run.json` remains a historical diagnostic.
 
-### Run all automatic templates
+### Run the full mission suite
 
-There is no `run-all` command. This Bash sequence attempts all seven automatic
-templates, stops on the first failure or abort, and retains each normal run bundle:
+Commit runtime edits, then run from this checkout:
 
 ```bash
-(
-  set -euo pipefail
-  for mission_config in \
-    config/configured-descent-run.json \
-    config/configured-moving-pad-run.json \
-    config/vertical-descent-run.json \
-    config/hover-roll-run.json \
-    config/autotune-roll-run.json \
-    config/default-run.json \
-    config/realtime-run.json
-  do
-    uv run --locked drone-sim start --config "$mission_config"
-  done
-)
+uv sync --locked
+uv run --locked drone-sim suite --config config/ci-suite.json
 ```
 
-The operator template is excluded until its connection gap above is resolved. The batch
-includes the existing AutoTune experiment and both competition timing variants;
-allow several hours. It checks process exit codes, not independent physical
-acceptance. Inspect each bundle and use [competition acceptance](#independent-competition-acceptance)
-for competition runs. AutoTune records candidates without promoting parameters.
+The [catalog](../config/ci-suite.json) covers all 11 checked-in flight templates,
+including the stationary fixture, operator wait and both competition timings.
+The command builds seven Phase 3 images once, checks the original competition
+imports, calibrates all axes, then validates saved gains in fresh SITL. These
+first two cases gate the other nine. Every consumer loads the same accepted
+artifact after its base/scenario overlays and verifies live parameters before
+flight. Each case has fresh SITL storage, Compose project and normal recordings.
 
-The [latest sweep](handoff.md#scenario-regression-sweep) records known image-packaging
-and diagnostic-acceptance failures. A completed process or image build does not
-establish that all templates can fly or pass independent acceptance.
+Individual mission failures do not skip later independent cases. Failed gates,
+changed source/images or unconfirmed teardown block remaining cases. Keep source
+and image tags unchanged until the command returns. One account-wide workstation
+lock prevents concurrent suites across checkouts and output roots. Ctrl-C
+requests the active run's existing bounded abort/finalization and retains a
+partial report; keep the process alive until teardown returns.
+
+The final `suite_result` JSON points to `runs/suites/SUITE_ID/report.json` and
+adjacent `report.md`. Reports separate lifecycle, physical outcome, raw score,
+independent acceptance and teardown, linking to `runs/RUN_ID` bundles. Recordings
+remain in each bundle's `video/onboard.mp4` and `video/observer.mp4`. Diagnostic
+safe landing can pass at 60/100; other cases require their maximum score. Exit
+codes are 0 passed, 1 failed/blocked/unrun, 2 setup failure, 130 interrupted.
+
+Use an absolute persistent destination when needed:
+
+```bash
+uv run --locked drone-sim suite --config config/ci-suite.json \
+  --output-root /home/willis/projects/drone_sim/runs/local-ci
+```
+
+The existing seeds, plans, timing and recording settings remain unchanged. The
+catalog's target timing totals about 4 h 40 min before build, startup and
+finalization; use the report's timestamps for actual duration. Configuration
+coverage fails if a new top-level flight template is absent from the catalog.
 
 ## Run and monitor
 

@@ -17,7 +17,7 @@ validates; it does not infer physical success from a command or log message.
 
 - The installed `drone-sim` command maps to [`cli.main`](src/orchestration/cli.py)
   through [`pyproject.toml`](pyproject.toml). Its operator commands are `start`,
-  `status`, `abort`, and `collect-results`.
+  `status`, `abort`, `collect-results`, and `suite`.
 - [`RunController`](src/orchestration/controller.py) owns run allocation, Compose
   supervision, deadlines, terminal-cause selection, log capture, and manifest
   commit.
@@ -36,6 +36,14 @@ validates; it does not infer physical success from a command or log message.
   `StatusStore.validated_manifest_result` accepts paths defined by
   [`artifacts.manifest.is_manifest_relative_path`](../artifacts/src/artifacts/manifest.py);
   the [`manifest.json` schema](../artifacts/schemas/manifest.schema.json) is the wire authority.
+
+[`suite.py`](src/orchestration/suite.py) owns the complete catalog, temporary
+input snapshots, sequential cases and reports. [`_adapters/suite.py`](src/orchestration/_adapters/suite.py)
+owns the account-wide workstation lock, bounded one-time build, frozen
+provenance and independent acceptance. Calibration and reload are prerequisites;
+remaining failures continue unless source/image identity or teardown is uncertain.
+The executable catalog is [`ci-suite.json`](../config/ci-suite.json). Reports and
+recordings follow the [full-suite workflow](../docs/runbook.md#run-the-full-mission-suite).
 
 ## Consumer and producer seams
 

@@ -197,10 +197,14 @@ independent acceptance at 100/100 by 2026-10-02. The first deliverable is a reus
 calibration stage and a fresh-process validation flight; see
 [current verification](handoff.md). The eventual CI runner invokes this stage
 before the mission suite.
-Existing launch commands do not implement that suite dependency yet. The
-[manual full-suite design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
-defines the proposed local command, workstation CI job, calibration consumers,
-and mission-specific acceptance contracts.
+The local `suite` command implements this dependency using the
+[executable catalog](../config/ci-suite.json). It builds once from clean committed
+source, freezes all source/image identities and runs cases sequentially with
+fresh SITL storage and Compose projects. Its account-wide workstation lock spans
+checkouts/output roots. Failed calibration/reload gates block dependents; other
+case failures continue unless provenance or teardown becomes uncertain. Reports
+retain lifecycle, physical outcome, raw score, artifact acceptance and teardown
+separately. Actual flight/provider verification remains in [handoff](handoff.md).
 
 ```mermaid
 flowchart LR
