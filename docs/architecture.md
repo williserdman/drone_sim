@@ -197,7 +197,10 @@ independent acceptance at 100/100 by 2026-10-02. The first deliverable is a reus
 calibration stage and a fresh-process validation flight; see
 [current verification](handoff.md). The eventual CI runner invokes this stage
 before the mission suite.
-Existing launch commands do not implement that suite dependency yet.
+Existing launch commands do not implement that suite dependency yet. The
+[manual full-suite design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
+defines the proposed local command, workstation CI job, calibration consumers,
+and mission-specific acceptance contracts.
 
 ```mermaid
 flowchart LR

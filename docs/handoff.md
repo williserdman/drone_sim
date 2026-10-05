@@ -8,6 +8,12 @@ world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
 
+Design update 2026-10-05: the conversational design for a manually triggered
+11-setup suite is approved. Its
+[written spec](superpowers/specs/2026-10-05-full-ci-suite-design.md) awaits review
+before implementation planning. No suite command, Actions workflow or
+self-hosted runner was installed, and no new flights were run for this update.
+
 The new CI calibration implementation shares aircraft dynamics across the three
 vehicle variants, tunes all axes and saves gains after native LAND. It adds
 independent calibration acceptance and a fresh-SITL validation consumer.
