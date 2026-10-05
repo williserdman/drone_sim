@@ -1,9 +1,9 @@
 # Manual full-mission CI suite
 
 Written and approved 2026-10-05. The
-[implementation plan](../plans/2026-10-05-full-ci-suite.md) awaits review and
-execution-method selection. The suite command and GitHub workflow are not
-implemented.
+[implementation plan](../plans/2026-10-05-full-ci-suite.md) is executing on
+`feat/manual-ci-suite`. The suite command and manual GitHub workflow are
+implemented; the fresh full flight sweep and Actions dispatch remain pending.
 
 ## Goal and agreed scope
 
@@ -223,9 +223,14 @@ copying videos or bags into the suite directory.
 The index records the suite identity and frozen provenance, calibration and
 reload identities, start/finish state, and each catalog entry's run ID, lifecycle
 result/reason, physical outcome, raw score, independent acceptance, teardown
-diagnostics, and evidence paths. Use explicit passed, failed, blocked and unrun
-case statuses. Unknown physical facts remain unknown. Update the index after
-each case so a partial result survives interruption.
+diagnostics, and evidence paths. Persist the allocated run ID immediately with
+transient status `running`; terminal case statuses remain explicit `passed`,
+`failed`, `blocked` and `unrun`. Unknown physical facts remain unknown. Record
+`LANDED` only when the independent acceptance contract establishes it; otherwise
+leave physical outcome null. Update the index on allocation and after each case
+so a partial result survives interruption. Returning partial physical evidence
+from a rejected inspection would require a new inspector interface and is
+deferred.
 
 Retain complete and partial local bundles, including videos, bag, DataFlash and
 logs. Upload reports, suite console output, and compact manifest/acceptance/log

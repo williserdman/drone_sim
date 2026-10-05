@@ -166,7 +166,10 @@ def test_report_json_and_markdown_keep_independent_outcomes_and_bundle_links(tmp
             "lifecycle": "FAILED",
             "reason": "invalid artifacts",
             "physical_outcome": "LANDED",
-            "score": {"earned": 60, "maximum": 100},
+            "score": {
+                "achieved_score": 60,
+                "maximum_available_score": 100,
+            },
             "artifact_acceptance": {
                 "accepted": False,
                 "reason": "video missing",

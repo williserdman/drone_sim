@@ -216,8 +216,8 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 def _score_text(score: object) -> str:
     if not isinstance(score, Mapping):
         return "unknown"
-    earned = score.get("earned", score.get("score"))
-    maximum = score.get("maximum", score.get("maximum_score"))
+    earned = score.get("achieved_score")
+    maximum = score.get("maximum_available_score")
     return "unknown" if earned is None or maximum is None else f"{earned}/{maximum}"
 
 
@@ -369,10 +369,17 @@ class SuiteRunner:
                     self.event_stream.write(f'suite {suite_id}: starting {case.name}\n')
                     self.event_stream.flush()
                     self._abort_requested = False
+
+                    def allocated(run_id, run_directory):
+                        self._allocated(run_id, run_directory)
+                        row.update(status='running', run_id=run_id, lifecycle='ALLOCATED',
+                                   bundle_path=os.path.relpath(run_directory, directory))
+                        write_suite_report(directory, report)
+
                     try:
                         result = self.controller.start(template,
                             auxiliary_services=('operator-wait-runtime',) if case.acceptance=='operator_wait' else (),
-                            on_allocated=self._allocated)
+                            on_allocated=allocated)
                         row.update(run_id=result.run_id, lifecycle=result.state, reason=result.reason)
                         run_directory = output_root / result.run_id
                         if result.state != 'COMPLETED':

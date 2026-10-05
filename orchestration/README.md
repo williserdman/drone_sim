@@ -42,6 +42,9 @@ input snapshots, sequential cases and reports. [`_adapters/suite.py`](src/orches
 owns the account-wide workstation lock, bounded one-time build, frozen
 provenance and independent acceptance. Calibration and reload are prerequisites;
 remaining failures continue unless source/image identity or teardown is uncertain.
+The report records each allocated run immediately with transient `running`
+status, then its terminal result after finalization. Unknown physical evidence
+stays null when the independent inspector cannot establish acceptance.
 The executable catalog is [`ci-suite.json`](../config/ci-suite.json). Reports and
 recordings follow the [full-suite workflow](../docs/runbook.md#run-the-full-mission-suite).
 

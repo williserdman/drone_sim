@@ -105,6 +105,31 @@ def test_setup_failure_preserves_partial_report(tmp_path):
     assert result.report_path.is_file() and not controller.started_cases
 
 
+def test_allocated_run_is_reported_before_long_running_start_returns(tmp_path):
+    runner, controller, _ = make_suite(tmp_path)
+    original = controller.start
+    observed = []
+
+    def inspect_allocation(path, *, auxiliary_services=(), on_allocated=None):
+        def allocated(run_id, directory):
+            on_allocated(run_id, directory)
+            report_path = next((tmp_path / 'runs/suites').glob('*/report.json'))
+            report = json.loads(report_path.read_text())
+            row = report['cases'][len(observed)]
+            assert row['run_id'] == run_id
+            assert (report_path.parent / row['bundle_path']).resolve() == directory
+            assert row['status'] == 'running'
+            assert row['lifecycle'] == 'ALLOCATED'
+            assert report['source_revisions'] and report['image_digests']
+            observed.append(run_id)
+        return original(path, auxiliary_services=auxiliary_services, on_allocated=allocated)
+
+    controller.start = inspect_allocation
+    result = runner.run(ROOT / 'config/ci-suite.json', output_root=tmp_path / 'runs')
+    assert result.state == 'PASSED'
+    assert len(observed) == 11
+
+
 def test_startup_interruption_aborts_only_allocated_run_and_restores_handlers(tmp_path):
     import signal
     runner,controller,runtime=make_suite(tmp_path)

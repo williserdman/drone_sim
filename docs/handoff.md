@@ -12,8 +12,11 @@ Implementation update 2026-10-05: branch `feat/manual-ci-suite` implements the
 approved [11-setup design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
 and [plan](superpowers/plans/2026-10-05-full-ci-suite.md). The shared local `suite`
 command builds once, gates consumers on accepted calibration/fresh reload and
-reports mission-specific independent results. Focused software checks pass;
-current common-build flight sweep and final full tests are pending.
+reports mission-specific independent results. After the final review fixes,
+host/module checks passed 2,257 tests with 27 environment skips; the imported
+Comp2026 suite passed 1,126 tests. Focused suite/CLI checks passed 48 tests.
+No static typechecker is configured; Python compilation passed. The fresh
+common-build flight sweep remains pending.
 
 The manual Actions workflow is implemented. Official runner v2.337.0 is
 registered as `drone-sim-workstation` with label `drone-sim`, but remains offline:
