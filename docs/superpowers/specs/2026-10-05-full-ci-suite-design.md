@@ -1,7 +1,9 @@
 # Manual full-mission CI suite
 
-Written 2026-10-05. The conversational design is approved; this written spec
-awaits review. The suite command and GitHub workflow are not implemented.
+Written and approved 2026-10-05. The
+[implementation plan](../plans/2026-10-05-full-ci-suite.md) awaits review and
+execution-method selection. The suite command and GitHub workflow are not
+implemented.
 
 ## Goal and agreed scope
 
