@@ -18,6 +18,13 @@ Comp2026 suite passed 1,126 tests. Focused suite/CLI checks passed 48 tests.
 No static typechecker is configured; Python compilation passed. The fresh
 common-build flight sweep remains pending.
 
+First suite attempt `0d11a7cb-e3f3-4379-86e0-95d76b274ef1` from clean `8f628be`
+built all seven images and passed Comp2026 import smoke, then failed preflight
+before allocating a flight. Compose returned identical image identities in
+different orders; the suite compared ordered tuples. The suite now compares
+name/digest mappings and still rejects changed or missing images. The failed
+setup report is retained under `runs/local-ci/20261005-8f628be/suites/`.
+
 The manual Actions workflow is implemented. Official runner v2.337.0 is
 registered as `drone-sim-workstation` with label `drone-sim`, but remains offline:
 noninteractive sudo is unavailable, so vendor service installation/start requires

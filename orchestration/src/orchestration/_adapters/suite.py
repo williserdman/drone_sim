@@ -78,7 +78,9 @@ class SuiteRuntime:
     def assert_unchanged(self, frozen: FrozenSuiteRuntime) -> None:
         if self._sources() != frozen.source_revisions:
             raise RuntimeError("suite source changed after build")
-        if self.compose.image_digests(30) != frozen.image_digests:
+        current = {row.name: row.digest for row in self.compose.image_digests(30)}
+        expected = {row.name: row.digest for row in frozen.image_digests}
+        if current != expected:
             raise RuntimeError("suite runtime image changed after build")
 
     def inspect_run(self, case, run_directory: Path, frozen: FrozenSuiteRuntime):
