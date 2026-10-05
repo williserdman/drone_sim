@@ -140,8 +140,11 @@ and those image tags fixed through both flights and acceptance.
    ```
 
    The mission settles in LOITER, tunes all axes, reactivates the tuned gains,
-   settles again and uses native LAND. The public/warmup windows total 690
-   simulated seconds at target RTF 0.25, about 46 wall minutes plus startup.
+   settles again and uses native LAND. The public/warmup windows total 990
+   simulated seconds at target RTF 0.25, about 66 wall minutes plus startup.
+   The final 60 public seconds remain reserved for LAND or failure recovery;
+   calibration stops tuning at public 840 seconds. The wall limit remains
+   7,200 seconds.
    A failed tune or landing cannot release accepted parameters.
 
 2. Save its UUID and prepare a temporary validation template:

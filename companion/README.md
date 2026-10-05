@@ -159,8 +159,9 @@ Completion requires the all-axis saved-gains status, observed disarm, and a
 post-disarm readback matching the tested values. Flight decisions use only the
 public clock and MAVLink telemetry. The historical `autotune_roll` and
 `hover_roll` diagnostic missions keep their existing behavior. Start the new
-mission with [autotune-run.json](../config/autotune-run.json); its 600-second
+mission with [autotune-run.json](../config/autotune-run.json); its 900-second
 public window reserves the final 60 seconds for landing or failure recovery.
+The reserve begins at public 840 seconds, allowing more time for native tuning.
 An airborne failure clears overrides and requests native LAND for at most 45
 simulated seconds; landing recovery does not change the failed mission result.
 Native rate-D, rate-P, and angle-P gain-determination failures trigger this

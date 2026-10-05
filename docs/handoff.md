@@ -3,7 +3,7 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-02. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-10-06. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
@@ -74,6 +74,32 @@ passed 2,263 tests with 27 environment skips; one lock check failed while the li
 suite held the workstation lock, then passed after teardown. Imported Comp2026
 checks passed 1,126 tests. Compilation and edited local documentation links
 passed. Physical reruns of the fixes remain pending.
+
+Fresh suite `15ff4914-3356-42d9-aff9-0a241a3faa7c`, built from clean
+`e113217`, failed its calibration gate on 2026-10-06 with
+`AutoTune reserved landing window reached`. At public 540 seconds, native
+AutoTune was still tuning yaw angle-P-up at step 5. A complete DataFlash MSG
+scan contains neither native AutoTune failure nor success. Native LAND began
+at native 629.942 seconds, disarm was recorded at native 642.367 seconds, and
+the companion published `mission_failed` at public 553.05 seconds.
+
+The final report records calibration lifecycle `FAILED`, raw score 0/100 and
+rejected artifact acceptance. Its physical outcome remains unknown: native LAND
+and disarm do not establish the independently accepted mission contract. The
+failed calibration gate blocked the other ten cases before allocation. This
+run provides no consumer flight evidence or suite pass. Its retained report is
+`runs/local-ci/20261005-e113217/suites/15ff4914-3356-42d9-aff9-0a241a3faa7c/report.json`.
+The owned suite process exited and its Compose project was removed.
+
+The calibration template now allows 900 public seconds, with the same 60-second
+landing reserve and 7,200-second wall limit. The reserve therefore starts at
+public 840 seconds. Native tuning parameters, flight control, scoring and
+acceptance are unchanged. A fresh frozen-build calibration and full suite
+remain required to verify this timing change and the earlier runtime fixes.
+Timing, recorder, configuration, suite and workflow checks passed 179 tests;
+the full host sweep passed 2,264 tests with 27 environment skips. The recorder
+contract now requires 18,000 calibration camera frames at 20 Hz. All 79 local
+links in the edited guides resolve; external URLs and anchors were not checked.
 
 The competition adapter needs a larger compatibility change. Identities alone
 satisfy only the constructor: native missions also require pinned home,
