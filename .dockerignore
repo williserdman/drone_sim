@@ -26,6 +26,9 @@
 !/companion/comp2026/src/drone/control/
 /companion/comp2026/src/drone/control/**
 !/companion/comp2026/src/drone/control/drone_control.py
+!/companion/comp2026/src/drone/control/flight_state.py
+!/companion/comp2026/src/drone/control/mission_supervisor.py
+!/companion/comp2026/src/drone/control/stability.py
 !/companion/comp2026/src/drone/control/mission_info.py
 !/companion/comp2026/src/drone/missions/
 /companion/comp2026/src/drone/missions/**
@@ -39,6 +42,10 @@
 !/companion/comp2026/src/drone/sensors/camera/_camera_manager.py
 !/companion/comp2026/src/drone/sensors/camera/calibration.json
 !/companion/comp2026/src/drone/sensors/camera/camera.py
+!/companion/comp2026/src/drone/sensors/lidar/
+/companion/comp2026/src/drone/sensors/lidar/**
+!/companion/comp2026/src/drone/sensors/lidar/clearance.py
+!/companion/comp2026/src/drone/sensors/lidar/lidar.py
 !/companion/comp2026/src/drone/utils/
 /companion/comp2026/src/drone/utils/**
 !/companion/comp2026/src/drone/utils/position_smoother.py

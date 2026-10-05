@@ -195,6 +195,10 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - The hosted `drone.auto_attempt` currently imports FM1 and FM2 from `missions/`
   but imports FM3 from `drone/mock_mission.py`; do not assume
   `missions/fm3.py` is the deployed implementation.
+- After changing the import closure, run `python3 -m
+  drone_sim_companion.comp2026_smoke` in the built companion image. It imports
+  the deployed control, camera, LiDAR and original mission functions without
+  opening devices or executing a mission.
 - That deployed `mock_mission.py` owns payload-marker acquisition and precision
   landing recovery. It establishes a five-frame earth-fixed target anchor,
   rejects stale or inconsistent camera/range observations before MAVLink,

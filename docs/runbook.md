@@ -73,6 +73,16 @@ Expect seven services. `start` uses `--no-build`; rebuild affected images after
 source/parameter changes. In particular, the SITL parameter overlay is copied
 into the ArduPilot image. Editing it on the host does not change an existing image.
 
+Check the deployed competition import closure before a flight:
+
+```bash
+docker run --rm drone-sim-companion-runtime:phase3 \
+  python3 -m drone_sim_companion.comp2026_smoke
+```
+
+This imports the original FM1/FM2/FM3 functions without opening devices. A
+nonzero exit identifies a packaging failure; success is not flight evidence.
+
 ## Local developer workflow
 
 After editing `companion/comp2026` or simulator code, run from the repository root:
