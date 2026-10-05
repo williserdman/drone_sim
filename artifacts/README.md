@@ -39,6 +39,8 @@ required evidence is missing or invalid.
 The shared status contract includes `MissionExecutionReadyStatus`, published by
 the configured companion runner and consumed by Gazebo's public-epoch gate.
 It records readiness to execute a plan, independently of command delivery.
+`OperatorWaitStartedStatus` records the configured host's actual first running
+wait operation. Its run ID, operation ID and public timestamp are immutable.
 
 ## Consumer and producer seams
 

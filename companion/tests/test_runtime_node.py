@@ -14,6 +14,7 @@ import pytest
 
 from artifacts.runtime_status import (
     MissionCommandDeliveredStatus,
+    MissionExecutionReadyStatus,
     MissionReadyStatus,
     RuntimeFailureStatus,
 )
@@ -31,6 +32,199 @@ from drone_sim_companion.mission import CommandKind, Telemetry
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def test_imported_calibration_readiness_blocks_until_complete_and_reports_once() -> None:
+    trace: list[tuple[str, object]] = []
+    protocol = SimpleNamespace(
+        write_status=lambda status: trace.append(("status", status)),
+    )
+    lifecycle = SimpleNamespace(
+        emit=lambda event, stamp, fields: trace.append(
+            ("event", (event, stamp, fields))
+        ),
+    )
+    readiness = runtime_node._CalibrationReadiness({
+        "ATC_RAT_RLL_P": 0.041,
+        "INS_GYRO_FILTER": 20.0,
+    })
+
+    readiness.observe_cached({"ATC_RAT_RLL_P": 0.041})
+    assert not readiness.release(protocol, lifecycle, RUN_ID, 0)
+    assert trace == []
+
+    readiness.observe_cached({
+        "ATC_RAT_RLL_P": 0.041,
+        "INS_GYRO_FILTER": 20.0,
+    })
+    assert readiness.release(protocol, lifecycle, RUN_ID, 0)
+    readiness.observe_cached({
+        "ATC_RAT_RLL_P": 0.0675,
+        "INS_GYRO_FILTER": 20.0,
+    })
+    assert readiness.release(protocol, lifecycle, RUN_ID, 1)
+    assert readiness.failure is None
+    assert trace == [
+        (
+            "event",
+            (
+                "calibration_parameters_verified",
+                0,
+                {
+                    "stage": "pre_arm",
+                    "parameters": {
+                        "ATC_RAT_RLL_P": 0.041,
+                        "INS_GYRO_FILTER": 20.0,
+                    },
+                },
+            ),
+        ),
+        ("status", MissionExecutionReadyStatus(RUN_ID, 0)),
+    ]
+
+
+def test_imported_calibration_readiness_exposes_terminal_mismatch() -> None:
+    readiness = runtime_node._CalibrationReadiness({"ATC_RAT_RLL_P": 0.041})
+
+    readiness.observe("ATC_RAT_RLL_P", 0.05)
+    readiness.observe("ATC_RAT_RLL_P", 0.041)
+
+    assert readiness.failure == (
+        "effective required parameter ATC_RAT_RLL_P is 0.05, expected 0.041"
+    )
+    assert not readiness.release(object(), object(), RUN_ID, 0)
+
+
+def test_roll_seed_override_is_recorded_after_import_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    statuses: list[object] = []
+    subscriptions: dict[str, object] = {}
+    parameter_writes: list[tuple[str, float]] = []
+
+    class Protocol:
+        def __init__(self, _config: object) -> None:
+            pass
+
+        def write_status(self, status: object) -> None:
+            statuses.append(status)
+
+        def read_finalize_request(self) -> None:
+            return None
+
+        def write_quiescence(self, _module: str) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Node:
+        def __init__(self, _name: str) -> None:
+            pass
+
+        def create_subscription(
+            self, _type: object, topic: str, callback: object, *_args: object, **_kwargs: object
+        ) -> object:
+            subscriptions[topic] = callback
+            return object()
+
+        def destroy_node(self) -> None:
+            pass
+
+    class Mode:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class Mav:
+        def param_set_send(
+            self,
+            _system: int,
+            _component: int,
+            name: bytes,
+            value: float,
+            _parameter_type: int,
+        ) -> None:
+            parameter_writes.append((name.decode("ascii"), value))
+
+    vehicle = SimpleNamespace(
+        last_heartbeat=0.0,
+        is_armable=True,
+        mode=Mode("STABILIZE"),
+        armed=False,
+        location=SimpleNamespace(global_relative_frame=SimpleNamespace(alt=0.0)),
+        parameters={"ATC_RAT_RLL_P": 0.041},
+        channels=SimpleNamespace(overrides={}),
+        _master=SimpleNamespace(target_system=1, target_component=1, mav=Mav()),
+        add_message_listener=lambda *_args: None,
+        remove_message_listener=lambda *_args: None,
+        close=lambda: None,
+        simple_takeoff=lambda _altitude: None,
+    )
+    spins = 0
+
+    def spin_once(_node: object, *, timeout_sec: float) -> None:
+        nonlocal spins
+        assert timeout_sec == 0.02
+        spins += 1
+        if spins == 1:
+            subscriptions["/simulation/run_state"](
+                SimpleNamespace(run_id=RUN_ID, state=1)
+            )
+            subscriptions["/clock"](
+                SimpleNamespace(clock=SimpleNamespace(sec=0, nanosec=0))
+            )
+
+    def module(name: str, **members: object) -> None:
+        value = ModuleType(name)
+        for member_name, member in members.items():
+            setattr(value, member_name, member)
+        monkeypatch.setitem(sys.modules, name, value)
+
+    module("dronekit", VehicleMode=Mode, connect=object())
+    module("rclpy", init=lambda: None, ok=lambda: spins < 2, spin_once=spin_once, shutdown=lambda: None)
+    module("rclpy.node", Node=Node)
+    module(
+        "rclpy.qos",
+        DurabilityPolicy=SimpleNamespace(TRANSIENT_LOCAL=1),
+        QoSProfile=lambda **kwargs: kwargs,
+        ReliabilityPolicy=SimpleNamespace(RELIABLE=1),
+    )
+    module("rosgraph_msgs.msg", Clock=object)
+    module("simulation_interfaces.msg", RunState=SimpleNamespace(RUNNING=1, FINALIZING=2))
+    for package in ("rosgraph_msgs", "simulation_interfaces"):
+        module(package)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", Protocol)
+    monkeypatch.setattr(runtime_node, "connect_autotune_vehicle", lambda *_args, **_kwargs: vehicle)
+    monkeypatch.setattr(runtime_node.signal, "signal", lambda *_args: None)
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="autotune_roll",
+        calibration_json=json.dumps({
+            "gains": {"ATC_RAT_RLL_P": 0.041},
+            "profile": {"baseline_parameters": {}},
+        }),
+    )
+
+    assert runtime_node._run_autotune_roll(config) == 0
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    named = [event for event in events if event["event"] in {
+        "calibration_parameters_verified", "calibration_parameters_overridden"
+    }]
+    assert [event["event"] for event in named] == [
+        "calibration_parameters_verified",
+        "calibration_parameters_overridden",
+    ]
+    assert named[1]["fields"] == {
+        "parameters": dict(parameter_writes),
+        "reason": "roll diagnostic seed",
+    }
+    assert statuses.index(MissionExecutionReadyStatus(RUN_ID, 0)) < statuses.index(
+        MissionCommandDeliveredStatus(RUN_ID, 0)
+    )
 
 
 def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() -> None:
@@ -622,6 +816,94 @@ def test_run_comp2026_keeps_worker_blocked_until_command_status_is_durable(
     assert mission_entered.is_set()
     assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
     assert MissionCommandDeliveredStatus(RUN_ID, 50_000_000) in statuses
+
+
+def test_run_comp2026_verifies_imported_parameters_before_guided(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+    )
+    vehicle.parameters = {
+        "ATC_RAT_RLL_P": 0.041,
+        "INS_GYRO_FILTER": 20.0,
+    }
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+        calibration_json=json.dumps({
+            "gains": {"ATC_RAT_RLL_P": 0.041},
+            "profile": {"baseline_parameters": {"INS_GYRO_FILTER": 20.0}},
+        }),
+    )
+
+    assert runtime_node._run_comp2026(config) == 0
+
+    execution_ready = MissionExecutionReadyStatus(RUN_ID, 50_000_000)
+    command_delivered = MissionCommandDeliveredStatus(RUN_ID, 50_000_000)
+    assert statuses.index(execution_ready) < statuses.index(command_delivered)
+    assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    verified = [
+        event for event in events
+        if event["event"] == "calibration_parameters_verified"
+    ]
+    assert [event["fields"] for event in verified] == [{
+        "stage": "pre_arm",
+        "parameters": {
+            "ATC_RAT_RLL_P": 0.041,
+            "INS_GYRO_FILTER": 20.0,
+        },
+    }]
+
+
+def test_run_comp2026_calibration_mismatch_emits_zero_flight_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+    )
+    vehicle.parameters = {"ATC_RAT_RLL_P": 0.05}
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+        calibration_json=json.dumps({
+            "gains": {"ATC_RAT_RLL_P": 0.041},
+            "profile": {"baseline_parameters": {}},
+        }),
+    )
+
+    assert runtime_node._run_comp2026(config) == 1
+    assert vehicle.assigned_modes == []
+    failures = [status for status in statuses if isinstance(status, RuntimeFailureStatus)]
+    assert [status.reason for status in failures] == [
+        "effective required parameter ATC_RAT_RLL_P is 0.05, expected 0.041"
+    ]
+    assert not any(isinstance(status, MissionExecutionReadyStatus) for status in statuses)
 
 
 def test_run_comp2026_rejects_late_clock_before_guided_or_status(

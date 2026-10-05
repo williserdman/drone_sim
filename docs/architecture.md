@@ -278,7 +278,11 @@ Freeze the source run ID, parameter values, artifact checksum, aircraft profile,
 base parameters, and firmware/image provenance with the calibration result.
 Each dependent run copies the exact artifact into its own configuration and
 loads its allowlisted gain keys after the base and scenario parameter overlays.
-Before arming, live readback must match that frozen input. This path does not
+Before any mission flight command or execution readiness, every calibrated
+host verifies the complete effective gain/baseline input and records one
+`calibration_parameters_verified` pre-arm event. The gate then freezes its
+snapshot: a roll diagnostic may deliberately seed and retune its own controller
+without replacing the shared artifact, recording its seed writes separately. This path does not
 rewrite the tracked baseline through
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py).
 

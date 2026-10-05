@@ -50,14 +50,21 @@ bounds stalled infrastructure. An ACK alone does not establish flight completion
 execution readiness after passive readiness, matching RUNNING, and public clock.
 This releases physics during operator waiting without issuing a flight command.
 The whole sequence must finish landed/disarmed to publish mission success.
-When the frozen run configuration contains accepted calibration, the host
-requests fresh MAVLink readback for all 15 gains and the profile's preserved
-baseline parameters. Every value must match before execution readiness or the
+Every mission host consuming accepted calibration verifies all 15 gains and
+the profile's effective baseline before its first flight command. Version-2
+imports include scenario precision settings; legacy profiles use their preserved
+baseline. MAVLink hosts request one complete list; DroneKit hosts verify the
+mission-local parameter cache. Every value must match before execution readiness or the
 first flight command; missing values remain bounded by the run wall deadline,
 and a mismatch fails without arming. Calibration values use the artifact's
 float32-aware relative/absolute tolerances; the moving precision profile keeps
 its stricter absolute tolerance. A single `calibration_parameters_verified`
 event records the accepted pre-arm values before mission execution starts.
+Roll diagnostics freeze the verified snapshot before their deliberate seed
+writes and record those writes as `calibration_parameters_overridden`; their
+run-local saved gains never replace the shared calibration.
+The configured host publishes a typed `operator-wait-started` status once the
+first wait operation is actually running; this status itself issues no command.
 The shared adapter validates the required names, requests one complete MAVLink
 parameter list, and lets each host retain only its required replies. This avoids
 overflowing ArduPilot's bounded queue for individual parameter-read requests.

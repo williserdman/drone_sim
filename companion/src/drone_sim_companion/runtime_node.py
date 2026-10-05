@@ -32,10 +32,12 @@ from artifacts.runtime_status import (
     RuntimeStatus,
 )
 
+from .autotune import ActionKind as AutoTuneActionKind
 from .autotune import Observation as AutoTuneObservation
 from .autotune import Phase as AutoTunePhase
 from .autotune import RollAutoTuneDriver
 from . import calibration_autotune
+from .calibration_gate import CalibrationGate, calibration_parameters
 from .hover import Observation as HoverObservation
 from .hover import Phase as HoverPhase
 from .hover import RollHoverDriver
@@ -283,6 +285,56 @@ def autotune_neutral_refresh_due(
         calibration_autotune.neutral_override_required(phase)
         and wall_now - last_refresh_wall >= 0.5
     )
+
+
+class _CalibrationReadiness:
+    def __init__(self, expected: Mapping[str, float]) -> None:
+        self.expected = dict(expected)
+        self.gate = CalibrationGate(self.expected)
+        self.reported = False
+
+    @property
+    def required(self) -> bool:
+        return bool(self.expected)
+
+    @property
+    def failure(self) -> str | None:
+        return self.gate.failure
+
+    def observe(self, name: str, value: float) -> None:
+        if self.reported:
+            return
+        self.gate.observe(name, value)
+
+    def observe_cached(self, parameters: Mapping[str, float]) -> None:
+        if self.reported:
+            return
+        for name in self.expected:
+            try:
+                value = parameters[name]
+            except (KeyError, TypeError):
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                self.gate.observe(name, float(value))
+
+    def release(
+        self,
+        protocol: object,
+        lifecycle: CompanionLifecycle,
+        run_id: str,
+        timestamp_ns: int,
+    ) -> bool:
+        if not self.gate.ready:
+            return False
+        if self.required and not self.reported:
+            lifecycle.emit(
+                "calibration_parameters_verified",
+                timestamp_ns,
+                {"stage": "pre_arm", "parameters": self.gate.snapshot()},
+            )
+            protocol.write_status(MissionExecutionReadyStatus(run_id, timestamp_ns))
+            self.reported = True
+        return True
 
 
 class _Comp2026ShutdownAdmission:
@@ -557,6 +609,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
         return 1
     lifecycle.mark_transport_ready()
     vehicle = MavlinkAdapter(connection, mavutil)
+    calibration = _CalibrationReadiness(calibration_parameters(config))
     controller = MissionController(
         vehicle,
         lifecycle.emit,
@@ -610,6 +663,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     telemetry_requested = False
+    parameters_requested = False
     exit_code = 0
     try:
         while rclpy.ok() and not requested_stop and not finalizing:
@@ -622,6 +676,9 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                 policy_active
                 and latest_clock_ns == 0
                 and controller.mission_ready
+                and calibration.release(
+                    protocol, lifecycle, config.run_id, latest_clock_ns
+                )
                 and controller.state.phase is MissionPhase.WAIT_HEARTBEAT
                 and failure is None
             ):
@@ -637,6 +694,16 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                         )
                         if telemetry is None:
                             break
+                        if (
+                            telemetry.parameter_name is not None
+                            and telemetry.parameter_value is not None
+                        ):
+                            calibration.observe(
+                                telemetry.parameter_name, telemetry.parameter_value
+                            )
+                            if calibration.failure is not None:
+                                failure = calibration.failure
+                                break
                         process_runtime_telemetry(
                             controller,
                             lifecycle,
@@ -655,6 +722,14 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                 vehicle.request_telemetry(rate_hz=10)
                 lifecycle.emit("telemetry_requested", latest_clock_ns, {"rate_hz": 10})
                 telemetry_requested = True
+            if (
+                calibration.required
+                and controller.heartbeat_observed
+                and not parameters_requested
+                and failure is None
+            ):
+                vehicle.request_parameters(tuple(calibration.expected))
+                parameters_requested = True
             lifecycle.observe_terminal(controller.state)
             if controller.state.phase is MissionPhase.FAILED:
                 failure = controller.state.failure_reason
@@ -675,6 +750,21 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
             )
             if heartbeat_failure is not None:
                 failure = heartbeat_failure
+                lifecycle.observe_terminal(
+                    MissionState(
+                        MissionPhase.FAILED,
+                        last_timestamp_ns=latest_clock_ns or 0,
+                        failure_reason=failure,
+                    )
+                )
+                exit_code = 1
+                break
+            if (
+                calibration.required
+                and not calibration.gate.ready
+                and time.monotonic() >= overall_wall_deadline
+            ):
+                failure = "calibration parameter readback was unavailable before the overall run wall failsafe"
                 lifecycle.observe_terminal(
                     MissionState(
                         MissionPhase.FAILED,
@@ -780,6 +870,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
         return 1
 
     lifecycle.mark_transport_ready()
+    calibration = _CalibrationReadiness(calibration_parameters(config))
     hover_only = config.mission == "hover_roll"
     driver = (RollHoverDriver if hover_only else RollAutoTuneDriver)(
         vehicle,
@@ -817,6 +908,9 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 heartbeat_observed=heartbeat,
                 prearm_checks_healthy=armable,
             )
+            calibration.observe_cached(getattr(vehicle, "parameters", {}))
+            if calibration.failure is not None:
+                failure = calibration.failure
 
             control_timestamp_ns = autotune_control_timestamp_ns(
                 mission_running=mission_running,
@@ -824,7 +918,16 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 first_command_pending=driver.state.phase
                 is (HoverPhase.WAIT_READY if hover_only else AutoTunePhase.WAIT_READY),
             )
-            if control_timestamp_ns is not None and failure is None:
+            if (
+                control_timestamp_ns is not None
+                and failure is None
+                and calibration.release(
+                    protocol,
+                    lifecycle,
+                    config.run_id,
+                    control_timestamp_ns,
+                )
+            ):
                 with status_lock:
                     status_text = status_texts.popleft() if status_texts else None
                 mode_value = getattr(vehicle, "mode", None)
@@ -856,6 +959,21 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                             status_text=status_text,
                         )
                     )
+                    if not hover_only:
+                        written_parameters = {
+                            action.name: action.value
+                            for action in transition.actions
+                            if action.kind is AutoTuneActionKind.SET_PARAMETER
+                        }
+                        if written_parameters:
+                            lifecycle.emit(
+                                "calibration_parameters_overridden",
+                                control_timestamp_ns,
+                                {
+                                    "parameters": written_parameters,
+                                    "reason": "roll diagnostic seed",
+                                },
+                            )
                     if transition.state.phase is not previous_phase:
                         lifecycle.emit(
                             "hover_phase" if hover_only else "autotune_phase",
@@ -912,6 +1030,21 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
             )
             if heartbeat_failure is not None:
                 failure = heartbeat_failure
+                lifecycle.observe_terminal(
+                    MissionState(
+                        MissionPhase.FAILED,
+                        last_timestamp_ns=latest_clock_ns or 0,
+                        failure_reason=failure,
+                    )
+                )
+                exit_code = 1
+                break
+            if (
+                calibration.required
+                and not calibration.gate.ready
+                and time.monotonic() >= overall_wall_deadline
+            ):
+                failure = "calibration parameter readback was unavailable before the overall run wall failsafe"
                 lifecycle.observe_terminal(
                     MissionState(
                         MissionPhase.FAILED,
@@ -1241,6 +1374,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     frame_source = RosFrameSource(width_px=640, height_px=480)
     lidar = RosLidar(clock)
     gate = Comp2026StartGate()
+    calibration = _CalibrationReadiness(calibration_parameters(config))
     mission_publisher = node.create_publisher(
         MissionEvent,
         "/simulation/mission_events",
@@ -1483,6 +1617,12 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             and not shutdown_admission.stop_requested
             and not shutdown_admission.finalizing
         ):
+            if controller is not None and not attempt_failure.failed:
+                calibration.observe_cached(
+                    getattr(controller.vehicle, "parameters", {})
+                )
+                if calibration.failure is not None:
+                    attempt_failure.fail(calibration.failure)
             if controller is not None and comp2026_start_gate_poll_required(
                 mission_running=mission_running,
                 mission_start_ready=gate.mission_start_ready,
@@ -1512,6 +1652,12 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     mission_running
                     and gate.mission_ready
                     and not initial_command_delivered
+                    and calibration.release(
+                        protocol,
+                        lifecycle,
+                        config.run_id,
+                        clock.timestamp_ns or 0,
+                    )
                 ):
                     def mark_initial_command_delivered() -> None:
                         nonlocal initial_command_delivered

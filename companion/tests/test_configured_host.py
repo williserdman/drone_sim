@@ -340,3 +340,21 @@ def test_moving_approach_fails_if_waypoint_is_still_active_after_absolute_settle
     host.tick(late, mission_running=True)
 
     assert host.error == "moving-pad approach did not reach precision settlement by 45 simulated seconds"
+
+
+def test_wait_status_follows_actual_started_operation_once():
+    host, vehicle, protocol = host_for([
+        {"tool": "wait_for_state", "args": {"armed": True, "mode": "GUIDED"}},
+        {"tool": "takeoff", "args": {"altitude_m": 2}},
+    ])
+    host.observe(Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False,
+                           landed=True, prearm_checks_healthy=True))
+    host.tick(0, mission_running=False)
+    assert "operator-wait-started" not in protocol.statuses
+    host.tick(0, mission_running=True)
+    assert protocol.statuses["operator-wait-started"] == {
+        "run_id": RUN_ID, "tool": "wait_for_state", "state": "running",
+        "operation_id": "1", "sim_timestamp_ns": 0}
+    assert host.operations.operation_status("1").state == "running"
+    host.tick(50_000_000, mission_running=True)
+    assert vehicle.commands == []
