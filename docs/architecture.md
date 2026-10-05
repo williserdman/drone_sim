@@ -260,8 +260,11 @@ all requested axes, independent airborne/contact/stable-landing evidence, safe
 preimpact speed, observed disarm, and a coherent saved-parameter artifact. It does
 not require touchdown at the origin marker. Its physical checks retain the
 airborne, preimpact-speed, and stable-contact thresholds from the original
-[descent rules](../scorekeeper/rules/descent_v1_legacy.json). Existing descent and precision-land
-scoring contracts retain their location requirements. Terminal `COMPLETED`,
+[descent rules](../scorekeeper/rules/descent_v1_legacy.json). Raw descent and precision-land scoring retain their location requirements.
+Hover and roll diagnostics accept safe airborne/contact and stable landing
+without requiring uncommanded origin precision; their reported score remains
+unchanged. Independent acceptance also checks their actual hold/tuning phases
+and saved-parameter evidence. A completed lifecycle alone never passes a case. Terminal `COMPLETED`,
 physical score, and artifact acceptance remain separate results.
 
 The artifact contains 15 tuned values: rate P/I/D, angle P, and acceleration

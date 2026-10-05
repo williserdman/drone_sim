@@ -519,6 +519,36 @@ def _validate_calibration_hover(
     raise BundleAcceptanceError("calibration validation hover was not stable for five seconds")
 
 
+def _requires_reload_validation(configuration):
+    calibration = configuration.get("calibration_json")
+    return calibration is not None and (
+        configuration.get("calibration_validation", False)
+        or calibration["profile"].get("schema_version", 1) == 1
+    )
+
+
+def _validate_operator_evidence(run_directory, configuration, companion):
+    checked, payload = read_regular_file_bytes(run_directory, "logs/docker/operator.jsonl")
+    try:
+        rows = [json.loads(line) for line in payload.splitlines()] if payload else []
+        pairs = _configured_operation_pairs(companion, configuration["mission_plan"])
+        step, started, finished = pairs[0]
+        if step["tool"] != "wait_for_state" or step["args"] != {"armed": True, "mode": "GUIDED"}:
+            raise ValueError("frozen first operation is not the operator wait")
+        sequence = [(row["event"], row.get("command")) for row in rows]
+        if sequence != [("operator_command", "SET_GUIDED"), ("operator_acknowledgement", "SET_GUIDED"),
+                        ("operator_observed_guided", None), ("operator_command", "ARM"),
+                        ("operator_acknowledgement", "ARM"), ("operator_observed_armed", None)]:
+            raise ValueError("command/ACK/observed-state sequence differs")
+        stamps = [row["sim_timestamp_ns"] for row in rows]
+        if any(row["run_id"] != configuration["run_id"] for row in rows) or any(type(stamp) is not int or stamp < 0 for stamp in stamps):
+            raise ValueError("run identity or public timestamps differ")
+        if stamps != sorted(stamps) or stamps[0] < round(started*1e9) or stamps[3] > round(finished*1e9):
+            raise ValueError("operator commands do not fall within the started wait")
+    except (ValueError, KeyError, TypeError, IndexError) as error:
+        raise BundleAcceptanceError(f"operator evidence is invalid: {error}") from error
+
+
 def _validate_calibration_inputs(run_directory, calibration, companion):
     for relative, field in (
         ("configuration/calibration.parm", "source_artifact_sha256"),
@@ -535,13 +565,19 @@ def _validate_calibration_inputs(run_directory, calibration, companion):
         if (source_id != calibration["source_run_id"]
                 or source_manifest["run_id"] != source_id or gains != calibration["gains"]):
             raise ValueError("frozen source identity or gain values differ")
-        expected = {**calibration["profile"]["baseline_parameters"], **gains}
+        profile = calibration["profile"]
+        baseline = profile["effective_baseline_parameters"] if profile.get("schema_version") == 2 else profile["baseline_parameters"]
+        expected = {**baseline, **gains}
     except (OSError, KeyError, ValueError) as error:
         raise BundleAcceptanceError(f"calibration input is invalid: {error}") from error
     # Match a durable readback before any arm operation, never after touchdown.
     for row in companion:
         fields = row["fields"]
-        if row["event"] == "operation_started" and fields.get("tool") == "arm":
+        if (row["event"] == "operation_started" and fields.get("tool") != "wait_for_state") or row["event"] in {
+            "command_issued", "autotune_command_status", "hover_command_status", "mission_command_delivered"
+        } or (row["event"] in {"hover_phase", "autotune_phase"} and fields.get("phase") != "WAIT_READY") or (
+            row["event"] == "mission_event" and fields.get("state") == "STARTED"
+        ):
             break
         if (row["event"] == "calibration_parameters_verified"
                 and fields.get("stage") == "pre_arm"):
@@ -564,9 +600,12 @@ def _validate_calibration_profile(run_directory, profile, manifest):
     checked, contents = read_regular_file_bytes(run_directory, "gazebo/server.log")
     try:
         preamble = json.loads(contents.splitlines()[0]) if contents else {}
-        model = dict(preamble["resource_sha256s"])["models/iris_flight/model.sdf"]
+        resource = profile.get("consumer_model_resource", "gazebo/resources/models/iris_flight/model.sdf")
+        if not resource.startswith("gazebo/resources/models/"):
+            raise ValueError("consumer model resource is invalid")
+        model = dict(preamble["resource_sha256s"])[resource.removeprefix("gazebo/resources/")]
         images = {row["name"]: row["digest"] for row in manifest["image_digests"]}
-        if (model != profile["physical_model_sha256"]
+        if (model != profile.get("consumer_model_sha256", profile["physical_model_sha256"])
                 or not profile["image_digests"]
                 or any(images.get(name) != digest for name, digest in profile["image_digests"].items())):
             raise ValueError("runtime aircraft/image identity differs")
@@ -613,11 +652,14 @@ def _validate_production_log_evidence(
         and acknowledged == commands
     )
     if not mission_finished or (
-        ruleset_id == "descent_v1" and mission != "configured" and not descent_evidence_valid
+        ruleset_id == "descent_v1" and mission not in {"configured", "hover_roll", "autotune_roll"} and not descent_evidence_valid
     ):
         raise BundleAcceptanceError("companion flight evidence is incomplete")
     if mission == "configured":
         _configured_operation_pairs(companion, mission_plan)
+    if mission in {"hover_roll", "autotune_roll"}:
+        from .diagnostic_acceptance import validate_diagnostic_logs
+        validate_diagnostic_logs(mission, companion)
     if ruleset_id == "calibration_v1":
         statuses = [row["fields"].get("text") for row in companion
                     if row["event"] == "ardupilot_status_text"]
@@ -983,6 +1025,10 @@ def inspect_phase3_semantics(
         mission=configuration.get("mission", "controlled_descent"),
         mission_plan=configuration.get("mission_plan"),
     )
+    if (directory / "logs/docker/operator.jsonl").exists():
+        if not any(row["relative_path"] == "logs/docker/operator.jsonl" for row in manifest["artifacts"]):
+            raise BundleAcceptanceError("operator evidence is absent from manifest inventory")
+        _validate_operator_evidence(directory, configuration, companion_logs)
     physical_evidence = semantic_check(
         directory,
         run_id,
@@ -1002,6 +1048,9 @@ def inspect_phase3_semantics(
     if calibration is not None:
         _validate_calibration_inputs(directory, calibration, companion_logs)
         _validate_calibration_profile(directory, calibration.get("profile"), manifest)
+        if calibration["profile"].get("schema_version") == 2 and calibration["profile"].get("consumer_vehicle") != configuration["vehicle"]:
+            raise BundleAcceptanceError("calibration consumer aircraft differs from frozen run")
+    if _requires_reload_validation(configuration):
         pairs = _configured_operation_pairs(companion_logs, configuration.get("mission_plan"))
         altitude = None
         verified_hover = False
@@ -1017,6 +1066,16 @@ def inspect_phase3_semantics(
                 verified_hover = True
         if not verified_hover:
             raise BundleAcceptanceError("calibration validation requires a recorded 5 m, 10 s hover")
+    if configuration.get("mission") == "hover_roll":
+        phases = [(row["fields"].get("phase"), row["sim_timestamp"]) for row in companion_logs if row["event"] == "hover_phase"]
+        start = next((stamp for phase, stamp in phases if phase == "HOVERING"), None)
+        end = next((stamp for phase, stamp in phases if phase == "WAIT_LAND" and start is not None and stamp >= start), None)
+        if start is None or end is None or not math.isclose(end - start, 10.0, abs_tol=0.1):
+            raise BundleAcceptanceError("hover diagnostic requires its recorded ten-second ALT_HOLD")
+        _validate_calibration_hover(physical_evidence.ground_truth, hold_start_ns=round(start*1e9), hold_end_ns=round(end*1e9), altitude_m=5.0)
+    if configuration.get("mission") == "autotune_roll":
+        from .diagnostic_acceptance import validate_roll_gain_artifact
+        validate_roll_gain_artifact(directory)
 
     try:
         score = validate_score_outputs(
@@ -1035,7 +1094,12 @@ def inspect_phase3_semantics(
         "evidence_paths": list(score.evidence_paths),
     }:
         raise BundleAcceptanceError("manifest scoring provenance does not match score evidence")
-    if (require_maximum_score or ruleset_id == "calibration_v1" or calibration is not None) and not math.isclose(
+    diagnostic = configuration.get("mission") in {"hover_roll", "autotune_roll"}
+    if diagnostic:
+        from .diagnostic_acceptance import validate_diagnostic_landing
+        score_document, _ = _read_json(directory, "scoring/result.json")
+        validate_diagnostic_landing(score_document["rule_results"])
+    if (require_maximum_score or ruleset_id == "calibration_v1" or (calibration is not None and not diagnostic)) and not math.isclose(
         score.achieved_score, score.maximum_available_score
     ):
         required = "150/150" if ruleset_id == "competition_v1" else "100/100"

@@ -101,9 +101,20 @@ contact, safe preimpact speed and stable contact; it has no origin-radius rule.
 Both the parameter file and DataFlash log have manifest checksums.
 
 Configured missions validate their ordered successful operations against the
-frozen plan. A calibration validation run additionally requires matching
-pre-arm gain/baseline readback and five continuous seconds of recorded stable
+frozen plan. Every calibrated mission additionally requires matching pre-arm effective
+gain/baseline readback. Only the explicit version-2 reload role (and legacy
+version-1 imports) requires and five continuous seconds of recorded stable
 hover during its 5 m, 10 s hold. Native descent scoring remains 100/100.
+Hover diagnostics require five continuous stable seconds during their actual
+ten-second ALT_HOLD. Roll diagnostics require ordered tuning success/save,
+terminal completion and an exact five-gain artifact matching one post-disarm
+DataFlash save. Both retain raw descent score replay, but acceptance requires
+airborne/contact, safe preimpact speed and stable contact rather than the
+uncommanded origin-precision points. A safe 60/100 can pass; unsafe impact or
+unstable contact fails. Other suite contracts require their maximum score.
+When present, external operator logs must be inventoried and prove GUIDED
+command/ACK/observation before ARM command/ACK/observation within the actual
+started wait. The suite requires these logs for its operator case.
 Descent replay independently applies the settling-policy version in the
 checksum-bound rule file. Use
 [descent_v1_legacy.json](../scorekeeper/rules/descent_v1_legacy.json) for historical
