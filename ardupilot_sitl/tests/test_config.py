@@ -194,6 +194,8 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "9002",
         "--serial0",
         "tcp:0.0.0.0:5760",
+        "--serial1",
+        "tcp:0.0.0.0:5762",
         "--defaults",
         "/opt/drone_sim/ardupilot/params/descent.parm",
         "--home",
@@ -201,6 +203,27 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "--wipe",
     )
     assert "--no-lockstep" not in config.argv
+
+
+def test_operator_port_preserves_the_primary_endpoint(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        gazebo_host="127.0.0.1",
+    )
+
+    assert config.argv[config.argv.index("--serial0") + 1] == "tcp:0.0.0.0:5760"
+    assert config.argv[config.argv.index("--serial1") + 1] == "tcp:0.0.0.0:5762"
+
+
+def test_operator_port_must_be_distinct_from_the_primary_endpoint(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="operator_mavlink_port must differ"):
+        RuntimeConfig(
+            run_id=RUN_ID,
+            run_directory=tmp_path,
+            mavlink_port=5760,
+            operator_mavlink_port=5760,
+        )
 
 
 def test_moving_profile_overlays_ekf3_and_native_precision_estimator(tmp_path: Path) -> None:

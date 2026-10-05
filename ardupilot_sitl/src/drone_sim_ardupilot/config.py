@@ -147,6 +147,7 @@ class RuntimeConfig:
     gazebo_port: int = 9002
     gazebo_input_port: int = 9003
     mavlink_port: int = 5760
+    operator_mavlink_port: int = 5762
     home: str = "37.4003371,-122.0800351,0,0"
 
     def __post_init__(self) -> None:
@@ -175,6 +176,9 @@ class RuntimeConfig:
         _port(self.gazebo_port, "gazebo_port")
         _port(self.gazebo_input_port, "gazebo_input_port")
         _port(self.mavlink_port, "mavlink_port")
+        _port(self.operator_mavlink_port, "operator_mavlink_port")
+        if self.operator_mavlink_port == self.mavlink_port:
+            raise ValueError("operator_mavlink_port must differ from mavlink_port")
 
     @property
     def argv(self) -> tuple[str, ...]:
@@ -197,6 +201,8 @@ class RuntimeConfig:
             str(self.gazebo_port),
             "--serial0",
             f"tcp:0.0.0.0:{self.mavlink_port}",
+            "--serial1",
+            f"tcp:0.0.0.0:{self.operator_mavlink_port}",
             "--defaults",
             defaults,
             "--home",

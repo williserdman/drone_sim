@@ -499,6 +499,7 @@ class FakeCompose:
         return ComposeCommandResult(0, b"removed")
 
     def stop_services(self, services, timeout):
+        self.trace.append(f"stop {' '.join(services)}")
         return ComposeCommandResult(0, b"stopped")
 
 
@@ -564,7 +565,8 @@ def _controller(
     def store_factory(root):
         return store_type(root, trace)
 
-    def compose_factory(config, run_directory):
+    def compose_factory(config, run_directory, *, auxiliary_services=()):
+        services = PHASE3_SERVICES if config.runtime_profile == "phase3" else SERVICES
         compose = FakeCompose(
             run_directory,
             trace,
@@ -574,7 +576,7 @@ def _controller(
             runtime_mutator=runtime_mutator,
             up_error=up_error,
             down_error=down_error,
-            services=(PHASE3_SERVICES if config.runtime_profile == "phase3" else SERVICES),
+            services=(*services, *auxiliary_services),
         )
         compose_holder["value"] = compose
         return compose
@@ -689,6 +691,86 @@ def test_compose_runtime_uses_exact_detached_arrays_environment_and_merged_outpu
         "SIM_RUN_ID": RUN_ID,
     }
     assert timeout == 9.5
+
+
+def test_compose_runtime_enables_only_the_operator_wait_auxiliary(tmp_path):
+    run_directory = (tmp_path / "runs" / RUN_ID).resolve()
+    runtime = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_path=run_directory / "configuration/run.json",
+        topology=_topology("phase3"),
+        auxiliary_services=("operator-wait-runtime",),
+        base_environment={},
+    )
+
+    assert runtime.environment["COMPOSE_PROFILES"] == "phase3,operator-wait"
+    assert runtime.services == frozenset((*PHASE3_SERVICES, "operator-wait-runtime"))
+
+    with pytest.raises(ValueError, match="auxiliary_services"):
+        ComposeRuntime(
+            project_directory=tmp_path.resolve(),
+            run_id=RUN_ID,
+            run_directory=run_directory,
+            config_path=run_directory / "configuration/run.json",
+            topology=_topology("phase3"),
+            auxiliary_services=("unknown",),
+            base_environment={},
+        )
+
+
+def test_operator_auxiliary_stops_after_runtime_freeze_before_manifest(tmp_path):
+    controller, trace, _clock, _holder = _controller(
+        tmp_path,
+        statuses=(
+            ArtifactsReadyStatus,
+            GazeboReadyStatus,
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+            RuntimeRunningStatus,
+            SourceFinishedStatus,
+            MissionFinishedStatus,
+            ScoreFinishedStatus,
+            RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
+        ),
+    )
+
+    result = controller.start(
+        _template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        ),
+        auxiliary_services=("operator-wait-runtime",),
+    )
+
+    assert result.state == "COMPLETED"
+    assert trace.index("wait runtime-frozen") < trace.index("stop operator-wait-runtime")
+    assert trace.index("stop operator-wait-runtime") < trace.index("commit manifest")
+
+
+def test_allocation_callback_precedes_compose_startup(tmp_path):
+    controller, trace, _clock, _holder = _controller(tmp_path)
+    allocated = []
+
+    controller.start(
+        _template(tmp_path),
+        on_allocated=lambda run_id, path: (
+            allocated.append((run_id, path)),
+            trace.append("allocation callback"),
+        ),
+    )
+
+    assert allocated == [(RUN_ID, tmp_path / "runs" / RUN_ID)]
+    assert trace.index("allocation callback") < trace.index("compose up")
 
 
 def test_compose_runtime_gpu_overlay_uses_only_the_owned_gpu_file(tmp_path):
@@ -1328,7 +1410,7 @@ def test_git_provenance_commands_consume_one_shared_remaining_deadline(tmp_path)
         source_runner=runner,
     )
 
-    assert controller._source_revisions(15.0) == (
+    assert controller.source_revisions(15.0) == (
         SourceRevision("drone_sim", "a" * 40, False),
         SourceRevision("comp2026", "b" * 40, True),
     )
@@ -1412,7 +1494,9 @@ def test_rejected_calibration_source_never_allocates_or_calls_compose(tmp_path):
     calls = []
     controller = RunController(
         project_directory=tmp_path,
-        calibration_importer=lambda _path: (_ for _ in ()).throw(ValueError("source rejected")),
+        calibration_importer=lambda *_args: (_ for _ in ()).throw(
+            ValueError("source rejected")
+        ),
         status_store_factory=lambda _root: calls.append("allocate") or pytest.fail("allocated"),
         compose_factory=lambda *_args: calls.append("compose") or pytest.fail("compose"),
     )

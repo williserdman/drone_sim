@@ -20,6 +20,7 @@ _SERVICE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _DIGEST_PATTERN = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
 _COMPANION_IMAGE = "drone-sim-companion-runtime:phase3"
 _COMP2026_REVISION_LABEL = "org.opencontainers.image.comp2026.revision"
+_OPERATOR_WAIT_SERVICES = ("operator-wait-runtime",)
 _AMBIENT_COMPOSE_SELECTORS = frozenset(
     {
         "COMPOSE_FILE",
@@ -80,6 +81,7 @@ class ComposeRuntime:
         run_directory: Path | str,
         config_path: Path | str,
         topology: RuntimeTopology,
+        auxiliary_services: Sequence[str] = (),
         runner: Runner = _production_runner,
         base_environment: Mapping[str, str] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
@@ -105,7 +107,18 @@ class ComposeRuntime:
         self.run_id = run_id
         self.project_name = f"drone-sim-{run_id.replace('-', '')}"
         self.topology = topology
-        self._services = frozenset(service for service, _module in topology.ownership)
+        auxiliaries = tuple(auxiliary_services)
+        if auxiliaries not in {(), _OPERATOR_WAIT_SERVICES}:
+            raise ValueError(
+                "auxiliary_services must be empty or ('operator-wait-runtime',)"
+            )
+        if auxiliaries and topology.profile != "phase3":
+            raise ValueError("operator-wait auxiliary requires the phase3 profile")
+        self.auxiliary_services = auxiliaries
+        self.services = frozenset(
+            (*[service for service, _module in topology.ownership], *auxiliaries)
+        )
+        self._services = self.services
         self._runner = runner
         self._monotonic = monotonic
         environment = dict(os.environ if base_environment is None else base_environment)
@@ -117,7 +130,9 @@ class ComposeRuntime:
         self.environment = {
             **environment,
             "COMPOSE_DISABLE_ENV_FILE": "1",
-            "COMPOSE_PROFILES": topology.profile,
+            "COMPOSE_PROFILES": ",".join(
+                (topology.profile, "operator-wait") if auxiliaries else (topology.profile,)
+            ),
             "SIM_RUN_ID": run_id,
             "SIM_RUN_DIRECTORY": str(self.run_directory),
             "SIM_CONFIG_PATH": str(self.config_path),

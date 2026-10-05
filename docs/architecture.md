@@ -450,3 +450,14 @@ truth, the SITL profile, configuration, and scoring/recording. Their module
 guides and the runbook describe the executable entry points. Turns,
 search sweeps, replanning the intercept during transit, payload handling, and
 agent transport are deferred. This design is separate from the core-runner PR.
+
+### External operator suite case
+
+The configured host publishes `OperatorWaitStartedStatus` only after its first
+wait operation starts. A separate companion-image service observes that status,
+execution readiness and public RUNNING, then uses ArduPilot SERIAL1 on private
+TCP 5762 with a distinct GCS system ID. It requires command acceptance and
+observed GUIDED before ARM, then observed arming, and remains passive afterward.
+The auxiliary actor joins service health checks but not module ownership or
+the seven-owner quiescence barrier. Orchestration closes it after runtime-frozen
+and before hashing its optional log; suite acceptance requires that log.

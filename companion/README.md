@@ -70,7 +70,13 @@ parameter list, and lets each host retain only its required replies. This avoids
 overflowing ArduPilot's bounded queue for individual parameter-read requests.
 Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
-the failed result. Another observed mode prevents that recovery command. Global
+the failed result. The auxiliary `drone-sim-operator-wait` entry point connects on native SERIAL1
+with system ID 253. It waits for same-run RUNNING, execution readiness, an
+actually started first wait and fresh heartbeat; GUIDED ACK plus observed mode
+precedes ARM ACK plus observed arming. It then stays passive until finalization,
+closing `logs/docker/operator.jsonl`. Startup connection retries are bounded by
+the frozen startup wall deadline.
+Another observed mode prevents that recovery command. Global
 finalization cancels a pending recovery and never starts a new one, allowing
 teardown to finish when simulation time and the vehicle transport have stopped.
 

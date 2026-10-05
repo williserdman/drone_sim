@@ -35,6 +35,8 @@ an ArduPilot SITL wrapper, not a Pixhawk simulator.
 The companion connects over Compose-only MAVLink TCP at
 `tcp://ardupilot-sitl:5760`. ArduPilot consumes flight commands and provides
 telemetry, modes, state, acknowledgements, and `STATUSTEXT` diagnostics.
+Native SERIAL1 adds private TCP `5762` for the suite's external operator. It has
+a distinct GCS system ID and no host-published port; SERIAL0 remains `5760`.
 
 The upstream JSON backend exchanges servo outputs and simulated sensor/dynamics
 data with `gazebo-runtime:9002` over UDP. Sensor replies retain

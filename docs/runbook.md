@@ -83,6 +83,10 @@ docker run --rm drone-sim-companion-runtime:phase3 \
 This imports the original FM1/FM2/FM3 functions without opening devices. A
 nonzero exit identifies a packaging failure; success is not flight evidence.
 
+The manual operator template waits for external GUIDED/arming. The suite supplies
+that operator through the private `operator-wait` Compose profile, retaining the
+original mission plan. Ordinary `start` keeps manual operator behavior.
+
 ## Local developer workflow
 
 After editing `companion/comp2026` or simulator code, run from the repository root:

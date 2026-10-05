@@ -81,6 +81,12 @@ with `moving_pad_stationary`; its template lives in
 Completed moving-pad runs validate the moving-pad scoring rules, independently
 of the companion's mission completion.
 
+An explicit `auxiliary_services=("operator-wait-runtime",)` launch adds the
+external operator service to health supervision. It remains outside the seven
+module owners and quiescence barrier. After runtime-frozen, orchestration stops
+it before artifact/manifest hashing. The suite uses it only for the operator
+case; direct operator templates still support manual arming.
+
 At runtime, orchestration publishes `/simulation/run_state` using the actual
 [`RunState` schema](../ros_ws/src/simulation_interfaces/msg/RunState.msg), consumes
 aggregate [`ArtifactStatus`](../ros_ws/src/simulation_interfaces/msg/ArtifactStatus.msg),

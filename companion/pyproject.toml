@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 drone-sim-companion-runtime = "drone_sim_companion.runtime_node:main"
+drone-sim-operator-wait = "drone_sim_companion.operator_wait:main"
 
 [build-system]
 requires = ["setuptools>=68"]
