@@ -652,6 +652,33 @@ def test_all_axis_autotune_keeps_neutral_rc_override_alive(phase: str) -> None:
     assert calibration.neutral_override_required(calibration.Phase[phase])
 
 
+@pytest.mark.parametrize(
+    "status_text",
+    [
+        "AutoTune: Failed",
+        "AutoTune: Rate D Gain Determination Failed",
+        "AutoTune: Rate P Gain Determination Failed",
+        "AutoTune: Angle P Gain Determination Failed",
+    ],
+)
+def test_all_axis_autotune_fails_on_native_terminal_status(status_text: str) -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.AllAxisState(
+        phase=calibration.Phase.TUNING,
+        phase_started_ns=1,
+        public_deadline_ns=600_000_000_000,
+    )
+    transition = calibration.advance(
+        state,
+        calibration.Observation(
+            44_000_000_000, mode="AUTOTUNE", armed=True, status_text=status_text
+        ),
+    )
+    assert transition.state.phase is calibration.Phase.FAILED
+    assert transition.state.failure_reason == status_text
+    assert transition.actions == ()
+
+
 def test_all_axis_autotune_fails_immediately_on_unexpected_disarm() -> None:
     calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
     state = calibration.AllAxisState(

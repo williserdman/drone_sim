@@ -160,6 +160,8 @@ mission with [autotune-run.json](../config/autotune-run.json); its 600-second
 public window reserves the final 60 seconds for landing or failure recovery.
 An airborne failure clears overrides and requests native LAND for at most 45
 simulated seconds; landing recovery does not change the failed mission result.
+Native rate-D, rate-P, and angle-P gain-determination failures trigger this
+recovery immediately, even while the vehicle mode still reports AUTOTUNE.
 
 The runtime consumes the public clock and run state, onboard images, competition
 downward range, and ArduPilot MAVLink telemetry. Production MAVLink is fixed to

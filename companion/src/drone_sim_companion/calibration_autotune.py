@@ -192,7 +192,14 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         Phase.WAIT_LAND,
     } and observation.armed is False:
         return _failed(current, stamp, "vehicle disarmed before native LAND")
-    if observation.status_text and observation.status_text.startswith("AutoTune: Failed"):
+    if observation.status_text and (
+        observation.status_text.startswith("AutoTune: Failed")
+        or observation.status_text in {
+            "AutoTune: Rate D Gain Determination Failed",
+            "AutoTune: Rate P Gain Determination Failed",
+            "AutoTune: Angle P Gain Determination Failed",
+        }
+    ):
         return _failed(current, stamp, observation.status_text)
     if stamp >= state.public_deadline_ns - 60_000_000_000 and state.phase not in {Phase.LANDING}:
         return _failed(current, stamp, "AutoTune reserved landing window reached")

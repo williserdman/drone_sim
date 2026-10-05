@@ -34,6 +34,20 @@ The native arguments now use `tcp:5760` and `tcp:5762`; 49 SITL module tests
 passed, and a pinned-binary smoke observed both distinct listeners and connected
 both sockets. Failed evidence remains under `runs/local-ci/20261005-f5a4411/`.
 
+Third suite `664c1546-c36c-4ccd-a746-015e00676652` from clean `2f2ba2e`
+started calibration run `eba17a27-01bf-4e05-8b8c-efdb8773a8fa`. Native AutoTune
+failed roll rate-D gain determination at public 43.95 seconds. The driver missed
+that terminal text and kept waiting; the operator aborted the failed attempt,
+and all owned containers were removed. The suite failed and blocked the ten
+consumers. The interrupted recording has a ground-truth sample-count diagnostic;
+it is not accepted calibration evidence. Starting parameters and aircraft inputs
+match the earlier accepted calibration, but the first roll response differs;
+the cause remains under investigation. The driver now recognizes all three
+native gain-determination failure messages and enters existing bounded LAND
+recovery. Focused companion/runtime checks passed 91 tests; fresh flight proof
+of this change remains pending. Evidence is retained under
+`runs/local-ci/20261005-2f2ba2e/`.
+
 The manual Actions workflow is implemented. Official runner v2.337.0 is
 registered as `drone-sim-workstation` with label `drone-sim`. A temporary user
 listener connected at 16:33 UTC and GitHub reports online. The persistent service
