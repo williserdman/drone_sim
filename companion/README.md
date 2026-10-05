@@ -53,9 +53,11 @@ The whole sequence must finish landed/disarmed to publish mission success.
 Every mission host consuming accepted calibration verifies all 15 gains and
 the profile's effective baseline before its first flight command. Version-2
 imports include scenario precision settings; legacy profiles use their preserved
-baseline. MAVLink hosts request one complete list; DroneKit hosts verify the
-mission-local parameter cache. Every value must match before execution readiness or the
-first flight command; missing values remain bounded by the run wall deadline,
+baseline. MAVLink hosts request one complete list; DroneKit hosts inspect the
+current cache with `parameters.get(name, wait_ready=False)`. This avoids a
+blocking complete-parameter wait inside the runtime loop. Every value must match
+before execution readiness or the first flight command; missing values remain
+bounded by the run wall deadline,
 and a mismatch fails without arming. Calibration values use the artifact's
 float32-aware relative/absolute tolerances; the moving precision profile keeps
 its stricter absolute tolerance. A single `calibration_parameters_verified`
@@ -64,7 +66,8 @@ Roll diagnostics freeze the verified snapshot before their deliberate seed
 writes and record those writes as `calibration_parameters_overridden`; their
 run-local saved gains never replace the shared calibration.
 The configured host publishes a typed `operator-wait-started` status once the
-first wait operation is actually running; this status itself issues no command.
+first wait operation is actually running. The production status writer admits
+this companion-owned status; the status itself issues no command.
 The shared adapter validates the required names, requests one complete MAVLink
 parameter list, and lets each host retain only its required replies. This avoids
 overflowing ArduPilot's bounded queue for individual parameter-read requests.
@@ -202,6 +205,12 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   `comp2026_auto` mission. Keep changes there focused and preserve its imported
   history and provenance. The Docker context admits only its explicit import
   closure.
+- The current `comp2026_auto` host is incompatible with the imported guarded
+  flight API. Both competition suite cases fail before flight. The adapter needs
+  explicit identities, supervisor/home setup, and validated release/precision
+  policies; those policies are absent from the competition configuration.
+  See the dated evidence in [handoff](../docs/handoff.md). Import smoke alone
+  does not establish flight compatibility.
 - Building the Phase 3 companion image requires
   `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. Compose
   leaves the build argument empty when it is not supplied so inactive profiles

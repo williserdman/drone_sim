@@ -28,6 +28,7 @@ from artifacts.runtime_status import (
     MissionExecutionReadyStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
+    OperatorWaitStartedStatus,
     RuntimeFailureStatus,
     RuntimeStatus,
 )
@@ -311,9 +312,12 @@ class _CalibrationReadiness:
             return
         for name in self.expected:
             try:
-                value = parameters[name]
-            except (KeyError, TypeError):
-                continue
+                value = parameters.get(name, wait_ready=False)
+            except TypeError:
+                try:
+                    value = parameters[name]
+                except (KeyError, TypeError):
+                    continue
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 self.gate.observe(name, float(value))
 
@@ -464,6 +468,7 @@ class _ProductionProtocol:
             MissionCommandDeliveredStatus,
             MissionExecutionReadyStatus,
             MissionFinishedStatus,
+            OperatorWaitStartedStatus,
             RuntimeFailureStatus,
         }:
             raise ValueError("companion does not own that status")

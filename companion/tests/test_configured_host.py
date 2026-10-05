@@ -4,12 +4,19 @@ from pathlib import Path
 
 import pytest
 
-from artifacts.runtime_status import RuntimeStatus, status_document, status_name
+from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.runtime_status import (
+    OperatorWaitStartedStatus,
+    RuntimeStatus,
+    status_document,
+    status_name,
+)
 from drone_sim_companion.configured_runtime import ConfiguredHost
 from drone_sim_companion.configured_runtime import MOVING_PRECISION_PARAMETERS
 from drone_sim_companion.lifecycle import CompanionLifecycle
 from drone_sim_companion.mission import Ack, CommandKind, Telemetry
 from drone_sim_companion.mission_plan import parse_mission_plan
+from drone_sim_companion.runtime_node import RuntimeConfig, _ProductionProtocol
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -305,6 +312,40 @@ def test_moving_plan_publishes_observed_arm_and_disarm_events():
         ("MOVING_PAD", "ARMED", 1),
         ("MOVING_PAD", "DISARMED", 2),
     ]
+
+
+def test_first_wait_status_crosses_the_production_protocol_boundary(tmp_path: Path):
+    run_directory = tmp_path / RUN_ID
+    (run_directory / ".status").mkdir(parents=True)
+    protocol = _ProductionProtocol(RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        mission="configured",
+    ))
+    vehicle = Vehicle()
+    lifecycle = CompanionLifecycle(run_id=RUN_ID, protocol=protocol, stream=StringIO())
+    host = ConfiguredHost(
+        parse_mission_plan({"schema_version": 1, "steps": [{
+            "tool": "wait_for_state",
+            "args": {"armed": True, "mode": "GUIDED"},
+        }]}),
+        vehicle,
+        lifecycle,
+        protocol,
+        RUN_ID,
+    )
+
+    try:
+        host.observe(Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False,
+                               landed=True, prearm_checks_healthy=True))
+        host.tick(0, mission_running=False)
+        host.tick(0, mission_running=True)
+        with RuntimeProtocol(run_directory, RUN_ID) as reader:
+            assert reader.read_status(OperatorWaitStartedStatus) == (
+                OperatorWaitStartedStatus(RUN_ID, "1", 0)
+            )
+    finally:
+        protocol.close()
 
 
 def test_moving_approach_fails_if_waypoint_is_still_active_after_absolute_settle_deadline():

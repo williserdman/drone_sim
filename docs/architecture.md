@@ -77,8 +77,10 @@ from mission success; scoring and artifact validity remain independent.
 After passive readiness, matching RUNNING, and accepted public clock, the
 companion publishes typed `MissionExecutionReadyStatus`. Gazebo selects this
 release fact only for `mission: configured`. Operator waiting can then observe
-advancing simulation without a fabricated GUIDED command. Other missions keep
-their existing command-delivery gate. See the
+advancing simulation without a fabricated GUIDED command. The first running wait
+also publishes typed `OperatorWaitStartedStatus` through the companion's
+production writer. The separate operator consumes this fact before its commands.
+Other missions keep their existing command-delivery gate. See the
 [tool contract](../companion/README.md#configured-diagnostic-missions).
 
 ROS messages/services define the wire format; the linked module guides identify
@@ -287,8 +289,10 @@ Each dependent run copies the exact artifact into its own configuration and
 loads its allowlisted gain keys after the base and scenario parameter overlays.
 Before any mission flight command or execution readiness, every calibrated
 host verifies the complete effective gain/baseline input and records one
-`calibration_parameters_verified` pre-arm event. The gate then freezes its
-snapshot: a roll diagnostic may deliberately seed and retune its own controller
+`calibration_parameters_verified` pre-arm event. DroneKit hosts poll only already
+received cache values without waiting for global parameter readiness. Missing
+values keep the gate closed; mismatches fail without arming. The gate then freezes
+its snapshot: a roll diagnostic may deliberately seed and retune its own controller
 without replacing the shared artifact, recording its seed writes separately. This path does not
 rewrite the tracked baseline through
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py).

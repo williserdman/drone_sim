@@ -48,6 +48,43 @@ recovery. Focused companion/runtime checks passed 91 tests; fresh flight proof
 of this change remains pending. Evidence is retained under
 `runs/local-ci/20261005-2f2ba2e/`.
 
+Fourth suite `8504b189-776f-442f-8053-62635ce0b601`, built from clean `91d8cae`,
+finished `FAILED` at 21:26 UTC on 2026-10-05 and attempted all 11 setups.
+Calibration, reload validation, configured descent, controlled descent, moving
+pad, and stationary pad each completed, established physical `LANDED`, scored
+100/100, and passed independent acceptance. Operator wait, hover-roll, and
+AutoTune-roll failed before flight: their physical outcomes are unknown,
+their raw scores are 0/100, and their artifacts are rejected. The operator
+production writer rejected its registered wait status. Both roll hosts invoked
+DroneKit's blocking complete-parameter wait when reading the cache.
+
+Both competition cases failed before flight with
+`DroneKit connection failed: source_identity must be explicit`. Their physical
+outcomes and scores are unknown; artifact acceptance rejected both. Each retained
+finalization/terminal-notification/runtime-failure-observation deadline
+diagnostics. All 11 owned Compose projects were removed. The report, failed
+bundles, and six accepted recordings remain in the shared
+`/home/willis/projects/drone_sim/runs/local-ci/20261005-91d8cae/` directory.
+The report is `suites/8504b189-776f-442f-8053-62635ce0b601/report.json` beneath it.
+
+Two focused regressions reproduced the status-writer and parameter-cache bugs.
+The fixes admit the companion-owned wait status and inspect DroneKit's current
+cache without blocking. Their focused checks passed 84 tests. A full host sweep
+passed 2,263 tests with 27 environment skips; one lock check failed while the live
+suite held the workstation lock, then passed after teardown. Imported Comp2026
+checks passed 1,126 tests. Compilation and edited local documentation links
+passed. Physical reruns of the fixes remain pending.
+
+The competition adapter needs a larger compatibility change. Identities alone
+satisfy only the constructor: native missions also require pinned home,
+FlightState/supervisor/output transactions, release/clearance configuration, and
+an explicit precision policy. The hardware/QGC initializer requires deployment
+artifacts absent from simulator configuration. Sensor geometry and physical
+attachment confirmation exist, but required safety and precision policy values
+are not defined. Do not bypass those guards, use ground truth as onboard
+evidence, or treat test-only policies as deployment configuration. No common-build
+full-suite pass is claimed.
+
 The manual Actions workflow is implemented. Official runner v2.337.0 is
 registered as `drone-sim-workstation` with label `drone-sim`. A temporary user
 listener connected at 16:33 UTC and GitHub reports online. The persistent service

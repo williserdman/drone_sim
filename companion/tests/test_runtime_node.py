@@ -83,6 +83,32 @@ def test_imported_calibration_readiness_blocks_until_complete_and_reports_once()
     ]
 
 
+def test_imported_calibration_readiness_uses_nonblocking_dronekit_cache() -> None:
+    class DroneKitParameters:
+        def __init__(self) -> None:
+            self.values = {"ATC_RAT_RLL_P": 0.041}
+
+        def __getitem__(self, _name: str) -> float:
+            raise AssertionError("parameter subscription must not block the runtime loop")
+
+        def get(self, name: str, *, wait_ready: bool = True) -> float | None:
+            assert wait_ready is False
+            return self.values.get(name)
+
+    parameters = DroneKitParameters()
+    readiness = runtime_node._CalibrationReadiness({
+        "ATC_RAT_RLL_P": 0.041,
+        "INS_GYRO_FILTER": 20.0,
+    })
+
+    readiness.observe_cached(parameters)
+    assert not readiness.gate.ready
+
+    parameters.values["INS_GYRO_FILTER"] = 20.0
+    readiness.observe_cached(parameters)
+    assert readiness.gate.ready
+
+
 def test_imported_calibration_readiness_exposes_terminal_mismatch() -> None:
     readiness = runtime_node._CalibrationReadiness({"ATC_RAT_RLL_P": 0.041})
 
