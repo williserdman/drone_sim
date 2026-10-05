@@ -8,19 +8,26 @@ world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
 
-Design update 2026-10-05: the conversational design for a manually triggered
-11-setup suite and its
-[written spec](superpowers/specs/2026-10-05-full-ci-suite-design.md) are approved.
-The [implementation plan](superpowers/plans/2026-10-05-full-ci-suite.md) awaits
-review and execution-method selection. No suite command, Actions workflow or
-self-hosted runner was installed, and no new flights were run for these updates.
+Implementation update 2026-10-05: branch `feat/manual-ci-suite` implements the
+approved [11-setup design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
+and [plan](superpowers/plans/2026-10-05-full-ci-suite.md). The shared local `suite`
+command builds once, gates consumers on accepted calibration/fresh reload and
+reports mission-specific independent results. Focused software checks pass;
+current common-build flight sweep and final full tests are pending.
+
+The manual Actions workflow is implemented. Official runner v2.337.0 is
+registered as `drone-sim-workstation` with label `drone-sim`, but remains offline:
+noninteractive sudo is unavailable, so vendor service installation/start requires
+the operator steps in the [runbook](runbook.md#manual-workstation-ci).
+Actions dispatch remains unrun until the workflow exists on default branch
+`main` and the runner service is online. No current end-to-end pass is claimed.
 
 The new CI calibration implementation shares aircraft dynamics across the three
 vehicle variants, tunes all axes and saves gains after native LAND. It adds
 independent calibration acceptance and a fresh-SITL validation consumer.
 Calibration and fresh-SITL validation both passed independent acceptance at
-100/100. This completes the first calibration/reload milestone; whole-suite
-dependency execution remains unimplemented. The sweep below used the older
+100/100. This completes the first calibration/reload milestone; the new suite wires the dependency,
+but its current all-setup flight proof remains pending. The sweep below used the older
 `33da957` profile; its passes do not establish compatibility with the new body or
 gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
 

@@ -230,6 +230,42 @@ catalog's target timing totals about 4 h 40 min before build, startup and
 finalization; use the report's timestamps for actual duration. Configuration
 coverage fails if a new top-level flight template is absent from the catalog.
 
+### Manual workstation CI
+
+The [Mission suite workflow](../.github/workflows/mission-suite.yml) uses the same
+catalog and CLI, with no scheduled, push or PR trigger. It selects this workstation
+by `self-hosted`, `linux`, `x64`, `drone-sim` labels and queues dispatches without
+cancelling an active suite. Its persistent outputs are
+`/home/willis/projects/drone_sim/runs/ci/GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT`.
+Full MP4s and bags remain local; Actions publishes the report and compact logs,
+configuration, manifests, score results and parameters.
+
+The official runner is registered at `/home/willis/actions-runner-drone-sim`.
+Service installation needs interactive workstation sudo:
+
+```bash
+cd /home/willis/actions-runner-drone-sim
+sudo ./svc.sh install willis
+sudo ./svc.sh start
+```
+
+Confirm the service with `sudo ./svc.sh status` and the repository runner page.
+Registration alone does not establish that the service is online. Machine setup
+and verification are recorded in `/home/willis/SETUP_REPLICATION.md`.
+
+After the workflow definition is present on `main`, dispatch through Actions →
+Mission suite → Run workflow, or from this repository:
+
+```bash
+gh workflow run mission-suite.yml --ref main
+gh run list --workflow mission-suite.yml --limit 1
+```
+
+Watch that run's job summary for the report. The self-hosted job allows 24 hours;
+the local command still enforces its own build, run, inspection and finalization
+bounds. Existing [handoff](handoff.md) evidence distinguishes local sweeps from
+actual Actions dispatches; neither registration nor workflow syntax proves a flight.
+
 ## Run and monitor
 
 ```bash

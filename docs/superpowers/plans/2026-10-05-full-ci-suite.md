@@ -366,9 +366,10 @@ No alternative sweep script, handcrafted success report or new scoring policy.
 
 ## Execution handoff and deferred work
 
-Written plan awaits approval and execution-method selection. Recommend native
+Approved 2026-10-05; executing on `feat/manual-ci-suite`. Recommend native
 execution with bounded independent delegation, following the user's MVP rule
-against review cycles. Use `superpowers:executing-plans` for root implementation;
+against unsolicited review cycles. The explicit `$implement` request adds one
+final code review. Use `superpowers:executing-plans` for root implementation;
 delegation does not authorize speculative refactoring or hardening.
 
 Defer cache/promotion, parallel jobs, scheduled/PR triggers, video hosting,
