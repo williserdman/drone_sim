@@ -218,8 +218,13 @@ course geometry remain mission-specific. Calibration starts without a payload;
 the competition flights exercise the same gains with their specified loads.
 The [shared generator](../gazebo/scripts/prepare_competition_assets.py) produces
 the diagnostic, moving-pad and competition variants from the same physical body.
-The first calibration importer supports the unloaded diagnostic variant only;
-whole-suite import and payload validation remain a separate delivery step.
+The version-2 importer binds all three stock variants to one canonical physical
+fingerprint and records their exact model digests. Only declared pose/payload
+coordination plugins are excluded; unknown plugins and all dynamics remain
+bound. Imported profiles freeze the consumer model and ordered parameter
+overlays, with gains loaded last. Legacy version-1 imports remain unloaded-only.
+The explicit `calibration_validation` flag distinguishes the reload hover from
+ordinary calibrated missions.
 
 The companion takes off in GUIDED, settles in LOITER, then enters AUTOTUNE with
 `AUTOTUNE_AXES=7` for roll, pitch, and the pinned implementation's standard yaw

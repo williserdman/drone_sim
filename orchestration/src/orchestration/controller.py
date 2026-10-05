@@ -324,7 +324,7 @@ class RunController:
         event_stream: TextIO | None = None,
         poll_interval: float = 0.1,
         source_runner: Callable[..., Any] = subprocess.run,
-        calibration_importer: Callable[[Path], CalibrationImport] | None = None,
+        calibration_importer: Callable[[Path, str, str], CalibrationImport] | None = None,
     ) -> None:
         self.project_directory = Path(
             project_directory
@@ -346,8 +346,9 @@ class RunController:
         self.poll_interval = float(poll_interval)
         self.source_runner = source_runner
         self.calibration_importer = calibration_importer or (
-            lambda source: freeze_calibration_import(
-                source, project_directory=self.project_directory
+            lambda source, vehicle, scenario: freeze_calibration_import(
+                source, project_directory=self.project_directory,
+                consumer_vehicle=vehicle, consumer_scenario=scenario,
             )
         )
 

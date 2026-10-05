@@ -28,7 +28,8 @@
     "competition": {"$ref": "#/$defs/competition"},
     "mission_plan": {"$ref": "#/$defs/mission_plan"},
     "calibration": {"$ref": "#/$defs/calibration_source"},
-    "calibration_profile": {"type": "object"}
+    "calibration_profile": {"type": "object"},
+    "calibration_validation": {"type": "boolean", "default": false}
   },
   "allOf": [
     {
@@ -59,12 +60,15 @@
         "required": ["runtime_profile", "mission_plan"],
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
-      "else": {
-        "allOf": [
-          {"not": {"required": ["mission_plan"]}},
-          {"not": {"required": ["calibration"]}}
-        ]
-      }
+      "else": {"not": {"required": ["mission_plan"]}}
+    },
+    {
+      "if": {"required": ["calibration"]},
+      "then": {"properties": {"mission": {"enum": ["configured", "controlled_descent", "hover_roll", "autotune_roll", "comp2026_auto"]}}}
+    },
+    {
+      "if": {"required": ["calibration_validation"], "properties": {"calibration_validation": {"const": true}}},
+      "then": {"required": ["calibration"], "properties": {"mission": {"const": "configured"}}}
     },
     {
       "if": {"properties": {"mission": {"const": "autotune"}}},

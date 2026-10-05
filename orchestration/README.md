@@ -55,9 +55,10 @@ validated by the companion. Examples are
 [operator waiting](../config/configured-operator-run.json).
 
 An `autotune` run receives a host-generated `calibration_profile` in its resolved
-configuration before Compose starts. The profile binds the unloaded
-`iris_flight` model, base parameter file, ArduPilot revision, and immutable
-Gazebo/SITL image IDs. A configured validation template may declare
+configuration before Compose starts. The version-2 profile binds the shared physics of `iris_flight`,
+`iris_moving_pad`, and `iris_competition`, each exact model digest, the base
+parameter file, ArduPilot revision and immutable Gazebo/SITL image IDs. The
+configured, descent, hover, roll and competition consumers may declare
 `calibration.source_run_directory`; relative paths resolve from the template.
 Before allocating the new run, orchestration independently accepts the source at
 maximum score, checks that profile against the current runtime, and freezes the
@@ -66,6 +67,10 @@ to `configuration/calibration.parm` and
 `configuration/calibration-manifest.json`. See the
 [calibration validation template](../config/calibration-validation-run.json);
 replace `SOURCE_RUN_ID` with an accepted `autotune` run ID before launch.
+The explicit `calibration_validation: true` role selects reload hover checks;
+ordinary calibrated missions retain their own contracts. Imported profiles bind
+the consumer model, ordered scenario overlays and effective baseline. The
+original unloaded version-1 profile remains valid only for `iris_flight`.
 
 The [moving-pad template](../config/configured-moving-pad-run.json) binds
 `configured`, `iris_moving_pad`, and `moving_pad_v1` to the moving-pad world,

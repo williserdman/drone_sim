@@ -89,6 +89,9 @@ settings are recorded separately and may be zero.
 manifest inventory, DataFlash save, activation readback, post-disarm readback,
 and unchanged preserved settings to agree. Historical roll-only
 `autotune-roll.parm` artifacts retain their existing format and parser.
+`airframe_fingerprint()` binds the full physical model after normalizing its
+outer name and removing only declared pose/payload coordination plugins;
+unknown plugins, links, sensors and controller settings remain bound.
 
 Independent acceptance also replays `calibration_v1` physical scoring, rotating
 recorded body velocity into world coordinates. Its 100 points cover airborne
