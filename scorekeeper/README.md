@@ -55,6 +55,11 @@ and attempt messages contain timing and evidence references, never exact payload
 positions.
 Topic selection and QoS live in
 [runtime_node.py](src/drone_sim_scorekeeper/runtime_node.py), not this guide.
+The VFS runtime joins each exact 20 Hz ground-truth and three-payload epoch with
+the matching 10 Hz vehicle status when due. It applies truth, payload, then
+status before publishing that epoch's attempt state. A phase check waits for its
+exact physical epoch, retains its original timestamp and correlation, and fails
+closed if the epoch remains incomplete for 500 ms of observed simulation time.
 
 The exact scoring data authorities are
 [competition_v1.json](rules/competition_v1.json) and
@@ -76,6 +81,9 @@ documentation. The persisted schema is defined by
   simulation-time grid after mission start. A gap, duplicate, regression,
   conflicting physical order, or missing terminal evidence makes scoring
   incomplete; a later suffix cannot repair it.
+- Judge freshness remains an as-of rule: deferred checks use only evidence at or
+  before the original request timestamp. Callback arrival order cannot substitute
+  later physical facts or change the request's active-clock value.
 - Payload release is evidence, not points by itself. Delivery requires physical
   detachment and settled geometry. Comp2026 Home completion requires physical
   landing truth through ordered `HOME/DISARMED` and `HOME/COMPLETE` events.

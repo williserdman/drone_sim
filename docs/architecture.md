@@ -97,6 +97,13 @@ combines Gazebo contact/poses with observed
 then publishes correlated
 [`JudgeDecision`](../ros_ws/src/simulation_interfaces/msg/JudgeDecision.msg) and
 continuous [`AttemptStatus`](../ros_ws/src/simulation_interfaces/msg/AttemptStatus.msg).
+The scorekeeper canonically joins each exact 20 Hz ground-truth and three-payload
+epoch with the matching 10 Hz vehicle-status sample when due, applying truth,
+payloads, then status before publishing `AttemptStatus`. A check request remains
+immutable while it waits for its exact epoch. The judge uses only facts at or
+before that request timestamp and emits one correlated decision; an incomplete
+epoch fails closed after 500 ms of observed simulation time. This removes DDS
+callback-order dependence without widening any evidence-freshness bound.
 The companion queues phase checks until disarm has been published for one full
 vehicle-status interval, then emits the request with its current simulation
 timestamp. Judge rejection remains terminal.

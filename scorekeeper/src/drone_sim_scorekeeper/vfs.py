@@ -383,6 +383,11 @@ class VfsJudge:
             return self._active_accumulated_ns
         return self._active_accumulated_ns + self._truth.sim_timestamp_ns - self._active_since_ns
 
+    def _active_elapsed_at(self, timestamp_ns: int) -> int:
+        if self._active_since_ns is None:
+            return self._active_accumulated_ns
+        return self._active_accumulated_ns + max(0, timestamp_ns - self._active_since_ns)
+
     @property
     def attempt_status(self) -> AttemptStatus:
         stamp = self._truth.sim_timestamp_ns if self._truth else 0
@@ -534,9 +539,9 @@ class VfsJudge:
         reason = "physical_requirements_not_met"
         eligible: tuple[int, ...] = ()
         refs = [f"mission-events#{event.event_id}"]
-        if self._truth is not None:
+        if self._truth is not None and self._truth.sim_timestamp_ns <= event.sim_timestamp_ns:
             refs.append(f"groundtruth#{self._truth.sim_timestamp_ns}")
-        if self._status is not None:
+        if self._status is not None and self._status.sim_timestamp_ns <= event.sim_timestamp_ns:
             refs.append(f"vehicle-status#{self._status.sequence_id}")
         if (
             self._truth is None
@@ -676,11 +681,51 @@ class VfsJudge:
         self._requests[request_id] = (event.phase, checkpoint, decision)
         return (decision,)
 
-    def _error(self, event: MissionEventSample, request_id: str, checkpoint: str, reason: str) -> JudgeDecision:
+    def reject_mission_event_missing_evidence(
+        self, event: MissionEventSample
+    ) -> tuple[JudgeDecision, ...]:
+        """Freeze a pending check as an evidence error without re-evaluating facts."""
+        self._same_run(event)
+        if event.state != "CHECK_REQUESTED":
+            return ()
+        try:
+            detail = json.loads(event.detail)
+            if set(detail) != {"checkpoint", "request_id"}:
+                raise ValueError
+            checkpoint, request_id = detail["checkpoint"], detail["request_id"]
+            if not isinstance(checkpoint, str) or not isinstance(request_id, str) or not request_id:
+                raise ValueError
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return (self._error(event, "", "", "invalid_request_detail"),)
+        previous = self._requests.get(request_id)
+        if previous is not None:
+            if previous[:2] == (event.phase, checkpoint):
+                return (previous[2],)
+            return (self._error(event, request_id, checkpoint, "request_id_conflict"),)
+        decision = self._error(
+            event,
+            request_id,
+            checkpoint,
+            "evidence_stale_or_missing",
+            active_elapsed_ns=self._active_elapsed_at(event.sim_timestamp_ns),
+        )
+        self._requests[request_id] = (event.phase, checkpoint, decision)
+        return (decision,)
+
+    def _error(
+        self,
+        event: MissionEventSample,
+        request_id: str,
+        checkpoint: str,
+        reason: str,
+        *,
+        active_elapsed_ns: int | None = None,
+    ) -> JudgeDecision:
         decision = JudgeDecision(
             self.run_id, event.sim_timestamp_ns, self._decision_id, request_id,
             event.event_id, event.phase, checkpoint, JudgeOutcome.ERROR, (),
-            self.active_elapsed_ns, reason, (f"mission-events#{event.event_id}",),
+            self.active_elapsed_ns if active_elapsed_ns is None else active_elapsed_ns,
+            reason, (f"mission-events#{event.event_id}",),
         )
         self._decision_id += 1
         return decision

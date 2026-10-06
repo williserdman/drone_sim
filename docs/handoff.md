@@ -81,6 +81,16 @@ and terminal camera errors retain their cause chain. These changes passed 35
 focused tests and relevant type checks; they do not establish this run's root
 camera cause or a completed mission. Full three-payload flight, score, and
 artifact acceptance remain pending.
+Ninth launch `a5234350-97c8-4285-af84-39b9293c891a` at `fa98aae` passed FM1 D
+at 48.2 s, then its H check at 96.3 s failed with stale evidence. Native MCAP
+showed valid H contact and disarm: the request reached the judge after ground
+truth 96.2 s but before already-produced 96.25/96.3 s samples, making the latest
+consumed truth 100 ms old against the unchanged 50 ms limit. The scorekeeper
+runtime now joins exact physical epochs in canonical truth/payload/status order
+and defers a check to its original epoch, with a 500 ms simulation-time
+fail-closed bound. Focused source verification is recorded with the implementing
+change: 60 scorekeeper tests and relevant type checks passed. No rebuilt image
+or replacement flight has yet verified this fix.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact
