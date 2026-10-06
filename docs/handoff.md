@@ -3,18 +3,36 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-06. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-10-07. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
 
-Calibration return update 2026-10-06: the companion now captures the disarmed
+Calibration return update 2026-10-07: the companion now captures the disarmed
 launch position, returns there in GUIDED at 5 m after tuning/gain activation,
 and requires two stable seconds within 0.5 m before native LAND. Checks passed
-2,285 host/module tests with 27 skips and 1,126 imported Comp2026 tests. Fresh
-flight/recording validation is pending;
-the older accepted and rejected landings below had no return command. Landing
-speed, physical scoring and saved-gain verification are unchanged.
+2,285 host/module tests with 27 skips and 1,126 imported Comp2026 tests.
+Diagnostic run `a7c6d2e1-a4f6-4d12-a1e2-af4bfecbc7a6`, from clean `9416c22`,
+completed on 2026-10-06 at 22:26 UTC. It commanded the return at public
+411.95 seconds, verified arrival at 422.20 seconds, and made ground contact
+at 432.60 seconds, 0.0234 m from the zone origin. Recorded contact persisted through
+the recording end at 900 seconds. Native Roll/Pitch/Yaw gain saving preceded
+matching post-disarm readback and companion `LANDED` at 435.25 seconds.
+
+Physical return/landing succeeded, but raw scoring remained 60/100 because
+`stable_contact` failed. The first contact sample reports 0.101601 m/s against
+the 0.1 m/s limit; it is the only failing sample in the 432.60–433.10 second
+window. Contact stays true and tilt stays below 1.003 degrees throughout.
+Fresh checksum/size validation matches all 27 manifest records, and the MCAP
+independently parses; this does not establish semantic acceptance. The standard
+inspector rejects the diagnostic's noncanonical image references, and its raw
+score also falls short of the calibration gate. Do not import this run as an
+accepted CI calibration or treat it as an all-setup pass. The run and a
+side-by-side return/landing clip at original playback speed are retained beneath
+`runs/diagnostics/20261006-calibration-return-zone/`; the clip is
+`review/return-and-land-normal-speed.mp4`, covering public 407–441 seconds,
+observer left and onboard right. Source videos remain in the run bundle.
+Landing speed, physical scoring and saved-gain verification are unchanged.
 
 Implementation update 2026-10-05: branch `feat/manual-ci-suite` implements the
 approved [11-setup design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
@@ -207,7 +225,11 @@ are not defined. Do not bypass those guards, use ground truth as onboard
 evidence, or treat test-only policies as deployment configuration. No common-build
 full-suite pass is claimed.
 
-The manual Actions workflow is implemented. Official runner v2.337.0 is
+The manual Actions workflow is implemented. On 2026-10-07, GitHub reported the
+registered runner online and idle with the required labels. The operator also
+added the missing `workflow` authentication scope; publishing the workflow is
+no longer blocked on that scope. The workflow remains absent from default
+branch `main`, so provider dispatch is still unrun. Official runner v2.337.0 is
 registered as `drone-sim-workstation` with label `drone-sim`. A temporary user
 listener connected at 16:33 UTC and GitHub reports online. The persistent service
 remains pending: noninteractive sudo is unavailable, so installation/start requires
