@@ -382,6 +382,89 @@ def test_vfs_2027_node_joins_payload_support_into_vehicle_contact():
         rclpy.shutdown()
 
 
+def test_vfs_2027_odometry_watermark_releases_grounded_attached_support_first():
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from nav_msgs.msg import Odometry
+    from rosgraph_msgs.msg import Clock
+    from sensor_msgs.msg import Image
+    from drone_sim_gazebo.ros_adapter.model import PublicGroundTruth
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    published = []
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=2,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        world_name="competition_2027",
+        width_px=320,
+        height_px=240,
+    )
+    adapter._publish = published.extend
+
+    def image(timestamp_ns):
+        message = Image()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        message.height = 240
+        message.width = 320
+        message.encoding = "rgb8"
+        message.step = 960
+        message.data = bytes(320 * 240 * 3)
+        return message
+
+    def odometry(timestamp_ns):
+        message = Odometry()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        message.pose.pose.orientation.w = 1.0
+        return message
+
+    def support(aruco_id, timestamp_ns, *, grounded=False, attached=False):
+        return PublicPayloadState(
+            run_id=RUN_ID,
+            sim_timestamp_ns=timestamp_ns,
+            aruco_id=aruco_id,
+            position_xyz=(0.0, 0.0, 0.0),
+            orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+            linear_velocity_xyz=(0.0, 0.0, 0.0),
+            grounded=grounded,
+            attached=attached,
+        )
+
+    try:
+        adapter.activate_output()
+        epoch = Clock()
+        _set_stamp(epoch.clock, PUBLIC_EPOCH_NATIVE_NS)
+        adapter._accept_clock(epoch)
+
+        first_native = PUBLIC_EPOCH_NATIVE_NS + 50_000_000
+        for stream in ("onboard", "observer"):
+            adapter._accept_image(stream, image(first_native))
+        adapter._accept_odometry(odometry(first_native))
+        adapter._accept_odometry(odometry(first_native + 50_000_000))
+
+        for aruco_id in (2, 3, 4):
+            adapter._emit(
+                (
+                    support(
+                        aruco_id,
+                        50_000_000,
+                        grounded=aruco_id == 2,
+                        attached=aruco_id == 2,
+                    ),
+                )
+            )
+
+        truths = [item for item in published if isinstance(item, PublicGroundTruth)]
+        assert [(item.sim_timestamp_ns, item.in_contact) for item in truths] == [
+            (50_000_000, True)
+        ]
+        assert adapter._faulted is False
+    finally:
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_live_ros_node_faults_when_pre_zero_outputs_exceed_two_public_epochs():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")

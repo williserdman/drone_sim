@@ -10,11 +10,22 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-All seven VFS runtime images built successfully at `9f7679c`; physical mission,
+All seven VFS runtime images built successfully at `26e0d07`; physical mission,
 score, and full-window artifact verification remain pending. First launch
 `fe0831d5-c8d8-4532-84b6-db3509cc5705` failed before takeoff: artifact validation
 looked for the mission-plan version at the run document's top level. The check
 now reads the nested mission plan, with a real host-snapshot regression.
+Second launch `94992697-9946-4d04-85ff-c1d9948e7da9` passed artifact startup,
+released the public epoch, and issued takeoff. Gazebo then stopped on payload
+support lookahead exhaustion. Its join waited for a future leg contact event,
+but those events stop while airborne. The fix closes absent-leg intervals with
+later odometry and holds vehicle truth until matching payload support arrives,
+retaining strict payload-grid checks. Neither failed launch
+proves a completed physical mission or a valid full-window bundle.
+Support-join verification passed 19 host tests with 10 ROS skips and two native
+ROS regressions. A delayed attached, grounded payload still produces grounded
+vehicle truth; 25 sparse-leg epochs drain, and missing payload truth faults at
+the existing 20-epoch bound. The pure aggregator type check passed.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact

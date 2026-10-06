@@ -400,13 +400,18 @@ class GazeboAdapterNode(_node_base()):
                 return
             pose = message.pose.pose
             twist = message.twist.twist
-            output = self._live.accept_odometry(
-                NativeOdometry(
-                    sim_timestamp_ns=public_timestamp_ns,
-                    position_xyz=_vector3(pose.position),
-                    orientation_xyzw=_quaternion(pose.orientation),
-                    linear_velocity_xyz=_vector3(twist.linear),
-                    angular_velocity_xyz=_vector3(twist.angular),
+            odometry = NativeOdometry(
+                sim_timestamp_ns=public_timestamp_ns,
+                position_xyz=_vector3(pose.position),
+                orientation_xyzw=_quaternion(pose.orientation),
+                linear_velocity_xyz=_vector3(twist.linear),
+                angular_velocity_xyz=_vector3(twist.angular),
+            )
+            output = (
+                self._live.accept_odometry(odometry)
+                if self._vehicle_support is None
+                else self._accept_vehicle_truth(
+                    self._vehicle_support.accept_odometry(odometry)
                 )
             )
             self._emit(output)
@@ -430,12 +435,10 @@ class GazeboAdapterNode(_node_base()):
                     public_timestamp_ns, bool(message.contacts)
                 )
             else:
-                output = tuple(
-                    item
-                    for stamp_ns, supported in self._vehicle_support.accept_leg_contact(
+                output = self._accept_vehicle_truth(
+                    self._vehicle_support.accept_leg_contact(
                         public_timestamp_ns, bool(message.contacts)
                     )
-                    for item in self._live.accept_contact(stamp_ns, supported)
                 )
             self._emit(output)
         except (AdapterFault, AggregationFault, ValueError, TypeError) as error:
@@ -538,11 +541,9 @@ class GazeboAdapterNode(_node_base()):
             for value in output:
                 if isinstance(value, PublicPayloadState):
                     joined.extend(
-                        item
-                        for stamp_ns, supported in self._vehicle_support.accept_payload(
-                            value
+                        self._accept_vehicle_truth(
+                            self._vehicle_support.accept_payload(value)
                         )
-                        for item in self._live.accept_contact(stamp_ns, supported)
                     )
                 joined.append(value)
             output = tuple(joined)
@@ -553,6 +554,17 @@ class GazeboAdapterNode(_node_base()):
         if len(self._pre_zero_outputs) + len(output) > limit:
             raise AdapterFault("pre-zero output queue exceeded two public epochs")
         self._pre_zero_outputs.extend(output)
+
+    def _accept_vehicle_truth(
+        self, completed: tuple[tuple[NativeOdometry, bool], ...]
+    ) -> tuple[object, ...]:
+        output: list[object] = []
+        for odometry, supported in completed:
+            output.extend(
+                self._live.accept_contact(odometry.sim_timestamp_ns, supported)
+            )
+            output.extend(self._live.accept_odometry(odometry))
+        return tuple(output)
 
     def _publish(self, output) -> None:
         for value in output:

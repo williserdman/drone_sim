@@ -187,6 +187,8 @@ class VehicleSupportTracker:
         self._interval_ns = interval_ns
         self._leg_epochs: dict[int, bool] = {}
         self._last_leg_stamp: int | None = None
+        self._last_odometry_stamp: int | None = None
+        self._odometry_epochs: dict[int, NativeOdometry] = {}
         self._payload_epochs: dict[int, dict[int, bool]] = {}
         self._last_payload_stamps: dict[int, int] = {}
 
@@ -195,7 +197,7 @@ class VehicleSupportTracker:
 
     def accept_leg_contact(
         self, sim_timestamp_ns: int, in_contact: bool
-    ) -> tuple[tuple[int, bool], ...]:
+    ) -> tuple[tuple[NativeOdometry, bool], ...]:
         stamp = _stamp(sim_timestamp_ns)
         if type(in_contact) is not bool:
             raise AggregationFault("leg contact state must be a boolean")
@@ -206,7 +208,22 @@ class VehicleSupportTracker:
         self._leg_epochs[epoch] = self._leg_epochs.get(epoch, False) or in_contact
         return self._drain()
 
-    def accept_payload(self, state: object) -> tuple[tuple[int, bool], ...]:
+    def accept_odometry(
+        self, sample: object
+    ) -> tuple[tuple[NativeOdometry, bool], ...]:
+        odometry = _odometry(sample)
+        stamp = odometry.sim_timestamp_ns
+        if stamp % self._interval_ns != 0:
+            raise AggregationFault("support odometry must align with a public epoch")
+        if self._last_odometry_stamp is not None and stamp <= self._last_odometry_stamp:
+            raise AggregationFault("support odometry timestamps must advance")
+        self._last_odometry_stamp = stamp
+        self._odometry_epochs[stamp] = odometry
+        return self._drain()
+
+    def accept_payload(
+        self, state: object
+    ) -> tuple[tuple[NativeOdometry, bool], ...]:
         try:
             sample = cast(_PayloadSupportSample, state)
             marker = sample.aruco_id
@@ -234,24 +251,37 @@ class VehicleSupportTracker:
         self._payload_epochs.setdefault(stamp, {})[marker] = grounded and attached
         return self._drain()
 
-    def _drain(self) -> tuple[tuple[int, bool], ...]:
-        output: list[tuple[int, bool]] = []
+    def _drain(self) -> tuple[tuple[NativeOdometry, bool], ...]:
+        output: list[tuple[NativeOdometry, bool]] = []
         for epoch in sorted(self._payload_epochs):
             payloads = self._payload_epochs[epoch]
-            if set(payloads) != self._payload_ids:
-                continue
+            if set(payloads) != self._payload_ids or epoch not in self._odometry_epochs:
+                break
             leg_known = epoch in self._leg_epochs
             if not leg_known:
-                if self._last_leg_stamp is None or self._epoch(self._last_leg_stamp) <= epoch:
-                    continue
+                contact_closes_epoch = (
+                    self._last_leg_stamp is not None
+                    and self._epoch(self._last_leg_stamp) > epoch
+                )
+                odometry_closes_epoch = (
+                    self._last_odometry_stamp is not None
+                    and self._last_odometry_stamp > epoch
+                )
+                if not contact_closes_epoch and not odometry_closes_epoch:
+                    break
                 leg_contact = False
             else:
                 leg_contact = self._leg_epochs[epoch]
-            output.append((epoch, leg_contact or any(payloads.values())))
+            output.append(
+                (self._odometry_epochs.pop(epoch), leg_contact or any(payloads.values()))
+            )
             del self._payload_epochs[epoch]
             self._leg_epochs = {
                 stamp: value for stamp, value in self._leg_epochs.items() if stamp > epoch
             }
-        if len(self._payload_epochs) > _COMPLETED_CAPACITY:
+        if (
+            len(self._payload_epochs) > _COMPLETED_CAPACITY
+            or len(self._odometry_epochs) > _COMPLETED_CAPACITY
+        ):
             raise AggregationFault("payload support lookahead is full")
         return tuple(output)

@@ -75,6 +75,10 @@ The runtime publishes it through the
   adapter fault; later input cannot repair it.
 - In `competition_2027`, vehicle ground contact is the epoch-aligned union of
   leg contact and support through a payload that is both attached and grounded.
+  Leg contact events are sparse; a later odometry epoch closes an earlier
+  interval with no leg event. Payload support still requires every payload on
+  the exact 20 Hz grid. Odometry waits for matching support before publication,
+  so callback arrival order cannot replace grounded payload support with false.
   Missing payload support truth faults instead of becoming an airborne sample.
 - Flight readiness requires a paused ArduPilot/Gazebo round trip with servo,
   motor-update, and JSON-send progress and no frame gaps or send errors.

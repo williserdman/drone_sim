@@ -98,7 +98,10 @@ to cancel expired payload work and attempt bounded home recovery through its
 existing command owner. A recovered landing cannot turn failure into success.
 
 Gazebo's vehicle contact includes support through an attached, grounded payload
-from the same physical epoch. The judge checks actual support footprints for
+from the same physical epoch. A later odometry epoch closes an earlier interval
+with no leg contact event; all payload support samples remain required at each
+20 Hz epoch. The bounded join holds odometry until matching support is complete
+before publishing vehicle truth. The judge checks actual support footprints for
 circle eligibility and landed delivery. The independent artifact evaluator
 reconstructs the outcome and score from recorded evidence; command intent,
 eligibility, points, and full-mission acceptance are separate facts.

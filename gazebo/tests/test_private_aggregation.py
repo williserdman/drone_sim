@@ -41,12 +41,15 @@ def test_vehicle_support_includes_only_attached_grounded_payloads(
     leg_contact: bool, grounded: bool, attached: bool, expected: bool
 ) -> None:
     tracker = VehicleSupportTracker(payload_ids=(2, 3, 4), interval_ns=STAMP)
+    tracker.accept_odometry(_odometry())
     assert tracker.accept_leg_contact(STAMP, leg_contact) == ()
     assert tracker.accept_payload(_payload_support(2, grounded=grounded, attached=attached)) == ()
     assert tracker.accept_payload(_payload_support(3, grounded=True, attached=False)) == ()
-    assert tracker.accept_payload(
+    ((odometry, supported),) = tracker.accept_payload(
         _payload_support(4, grounded=False, attached=False)
-    ) == ((STAMP, expected),)
+    )
+    assert odometry.sim_timestamp_ns == STAMP
+    assert supported is expected
 
 
 def test_vehicle_support_rejects_missing_payload_epoch() -> None:
@@ -64,6 +67,56 @@ def test_vehicle_support_rejects_missing_payload_epoch() -> None:
                 attached=False,
             )
         )
+
+
+def test_vehicle_support_uses_odometry_to_close_sparse_leg_contact_epochs() -> None:
+    tracker = VehicleSupportTracker(payload_ids=(2, 3, 4), interval_ns=STAMP)
+
+    for aruco_id in (2, 3, 4):
+        assert tracker.accept_payload(
+            _payload_support(
+                aruco_id,
+                stamp_ns=STAMP,
+                grounded=False,
+                attached=False,
+            )
+        ) == ()
+
+    assert tracker.accept_odometry(_odometry(STAMP)) == ()
+    ((odometry, supported),) = tracker.accept_odometry(_odometry(2 * STAMP))
+    assert (odometry.sim_timestamp_ns, supported) == (STAMP, False)
+
+    for epoch in range(2, 26):
+        for aruco_id in (2, 3, 4):
+            tracker.accept_payload(
+                _payload_support(
+                    aruco_id,
+                    stamp_ns=epoch * STAMP,
+                    grounded=False,
+                    attached=False,
+                )
+            )
+        ((odometry, supported),) = tracker.accept_odometry(
+            _odometry((epoch + 1) * STAMP)
+        )
+        assert (odometry.sim_timestamp_ns, supported) == (epoch * STAMP, False)
+
+
+def test_vehicle_support_missing_payload_stream_faults_closed() -> None:
+    tracker = VehicleSupportTracker(payload_ids=(2, 3, 4), interval_ns=STAMP)
+
+    with pytest.raises(AggregationFault, match="payload support lookahead is full"):
+        for epoch in range(1, 22):
+            tracker.accept_odometry(_odometry(epoch * STAMP))
+            for aruco_id in (2, 3):
+                tracker.accept_payload(
+                    _payload_support(
+                        aruco_id,
+                        stamp_ns=epoch * STAMP,
+                        grounded=False,
+                        attached=False,
+                    )
+                )
 
 
 def _odometry(stamp_ns=STAMP):
