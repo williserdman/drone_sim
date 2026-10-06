@@ -82,6 +82,9 @@ correlated, frozen FM-2 eligibility decision; every branch is validated before
 flight. The companion receives eligibility and timing, while camera observations
 provide retrieval positions. Public payload truth is reserved for the payload
 authority, judge, recordings, and independent validation.
+Course ENU navigation freezes the first complete observed flight-controller
+home latitude/longitude. Rearming away from H can update live home telemetry,
+but cannot change the course origin or resolved payload targets.
 
 The [shared VFS configuration](../artifacts/src/artifacts/vfs_contract.py) contains
 immutable course, payload, target, and timing values. It contains no flight or

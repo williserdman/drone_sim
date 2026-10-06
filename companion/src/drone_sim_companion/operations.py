@@ -87,6 +87,7 @@ class DroneOperations:
         self._payloads = payloads
         self._phases = phases
         self._attempt = attempt
+        self._course_origin: tuple[float, float] | None = None
         self._marker_anchors: dict[int, MarkerAnchor] = {}
         self._last_marker_sequence = 0
         self._last_precision_touchdown_id: int | None = None
@@ -98,8 +99,7 @@ class DroneOperations:
                 and self._values.get("prearm_checks_healthy") is True)
         if not base or self._course is None:
             return base
-        return ("home_latitude_deg" in self._values
-                and "home_longitude_deg" in self._values
+        return (self._course_origin is not None
                 and profile_matches(self._values.get("precision_parameters", {})))
 
     @property
@@ -248,6 +248,13 @@ class DroneOperations:
             parameters.update(telemetry.precision_parameters)
             self._values["precision_parameters"] = parameters
             self._observed["precision_parameters"] = (self._clock_ns, self._sequence)
+        if (self._course_origin is None
+                and telemetry.home_latitude_deg is not None
+                and telemetry.home_longitude_deg is not None):
+            self._course_origin = (
+                float(telemetry.home_latitude_deg),
+                float(telemetry.home_longitude_deg),
+            )
         if telemetry.armed is True and self.armed_at_ns is None:
             self.armed_at_ns = self._clock_ns
             self._emit("mission_armed", self._clock_ns, {})
@@ -355,8 +362,7 @@ class DroneOperations:
     def _resolve_course_target(self, args: dict[str, Any]) -> tuple[float, float]:
         if self._course is None:
             raise RuntimeError("course navigation requires a frozen course")
-        if ("home_latitude_deg" not in self._values
-                or "home_longitude_deg" not in self._values):
+        if self._course_origin is None:
             raise RuntimeError("course navigation requires pinned home")
         if "waypoint" in args:
             waypoint = self._course.waypoints.get(args["waypoint"])
@@ -382,12 +388,8 @@ class DroneOperations:
                 offset_east, offset_north = payload.release_offset_xy_m
                 east = waypoint.center_xy_m[0] + offset_east
                 north = waypoint.center_xy_m[1] + offset_north
-        return offset_gps(
-            float(self._values["home_latitude_deg"]),
-            float(self._values["home_longitude_deg"]),
-            float(north),
-            float(east),
-        )
+        latitude, longitude = self._course_origin
+        return offset_gps(latitude, longitude, float(north), float(east))
 
     def _evaluate_course_waypoint(self, active: _Active, args: dict[str, Any]) -> bool:
         names = (

@@ -34,6 +34,14 @@ Checks now wait one published disarmed interval before emission. The actual
 failure timeline, freshness, armed resets, and correlation passed 53 focused
 tests; relevant type checks passed. Full mission and full-window acceptance
 remain pending.
+Fourth launch `b6f40106-ae81-4012-91aa-22939b82c92a`, with all seven images at
+`b3c4ab3`, received the D approval at 48.1 s, proving the published-disarm fix
+in flight. After rearming at D, the H command used ArduPilot's updated home
+position and landed at D again; the H judge correctly rejected it. Course
+navigation now freezes the first complete observed home pair. H and payload
+target regressions retain their original ENU coordinates after later home
+updates; 65 focused checks and the operations type check passed. That run shut
+down normally. Full three-payload flight and artifact acceptance remain pending.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact

@@ -8,7 +8,7 @@ import pytest
 from drone_sim_companion.configured_vision import MarkerObservation, RangeObservation
 from drone_sim_companion.mission import CommandKind, Telemetry
 from drone_sim_companion.operations import DroneOperations
-from drone_sim_companion.precision_landing import PRECISION_PARAMETERS
+from drone_sim_companion.precision_landing import PRECISION_PARAMETERS, offset_gps
 
 
 class Vehicle:
@@ -154,6 +154,62 @@ def test_course_waypoint_requires_one_second_below_horizontal_speed_limit() -> N
     assert operations.operation_status(operation_id).state == "running"
     observe_flight(operations, 1_100_000_000)
     assert operations.operation_status(operation_id).state == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("target_args", "east_m", "north_m"),
+    [
+        ({"waypoint": "H"}, 0.0, 0.0),
+        ({"payload_target": 2}, 11.0, 22.0),
+    ],
+)
+def test_course_navigation_keeps_first_complete_home_as_enu_origin(
+    target_args, east_m, north_m
+) -> None:
+    waypoint = lambda x, y: SimpleNamespace(center_xy_m=(x, y))
+    frozen_course = SimpleNamespace(
+        waypoints={"H": waypoint(0.0, 0.0), "P": waypoint(10.0, 20.0)},
+        attempt=SimpleNamespace(),
+    )
+    frozen_scenario = SimpleNamespace(payload=lambda _aruco_id: SimpleNamespace(
+        delivery="P", release_offset_xy_m=(1.0, 2.0)
+    ))
+    vehicle = Vehicle()
+    operations = DroneOperations(
+        vehicle, course=frozen_course, scenario=frozen_scenario
+    )
+    observe_flight(
+        operations, 0, home_latitude_deg=41.0, home_longitude_deg=-81.0
+    )
+    observe_flight(
+        operations, 1, home_latitude_deg=41.001, home_longitude_deg=-81.002
+    )
+
+    operation_id = operations.start(
+        "goto_course_waypoint", {**target_args, "altitude_m": 10.0}
+    )
+
+    assert operations.operation_status(operation_id).state == "running"
+    expected = offset_gps(41.0, -81.0, north_m, east_m)
+    assert vehicle.commands[-1][1:3] == pytest.approx(expected)
+    state = operations.read_vehicle_state()
+    assert state["home_latitude_deg"] == pytest.approx(41.001)
+    assert state["home_longitude_deg"] == pytest.approx(-81.002)
+
+
+def test_course_navigation_without_first_home_origin_sends_no_command() -> None:
+    vehicle = Vehicle()
+    operations = DroneOperations(vehicle, course=course(), scenario=scenario())
+    observe_flight(
+        operations, 0, home_latitude_deg=None, home_longitude_deg=None
+    )
+
+    operation_id = operations.start(
+        "goto_course_waypoint", {"waypoint": "H", "altitude_m": 10.0}
+    )
+
+    assert operations.operation_status(operation_id).state == "failed"
+    assert vehicle.commands == []
 
 
 def test_find_marker_needs_five_new_consistent_requested_id_frames() -> None:

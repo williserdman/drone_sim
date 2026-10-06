@@ -52,6 +52,9 @@ numbers fail before ROS or MAVLink resources open.
 | `check_phase` | Phase and the FM1 D/H checkpoint where required; waits for published disarm evidence, then the exactly correlated automatic judge decision. |
 
 Coordinates are WGS84 degrees; altitudes are metres above ArduPilot home.
+VFS course coordinates use the first complete observed home latitude/longitude
+as their fixed ENU origin. Later home updates after rearming remain visible in
+telemetry and cannot move named waypoints or payload targets.
 VFS checks wait one complete public status interval after the first disarmed
 snapshot. The runtime publishes status before advancing queued checks and stamps
 each request at emission time. This lets the judge observe disarm before a check;
