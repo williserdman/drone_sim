@@ -12,9 +12,14 @@ contracts live in the [runbook](runbook.md) and module guides.
 
 Fresh VFS image, physical mission, score, and full-window artifact verification
 are pending. The first image build exposed an unavailable Ubuntu Python venv
-pin; the affected Docker/lock entries now use the available `.17` revision.
-The exact artifact apt set simulated successfully; Gazebo provenance checks
-passed seven tests. This is build dependency evidence, not a flight pass.
+pin; three affected runtime Dockerfiles now use the available `.17` revision.
+The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact
+apt sets simulated successfully. Gazebo provenance checks
+passed seven tests. Gazebo's existing pinned dependency layer builds from local
+cache; reconstructing that older lock from current repositories remains deferred.
+Its fresh runtime source compiled the new messages, and a native probe passed
+three CDR round trips, three MCAP reads, and three artifact evidence decodes.
+This is build/serialization evidence, not a flight pass.
 Full host gate on `06ff611`: 2,093 passed, 27 skipped in 57.79 s. Bundled mission
 gate: 1,126 passed in 24.46 s. All eight templates resolve and schema-check;
 mixed A/B/C targets survive source snapshots and change resolved aimpoints.
