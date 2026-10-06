@@ -62,7 +62,7 @@ def _configure_vfs_resources(config, node, *, qos_profile, reliability, durabili
         mounting_path=Path(__file__).with_name("gazebo_camera_mounting.json"),
     )
     vision = ConfiguredVision(camera)
-    rangefinder = ConfiguredRangefinder()
+    rangefinder = ConfiguredRangefinder(clock_ns=clock_ns)
     payload_client = node.create_client(PayloadCommand, "/simulation/payload_command")
     payloads = PayloadActions(config.run_id, payload_client, PayloadCommand)
     event_publisher = node.create_publisher(

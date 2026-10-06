@@ -524,6 +524,7 @@ class DroneOperations:
                 and self._values.get("mode") == "LAND"
                 and range_observation is not None
                 and range_observation.distance_m <= NEAR_GROUND_M):
+            active.context["last_healthy_ns"] = self._clock_ns
             return False
         candidate_observation = self._vision.poll()
         candidate = self._marker_candidate(
@@ -563,6 +564,7 @@ class DroneOperations:
                 return False
             if (range_observation is not None
                     and range_observation.distance_m <= NEAR_GROUND_M):
+                active.context["last_healthy_ns"] = self._clock_ns
                 return False
             if self._clock_ns - active.context["last_healthy_ns"] < TARGET_HEALTH_NS:
                 return False

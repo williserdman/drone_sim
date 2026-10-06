@@ -106,9 +106,12 @@ class VehicleStatusStream:
 
 
 class ConfiguredRangefinder:
-    def __init__(self) -> None:
+    def __init__(self, clock_ns: Callable[[], int | None] | None = None) -> None:
         self._lock = threading.Lock()
+        self._clock_ns = clock_ns
+        self._read_timestamp_ns: int | None = None
         self._latest: RangeObservation | None = None
+        self._pending: RangeObservation | None = None
         self._sequence = 0
 
     def accept(self, message, timestamp_ns: int) -> None:
@@ -120,17 +123,33 @@ class ConfiguredRangefinder:
         if not math.isfinite(distance) or not minimum <= distance <= maximum:
             raise ValueError("downward range is invalid")
         with self._lock:
-            if self._latest is not None and timestamp_ns < self._latest.timestamp_ns:
+            current_ns = self._clock_ns() if self._clock_ns else self._read_timestamp_ns
+            self._promote_pending(current_ns)
+            last = self._pending or self._latest
+            if last is not None and timestamp_ns < last.timestamp_ns:
                 raise ValueError("downward range timestamp regressed")
             self._sequence += 1
-            self._latest = RangeObservation(self._sequence, timestamp_ns, distance)
+            observation = RangeObservation(self._sequence, timestamp_ns, distance)
+            if current_ns is not None and timestamp_ns <= current_ns:
+                self._latest = observation
+                self._pending = None
+            else:
+                self._pending = observation
 
     def latest(self, timestamp_ns: int) -> RangeObservation:
         with self._lock:
+            self._read_timestamp_ns = timestamp_ns
+            self._promote_pending(timestamp_ns)
             observation = self._latest
         if observation is None or not 0 <= timestamp_ns - observation.timestamp_ns <= 500_000_000:
             raise RuntimeError("fresh downward range is unavailable")
         return observation
+
+    def _promote_pending(self, timestamp_ns: int | None) -> None:
+        if (timestamp_ns is not None and self._pending is not None
+                and self._pending.timestamp_ns <= timestamp_ns):
+            self._latest = self._pending
+            self._pending = None
 
 
 class PayloadActions:

@@ -99,6 +99,48 @@ def test_rangefinder_rejects_stale_and_malformed_physical_samples() -> None:
         rangefinder.latest(500_000_101)
 
 
+def test_rangefinder_retains_current_range_when_delivery_leads_clock() -> None:
+    rangefinder = ConfiguredRangefinder()
+    rangefinder.accept(
+        SimpleNamespace(ranges=[0.63], range_min=0.05, range_max=40),
+        336_150_000_000,
+    )
+    assert rangefinder.latest(336_150_000_000).distance_m == pytest.approx(0.63)
+    rangefinder.accept(
+        SimpleNamespace(ranges=[0.43], range_min=0.05, range_max=40),
+        336_250_000_000,
+    )
+
+    observation = rangefinder.latest(336_200_000_000)
+    assert observation.timestamp_ns == 336_150_000_000
+    assert observation.distance_m == pytest.approx(0.63)
+    assert rangefinder.latest(336_250_000_000).distance_m == pytest.approx(0.43)
+    with pytest.raises(RuntimeError, match="fresh"):
+        rangefinder.latest(336_750_000_001)
+
+
+def test_rangefinder_promotes_pending_sample_before_next_leading_delivery() -> None:
+    clock_ns = 336_150_000_000
+    rangefinder = ConfiguredRangefinder(clock_ns=lambda: clock_ns)
+    rangefinder.accept(
+        SimpleNamespace(ranges=[0.63], range_min=0.05, range_max=40),
+        336_150_000_000,
+    )
+    assert rangefinder.latest(336_150_000_000).distance_m == pytest.approx(0.63)
+    rangefinder.accept(
+        SimpleNamespace(ranges=[0.43], range_min=0.05, range_max=40),
+        336_200_000_000,
+    )
+    clock_ns = 336_200_000_000
+    rangefinder.accept(
+        SimpleNamespace(ranges=[0.33], range_min=0.05, range_max=40),
+        336_250_000_000,
+    )
+
+    assert rangefinder.latest(336_200_000_000).distance_m == pytest.approx(0.43)
+    assert rangefinder.latest(336_250_000_000).distance_m == pytest.approx(0.33)
+
+
 def test_payload_action_requires_command_and_response_sequence_correlation() -> None:
     class Request:
         ATTACH = 1

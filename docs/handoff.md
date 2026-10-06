@@ -29,7 +29,24 @@ clock. Both new regressions failed before the correction and passed afterward,
 with 42 focused checks. Native source-bound replay now agrees with all four judge
 decisions and independently validates 579.7 active seconds and 365/380 points.
 These checks are diagnostic only: the original failed manifest remains unchanged.
-Matching rebuilt runtime images and a fresh accepted full-window run are pending.
+All seven images rebuilt at `6637136`; installed native replay validated the
+preserved bag and exact judge clocks. Flight `6e004e62-1728-4d53-a5ca-2d04b7355192`
+then completed all three C drops and received FM2 approval at 293.50 public
+seconds and 290.15 active seconds, freezing IDs 2, 3, and 4. FM3 failed on its
+first retrieval at 346.20 public seconds with `precision target reacquisition
+failed`. The aircraft touched down on payload 2 but remained armed in GUIDED;
+no L delivery or FM3 approval occurred. Its score was 215/380; terminal artifact
+finalization is pending. The original run remains failed evidence.
+
+Focused regressions reproduced two configured landing gaps: a future range scan
+hid the last clock-current scan, and fresh near-ground range did not refresh
+target health. A subsequent scan gap could therefore immediately switch LAND
+to GUIDED. The adapter now uses the existing mission's committed/pending scan
+pattern, and near-ground tracking refreshes health within the unchanged 500 ms
+timeout. Three new regressions failed before the fix; 53 focused companion
+checks passed afterward. The exact triggering callback order of that flight remains unrecorded;
+these deterministic regressions do not establish a successful physical flight.
+Matching rebuilt images and a fresh accepted full-window run remain pending.
 
 The preceding integration failures below are historical evidence. All seven VFS
 runtime images first built successfully at `26e0d07`. First launch

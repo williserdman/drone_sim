@@ -61,6 +61,10 @@ Superseded or stale queued images are discarded before
 camera acquisition; the adapter waits for fresh input within the existing
 operation and infrastructure deadlines. The camera's own freshness check remains
 enforced. Recording consumers retain their complete public frame grids.
+The configured downward-range adapter likewise retains a clock-current sample
+while a newer scan awaits its public timestamp, keeping the 500 ms freshness
+limit. Fresh range below the precision-landing floor refreshes target health;
+a brief scan gap does not immediately interrupt LAND.
 
 ## Where to read or change code
 

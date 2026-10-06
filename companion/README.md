@@ -90,7 +90,11 @@ handoff guard.
 Precision reacquisition counts fresh camera observations; intervening telemetry
 or clock ticks preserve the count, while a fresh invalid observation resets it.
 During LAND tracking, fresh range at or below 0.75 m takes precedence over camera
-polling until touchdown/disarm. Each camera request owns its result queue, so a
+polling and refreshes target health until touchdown/disarm. A brief range gap
+retains the existing 500 ms health timeout. The configured range adapter keeps
+clock-current and pending scans separately: a scan ahead of the public clock
+cannot hide a still-fresh prior scan or satisfy a decision before its timestamp.
+Each camera request owns its result queue, so a
 cancelled request cannot fail a later acquisition. Camera failures above that
 range retain their underlying exception details in the terminal diagnostic.
 Search remains bounded to the configured acquisition hover;

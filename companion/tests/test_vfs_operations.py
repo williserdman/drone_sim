@@ -347,6 +347,41 @@ def test_precision_land_near_ground_marker_loss_waits_for_touchdown_and_disarm()
     assert operations.operation_status(operation_id).state == "succeeded"
 
 
+def test_precision_land_fresh_near_ground_range_refreshes_target_health() -> None:
+    class IntermittentRangefinder(Rangefinder):
+        available = True
+
+        def latest(self, timestamp_ns: int) -> RangeObservation:
+            if not self.available:
+                raise RuntimeError("fresh downward range is unavailable")
+            return super().latest(timestamp_ns)
+
+    vision = Vision()
+    vehicle = Vehicle()
+    rangefinder = IntermittentRangefinder()
+    operations = DroneOperations(
+        vehicle, course=course(), scenario=scenario(), vision=vision,
+        rangefinder=rangefinder,
+    )
+    observe_flight(operations, 0, relative_altitude_m=4.572,
+                   precision_parameters=dict(PRECISION_PARAMETERS))
+    acquire_marker(operations, vision)
+    operation_id = operations.start("precision_land", {"aruco_id": 2})
+    vision.add(MarkerObservation(2, 6, 300_000_000, 300_000_000,
+                                 0.0, 0.0, 4.572))
+    observe_flight(operations, 300_000_000, relative_altitude_m=4.572)
+    rangefinder.distance_m = 0.70
+    observe_flight(operations, 900_000_000, mode="LAND", relative_altitude_m=0.70)
+    rangefinder.available = False
+
+    operations.tick(950_000_000)
+
+    assert ("mode", "GUIDED") not in vehicle.commands
+    assert operations.operation_status(operation_id).state == "running"
+    operations.tick(1_400_000_000)
+    assert vehicle.commands[-1] == ("mode", "GUIDED")
+
+
 @pytest.mark.parametrize(
     ("distance_m", "expected_state"), [(0.70, "running"), (0.76, "failed")]
 )
