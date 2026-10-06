@@ -79,6 +79,9 @@ actually started first wait and fresh heartbeat; GUIDED ACK plus observed mode
 precedes ARM ACK plus observed arming. It then stays passive until finalization,
 closing `logs/docker/operator.jsonl`. Startup connection retries are bounded by
 the frozen startup wall deadline.
+The actor continuously drains private SERIAL1 traffic during native warmup so
+requested telemetry cannot back up the command-response path. Warmup packets do
+not enter the actor state machine and receive no fabricated public timestamp.
 Another observed mode prevents that recovery command. Global
 finalization cancels a pending recovery and never starts a new one, allowing
 teardown to finish when simulation time and the vehicle transport have stopped.

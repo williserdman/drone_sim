@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import drone_sim_companion.operator_wait as operator_wait
 from drone_sim_companion.mission import Ack, CommandKind, Telemetry
 from drone_sim_companion.operator_wait import (
     OperatorPhase,
@@ -148,3 +149,53 @@ def test_operator_connection_retries_refusal_and_uses_distinct_source_system() -
         ("tcp:ardupilot-sitl:5762", {"autoreconnect": False, "source_system": 253}),
         ("tcp:ardupilot-sitl:5762", {"autoreconnect": False, "source_system": 253}),
     ]
+
+
+def test_operator_drains_private_warmup_without_delivering_telemetry() -> None:
+    subject, command_vehicle, events = actor()
+
+    class Connection:
+        def __init__(self) -> None:
+            self.received = []
+
+        def recv_match(self, *, blocking: bool):
+            self.received.append(blocking)
+            return object()
+
+    class TelemetryVehicle:
+        def __init__(self) -> None:
+            self.timestamps = []
+            self.telemetry = iter((
+                Telemetry(1_000_000_001, ack=Ack(CommandKind.SET_GUIDED, True, 0)),
+                Telemetry(1_000_000_002, heartbeat=True, mode="GUIDED", armed=False),
+            ))
+
+        def poll(self, timestamp_ns: int):
+            self.timestamps.append(timestamp_ns)
+            return next(self.telemetry)
+
+    connection = Connection()
+    telemetry_vehicle = TelemetryVehicle()
+    event_count = len(events)
+
+    operator_wait.poll_operator_mavlink(
+        connection, telemetry_vehicle, subject, public_timestamp_ns=None
+    )
+
+    assert connection.received == [False]
+    assert telemetry_vehicle.timestamps == []
+    assert len(events) == event_count
+    assert command_vehicle.commands == []
+
+    ready(subject)
+    subject.tick(1_000_000_000)
+
+    operator_wait.poll_operator_mavlink(
+        connection, telemetry_vehicle, subject, public_timestamp_ns=1_000_000_001
+    )
+    operator_wait.poll_operator_mavlink(
+        connection, telemetry_vehicle, subject, public_timestamp_ns=1_000_000_002
+    )
+
+    assert telemetry_vehicle.timestamps == [1_000_000_001, 1_000_000_002]
+    assert command_vehicle.commands == [CommandKind.SET_GUIDED, CommandKind.ARM]

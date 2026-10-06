@@ -155,6 +155,22 @@ class OperatorWaitActor:
             self.phase = OperatorPhase.FINALIZED
 
 
+def poll_operator_mavlink(
+    connection: Any,
+    vehicle: MavlinkAdapter,
+    actor: OperatorWaitActor,
+    *,
+    public_timestamp_ns: int | None,
+) -> None:
+    """Drain private warmup traffic without inventing public-time evidence."""
+    if public_timestamp_ns is None:
+        connection.recv_match(blocking=False)
+        return
+    telemetry = vehicle.poll(public_timestamp_ns)
+    if telemetry is not None:
+        actor.observe(telemetry)
+
+
 def main() -> int:
     """Run the private SERIAL1 actor until global finalization."""
     from artifacts.runtime_protocol import RuntimeProtocol
@@ -224,10 +240,13 @@ def main() -> int:
                     actor.observe_execution_ready(ready)
                 if started is not None:
                     actor.observe_wait_started(started)
+                poll_operator_mavlink(
+                    connection,
+                    vehicle,
+                    actor,
+                    public_timestamp_ns=latest_clock_ns,
+                )
                 if latest_clock_ns is not None:
-                    telemetry = vehicle.poll(latest_clock_ns)
-                    if telemetry is not None:
-                        actor.observe(telemetry)
                     actor.tick(latest_clock_ns)
                 if actor.phase is OperatorPhase.FAILED:
                     return 1
@@ -244,5 +263,6 @@ __all__ = [
     "OperatorPhase",
     "OperatorWaitActor",
     "connect_operator_mavlink",
+    "poll_operator_mavlink",
     "main",
 ]

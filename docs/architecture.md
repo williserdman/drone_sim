@@ -466,6 +466,8 @@ wait operation starts. A separate companion-image service observes that status,
 execution readiness and public RUNNING, then uses ArduPilot SERIAL1 on private
 TCP 5762 with a distinct GCS system ID. It requires command acceptance and
 observed GUIDED before ARM, then observed arming, and remains passive afterward.
+It drains SERIAL1 during private warmup, but only public-clock telemetry may
+advance its state machine or produce a command or event.
 The auxiliary actor joins service health checks but not module ownership or
 the seven-owner quiescence barrier. Orchestration closes it after runtime-frozen
 and before hashing its optional log; suite acceptance requires that log.
