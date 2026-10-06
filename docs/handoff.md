@@ -18,8 +18,16 @@ Comp2026 suite passed 1,126 tests. Focused suite/CLI checks passed 48 tests.
 No static typechecker is configured; Python compilation passed. The fresh
 common-build flight sweep remains pending.
 
-Suite `2079a7e2-cd19-4bd0-ba31-0bc45e0338ed` from clean `76dd2b9` remains in
-progress on 2026-10-06. Its hover-roll run
+Suite `2079a7e2-cd19-4bd0-ba31-0bc45e0338ed` from clean `76dd2b9` was gracefully
+interrupted at 02:15 UTC on 2026-10-06 to test the startup fixes. Calibration,
+fresh reload, configured descent, and controlled descent each established
+`LANDED`, scored 100/100, and passed independent acceptance. Operator wait
+failed at public 60 seconds: GUIDED executed, but its ACK was not observed and
+ARM never ran. It scored 0/100 with rejected acceptance and no physical outcome.
+The operator now drains MAVLink during private warmup without producing public
+telemetry or flight commands, avoiding the previous interval without reads.
+
+The interrupted hover-roll run
 `0396e6e9-c5a0-414d-a584-691515da078f` reached the fixed 15-second private epoch
 without publishing the calibration snapshot, execution-ready status, or first
 mission command. The calibration guard remained unmet; the current evidence does
@@ -27,8 +35,17 @@ not expose which cached parameter names were absent. Gazebo therefore retained
 the release barrier and no flight began. The roll diagnostic templates now use
 the existing 90-second calibrated-consumer warmup while retaining their 45- and
 120-second public windows, target RTF, seed, full 46-parameter gate, scoring, and
-wall deadlines. This configuration fix has no native-flight validation yet; do
-not treat the active suite or this source change as a physical result.
+wall deadlines. Hover finalized `ABORTED` at 0/100 with rejected acceptance and
+a ground-truth sample-count diagnostic; five later cases remained unrun. Both
+suite processes and its Compose projects exited, and all evidence remains under
+`runs/local-ci/20261006-76dd2b9/`. Both startup fixes are integrated on
+`feat/manual-ci-suite`; neither has fresh native-flight validation yet. This
+interrupted attempt is not an all-11 demonstration.
+
+Post-integration checks on 2026-10-06 passed 2,265 host/module tests with 27
+skips and 1,126 imported Comp2026 tests. Run the imported tests with
+`--import-mode=prepend`; the root import mode cannot resolve their sibling-test
+imports. The executable changes passed their focused checks before integration.
 
 First suite attempt `0d11a7cb-e3f3-4379-86e0-95d76b274ef1` from clean `8f628be`
 built all seven images and passed Comp2026 import smoke, then failed preflight
