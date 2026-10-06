@@ -47,6 +47,36 @@ skips and 1,126 imported Comp2026 tests. Run the imported tests with
 `--import-mode=prepend`; the root import mode cannot resolve their sibling-test
 imports. The executable changes passed their focused checks before integration.
 
+Fresh suite `72cd9035-94f5-42ad-9ee3-c5a2ec798731` from clean `04aa25a`
+finished `FAILED` on 2026-10-06. Calibration run
+`b75e44b6-a378-4503-bfa7-2d23a32dc964` completed its full 900-second recording.
+Native all-axis AutoTune succeeded at public 725.299 seconds; the companion
+verified all 34 parameters after activation at 725.55 seconds. Native LAND
+began at 730.242 seconds, followed by disarm and saved Roll/Pitch/Yaw gains at
+742.759 seconds. Post-disarm readback verified all 34 parameters, and the
+companion recorded `LANDED` at 743.25 seconds. All 15 exported gains match
+that readback within export precision.
+
+The lifecycle completed without diagnostics, but physical scoring awarded
+60/100 and independent acceptance rejected the required 100/100 gate. The
+first contact sample at 740.850 seconds retained 0.438518 m/s impact speed,
+above the stable-contact limit; the following ten samples were at most
+0.001304 m/s. Contact and tilt passed throughout the evaluated half-second
+interval. Calibration still uses the first-contact interval, unlike descent's
+versioned bounded-settling policy. Native LAND targets 0.50 m/s in the current
+profile; its [pinned parameter metadata](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/ArduCopter/mode_land.cpp#L5-L12)
+starts at 0.3 m/s. A parameter change alone does not establish the
+first-contact stability requirement.
+
+The other ten setups were blocked before allocation. The report's physical
+outcome remains unknown because independent acceptance failed; the native and
+companion landing observations above are separate evidence. Both suite processes
+exited and the owned Compose project was removed. Reports, recordings and the
+canonical 60/100 result remain under `runs/local-ci/20261006-04aa25a/`.
+The landing-scoring contract decision is pending; no scoring rule or historical
+evidence was changed, and this attempt does not validate the consumer startup
+fixes or establish an all-11 pass.
+
 First suite attempt `0d11a7cb-e3f3-4379-86e0-95d76b274ef1` from clean `8f628be`
 built all seven images and passed Comp2026 import smoke, then failed preflight
 before allocating a flight. Compose returned identical image identities in
