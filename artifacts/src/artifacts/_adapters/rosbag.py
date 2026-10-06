@@ -997,7 +997,7 @@ class RosbagValidator:
                     f"rosbag topic {topic} has wrong type {topic_metadata.message_type!r}",
                 )
             if topic_metadata.message_count <= 0 and not (
-                self.ruleset_id == "competition_v1"
+                self.ruleset_id in {"competition_v1", "competition_2027_v1"}
                 and topic == "/simulation/scenario_events"
             ):
                 return self._result(

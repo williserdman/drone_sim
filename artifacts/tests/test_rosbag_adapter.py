@@ -818,6 +818,114 @@ def _competition_metadata_for(messages):
     )
 
 
+def _valid_vfs_messages():
+    messages = [
+        item
+        for item in _valid_competition_messages()
+        if item.topic not in {"/simulation/scenario_events", "/simulation/score_events"}
+    ]
+    event_types = (
+        "competition_2027.A",
+        "competition_2027.BP",
+        "competition_2027.CP",
+        "competition_2027.R",
+        "competition_2027.BA",
+        "competition_2027.CA",
+        "competition_2027.T",
+        "competition_2027.deductions",
+        "competition_2027.unloaded_weight_lb",
+        "score.finalized",
+    )
+    messages.extend(
+        BagMessage(
+            "/simulation/score_events",
+            _custom_message(
+                50_000_000,
+                event_id=index,
+                event_type=event_type,
+                value=0.0,
+                evidence_ref=f"vfs#{index}",
+            ),
+            300 + index,
+        )
+        for index, event_type in enumerate(event_types)
+    )
+    messages.extend(
+        (
+            BagMessage(
+                "/simulation/mission_events",
+                _custom_message(
+                    50_000_000,
+                    event_id=1,
+                    phase="FM1",
+                    state="CHECK_REQUESTED",
+                    detail='{"request_id":"request-0","checkpoint":"H"}',
+                ),
+                320,
+            ),
+            BagMessage(
+                "/simulation/vehicle_status",
+                _custom_message(
+                    50_000_000,
+                    sequence_id=0,
+                    vehicle_id="iris",
+                    armed=False,
+                    mode="LAND",
+                    failsafe_active=False,
+                    failsafe_reason="",
+                ),
+                321,
+            ),
+            BagMessage(
+                "/simulation/judge_decisions",
+                _custom_message(
+                    50_000_000,
+                    decision_id=0,
+                    request_id="request-0",
+                    request_event_id=1,
+                    phase="FM1",
+                    checkpoint="H",
+                    outcome=1,
+                    eligible_aruco_ids=[],
+                    active_elapsed_ns=0,
+                    reason_code="APPROVED",
+                    evidence_refs=["ground_truth#0"],
+                ),
+                322,
+            ),
+            BagMessage(
+                "/simulation/attempt_status",
+                _custom_message(
+                    50_000_000,
+                    sequence_id=0,
+                    state=1,
+                    active_elapsed_ns=0,
+                    approval_timestamp_ns=50_000_000,
+                    started=True,
+                ),
+                323,
+            ),
+        )
+    )
+    return messages
+
+
+def _vfs_metadata_for(messages):
+    from artifacts._adapters.rosbag import VFS_2027_TOPIC_TYPES, VFS_2027_TOPICS
+
+    return BagMetadata(
+        storage_id="mcap",
+        topics=tuple(
+            BagTopicMetadata(
+                topic,
+                VFS_2027_TOPIC_TYPES[topic],
+                sum(message.topic == topic for message in messages),
+            )
+            for topic in VFS_2027_TOPICS
+        ),
+    )
+
+
 def _metadata_for(messages, *, storage_id="mcap", type_overrides=None):
     type_overrides = type_overrides or {}
     return BagMetadata(
@@ -1047,6 +1155,63 @@ def test_competition_bag_allows_empty_optional_scenario_event_diagnostics(tmp_pa
     assert scenario.message_count == 0
     assert scenario.first_sim_timestamp_ns is None
     assert scenario.last_sim_timestamp_ns is None
+
+
+def test_vfs_bag_allows_empty_optional_scenario_event_diagnostics(tmp_path):
+    _bag_directory(tmp_path)
+    messages = _valid_vfs_messages()
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_vfs_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="competition_2027_v1",
+        width_px=640,
+        height_px=480,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+    scenario = next(
+        topic for topic in result.topics
+        if topic.name == "/simulation/scenario_events"
+    )
+    assert scenario.message_count == 0
+    assert scenario.first_sim_timestamp_ns is None
+    assert scenario.last_sim_timestamp_ns is None
+
+
+@pytest.mark.parametrize(
+    "required_topic",
+    ["/simulation/judge_decisions", "/simulation/attempt_status"],
+)
+def test_vfs_bag_rejects_empty_authoritative_judge_topics(tmp_path, required_topic):
+    _bag_directory(tmp_path)
+    messages = [
+        message for message in _valid_vfs_messages()
+        if message.topic != required_topic
+    ]
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(
+            messages=messages,
+            metadata=_vfs_metadata_for(messages),
+        ),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        ruleset_id="competition_2027_v1",
+        width_px=640,
+        height_px=480,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.INVALID
+    assert result.detail == f"rosbag topic {required_topic} has zero messages"
 
 
 def test_competition_payload_timestamps_are_monotonic_per_marker(tmp_path):

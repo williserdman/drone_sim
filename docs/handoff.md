@@ -10,8 +10,21 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-All seven VFS runtime images built successfully at `26e0d07`; physical mission,
-score, and full-window artifact verification remain pending. First launch
+Current VFS flight evidence is run `ed9d6023-aa59-4d26-8d77-61dd34c7dc86`
+at runtime revision `34d85c0`. All three payloads were dropped at C, retrieved,
+and released grounded in L; the aircraft returned to H and disarmed. FM3 was
+approved at 588.5 public seconds and 579.7 active seconds, with 365/380 points.
+The 780-second recording finalized, but the terminal bundle failed because
+`/simulation/scenario_events` had zero messages. That legacy descent event is
+intentionally inert for both competition profiles; VFS uses payload events,
+judge decisions, and attempt status. Its validator now applies the existing
+competition empty-diagnostic exception to VFS as well, retaining every required
+VFS stream check. The regression and missing-judge/attempt controls passed within
+72 focused checks (four ROS skips). The failed manifest remains unchanged;
+a matching rebuilt validator and a fresh accepted full-window run are pending.
+
+The preceding integration failures below are historical evidence. All seven VFS
+runtime images first built successfully at `26e0d07`. First launch
 `fe0831d5-c8d8-4532-84b6-db3509cc5705` failed before takeoff: artifact validation
 looked for the mission-plan version at the run document's top level. The check
 now reads the nested mission plan, with a real host-snapshot regression.
