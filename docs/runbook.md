@@ -210,7 +210,9 @@ first two cases gate the other nine. Every consumer loads the same accepted
 artifact after its base/scenario overlays and verifies live parameters before
 flight. Each case has fresh SITL storage, Compose project and normal recordings.
 
-Individual mission failures do not skip later independent cases. Failed gates,
+Individual mission failures, including template preparation errors, do not skip
+later independent cases. A preparation failure has no allocated run or recording;
+its cause appears in that case's report row. Failed gates,
 changed source/images or unconfirmed teardown block remaining cases. Keep source
 and image tags unchanged until the command returns. One account-wide workstation
 lock prevents concurrent suites across checkouts and output roots. Ctrl-C

@@ -89,6 +89,41 @@ def test_completed_run_with_invalid_artifacts_fails_but_continues(tmp_path):
     assert case['artifact_acceptance']['accepted'] is False
 
 
+@pytest.mark.parametrize('case_name,started_count,later_status', [
+    ('calibration', 0, 'blocked'),
+    ('reload-validation', 1, 'blocked'),
+    ('competition-slow', 10, 'passed'),
+])
+def test_preparation_failure_respects_case_dependencies(
+    tmp_path, case_name, started_count, later_status
+):
+    runner, controller, runtime = make_suite(tmp_path)
+    original_build = runtime.build_and_freeze
+
+    def block_case_directory():
+        frozen = original_build()
+        suite_directory = next((tmp_path / 'runs/suites').iterdir())
+        configuration = suite_directory / 'configuration'
+        configuration.mkdir()
+        (configuration / case_name).write_text('cannot create a directory here')
+        return frozen
+
+    runtime.build_and_freeze = block_case_directory
+    result = runner.run(ROOT / 'config/ci-suite.json', output_root=tmp_path / 'runs')
+    report = json.loads(result.report_path.read_text())
+
+    assert result.state == 'FAILED' and result.exit_code == 1
+    assert len(controller.started_cases) == started_count
+    index = next(i for i, row in enumerate(report['cases']) if row['name'] == case_name)
+    failed = report['cases'][index]
+    assert failed['status'] == 'failed' and failed['reason']
+    assert failed['run_id'] is None and failed['bundle_path'] is None
+    assert failed['lifecycle'] is None and failed['physical_outcome'] is None
+    assert all(row['status'] == later_status for row in report['cases'][index + 1:])
+    if later_status == 'passed':
+        assert controller.started_cases[-1] == 'competition-realtime'
+
+
 @pytest.mark.parametrize('failure',[{'teardown_failure':'configured-descent'},{'changed_after':3}])
 def test_unconfirmed_runtime_blocks_remaining_launches(tmp_path,failure):
     runner,controller,_=make_suite(tmp_path,**failure)

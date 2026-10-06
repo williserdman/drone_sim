@@ -364,8 +364,6 @@ class SuiteRunner:
                         blocked_reason = str(error)
                         row.update(status='blocked', reason=blocked_reason)
                         continue
-                    template = prepare_suite_template(case, suite_directory=directory,
-                        output_root=output_root, calibration_source=calibration_source)
                     self.event_stream.write(f'suite {suite_id}: starting {case.name}\n')
                     self.event_stream.flush()
                     self._abort_requested = False
@@ -377,6 +375,8 @@ class SuiteRunner:
                         write_suite_report(directory, report)
 
                     try:
+                        template = prepare_suite_template(case, suite_directory=directory,
+                            output_root=output_root, calibration_source=calibration_source)
                         result = self.controller.start(template,
                             auxiliary_services=('operator-wait-runtime',) if case.acceptance=='operator_wait' else (),
                             on_allocated=allocated)

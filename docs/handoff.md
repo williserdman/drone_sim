@@ -43,6 +43,18 @@ pass; the two static contract files plus the host operator checks passed 73
 tests. Runtime behavior and flight/scoring results are unchanged. The existing
 orchestration README, architecture and runbook already describe these interfaces.
 
+CI review update 2026-10-07: review of `d0cf025..6552414` found one new
+Important issue: template preparation errors escaped per-case handling and
+stopped later independent cases. Preparation now uses the existing case failure
+path. Three filesystem-failure regressions prove independent continuation and
+blocking after either prerequisite fails. Focused suite checks passed 52 tests;
+the full host suite passed 2,288 with 27 skips, and imported Comp2026 passed
+1,126. The orchestration README and runbook describe this failure reporting;
+the architecture already requires independent continuation. The review's merge
+verdict remains negative because the known competition integration and fresh
+flight/provider gates are incomplete. No scoring or flight-control change was
+made in this correction.
+
 Implementation update 2026-10-05: branch `feat/manual-ci-suite` implements the
 approved [11-setup design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
 and [plan](superpowers/plans/2026-10-05-full-ci-suite.md). The shared local `suite`
