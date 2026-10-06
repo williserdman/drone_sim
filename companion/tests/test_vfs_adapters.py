@@ -116,3 +116,57 @@ def test_vehicle_status_stream_samples_complete_observed_state_once_per_grid() -
     assert (second.timestamp_ns, second.sequence_id, second.mode) == (
         200_000_000, 1, "GUIDED",
     )
+
+
+def test_phase_check_waits_for_one_full_published_disarmed_interval() -> None:
+    stream = VehicleStatusStream()
+    events = []
+
+    def publish(*fields):
+        events.append(fields)
+        return len(events) - 1
+
+    exchange = PhaseExchange("run", publish, check_ready=stream.disarmed_ready)
+    stream.observe(Telemetry(
+        47_900_000_000, mode="LAND", armed=True, failsafe=False
+    ))
+    assert stream.sample(47_900_000_000).armed
+    exchange.check("FM1", "D", "request-1", 47_950_000_000)
+    assert events == []
+
+    stream.observe(Telemetry(47_950_000_000, armed=False))
+    exchange.advance(47_950_000_000)
+    assert events == []
+    assert stream.sample(48_000_000_000).armed is False
+    exchange.advance(48_000_000_000)
+    assert events == []
+    assert stream.sample(48_100_000_000).armed is False
+    exchange.advance(48_100_000_000)
+
+    assert events == [(
+        "FM1",
+        "CHECK_REQUESTED",
+        '{"checkpoint":"D","request_id":"request-1"}',
+        48_100_000_000,
+    )]
+    exchange.advance(48_200_000_000)
+    assert len(events) == 1
+    exchange.accept(SimpleNamespace(
+        run_id="run", outcome=1, APPROVED=1, REJECTED=2, ERROR=3,
+        request_id="request-1", phase="FM1", checkpoint="D",
+        request_event_id=0, eligible_aruco_ids=[], reason_code="APPROVED",
+    ))
+    assert exchange.decision("request-1").request_event_id == 0
+
+
+def test_disarmed_readiness_requires_fresh_published_state_and_resets_on_armed() -> None:
+    stream = VehicleStatusStream()
+    assert not stream.disarmed_ready(100_000_000)
+    stream.observe(Telemetry(100_000_000, mode="LAND", armed=False, failsafe=False))
+    assert not stream.disarmed_ready(200_000_000)
+    stream.sample(200_000_000)
+    assert not stream.disarmed_ready(200_000_000)
+    assert stream.disarmed_ready(300_000_000)
+    assert not stream.disarmed_ready(700_000_001)
+    stream.observe(Telemetry(700_000_001, armed=True))
+    assert not stream.disarmed_ready(700_000_001)

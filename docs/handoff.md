@@ -26,6 +26,14 @@ Support-join verification passed 19 host tests with 10 ROS skips and two native
 ROS regressions. A delayed attached, grounded payload still produces grounded
 vehicle truth; 25 sparse-leg epochs drain, and missing payload truth faults at
 the existing 20-epoch bound. The pure aggregator type check passed.
+All seven images rebuilt at `eccad33`; installed Gazebo adapter hashes matched
+the committed source. Third launch `c3d7d3a6-e5c5-4afb-8fea-973a7a13f362`
+took off to 10 m and landed/disarmed at D. Its immediate 47.95 s check still
+saw public status 47.9 s as armed, so the automatic judge rejected it correctly.
+Checks now wait one published disarmed interval before emission. The actual
+failure timeline, freshness, armed resets, and correlation passed 53 focused
+tests; relevant type checks passed. Full mission and full-window acceptance
+remain pending.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact

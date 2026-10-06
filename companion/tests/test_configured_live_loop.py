@@ -252,6 +252,7 @@ def test_vfs_status_uses_public_grid_after_packet_batch_until_source_end(monkeyp
         status_publisher=SimpleNamespace(publish=published.append),
         status_type=Status,
         status_stream=VehicleStatusStream(),
+        phases=SimpleNamespace(advance=lambda _stamp: None),
         frame_source=SimpleNamespace(stop=stopped.append),
         vision=SimpleNamespace(close=lambda: stopped.append("vision")),
     )

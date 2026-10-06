@@ -91,6 +91,9 @@ combines Gazebo contact/poses with observed
 then publishes correlated
 [`JudgeDecision`](../ros_ws/src/simulation_interfaces/msg/JudgeDecision.msg) and
 continuous [`AttemptStatus`](../ros_ws/src/simulation_interfaces/msg/AttemptStatus.msg).
+The companion queues phase checks until disarm has been published for one full
+vehicle-status interval, then emits the request with its current simulation
+timestamp. Judge rejection remains terminal.
 First physical takeoff starts the 600-second active clock; inspection after
 FM-2 home landing/disarm pauses it; FM-3 takeoff resumes it. Public simulation
 and recording time continue throughout. The companion uses these timing facts

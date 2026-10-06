@@ -82,7 +82,10 @@ def _configure_vfs_resources(config, node, *, qos_profile, reliability, durabili
         event_publisher.publish(message)
         return published_event_id
 
-    phases = PhaseExchange(config.run_id, publish_event)
+    status_stream = VehicleStatusStream()
+    phases = PhaseExchange(
+        config.run_id, publish_event, check_ready=status_stream.disarmed_ready
+    )
     attempt = AttemptMonitor(config.run_id)
     node.create_subscription(
         Image, "/camera/onboard/image_raw", frame_source.accept_image, reliable(100)
@@ -113,7 +116,8 @@ def _configure_vfs_resources(config, node, *, qos_profile, reliability, durabili
         frame_source=frame_source,
         status_publisher=status_publisher,
         status_type=VehicleStatus,
-        status_stream=VehicleStatusStream(),
+        status_stream=status_stream,
+        phases=phases,
     )
 
 
@@ -321,6 +325,7 @@ def run_configured(config) -> int:
                     message.failsafe_active = status.failsafe_active
                     message.failsafe_reason = status.failsafe_reason
                     vfs_resources.status_publisher.publish(message)
+                vfs_resources.phases.advance(latest_clock_ns)
             now = time.monotonic()
             if (vfs_resources is not None and not host.started
                     and now >= readiness_deadline):

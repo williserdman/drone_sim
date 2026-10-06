@@ -49,9 +49,13 @@ numbers fail before ROS or MAVLink resources open.
 | `attach_payload` | Payload ID; requires the matching aligned touchdown and physical attachment confirmation. |
 | `release_payload` | Payload ID and `airborne` or `grounded`; checks flight prerequisites and waits for physical detachment confirmation. |
 | `begin_phase` | FM1, FM2, or FM3; publishes ordered mission intent. |
-| `check_phase` | Phase and the FM1 D/H checkpoint where required; waits for the exactly correlated automatic judge decision. |
+| `check_phase` | Phase and the FM1 D/H checkpoint where required; waits for published disarm evidence, then the exactly correlated automatic judge decision. |
 
 Coordinates are WGS84 degrees; altitudes are metres above ArduPilot home.
+VFS checks wait one complete public status interval after the first disarmed
+snapshot. The runtime publishes status before advancing queued checks and stamps
+each request at emission time. This lets the judge observe disarm before a check;
+a rejected decision still ends the operation.
 [operations.py](src/drone_sim_companion/operations.py) exposes `start()`,
 `operation_status()`, and `read_vehicle_state()`. One operation owns flight output
 at a time, advancing on telemetry and simulation-clock ticks so observation and

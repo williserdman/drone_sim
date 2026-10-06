@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 import math
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from .configured_vision import RangeObservation
 from .mission import Telemetry
@@ -51,6 +51,8 @@ class VehicleStatusStream:
         self._failsafe_reason: str | None = None
         self._last_grid_ns = 0
         self._sequence_id = 0
+        self._latest_snapshot: VehicleStatusSnapshot | None = None
+        self._first_disarmed_published_ns: int | None = None
 
     def observe(self, telemetry: Telemetry) -> None:
         if telemetry.mode is not None:
@@ -59,6 +61,8 @@ class VehicleStatusStream:
                 self._mode = mode
         if telemetry.armed is not None:
             self._armed = telemetry.armed
+            if telemetry.armed:
+                self._first_disarmed_published_ns = None
         if telemetry.failsafe is not None:
             reason = (telemetry.failsafe_reason or "").strip()
             if not telemetry.failsafe or reason:
@@ -81,7 +85,24 @@ class VehicleStatusStream:
             failsafe_reason=self._failsafe_reason or "",
         )
         self._sequence_id += 1
+        self._latest_snapshot = snapshot
+        if snapshot.armed:
+            self._first_disarmed_published_ns = None
+        elif self._first_disarmed_published_ns is None:
+            self._first_disarmed_published_ns = snapshot.timestamp_ns
         return snapshot
+
+    def disarmed_ready(self, public_clock_ns: int) -> bool:
+        snapshot = self._latest_snapshot
+        first = self._first_disarmed_published_ns
+        return (
+            self._armed is False
+            and snapshot is not None
+            and snapshot.armed is False
+            and first is not None
+            and public_clock_ns - first >= self._interval_ns
+            and 0 <= public_clock_ns - snapshot.timestamp_ns <= 500_000_000
+        )
 
 
 class ConfiguredRangefinder:
@@ -170,17 +191,39 @@ class AttemptMonitor:
 
 
 class PhaseExchange:
-    def __init__(self, run_id: str, publish_event) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        publish_event,
+        *,
+        check_ready: Callable[[int], bool] | None = None,
+    ) -> None:
         self.run_id = run_id
         self._publish_event = publish_event
+        self._check_ready = check_ready
         self._decisions: dict[str, PhaseDecision] = {}
         self._latest_fm2: PhaseDecision | None = None
         self._requests: dict[str, tuple[str, str, int]] = {}
+        self._pending_checks: dict[str, tuple[str, str]] = {}
 
     def begin(self, phase: str, request_id: str, stamp_ns: int) -> None:
         self._publish_event(phase, "STARTED", request_id, stamp_ns)
 
     def check(self, phase: str, checkpoint: str, request_id: str, stamp_ns: int) -> None:
+        self._pending_checks[request_id] = (phase, checkpoint)
+        if self._check_ready is None:
+            self._emit_check(request_id, stamp_ns)
+        else:
+            self.advance(stamp_ns)
+
+    def advance(self, stamp_ns: int) -> None:
+        if self._check_ready is not None and not self._check_ready(stamp_ns):
+            return
+        for request_id in tuple(self._pending_checks):
+            self._emit_check(request_id, stamp_ns)
+
+    def _emit_check(self, request_id: str, stamp_ns: int) -> None:
+        phase, checkpoint = self._pending_checks[request_id]
         detail = json.dumps(
             {"checkpoint": checkpoint, "request_id": request_id},
             sort_keys=True,
@@ -190,6 +233,7 @@ class PhaseExchange:
         if isinstance(event_id, bool) or not isinstance(event_id, int):
             raise RuntimeError("phase publisher did not return an event ID")
         self._requests[request_id] = (phase, checkpoint, event_id)
+        del self._pending_checks[request_id]
 
     def accept(self, message) -> None:
         if message.run_id != self.run_id or message.outcome not in (
