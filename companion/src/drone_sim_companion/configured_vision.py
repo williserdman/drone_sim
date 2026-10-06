@@ -42,6 +42,11 @@ class ConfiguredVision:
 
     def request(self, aruco_id: int, after_sequence: int) -> None:
         self.cancel()
+        manager = getattr(self._camera, "cm", None)
+        metadata = getattr(manager, "last_frame_metadata", None)
+        cached_sequence = getattr(metadata, "sequence", None)
+        if type(cached_sequence) is int and cached_sequence >= 0:
+            after_sequence = max(after_sequence, cached_sequence)
         stop = threading.Event()
         self._stop = stop
         self._thread = threading.Thread(

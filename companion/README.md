@@ -79,6 +79,8 @@ tick-driven operations, preserving one flight-output owner and responsive
 simulation-time aborts. Marker processing runs on a worker that cannot issue
 flight commands. Its bounded wall-time frame wait accommodates slowed rendering;
 observation freshness and mission deadlines remain measured in simulation time.
+Each marker request begins after the current camera sequence, so a frame cached
+before the request cannot satisfy acquisition after travel.
 Precision reacquisition counts fresh camera observations; intervening telemetry
 or clock ticks preserve the count, while a fresh invalid observation resets it.
 Search remains bounded to the configured acquisition hover;

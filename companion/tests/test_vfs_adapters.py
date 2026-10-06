@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import deque
 from pathlib import Path
 import sys
 import threading
@@ -295,3 +296,58 @@ def test_configured_vision_survives_slow_live_frame_after_request_handover() -> 
 
     assert resumed is not None
     assert resumed.sequence > after_sequence
+
+
+def test_configured_vision_skips_cached_stale_frame_at_new_marker_request() -> None:
+    calibration_path = (
+        ROOT / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+    )
+    mounting_path = ROOT / "companion/src/drone_sim_companion/gazebo_camera_mounting.json"
+    clock = [0]
+
+    class Source:
+        def __init__(self):
+            self.timestamps = deque([0, 1_000_000_000])
+            self.last_timestamp_ns = None
+
+        def capture_frame(self, quality=4):
+            assert quality == 4
+            timestamp = self.timestamps.popleft()
+            if timestamp:
+                time.sleep(0.05)
+            self.last_timestamp_ns = timestamp
+            return np.zeros((480, 640, 3), dtype=np.uint8)
+
+    class MarkerManager(CameraManager):
+        def get_coords(self, _frame):
+            return [object()], np.array([[4]]), []
+
+        def estimate_pose_3d(self, *_args, **_kwargs):
+            return np.array([0.0, 0.0, 4_572.0])
+
+    source = Source()
+    manager = MarkerManager(
+        frame_source=source,
+        calibration_path=calibration_path,
+        clock=lambda: clock[0],
+        max_exposure_age_ns=500_000_000,
+    )
+    manager.capture_observation()
+    assert manager.last_frame_metadata.sequence == 1
+    clock[0] = 1_000_000_000
+    vision = ConfiguredVision(
+        Camera(100, manager=manager, mounting_path=mounting_path)
+    )
+
+    vision.request(4, 0)
+    result = None
+    deadline = time.monotonic() + 1.0
+    while result is None and time.monotonic() < deadline:
+        result = vision.poll()
+        time.sleep(0.005)
+    vision.close()
+
+    assert result is not None
+    assert result.aruco_id == 4
+    assert result.sequence == 2
+    assert result.exposure_timestamp_ns == 1_000_000_000

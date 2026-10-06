@@ -61,6 +61,16 @@ fresh invalid observations still reset the count. The real-manager slow-frame
 handoff and interleaved-tick regressions passed within 58 focused checks;
 relevant type checks passed. Full payload flight and artifact acceptance remain
 pending.
+Seventh launch `f22afe60-3d48-40c6-94e4-eb8431642d42` at `5a0d2aa` passed
+two precision pickups and releases at C (payload 2 at 154.25 s, payload 3 at
+212.8 s). Its third acquisition failed immediately at 233.95 s: the camera
+returned a cached observation newer than the previous marker's sequence, but
+older than the exposure limit. An actual-manager reproduction returned that
+same error before a fresh frame arrived. New marker requests now start after
+the camera's current sequence; stale exposures remain rejected. The exact
+cached-stale/fresh-frame handoff passed within 34 focused checks, and the worker
+type check passed. FM2 eligibility
+and full payload/artifact acceptance remain unverified.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact
