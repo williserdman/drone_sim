@@ -132,9 +132,24 @@ class SimulationClock:
 class RosFrameSource:
     """Retain recent onboard images for blocking BGR capture."""
 
-    def __init__(self, *, width_px: int, height_px: int) -> None:
+    def __init__(
+        self,
+        *,
+        width_px: int,
+        height_px: int,
+        clock_ns: Callable[[], int | None] | None = None,
+        max_exposure_age_ns: int | None = None,
+    ) -> None:
+        if (clock_ns is None) != (max_exposure_age_ns is None):
+            raise ValueError(
+                "clock_ns and max_exposure_age_ns must be configured together"
+            )
+        if max_exposure_age_ns is not None and max_exposure_age_ns <= 0:
+            raise ValueError("max_exposure_age_ns must be positive")
         self._width_px = width_px
         self._height_px = height_px
+        self._clock_ns = clock_ns
+        self._max_exposure_age_ns = max_exposure_age_ns
         self._condition = threading.Condition()
         self._images: dict[int, object] = {}
         self.last_timestamp_ns: int | None = None
@@ -171,10 +186,17 @@ class RosFrameSource:
             while True:
                 images = self._available_images()
                 if images:
-                    timestamp_ns = images[0]
+                    timestamp_ns = (
+                        images[-1] if self._clock_ns is not None else images[0]
+                    )
+                    if self._exposure_is_stale(timestamp_ns):
+                        self._discard_through(timestamp_ns)
+                        self.last_timestamp_ns = timestamp_ns
+                        continue
                     image = self._images.pop(timestamp_ns)
                     self._discard_through(timestamp_ns)
-                    self.last_timestamp_ns = timestamp_ns
+                    if self._clock_ns is None:
+                        self.last_timestamp_ns = timestamp_ns
                     try:
                         data = bytes(image.data)  # type: ignore[attr-defined]
                     except (AttributeError, TypeError, ValueError) as error:
@@ -183,11 +205,16 @@ class RosFrameSource:
                         raise ValueError(
                             "image data length does not match its geometry"
                         )
-                    return (
+                    frame = (
                         np.frombuffer(data, dtype=np.uint8)
                         .reshape(self._height_px, self._width_px, 3)[..., ::-1]
                         .copy()
                     )
+                    if self._clock_ns is not None:
+                        if self._exposure_is_stale(timestamp_ns):
+                            continue
+                        self.last_timestamp_ns = timestamp_ns
+                    return frame
                 if deadline_sim_ns is not None:
                     raise StaleSensorError(
                         f"no newer frame after {self.last_timestamp_ns} before "
@@ -214,6 +241,15 @@ class RosFrameSource:
     def _discard_through(self, timestamp_ns: int) -> None:
         for stale in tuple(key for key in self._images if key <= timestamp_ns):
             self._images.pop(stale, None)
+
+    def _exposure_is_stale(self, timestamp_ns: int) -> bool:
+        if self._clock_ns is None or self._max_exposure_age_ns is None:
+            return False
+        now_ns = self._clock_ns()
+        return (
+            now_ns is not None
+            and now_ns - timestamp_ns > self._max_exposure_age_ns
+        )
 
     def _prune_buffers(self) -> None:
         """Keep only a small newest pairing window, never a recording queue."""

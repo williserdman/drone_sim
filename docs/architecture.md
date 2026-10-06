@@ -54,6 +54,11 @@ Slow rendering can make a short simulated mission take a long time in reality.
 Configured camera acquisition waits for frames on its worker with a bounded
 wall-time wait; exposure freshness remains a simulation-time guarantee. Precision
 reacquisition advances on fresh observations rather than telemetry/clock ticks.
+The configured camera adapter consumes the newest image within the 500 ms
+simulation-time age limit. Superseded or stale queued images are discarded before
+camera acquisition; the adapter waits for fresh input within the existing
+operation and infrastructure deadlines. The camera's own freshness check remains
+enforced. Recording consumers retain their complete public frame grids.
 
 ## Where to read or change code
 

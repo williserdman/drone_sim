@@ -45,7 +45,10 @@ def _configure_vfs_resources(config, node, *, qos_profile, reliability, durabili
         durability=(durability.TRANSIENT_LOCAL if transient else durability.VOLATILE),
     )
     frame_source = RosFrameSource(
-        width_px=scenario.camera.width_px, height_px=scenario.camera.height_px
+        width_px=scenario.camera.width_px,
+        height_px=scenario.camera.height_px,
+        clock_ns=clock_ns,
+        max_exposure_age_ns=500_000_000,
     )
     manager = CameraManager(
         frame_source=frame_source,

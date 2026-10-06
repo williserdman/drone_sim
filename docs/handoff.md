@@ -89,8 +89,25 @@ consumed truth 100 ms old against the unchanged 50 ms limit. The scorekeeper
 runtime now joins exact physical epochs in canonical truth/payload/status order
 and defers a check to its original epoch, with a 500 ms simulation-time
 fail-closed bound. Focused source verification is recorded with the implementing
-change: 60 scorekeeper tests and relevant type checks passed. No rebuilt image
-or replacement flight has yet verified this fix.
+change: 60 scorekeeper tests and relevant type checks passed. All seven images
+rebuilt at `706ed48`; the installed scorekeeper replayed the ninth run's native
+MCAP receive order and approved D/H with their exact original physical epochs.
+Tenth launch `ca5cc52e-1503-4a92-a88b-edcb8b9f74c6` passed FM1 D/H at
+48.3/96.4 s, all three precision pickups and airborne C drops, and FM2 approval
+at 310.0 s with eligible IDs 2, 3, 4 and 306.65 s active elapsed time. All three
+payloads physically settled at C. Its first FM3 precision retrieval failed at
+344.15 s: a stale frame permanently ended the camera acquisition worker. No L
+delivery or full-window artifact acceptance was established. An installed-image
+reproduction queued four images at 343.55–343.70 s while the clock was 344.15 s;
+the adapter selected the oldest, 600 ms-old image even though a newer image was
+within the unchanged 500 ms limit. Configured autonomy now requires newest fresh
+image consumption at this adapter boundary, with an age recheck after copying
+pixels. The configured adapter and unchanged default path passed 67 focused
+tests; four imported freshness/future/replay guards passed separately. The
+changed frame-source class type check passed; whole-file checks retain existing
+legacy coordinate-narrowing errors and unavailable host ROS imports. Replacement
+image and flight verification remain pending. The failed run finalized normally;
+its incomplete bag and absent finalized videos cannot establish artifact validity.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact

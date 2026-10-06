@@ -18,6 +18,9 @@ sys.path.insert(0, str(ROOT / "companion/comp2026/src"))
 from artifacts.vfs_contract import load_vfs_scenario
 from drone.sensors.camera._camera_manager import CameraManager
 from drone.sensors.camera.camera import Camera
+from drone_sim_companion.comp2026_host import RosFrameSource
+from drone_sim_companion.comp2026_host import StaleSensorError
+from drone_sim_companion.configured_runtime import _configure_vfs_resources
 from drone_sim_companion.mission_plan import Condition
 from drone_sim_companion.mission import Telemetry
 from drone_sim_companion.configured_vision import ConfiguredVision
@@ -27,6 +30,24 @@ from drone_sim_companion.vfs_operations import (
     PhaseExchange,
     VehicleStatusStream,
 )
+
+
+def rgb_image(timestamp_ns: int, *, red: int = 10) -> SimpleNamespace:
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(
+                sec=timestamp_ns // 1_000_000_000,
+                nanosec=timestamp_ns % 1_000_000_000,
+            ),
+            frame_id="camera/onboard",
+        ),
+        width=640,
+        height=480,
+        encoding="rgb8",
+        is_bigendian=False,
+        step=640 * 3,
+        data=bytes((red, 20, 30)) * (640 * 480),
+    )
 
 def test_phase_check_detail_is_canonical_and_eligibility_is_frozen() -> None:
     events = []
@@ -228,6 +249,296 @@ def test_gazebo_calibration_is_precision_ready_at_configured_image_dimensions() 
     assert observation.metadata.raw_image_size_px == (
         scenario.camera.width_px, scenario.camera.height_px
     )
+
+
+def test_configured_camera_consumes_freshest_queued_ros_image() -> None:
+    clock_ns = 344_150_000_000
+    source = RosFrameSource(
+        width_px=640,
+        height_px=480,
+        clock_ns=lambda: clock_ns,
+        max_exposure_age_ns=500_000_000,
+    )
+    for timestamp_ns, red in (
+        (343_550_000_000, 10),
+        (343_600_000_000, 20),
+        (343_650_000_000, 30),
+        (343_700_000_000, 40),
+    ):
+        source.accept_image(rgb_image(timestamp_ns, red=red))
+    manager = CameraManager(
+        frame_source=source,
+        calibration_path=(
+            ROOT
+            / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+        ),
+        clock=lambda: clock_ns,
+        max_exposure_age_ns=500_000_000,
+    )
+
+    observation = manager.capture_observation()
+
+    assert observation.metadata.exposure_timestamp_ns == 343_700_000_000
+    assert observation.metadata.exposure_age_ns == 450_000_000
+    assert observation.frame[0, 0].tolist() == [30, 20, 40]
+
+
+def test_configured_camera_waits_for_fresh_image_after_stale_queue() -> None:
+    clock_ns = 344_150_000_000
+    source = RosFrameSource(
+        width_px=640,
+        height_px=480,
+        clock_ns=lambda: clock_ns,
+        max_exposure_age_ns=500_000_000,
+    )
+    for timestamp_ns in (
+        343_450_000_000,
+        343_500_000_000,
+        343_550_000_000,
+        343_600_000_000,
+    ):
+        source.accept_image(rgb_image(timestamp_ns))
+    manager = CameraManager(
+        frame_source=source,
+        calibration_path=(
+            ROOT
+            / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+        ),
+        clock=lambda: clock_ns,
+        max_exposure_age_ns=500_000_000,
+    )
+    results: list[object] = []
+
+    def capture() -> None:
+        try:
+            results.append(manager.capture_observation())
+        except BaseException as error:
+            results.append(error)
+
+    worker = threading.Thread(target=capture)
+    worker.start()
+    deadline = time.monotonic() + 1.0
+    while source.ready and worker.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert worker.is_alive()
+    assert results == []
+
+    source.accept_image(rgb_image(clock_ns, red=40))
+    worker.join(1.0)
+
+    assert len(results) == 1
+    assert not isinstance(results[0], BaseException)
+    assert results[0].metadata.exposure_timestamp_ns == clock_ns
+
+
+def test_configured_camera_rechecks_freshness_after_pixel_copy() -> None:
+    clock_ns = [1_050]
+    copied = threading.Event()
+
+    class AgingPixels:
+        def __bytes__(self) -> bytes:
+            clock_ns[0] = 1_101
+            copied.set()
+            return bytes((10, 20, 30)) * (640 * 480)
+
+    source = RosFrameSource(
+        width_px=640,
+        height_px=480,
+        clock_ns=lambda: clock_ns[0],
+        max_exposure_age_ns=100,
+    )
+    aging_image = rgb_image(1_000)
+    aging_image.data = AgingPixels()
+    source.accept_image(aging_image)
+    manager = CameraManager(
+        frame_source=source,
+        calibration_path=(
+            ROOT
+            / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+        ),
+        clock=lambda: clock_ns[0],
+        max_exposure_age_ns=100,
+    )
+    results: list[object] = []
+
+    def capture() -> None:
+        try:
+            results.append(manager.capture_observation())
+        except BaseException as error:
+            results.append(error)
+
+    worker = threading.Thread(target=capture)
+    worker.start()
+    assert copied.wait(1.0)
+    time.sleep(0.01)
+
+    assert worker.is_alive()
+    assert source.last_timestamp_ns is None
+
+    source.accept_image(rgb_image(1_101, red=40))
+    worker.join(1.0)
+
+    assert len(results) == 1
+    assert not isinstance(results[0], BaseException)
+    assert results[0].metadata.exposure_timestamp_ns == 1_101
+
+
+def test_vfs_composition_enables_freshest_frame_policy(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "sensor_msgs.msg",
+        SimpleNamespace(Image=object, LaserScan=object),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "simulation_interfaces.msg",
+        SimpleNamespace(
+            AttemptStatus=object,
+            JudgeDecision=object,
+            MissionEvent=object,
+            VehicleStatus=object,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "simulation_interfaces.srv",
+        SimpleNamespace(PayloadCommand=object),
+    )
+
+    class Node:
+        def create_client(self, *_args):
+            return object()
+
+        def create_publisher(self, *_args):
+            return SimpleNamespace(publish=lambda _message: None)
+
+        def create_subscription(self, *_args):
+            return object()
+
+    clock_ns = 344_150_000_000
+    resources = _configure_vfs_resources(
+        SimpleNamespace(
+            course_path=ROOT / "config/course-2027.yaml",
+            scenario_path=ROOT / "config/scenario-2027.yaml",
+            run_id="run",
+        ),
+        Node(),
+        qos_profile=lambda **values: SimpleNamespace(**values),
+        reliability=SimpleNamespace(RELIABLE=1),
+        durability=SimpleNamespace(TRANSIENT_LOCAL=1, VOLATILE=2),
+        clock_ns=lambda: clock_ns,
+    )
+    for timestamp_ns in (
+        343_550_000_000,
+        343_600_000_000,
+        343_650_000_000,
+        343_700_000_000,
+    ):
+        resources.frame_source.accept_image(rgb_image(timestamp_ns))
+
+    resources.frame_source.capture_frame()
+
+    assert resources.frame_source.last_timestamp_ns == 343_700_000_000
+
+
+def test_frame_source_default_keeps_legacy_fifo_consumption() -> None:
+    source = RosFrameSource(width_px=640, height_px=480)
+    source.accept_image(rgb_image(100, red=10))
+    source.accept_image(rgb_image(200, red=40))
+
+    frame = source.capture_frame()
+
+    assert source.last_timestamp_ns == 100
+    assert frame[0, 0].tolist() == [30, 20, 10]
+
+
+def test_configured_camera_accepts_frame_at_exact_age_limit() -> None:
+    source = RosFrameSource(
+        width_px=640,
+        height_px=480,
+        clock_ns=lambda: 1_100,
+        max_exposure_age_ns=100,
+    )
+    source.accept_image(rgb_image(1_000))
+    manager = CameraManager(
+        frame_source=source,
+        calibration_path=(
+            ROOT
+            / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+        ),
+        clock=lambda: 1_100,
+        max_exposure_age_ns=100,
+    )
+
+    observation = manager.capture_observation()
+
+    assert observation.metadata.exposure_age_ns == 100
+    assert observation.metadata.exposure_age_bounded is True
+
+
+def test_configured_camera_still_rejects_future_exposure() -> None:
+    source = RosFrameSource(
+        width_px=640,
+        height_px=480,
+        clock_ns=lambda: 1_050,
+        max_exposure_age_ns=100,
+    )
+    source.accept_image(rgb_image(1_100))
+    manager = CameraManager(
+        frame_source=source,
+        calibration_path=(
+            ROOT
+            / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+        ),
+        clock=lambda: 1_050,
+        max_exposure_age_ns=100,
+    )
+
+    with pytest.raises(RuntimeError, match="future"):
+        manager.capture_observation()
+
+
+def test_configured_frame_source_still_rejects_malformed_pixels() -> None:
+    source = RosFrameSource(
+        width_px=640,
+        height_px=480,
+        clock_ns=lambda: 1_050,
+        max_exposure_age_ns=100,
+    )
+    malformed = rgb_image(1_000)
+    malformed.data = b"short"
+    source.accept_image(malformed)
+
+    with pytest.raises(ValueError, match="data length"):
+        source.capture_frame()
+
+
+def test_configured_frame_source_stop_wakes_fresh_frame_waiter() -> None:
+    source = RosFrameSource(
+        width_px=640,
+        height_px=480,
+        clock_ns=lambda: 1_050,
+        max_exposure_age_ns=100,
+    )
+    results: list[BaseException] = []
+
+    def capture() -> None:
+        try:
+            source.capture_frame()
+        except BaseException as error:
+            results.append(error)
+
+    worker = threading.Thread(target=capture)
+    worker.start()
+    time.sleep(0.01)
+
+    source.stop("test shutdown")
+    worker.join(1.0)
+
+    assert len(results) == 1
+    assert isinstance(results[0], StaleSensorError)
+    assert "test shutdown" in str(results[0])
 
 
 def test_configured_vision_survives_slow_live_frame_after_request_handover() -> None:
