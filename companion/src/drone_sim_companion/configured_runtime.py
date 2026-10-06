@@ -249,6 +249,8 @@ def run_configured(config) -> int:
             callback_error = "authoritative simulation clock regressed"
         else:
             latest_clock_ns = value
+            if vfs_resources is not None:
+                vfs_resources.frame_source.notify_clock()
 
     def state_callback(message):
         nonlocal mission_running, finalizing

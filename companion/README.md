@@ -84,7 +84,9 @@ before the request cannot satisfy acquisition after travel.
 The configured VFS ROS adapter consumes the newest queued image and discards
 images already older than the 500 ms simulation-time exposure limit. It
 rechecks age after copying pixels and waits for a newer image when the queue is
-stale. The camera manager retains the same final 500 ms handoff guard.
+stale. An image ahead of the accepted public clock remains queued until that
+clock timestamp arrives. The camera manager retains the same final 500 ms
+handoff guard.
 Precision reacquisition counts fresh camera observations; intervening telemetry
 or clock ticks preserve the count, while a fresh invalid observation resets it.
 During LAND tracking, fresh range at or below 0.75 m takes precedence over camera

@@ -477,26 +477,46 @@ def test_configured_camera_accepts_frame_at_exact_age_limit() -> None:
     assert observation.metadata.exposure_age_bounded is True
 
 
-def test_configured_camera_still_rejects_future_exposure() -> None:
+def test_configured_camera_waits_for_clock_before_consuming_future_image() -> None:
+    clock_ns = [1_000]
     source = RosFrameSource(
         width_px=640,
         height_px=480,
-        clock_ns=lambda: 1_050,
+        clock_ns=lambda: clock_ns[0],
         max_exposure_age_ns=100,
     )
-    source.accept_image(rgb_image(1_100))
+    source.accept_image(rgb_image(1_050))
     manager = CameraManager(
         frame_source=source,
         calibration_path=(
             ROOT
             / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
         ),
-        clock=lambda: 1_050,
+        clock=lambda: clock_ns[0],
         max_exposure_age_ns=100,
     )
+    results: list[object] = []
 
-    with pytest.raises(RuntimeError, match="future"):
-        manager.capture_observation()
+    def capture() -> None:
+        try:
+            results.append(manager.capture_observation())
+        except BaseException as error:
+            results.append(error)
+
+    worker = threading.Thread(target=capture)
+    worker.start()
+    worker.join(0.05)
+
+    assert worker.is_alive()
+    assert results == []
+
+    clock_ns[0] = 1_050
+    source.notify_clock()
+    worker.join(1.0)
+
+    assert len(results) == 1
+    assert not isinstance(results[0], BaseException)
+    assert results[0].metadata.exposure_timestamp_ns == 1_050
 
 
 def test_configured_frame_source_still_rejects_malformed_pixels() -> None:

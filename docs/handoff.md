@@ -106,7 +106,19 @@ pixels. The configured adapter and unchanged default path passed 67 focused
 tests; four imported freshness/future/replay guards passed separately. The
 changed frame-source class type check passed; whole-file checks retain existing
 legacy coordinate-narrowing errors and unavailable host ROS imports. Replacement
-image and flight verification remain pending. The failed run finalized normally;
+flight verification remains pending. All seven temporary images built at
+`1348f68`; the installed adapter selected the 450 ms-old newest image in the
+same queued-frame reproduction. Before launch, a native ROS callback-order
+probe found another boundary requirement: although Gazebo published clock before
+image, the subscriber handled image first. Selecting that newest image while
+the accepted clock was still 50 ms earlier correctly triggered the camera's
+future-frame guard. Configured acquisition must retain such images until their
+clock is accepted, then wake without requiring another image. The camera's own
+future-frame guard remains unchanged. The source change passed 69 focused tests
+and the changed frame-source class type check. A native ROS probe using the
+changed adapter confirmed image-first capture waits, then completes when the
+clock callback accepts its timestamp without another image. Matching rebuilt
+image and replacement-flight verification remain pending. The failed run finalized normally;
 its incomplete bag and absent finalized videos cannot establish artifact validity.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.

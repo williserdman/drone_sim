@@ -186,35 +186,42 @@ class RosFrameSource:
             while True:
                 images = self._available_images()
                 if images:
-                    timestamp_ns = (
-                        images[-1] if self._clock_ns is not None else images[0]
-                    )
-                    if self._exposure_is_stale(timestamp_ns):
-                        self._discard_through(timestamp_ns)
-                        self.last_timestamp_ns = timestamp_ns
-                        continue
-                    image = self._images.pop(timestamp_ns)
-                    self._discard_through(timestamp_ns)
-                    if self._clock_ns is None:
-                        self.last_timestamp_ns = timestamp_ns
-                    try:
-                        data = bytes(image.data)  # type: ignore[attr-defined]
-                    except (AttributeError, TypeError, ValueError) as error:
-                        raise ValueError("image data is malformed") from error
-                    if len(data) != self._width_px * self._height_px * 3:
-                        raise ValueError(
-                            "image data length does not match its geometry"
-                        )
-                    frame = (
-                        np.frombuffer(data, dtype=np.uint8)
-                        .reshape(self._height_px, self._width_px, 3)[..., ::-1]
-                        .copy()
-                    )
+                    timestamp_ns: int | None = images[0]
                     if self._clock_ns is not None:
+                        now_ns = self._clock_ns()
+                        usable = (
+                            []
+                            if now_ns is None
+                            else [value for value in images if value <= now_ns]
+                        )
+                        timestamp_ns = usable[-1] if usable else None
+                    if timestamp_ns is not None:
                         if self._exposure_is_stale(timestamp_ns):
+                            self._discard_through(timestamp_ns)
+                            self.last_timestamp_ns = timestamp_ns
                             continue
-                        self.last_timestamp_ns = timestamp_ns
-                    return frame
+                        image = self._images.pop(timestamp_ns)
+                        self._discard_through(timestamp_ns)
+                        if self._clock_ns is None:
+                            self.last_timestamp_ns = timestamp_ns
+                        try:
+                            data = bytes(image.data)  # type: ignore[attr-defined]
+                        except (AttributeError, TypeError, ValueError) as error:
+                            raise ValueError("image data is malformed") from error
+                        if len(data) != self._width_px * self._height_px * 3:
+                            raise ValueError(
+                                "image data length does not match its geometry"
+                            )
+                        frame = (
+                            np.frombuffer(data, dtype=np.uint8)
+                            .reshape(self._height_px, self._width_px, 3)[..., ::-1]
+                            .copy()
+                        )
+                        if self._clock_ns is not None:
+                            if self._exposure_is_stale(timestamp_ns):
+                                continue
+                            self.last_timestamp_ns = timestamp_ns
+                        return frame
                 if deadline_sim_ns is not None:
                     raise StaleSensorError(
                         f"no newer frame after {self.last_timestamp_ns} before "
@@ -229,6 +236,10 @@ class RosFrameSource:
     def stop(self, reason: str) -> None:
         with self._condition:
             self._stop_reason = reason or "shutdown"
+            self._condition.notify_all()
+
+    def notify_clock(self) -> None:
+        with self._condition:
             self._condition.notify_all()
 
     def _available_images(self) -> list[int]:

@@ -246,6 +246,7 @@ def test_vfs_status_uses_public_grid_after_packet_batch_until_source_end(monkeyp
 
     published = []
     stopped = []
+    clock_notifications = []
     resources = SimpleNamespace(
         dependencies={},
         conditions=None,
@@ -253,7 +254,10 @@ def test_vfs_status_uses_public_grid_after_packet_batch_until_source_end(monkeyp
         status_type=Status,
         status_stream=VehicleStatusStream(),
         phases=SimpleNamespace(advance=lambda _stamp: None),
-        frame_source=SimpleNamespace(stop=stopped.append),
+        frame_source=SimpleNamespace(
+            stop=stopped.append,
+            notify_clock=lambda: clock_notifications.append(True),
+        ),
         vision=SimpleNamespace(close=lambda: stopped.append("vision")),
     )
     protocol = Protocol()
@@ -285,4 +289,5 @@ def test_vfs_status_uses_public_grid_after_packet_batch_until_source_end(monkeyp
     ] == [100_000_000, 200_000_000, 300_000_000]
     assert [message.sequence_id for message in published] == [0, 1, 2]
     assert all(message.mode == "GUIDED" for message in published)
+    assert len(clock_notifications) == len(fake_ros.clock_values)
     assert stopped == ["configured runtime stopped", "vision"]
