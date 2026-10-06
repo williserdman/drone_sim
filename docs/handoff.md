@@ -105,21 +105,34 @@ image consumption at this adapter boundary, with an age recheck after copying
 pixels. The configured adapter and unchanged default path passed 67 focused
 tests; four imported freshness/future/replay guards passed separately. The
 changed frame-source class type check passed; whole-file checks retain existing
-legacy coordinate-narrowing errors and unavailable host ROS imports. Replacement
-flight verification remains pending. All seven temporary images built at
-`1348f68`; the installed adapter selected the 450 ms-old newest image in the
-same queued-frame reproduction. Before launch, a native ROS callback-order
-probe found another boundary requirement: although Gazebo published clock before
-image, the subscriber handled image first. Selecting that newest image while
+legacy coordinate-narrowing errors and unavailable host ROS imports. All seven
+temporary images built at `1348f68`; the installed adapter selected the 450
+ms-old newest image in the same queued-frame reproduction. Before launch, a
+native ROS callback-order probe found another boundary requirement: Gazebo
+published clock before image, but the subscriber handled image first. Selecting
+that newest image while
 the accepted clock was still 50 ms earlier correctly triggered the camera's
 future-frame guard. Configured acquisition must retain such images until their
 clock is accepted, then wake without requiring another image. The camera's own
 future-frame guard remains unchanged. The source change passed 69 focused tests
-and the changed frame-source class type check. A native ROS probe using the
-changed adapter confirmed image-first capture waits, then completes when the
-clock callback accepts its timestamp without another image. Matching rebuilt
-image and replacement-flight verification remain pending. The failed run finalized normally;
-its incomplete bag and absent finalized videos cannot establish artifact validity.
+and the changed frame-source class type check. All seven images were rebuilt at
+`b84f722`; the installed configured companion selected the newest fresh queued
+frame, and a native ROS image-first callback probe confirmed that capture waited
+for the accepted clock, then completed without another image. The failed run
+finalized normally; its incomplete bag and absent finalized videos cannot
+establish artifact validity.
+
+Eleventh launch `5d503177-1e0a-4b76-ad44-d78531a9d359` at `b84f722` passed
+FM1, placed all three payloads at C, received FM2 approval with IDs 2, 3, and 4,
+and physically delivered all three payloads on the ground in L. The active
+attempt reached 600 seconds during the final H LAND, and the mission failed at
+606.75 s public time with `active attempt deadline expired`. Its failed score was
+215/380: A 65, BP 90 with the 1.5 weight multiplier, and BA 15; without FM3
+approval, the three physical L deliveries earned no CP, CA, or time bonus. The
+configured plan now descends at the same waypoint from its stationary 10 m
+transit hold to 4.572 m before each of the seven ordinary landings at D, H, FM2
+H, L2, L3, L4, and final H. Transit and airborne release remain at 10 m. A fresh
+flight and full-window bundle are still required for complete acceptance.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact
