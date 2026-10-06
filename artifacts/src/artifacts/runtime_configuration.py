@@ -58,8 +58,10 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
     width_px, height_px, fps, encoding = cast(tuple[int, int, int, str], geometry)
     ruleset_id = requested_scenario
     if ruleset_id == "competition_2027_v1":
+        mission_plan = document.get("mission_plan")
         if (
-            document.get("schema_version") != 2
+            not isinstance(mission_plan, Mapping)
+            or mission_plan.get("schema_version") != 2
             or document.get("mission") != "configured"
             or (width_px, height_px) != (640, 480)
             or document.get("runtime_profile") != "phase3"

@@ -27,6 +27,7 @@ VERTICAL_DESCENT_TEMPLATE = CONFIG / "vertical-descent-run.json"
 ROLL_AUTOTUNE_TEMPLATE = CONFIG / "autotune-roll-run.json"
 CONFIGURED_DESCENT_TEMPLATE = CONFIG / "configured-descent-run.json"
 CONFIGURED_OPERATOR_TEMPLATE = CONFIG / "configured-operator-run.json"
+CONFIGURED_VFS_2027_TEMPLATE = CONFIG / "configured-vfs-2027-run.json"
 FIXED_RUN_ID = UUID("00000000-0000-4000-8000-000000000222")
 
 
@@ -1122,6 +1123,24 @@ def test_configured_plan_resolves_canonically_and_round_trips_in_run_snapshot(tm
         ).encode()
     ).hexdigest()
     assert load_run_config(written).mission_plan_json == resolved.mission_plan_json
+
+
+def test_resolved_vfs_snapshot_selects_artifact_recording_contract(tmp_path):
+    from artifacts.runtime_configuration import resolve_recording_runtime_config
+
+    resolved = resolve_run_config(
+        CONFIGURED_VFS_2027_TEMPLATE,
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+    written = write_resolved_config(tmp_path, resolved)
+    document = json.loads(written.read_text(encoding="utf-8"))
+
+    contract = resolve_recording_runtime_config(document)
+
+    assert document.get("schema_version") is None
+    assert document["mission_plan"]["schema_version"] == 2
+    assert contract.ruleset_id == "competition_2027_v1"
+    assert contract.expected_camera_frames == 15_600
 
 
 def test_configured_operator_plan_keeps_manual_state_wait_as_first_step():

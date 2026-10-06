@@ -10,8 +10,12 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-Fresh VFS image, physical mission, score, and full-window artifact verification
-are pending. The first image build exposed an unavailable Ubuntu Python venv
+All seven VFS runtime images built successfully at `9f7679c`; physical mission,
+score, and full-window artifact verification remain pending. First launch
+`fe0831d5-c8d8-4532-84b6-db3509cc5705` failed before takeoff: artifact validation
+looked for the mission-plan version at the run document's top level. The check
+now reads the nested mission plan, with a real host-snapshot regression.
+The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact
 apt sets simulated successfully. Gazebo provenance checks
