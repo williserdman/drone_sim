@@ -24,6 +24,12 @@ external arming. Each `mission_plan` has `schema_version: 1` and nonempty `steps
 A step has `tool`, `args`, and an optional `timeout_sim_s`, default 60. The
 normalized plan is frozen in checksum-bound `configuration/run.json`.
 
+The VFS 2027 template uses schema version 2. It retains ordinary calls and adds
+bounded `when` groups for the frozen FM-2 eligibility decision. The runner
+supports the outer `any_payload_eligible` group and one nested
+`payload_eligible` group. It validates skipped calls before opening ROS or
+MAVLink resources and records why each skipped group did not run.
+
 [mission_plan.py](src/drone_sim_companion/mission_plan.py) validates tools and
 exports `tool_definitions()` for future callers. Invalid tools, arguments, or
 numbers fail before ROS or MAVLink resources open.
@@ -37,6 +43,13 @@ numbers fail before ROS or MAVLink resources open.
 | `goto_waypoint` | `latitude_deg`, `longitude_deg`, positive `altitude_m`, optional `tolerance_m`; waits for position within tolerance. |
 | `hold` | Positive `duration_sim_s` shorter than its timeout; maintains the current GUIDED target. |
 | `land` | Empty arguments; waits for touchdown and disarm. Already landed/disarmed succeeds. |
+| `goto_course_waypoint` | Exactly one named waypoint or payload target, altitude, and optional tolerance; waits for position plus horizontal speed below 0.10 m/s for one second. |
+| `find_marker` | Payload ID 2, 3, or 4; requires five fresh, consistent observations while stationary. |
+| `precision_land` | Payload ID; uses the acquired anchor, live landing profile, bounded hold/reacquire policy, and completes on observed touchdown/disarm. |
+| `attach_payload` | Payload ID; requires the matching aligned touchdown and physical attachment confirmation. |
+| `release_payload` | Payload ID and `airborne` or `grounded`; checks flight prerequisites and waits for physical detachment confirmation. |
+| `begin_phase` | FM1, FM2, or FM3; publishes ordered mission intent. |
+| `check_phase` | Phase and the FM1 D/H checkpoint where required; waits for the exactly correlated automatic judge decision. |
 
 Coordinates are WGS84 degrees; altitudes are metres above ArduPilot home.
 [operations.py](src/drone_sim_companion/operations.py) exposes `start()`,
@@ -53,10 +66,12 @@ Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
 the failed result. Another observed mode prevents that recovery command.
 
-These templates exercise the parent operation runner, not Comp2026's mission
-classes. Existing competition missions retain their own execution path.
-Precision landing, payload tools, agent transport, sensor-read tools, branching,
-and retries are deferred. For local commands, see the
+Configured missions never launch the Comp2026 automatic worker. The VFS profile
+reuses its calibrated ArUco transform and guarded precision-policy values through
+tick-driven operations, preserving one flight-output owner and responsive
+simulation-time aborts. Marker processing runs on a worker that cannot issue
+flight commands. Search remains bounded to the configured acquisition hover;
+course-wide search is not implemented. For local commands, see the
 [runbook](../docs/runbook.md#local-developer-workflow).
 
 ## Entry points and implementation seams
@@ -88,7 +103,11 @@ downward range, and ArduPilot MAVLink telemetry. Production MAVLink is fixed to
 For the exact ROS payloads, read
 [RunState.msg](../ros_ws/src/simulation_interfaces/msg/RunState.msg),
 [PayloadCommand.srv](../ros_ws/src/simulation_interfaces/srv/PayloadCommand.srv),
-and [MissionEvent.msg](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg).
+[MissionEvent.msg](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg), and
+[VehicleStatus.msg](../ros_ws/src/simulation_interfaces/msg/VehicleStatus.msg).
+VFS vehicle status starts at 100 ms and publishes once per 100 ms public-clock
+grid point through public finalization, using the latest complete observed
+HEARTBEAT state; queued MAVLink packets cannot create duplicate samples.
 Camera identity is recorded through
 [FrameMetadata.msg](../ros_ws/src/simulation_interfaces/msg/FrameMetadata.msg),
 although autonomy consumes the image itself rather than subscribing to the
@@ -103,6 +122,11 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 
 - Mission decisions use accepted simulation time. Loss of `/clock` prevents new
   simulated decisions; wall time only bounds infrastructure and computation.
+- VFS startup waits for pinned home and all live precision-landing parameters.
+  Attempt status supplies active elapsed time. Expiry cancels payload work and,
+  only with fresh GUIDED/LAND authority and no failsafe, gives the same operation
+  owner a bounded return-to-H and landing recovery. Recovery never replaces the
+  failed outcome.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.

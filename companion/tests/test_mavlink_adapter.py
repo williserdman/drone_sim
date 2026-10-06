@@ -24,6 +24,7 @@ class FakeMav:
     calls: list[tuple[object, ...]] = field(default_factory=list)
     stream_calls: list[tuple[object, ...]] = field(default_factory=list)
     global_position_target_calls: list[tuple[object, ...]] = field(default_factory=list)
+    landing_target_calls: list[tuple[object, ...]] = field(default_factory=list)
 
     def command_long_send(self, *arguments: object) -> None:
         self.calls.append(arguments)
@@ -33,6 +34,9 @@ class FakeMav:
 
     def set_position_target_global_int_send(self, *arguments: object) -> None:
         self.global_position_target_calls.append(arguments)
+
+    def landing_target_send(self, *arguments: object) -> None:
+        self.landing_target_calls.append(arguments)
 
 
 class FakeConnection:
@@ -62,6 +66,7 @@ def mavutil() -> SimpleNamespace:
         MAV_DATA_STREAM_ALL=0,
         MAV_SYS_STATUS_PREARM_CHECK=0x10000000,
         MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+        MAV_FRAME_BODY_FRD=12,
         POSITION_TARGET_TYPEMASK_VX_IGNORE=8,
         POSITION_TARGET_TYPEMASK_VY_IGNORE=16,
         POSITION_TARGET_TYPEMASK_VZ_IGNORE=32,
@@ -154,6 +159,7 @@ def test_telemetry_request_keeps_generic_stream_and_requests_landed_state() -> N
     assert connection.mav.stream_calls == [(1, 1, 0, 10, 1)]
     assert connection.mav.calls == [
         (1, 1, 511, 0, 245, 100_000, 0, 0, 0, 0, 0),
+        (1, 1, 511, 0, 0, 100_000, 0, 0, 0, 0, 0),
     ]
 
 
@@ -211,6 +217,31 @@ def test_global_position_exposes_decimal_degree_coordinates() -> None:
     assert position is not None
     assert position.latitude_deg == pytest.approx(37.4003371)
     assert position.longitude_deg == pytest.approx(-122.0800351)
+
+
+def test_global_position_exposes_horizontal_velocity() -> None:
+    connection = FakeConnection([
+        Message("GLOBAL_POSITION_INT", lat=0, lon=0, relative_alt=10_000,
+                vx=12, vy=-34, vz=0),
+    ])
+    position = MavlinkAdapter(connection, mavutil()).poll(1)
+    assert position is not None
+    assert position.horizontal_velocity_north_m_s == pytest.approx(0.12)
+    assert position.horizontal_velocity_east_m_s == pytest.approx(-0.34)
+
+
+def test_landing_target_encodes_body_frd_angles_and_distance() -> None:
+    from drone_sim_companion.precision_landing import BodyFrd
+
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+    adapter.send_landing_target(BodyFrd(1.0, -2.0, 4.0))
+
+    packet = connection.mav.landing_target_calls[0]
+    assert packet[:3] == (0, 0, 12)
+    assert packet[3] == pytest.approx(-0.4636476090)
+    assert packet[4] == pytest.approx(-0.2449786631)
+    assert packet[5] == pytest.approx(21 ** 0.5)
 
 
 def test_in_progress_ack_waits_and_negative_ack_is_exposed() -> None:

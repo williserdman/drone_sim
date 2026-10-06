@@ -32,7 +32,7 @@ class RuntimeConfig:
     config_path: Path
     scenario: str
     pickup_zones: Mapping[str, PickupZone]
-    payload_zones: Mapping[int, str | None]
+    payload_zones: Mapping[int, str | frozenset[str] | None]
     payload_capacity: int
     max_center_error_m: float
 
@@ -85,8 +85,11 @@ class RuntimeConfig:
                 0,
                 0.0,
             )
-        if scenario != "competition_v1":
-            raise ValueError("electromagnet scenario must be descent_v1 or competition_v1")
+        if scenario not in {"competition_v1", "competition_2027_v1"}:
+            raise ValueError(
+                "electromagnet scenario must be descent_v1, competition_v1, "
+                "or competition_2027_v1"
+            )
         competition = document.get("competition")
         if not isinstance(competition, dict) or not {"course", "scenario"}.issubset(
             competition
@@ -102,6 +105,51 @@ class RuntimeConfig:
             expected = competition.get(f"{name}_sha256")
             if expected is not None and expected != hashlib.sha256(payload).hexdigest():
                 raise ValueError(f"resolved {name} hash does not match copied bytes")
+        if scenario == "competition_2027_v1":
+            from artifacts.vfs_contract import load_vfs_course, load_vfs_scenario
+
+            course_config = load_vfs_course(course_path)
+            scenario_config = load_vfs_scenario(scenario_path)
+            pickup_zones: dict[str, PickupZone] = {}
+            for name in ("S", "D"):
+                try:
+                    point = course_config.waypoints[name]
+                    center_x, center_y = point.center_xy_m
+                    pickup_zones[name] = PickupZone(
+                        float(center_x),
+                        float(center_y),
+                        float(point.width),
+                        float(point.height),
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"resolved VFS pickup region {name} is invalid"
+                    ) from error
+            markers = {payload.aruco_id for payload in scenario_config.payloads}
+            if markers != set(PAYLOAD_IDS):
+                raise ValueError(
+                    "resolved VFS payload inventory must contain exact IDs 2, 3, and 4"
+                )
+            tolerance = float(
+                scenario_config.payload_interaction.pickup_max_center_error_m
+            )
+            if scenario_config.payload_capacity != 1:
+                raise ValueError("resolved VFS payload capacity must be one")
+            return cls(
+                run_id,
+                run_directory,
+                config_path,
+                scenario,
+                MappingProxyType(pickup_zones),
+                MappingProxyType(
+                    {
+                        marker: frozenset({"S", "D"})
+                        for marker in PAYLOAD_IDS
+                    }
+                ),
+                scenario_config.payload_capacity,
+                tolerance,
+            )
         try:
             course = yaml.safe_load(course_bytes)
             payload_scenario = yaml.safe_load(scenario_bytes)
@@ -166,8 +214,8 @@ class RuntimeConfig:
         )
 
     def authority(self) -> PayloadAuthority:
-        if self.scenario != "competition_v1":
-            raise ValueError("payload authority is available only for competition_v1")
+        if self.scenario not in {"competition_v1", "competition_2027_v1"}:
+            raise ValueError("payload authority is available only for competition scenarios")
         return PayloadAuthority(
             run_id=self.run_id,
             pickup_zones=self.pickup_zones,
@@ -357,7 +405,7 @@ def _competition_main(config: RuntimeConfig) -> int:
         publish=lambda _event: None,
         protocol=protocol,
         stream=sys.stdout,
-        scenario="competition_v1",
+        scenario=config.scenario,
     )
     finalizing = False
     requested_stop = False

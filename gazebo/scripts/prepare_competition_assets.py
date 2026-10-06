@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Generate the deterministic Comp2026 Gazebo world and physical models."""
+"""Generate deterministic competition Gazebo worlds and physical models."""
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import xml.etree.ElementTree as ET
+from typing import Any
 
 from drone_sim_gazebo.competition_config import (
     Camera,
@@ -43,6 +45,30 @@ VEHICLE_LEG_COLLISIONS = (
     "front_right_leg_collision",
     "rear_left_leg_collision",
     "rear_right_leg_collision",
+)
+
+
+@dataclass(frozen=True)
+class GenerationProfile:
+    world_name: str
+    vehicle_name: str
+    payload_resource_prefix: str
+    hardpoint_z_m: float
+    visual_markings: tuple[str, ...] = ()
+
+
+COMP2026_PROFILE = GenerationProfile(
+    world_name="competition_mission",
+    vehicle_name="iris_competition",
+    payload_resource_prefix="payload_",
+    hardpoint_z_m=PAYLOAD_HARDPOINT_Z_M,
+)
+VFS_2027_PROFILE = GenerationProfile(
+    world_name="competition_2027",
+    vehicle_name="iris_competition_2027",
+    payload_resource_prefix="payload_2027_",
+    hardpoint_z_m=-0.1569,
+    visual_markings=("S", "H", "L", "D", "A", "B", "C"),
 )
 
 
@@ -242,9 +268,9 @@ def _add_sensor_link(model: ET.Element, camera: Camera, range_sensor: RangeSenso
     _text(joint, "child", "competition_sensor_link")
 
 
-def _add_hardpoint(model: ET.Element) -> None:
+def _add_hardpoint(model: ET.Element, hardpoint_z_m: float) -> None:
     link = ET.SubElement(model, "link", {"name": "payload_hardpoint"})
-    _text(link, "pose", f"0 0 {_fmt(PAYLOAD_HARDPOINT_Z_M)} 0 0 0")
+    _text(link, "pose", f"0 0 {_fmt(hardpoint_z_m)} 0 0 0")
     inertial = ET.SubElement(link, "inertial")
     _text(inertial, "mass", "0.01")
     inertia = ET.SubElement(inertial, "inertia")
@@ -301,7 +327,12 @@ def _add_payload_joints(model: ET.Element, payloads: tuple[Payload, ...]) -> Non
         _text(detachable, "state_publish_period", "0.05")
 
 
-def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfig) -> None:
+def _write_vehicle(
+    source_root: Path,
+    output_root: Path,
+    scenario: ScenarioConfig,
+    profile: GenerationProfile,
+) -> None:
     source = source_root / "models/iris_flight/model.sdf"
     try:
         root = ET.parse(source).getroot()
@@ -316,20 +347,30 @@ def _write_vehicle(source_root: Path, output_root: Path, scenario: ScenarioConfi
     for control in model.findall("plugin[@name='ArduPilotPlugin']/control"):
         control.find("cmd_max").text = _fmt(PAYLOAD_MOTOR_TORQUE_NM)
         control.find("cmd_min").text = _fmt(-PAYLOAD_MOTOR_TORQUE_NM)
-    model.attrib["name"] = "iris_competition"
+    model.attrib["name"] = profile.vehicle_name
     _embed_competition_airframe(source_root, model)
     _add_sensor_link(model, scenario.camera, scenario.range_sensor)
-    _add_hardpoint(model)
+    _add_hardpoint(model, profile.hardpoint_z_m)
     _add_payload_joints(model, scenario.payloads)
     _add_pose_publisher(model)
+    if profile == VFS_2027_PROFILE:
+        empty_mass_kg = sum(
+            float(node.text)
+            for node in model.findall(".//link/inertial/mass")
+            if node.text is not None
+        )
+        if not abs(empty_mass_kg - scenario.aircraft_empty_mass_kg) <= 1e-9:
+            raise RuntimeError(
+                "generated 2027 aircraft mass does not match scenario configuration"
+            )
 
-    target = output_root / "models/iris_competition"
+    target = output_root / f"models/{profile.vehicle_name}"
     target.mkdir(parents=True, exist_ok=True)
     _write_xml(root, target / "model.sdf")
     _write_model_config(
         target / "model.config",
-        "Drone Sim Iris Competition",
-        "Validated Iris flight model with Comp2026 sensors and one payload hardpoint.",
+        f"Drone Sim {profile.vehicle_name}",
+        "Validated Iris flight model with competition sensors and one payload hardpoint.",
     )
 
 
@@ -352,9 +393,10 @@ def _write_payload(
     payload: Payload,
     geometry: PayloadGeometry,
     generate_marker: bool,
+    profile: GenerationProfile,
 ) -> None:
     marker_id = payload.aruco_id
-    model_dir = output_root / f"models/payload_{marker_id}"
+    model_dir = output_root / f"models/{profile.payload_resource_prefix}{marker_id}"
     texture = model_dir / f"materials/textures/marker_{marker_id}.png"
     if generate_marker:
         _write_marker(texture, marker_id)
@@ -363,7 +405,11 @@ def _write_payload(
         texture.write_bytes(b"test-marker")
 
     size_x, size_y, size_z = geometry.size_m
-    mass = geometry.mass_kg
+    mass = (
+        geometry.total_mass_kg
+        if profile == VFS_2027_PROFILE
+        else geometry.mass_kg
+    )
     inertia = {
         "ixx": mass * (size_y**2 + size_z**2) / 12,
         "iyy": mass * (size_x**2 + size_z**2) / 12,
@@ -373,7 +419,12 @@ def _write_payload(
     model = ET.SubElement(root, "model", {"name": f"payload_{marker_id}"})
     link = ET.SubElement(model, "link", {"name": "body"})
     inertial = ET.SubElement(link, "inertial")
-    _text(inertial, "mass", _fmt(mass))
+    mass_text = (
+        f"{mass:.9f}".rstrip("0").rstrip(".")
+        if profile == VFS_2027_PROFILE
+        else _fmt(mass)
+    )
+    _text(inertial, "mass", mass_text)
     inertia_sdf = ET.SubElement(inertial, "inertia")
     for tag in ("ixx", "iyy", "izz"):
         _text(inertia_sdf, tag, _fmt(inertia[tag]))
@@ -425,8 +476,8 @@ def _write_payload(
     _write_xml(root, model_dir / "model.sdf")
     _write_model_config(
         model_dir / "model.config",
-        f"Comp2026 Payload {marker_id}",
-        f"Physical 6x6x2 inch payload with ArUco 4x4-250 marker {marker_id}.",
+        f"Competition Payload {marker_id}",
+        f"Physical payload with ArUco 4x4-250 marker {marker_id}.",
     )
 
 
@@ -493,6 +544,49 @@ def _add_pad(world: ET.Element, course: CourseConfig, name: str) -> None:
         )
 
 
+def _waypoint_xy(course: Any, name: str) -> tuple[float, float]:
+    if isinstance(course, CourseConfig):
+        return world_xy(course, name)
+    try:
+        point = course.waypoints[name]
+    except KeyError as error:
+        raise ValueError(f"unknown VFS waypoint {name!r}") from error
+    return tuple(float(value) for value in point.center_xy_m)
+
+
+def _add_visual_marking(world: ET.Element, course: Any, name: str) -> None:
+    point = course.waypoints[name]
+    x_m, y_m = _waypoint_xy(course, name)
+    model = ET.SubElement(world, "model", {"name": f"mark_{name.lower()}"})
+    _text(model, "static", "true")
+    _text(model, "pose", f"{_fmt(x_m)} {_fmt(y_m)} 0.001 0 0 0")
+    link = ET.SubElement(model, "link", {"name": "paint_link"})
+    visual = ET.SubElement(link, "visual", {"name": "paint_visual"})
+    geometry = ET.SubElement(visual, "geometry")
+    radius = getattr(point, "radius", None)
+    if radius is not None:
+        cylinder = ET.SubElement(geometry, "cylinder")
+        _text(cylinder, "radius", _fmt(float(radius)))
+        _text(cylinder, "length", "0.001")
+    else:
+        plane = ET.SubElement(geometry, "plane")
+        _text(plane, "normal", "0 0 1")
+        _text(
+            plane,
+            "size",
+            f"{_fmt(float(point.width))} {_fmt(float(point.height))}",
+        )
+    color = {
+        "H": "0.04 0.04 0.04 1",
+        "A": "0.90 0.15 0.15 1",
+        "B": "0.95 0.75 0.10 1",
+        "C": "0.10 0.35 0.95 1",
+    }.get(name, "0.75 0.75 0.75 1")
+    material = ET.SubElement(visual, "material")
+    _text(material, "ambient", color)
+    _text(material, "diffuse", color)
+
+
 def _add_observer(world: ET.Element) -> None:
     model = ET.SubElement(world, "model", {"name": "observer_station"})
     _text(model, "pose", "-76.2 -100 90 0 0.733 1.570796327")
@@ -515,9 +609,14 @@ def _add_observer(world: ET.Element) -> None:
     _text(clip, "far", "300")
 
 
-def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConfig) -> Path:
+def _write_world(
+    output_root: Path,
+    course: CourseConfig,
+    scenario: ScenarioConfig,
+    profile: GenerationProfile,
+) -> Path:
     root = ET.Element("sdf", {"version": "1.9"})
-    world = ET.SubElement(root, "world", {"name": "competition_mission"})
+    world = ET.SubElement(root, "world", {"name": profile.world_name})
     _text(world, "gravity", "0 0 -9.8")
     physics = ET.SubElement(world, "physics", {"name": "competition_physics", "type": "ode"})
     _text(physics, "max_step_size", "0.001")
@@ -562,11 +661,15 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
     material = ET.SubElement(visual, "material")
     _text(material, "ambient", "0.25 0.25 0.25 1")
     _text(material, "diffuse", "0.35 0.35 0.35 1")
-    for name in ("H", "L", "F2", "WA", "WM"):
-        _add_pad(world, course, name)
+    if profile.visual_markings:
+        for name in profile.visual_markings:
+            _add_visual_marking(world, course, name)
+    else:
+        for name in ("H", "L", "F2", "WA", "WM"):
+            _add_pad(world, course, name)
 
     iris = ET.SubElement(world, "include")
-    _text(iris, "uri", "model://iris_competition")
+    _text(iris, "uri", f"model://{profile.vehicle_name}")
     _text(iris, "name", "iris")
     _text(iris, "pose", f"0 0 {_fmt(VEHICLE_INITIAL_Z_M)} 0 0 0")
     _text(iris, "static", "false")
@@ -581,27 +684,33 @@ def _write_world(output_root: Path, course: CourseConfig, scenario: ScenarioConf
     _text(odometry, "dimensions", "3")
     _text(odometry, "odom_publish_frequency", "20")
     _text(odometry, "odom_topic", "/gazebo/private/iris/odometry")
-    _text(odometry, "odom_frame", "competition_mission")
+    _text(odometry, "odom_frame", profile.world_name)
     _text(odometry, "robot_base_frame", "iris")
 
     for payload in sorted(scenario.payloads, key=lambda item: item.aruco_id):
         include = ET.SubElement(world, "include")
-        _text(include, "uri", f"model://payload_{payload.aruco_id}")
+        _text(
+            include,
+            "uri",
+            f"model://{profile.payload_resource_prefix}{payload.aruco_id}",
+        )
         _text(include, "name", f"payload_{payload.aruco_id}")
         if payload.initial == "attached":
             x_m, y_m = 0.0, 0.0
-            z_m = VEHICLE_INITIAL_Z_M + PAYLOAD_HARDPOINT_Z_M
+            z_m = VEHICLE_INITIAL_Z_M + profile.hardpoint_z_m
         else:
-            x_m, y_m = world_xy(course, payload.initial)
-            z_m = PAD_THICKNESS_M + scenario.payload_geometry.size_m[2] / 2
+            x_m, y_m = _waypoint_xy(course, payload.initial)
+            ground_height = 0.0 if profile.visual_markings else PAD_THICKNESS_M
+            z_m = ground_height + scenario.payload_geometry.size_m[2] / 2
         _text(include, "pose", f"{_fmt(x_m)} {_fmt(y_m)} {_fmt(z_m)} 0 0 0")
 
     _add_observer(world)
-    world_path = output_root / "worlds/competition_mission.sdf"
+    world_path = output_root / f"worlds/{profile.world_name}.sdf"
     _write_xml(root, world_path)
-    physics.find("real_time_factor").text = "1.0"
-    physics.find("real_time_update_rate").text = "1000"
-    _write_xml(root, output_root / "worlds/competition_mission_1x.sdf")
+    if profile == COMP2026_PROFILE:
+        physics.find("real_time_factor").text = "1.0"
+        physics.find("real_time_update_rate").text = "1000"
+        _write_xml(root, output_root / "worlds/competition_mission_1x.sdf")
     return world_path
 
 
@@ -611,15 +720,33 @@ def prepare_assets(
     course_path: Path,
     scenario_path: Path,
     *,
+    profile: GenerationProfile = COMP2026_PROFILE,
     generate_markers: bool = True,
 ) -> Path:
-    """Generate only Comp2026-owned outputs from validated source resources."""
-    course = load_course(course_path)
-    scenario = load_scenario(scenario_path, course)
-    _write_vehicle(source_root, output_root, scenario)
+    """Generate one validated competition profile from local resources."""
+    if profile == VFS_2027_PROFILE:
+        from artifacts.vfs_contract import (
+            load_vfs_course,
+            load_vfs_scenario,
+            validate_vfs_configuration,
+        )
+
+        course = load_vfs_course(course_path)
+        scenario = load_vfs_scenario(scenario_path)
+        validate_vfs_configuration(course, scenario)
+    else:
+        course = load_course(course_path)
+        scenario = load_scenario(scenario_path, course)
+    _write_vehicle(source_root, output_root, scenario, profile)
     for payload in sorted(scenario.payloads, key=lambda item: item.aruco_id):
-        _write_payload(output_root, payload, scenario.payload_geometry, generate_markers)
-    return _write_world(output_root, course, scenario)
+        _write_payload(
+            output_root,
+            payload,
+            scenario.payload_geometry,
+            generate_markers,
+            profile,
+        )
+    return _write_world(output_root, course, scenario, profile)
 
 
 def main() -> int:
@@ -628,13 +755,24 @@ def main() -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--course", required=True, type=Path)
     parser.add_argument("--scenario", required=True, type=Path)
+    parser.add_argument(
+        "--profile",
+        choices=("competition_v1", "competition_2027_v1"),
+        default="competition_v1",
+    )
     args = parser.parse_args()
+    profile = (
+        VFS_2027_PROFILE
+        if args.profile == "competition_2027_v1"
+        else COMP2026_PROFILE
+    )
     print(
         prepare_assets(
             args.source_root,
             args.output_root,
             args.course,
             args.scenario,
+            profile=profile,
         )
     )
     return 0

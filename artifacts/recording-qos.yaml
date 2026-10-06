@@ -39,6 +39,17 @@
   reliability: reliable
   durability: transient_local
 /simulation/mission_events: *competition_event_qos
+/simulation/judge_decisions: *competition_event_qos
+/simulation/vehicle_status:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
+/simulation/attempt_status:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
 /competition/range/downward:
   history: keep_last
   depth: 100

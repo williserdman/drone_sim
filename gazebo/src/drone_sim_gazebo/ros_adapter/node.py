@@ -7,7 +7,7 @@ from collections.abc import Callable
 import copy
 from dataclasses import dataclass
 
-from .aggregation import AggregationFault, NativeOdometry
+from .aggregation import AggregationFault, NativeOdometry, VehicleSupportTracker
 from .epoch import FRAME_INTERVAL_NS, OutputEpochGate
 from .live import LiveAdapter
 from .model import (
@@ -25,6 +25,7 @@ from .payload import (
     payload_state_message,
 )
 from .topics import (
+    COMPETITION_WORLDS,
     PAYLOAD_IDS,
     camera_topics_for_world,
     contact_topic_for_world,
@@ -102,7 +103,12 @@ class GazeboAdapterNode(_node_base()):
         super().__init__("drone_sim_gazebo_adapter")
         self._run_id = run_id
         self._world_name = world_name
-        self._competition = world_name == "competition_mission"
+        self._competition = world_name in COMPETITION_WORLDS
+        self._vehicle_support = (
+            VehicleSupportTracker(payload_ids=PAYLOAD_IDS, interval_ns=50_000_000)
+            if world_name == "competition_2027"
+            else None
+        )
         self._require_competition_recorders = (
             self._competition
             if require_competition_recorders is None
@@ -419,9 +425,18 @@ class GazeboAdapterNode(_node_base()):
             public_timestamp_ns = self._output_epoch.rebase_sample(timestamp_ns)
             if public_timestamp_ns is None:
                 return
-            output = self._live.accept_contact(
-                public_timestamp_ns, bool(message.contacts)
-            )
+            if self._vehicle_support is None:
+                output = self._live.accept_contact(
+                    public_timestamp_ns, bool(message.contacts)
+                )
+            else:
+                output = tuple(
+                    item
+                    for stamp_ns, supported in self._vehicle_support.accept_leg_contact(
+                        public_timestamp_ns, bool(message.contacts)
+                    )
+                    for item in self._live.accept_contact(stamp_ns, supported)
+                )
             self._emit(output)
         except (AdapterFault, AggregationFault, ValueError, TypeError) as error:
             self._fail(error)
@@ -518,6 +533,19 @@ class GazeboAdapterNode(_node_base()):
     def _emit(self, output) -> None:
         if not output:
             return
+        if self._vehicle_support is not None:
+            joined: list[object] = []
+            for value in output:
+                if isinstance(value, PublicPayloadState):
+                    joined.extend(
+                        item
+                        for stamp_ns, supported in self._vehicle_support.accept_payload(
+                            value
+                        )
+                        for item in self._live.accept_contact(stamp_ns, supported)
+                    )
+                joined.append(value)
+            output = tuple(joined)
         if self._output_active:
             self._publish(output)
             return

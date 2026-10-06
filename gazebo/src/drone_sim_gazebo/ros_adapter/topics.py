@@ -2,7 +2,8 @@
 
 
 PAYLOAD_IDS = (2, 3, 4)
-_WORLDS = {"phase3_foundation", "vertical_descent", "competition_mission"}
+COMPETITION_WORLDS = frozenset({"competition_mission", "competition_2027"})
+_WORLDS = {"phase3_foundation", "vertical_descent", *COMPETITION_WORLDS}
 _ONBOARD_CAMERA_TOPIC = "/gazebo/private/camera/onboard/image"
 _COMPETITION_ONBOARD_CAMERA_TOPIC = (
     "/gazebo/private/camera/competition_onboard/image"
@@ -18,7 +19,7 @@ def _world(world_name: str) -> str:
 
 def contact_topic_for_world(world_name: str) -> str:
     world_name = _world(world_name)
-    if world_name == "competition_mission":
+    if world_name in COMPETITION_WORLDS:
         return "/gazebo/private/iris/contact"
     return (
         f"/world/{world_name}/model/ground_plane/link/ground_link/sensor/"
@@ -30,7 +31,7 @@ def camera_topics_for_world(world_name: str) -> tuple[str, str]:
     world_name = _world(world_name)
     onboard = (
         _COMPETITION_ONBOARD_CAMERA_TOPIC
-        if world_name == "competition_mission"
+        if world_name in COMPETITION_WORLDS
         else _ONBOARD_CAMERA_TOPIC
     )
     return onboard, _OBSERVER_CAMERA_TOPIC
@@ -52,7 +53,7 @@ def private_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
         "/gazebo/private/iris/odometry",
         contact_topic_for_world(world_name),
     )
-    if world_name != "competition_mission":
+    if world_name not in COMPETITION_WORLDS:
         return topics
     competition = ["/gazebo/private/range/downward"]
     for aruco_id in PAYLOAD_IDS:
@@ -75,7 +76,7 @@ def readiness_publisher_topics_for_world(world_name: str) -> tuple[str, ...]:
     and supervised bridge children establish that side of readiness instead.
     """
     world_name = _world(world_name)
-    if world_name in {"vertical_descent", "competition_mission"}:
+    if world_name in {"vertical_descent", *COMPETITION_WORLDS}:
         return ()
     cameras = set(camera_topics_for_world(world_name))
     return tuple(
@@ -96,14 +97,14 @@ def recorder_topics_for_world(
         "/camera/observer/frame_metadata",
         "/simulation/ground_truth",
     )
-    if world_name == "competition_mission" and competition_evidence:
+    if world_name in COMPETITION_WORLDS and competition_evidence:
         return (*topics, "/simulation/payload_state", "/competition/range/downward")
     return topics
 
 
 def private_command_topics_for_world(world_name: str) -> tuple[str, ...]:
     world_name = _world(world_name)
-    if world_name != "competition_mission":
+    if world_name not in COMPETITION_WORLDS:
         return ()
     return tuple(
         private_payload_topic(aruco_id, "command")
@@ -120,7 +121,7 @@ def gazebo_topics_for_world(world_name: str) -> tuple[str, ...]:
         "/gazebo/private/iris/odometry",
         contact_topic_for_world(world_name),
     )
-    if world_name != "competition_mission":
+    if world_name not in COMPETITION_WORLDS:
         return topics
     competition = ["/gazebo/private/range/downward"]
     for aruco_id in PAYLOAD_IDS:

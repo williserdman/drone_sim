@@ -1,0 +1,34 @@
+schema_version: 1
+profile: competition_2027_v1
+seed: 2027
+vehicle:
+  payload_capacity: 1
+  aircraft_empty_mass_kg: 1.66001
+camera:
+  width_px: 640
+  height_px: 480
+  update_rate_hz: 20
+  horizontal_fov_rad: 0.60
+  body_position_m: [0.0, 0.0, -0.10]
+range_sensor:
+  update_rate_hz: 20
+payload_interaction:
+  pickup_max_center_error_m: 0.075
+  settle_position_tolerance_m: 0.01
+  settle_time_s: 1.0
+payload_geometry:
+  size_m: [0.1524, 0.1524, 0.0762]
+  water_mass_kg: 1.36077711
+  tare_mass_kg: 0.10
+  marker_size_m: 0.10
+payloads:
+  - {aruco_id: 2, color: red, initial: P2, delivery: L2, release_offset_xy_m: [0.0, 0.28]}
+  - {aruco_id: 3, color: yellow, initial: P3, delivery: L3, release_offset_xy_m: [-0.242, -0.14]}
+  - {aruco_id: 4, color: blue, initial: P4, delivery: L4, release_offset_xy_m: [0.242, -0.14]}
+mission:
+  targets: {2: C, 3: C, 4: C}
+assumptions:
+  rigid_containers: true
+  liquid_and_breakage_simulated: false
+  failed_payloads_physically_removed: false
+  ground_mission_simulated: false

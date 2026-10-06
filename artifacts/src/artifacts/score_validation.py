@@ -403,6 +403,16 @@ def validate_score_outputs(
             deadline_check=deadline_check,
             physical_evidence=physical_evidence,
         )
+    if ruleset_id == "competition_2027_v1":
+        from .vfs_score_validation import validate_vfs_score_outputs
+
+        return validate_vfs_score_outputs(
+            run_directory,
+            run_id=run_id,
+            rules_path=rules_path,
+            deadline_check=deadline_check,
+            physical_evidence=physical_evidence,
+        )
     raise ScoreValidationError("score ruleset is unsupported")
 
 

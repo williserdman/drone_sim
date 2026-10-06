@@ -5,10 +5,65 @@ import pytest
 from drone_sim_gazebo.ros_adapter.aggregation import (
     AggregationFault,
     PrivateTruthAggregator,
+    VehicleSupportTracker,
 )
+from drone_sim_gazebo.ros_adapter.payload import PublicPayloadState
 
 
 STAMP = 50_000_000
+
+
+def _payload_support(
+    aruco_id: int, *, stamp_ns: int = STAMP, grounded: bool, attached: bool
+) -> PublicPayloadState:
+    return PublicPayloadState(
+        run_id="00000000-0000-4000-8000-000000000001",
+        sim_timestamp_ns=stamp_ns,
+        aruco_id=aruco_id,
+        position_xyz=(0.0, 0.0, 0.0),
+        orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+        linear_velocity_xyz=(0.0, 0.0, 0.0),
+        grounded=grounded,
+        attached=attached,
+    )
+
+
+@pytest.mark.parametrize(
+    ("leg_contact", "grounded", "attached", "expected"),
+    (
+        (False, True, True, True),
+        (False, True, False, False),
+        (False, False, True, False),
+        (True, False, False, True),
+    ),
+)
+def test_vehicle_support_includes_only_attached_grounded_payloads(
+    leg_contact: bool, grounded: bool, attached: bool, expected: bool
+) -> None:
+    tracker = VehicleSupportTracker(payload_ids=(2, 3, 4), interval_ns=STAMP)
+    assert tracker.accept_leg_contact(STAMP, leg_contact) == ()
+    assert tracker.accept_payload(_payload_support(2, grounded=grounded, attached=attached)) == ()
+    assert tracker.accept_payload(_payload_support(3, grounded=True, attached=False)) == ()
+    assert tracker.accept_payload(
+        _payload_support(4, grounded=False, attached=False)
+    ) == ((STAMP, expected),)
+
+
+def test_vehicle_support_rejects_missing_payload_epoch() -> None:
+    tracker = VehicleSupportTracker(payload_ids=(2, 3, 4), interval_ns=STAMP)
+    tracker.accept_leg_contact(STAMP, False)
+    tracker.accept_payload(_payload_support(2, grounded=False, attached=False))
+    tracker.accept_payload(_payload_support(3, grounded=False, attached=False))
+
+    with pytest.raises(AggregationFault, match="first payload support"):
+        tracker.accept_payload(
+            _payload_support(
+                4,
+                stamp_ns=2 * STAMP,
+                grounded=False,
+                attached=False,
+            )
+        )
 
 
 def _odometry(stamp_ns=STAMP):

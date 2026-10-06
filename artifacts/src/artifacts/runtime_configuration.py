@@ -25,8 +25,10 @@ class RecordingRuntimeConfig:
 
     @property
     def topics(self) -> tuple[str, ...]:
-        from ._adapters.rosbag import BASE_TOPICS, COMPETITION_TOPICS
+        from ._adapters.rosbag import BASE_TOPICS, COMPETITION_TOPICS, VFS_2027_TOPICS
 
+        if self.ruleset_id == "competition_2027_v1":
+            return VFS_2027_TOPICS
         return COMPETITION_TOPICS if self.ruleset_id == "competition_v1" else BASE_TOPICS
 
 
@@ -41,15 +43,34 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
         recording.get("fps"),
         recording.get("encoding"),
     )
+    requested_scenario = document.get("scenario", "descent_v1")
+    if requested_scenario == "competition_2027_v1" and geometry != (
+        640,
+        480,
+        20,
+        "rgb8",
+    ):
+        raise ValueError("competition_2027_v1 recording must equal 640x480 rgb8 at 20 FPS")
     if geometry not in ((320, 240, 20, "rgb8"), (640, 480, 20, "rgb8")):
         raise ValueError(
             "recording configuration must equal 320x240 or 640x480 rgb8 at 20 FPS"
         )
     width_px, height_px, fps, encoding = geometry
-    ruleset_id = document.get("scenario", "descent_v1")
+    ruleset_id = requested_scenario
+    if ruleset_id == "competition_2027_v1":
+        if (
+            document.get("schema_version") != 2
+            or document.get("mission") != "configured"
+            or (width_px, height_px) != (640, 480)
+            or document.get("simulation", {}).get("duration_sim_seconds") != 780
+        ):
+            raise ValueError(
+                "competition_2027_v1 requires version 2 configured mission and "
+                "640x480 rgb8 at 20 FPS for 780 public seconds"
+            )
     if ruleset_id == "competition_v1" and (width_px, height_px) != (640, 480):
         raise ValueError("competition_v1 recording must equal 640x480 rgb8 at 20 FPS")
-    if ruleset_id != "competition_v1":
+    if ruleset_id not in {"competition_v1", "competition_2027_v1"}:
         ruleset_id = "descent_v1"
 
     profile = document.get("runtime_profile", "phase2")

@@ -82,6 +82,21 @@ def test_foundation_image_bridge_keeps_its_existing_private_source(tmp_path):
     )
 
 
+def test_vfs_world_runs_competition_clock_and_image_bridges(tmp_path):
+    specs = gazebo_child_specs(
+        bridge_config=tmp_path / "bridge.yaml",
+        environment={"GZ_PARTITION": "vfs"},
+        world_name="competition_2027",
+    )
+
+    assert tuple(spec.name for spec in specs) == (
+        "clock_decimator",
+        "bridge",
+        "image_bridge_onboard",
+        "image_bridge_observer",
+    )
+
+
 def test_supervisor_reports_first_unexpected_child_exit():
     processes = iter((FakeProcess(), FakeProcess(17)))
     supervisor = ChildSupervisor(

@@ -360,6 +360,28 @@ def test_competition_node_consumes_every_payload_pose_reliably():
         rclpy.shutdown()
 
 
+def test_vfs_2027_node_joins_payload_support_into_vehicle_contact():
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from drone_sim_gazebo.ros_adapter.aggregation import VehicleSupportTracker
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=2,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        world_name="competition_2027",
+        width_px=640,
+        height_px=480,
+    )
+    try:
+        assert isinstance(adapter._vehicle_support, VehicleSupportTracker)
+    finally:
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_live_ros_node_faults_when_pre_zero_outputs_exceed_two_public_epochs():
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("simulation_interfaces.msg")

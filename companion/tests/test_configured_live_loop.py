@@ -11,6 +11,7 @@ from artifacts.runtime_status import RuntimeStatus, status_document, status_name
 import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.configured_runtime import run_configured
 from drone_sim_companion.mission_plan import parse_mission_plan
+from drone_sim_companion.vfs_operations import VehicleStatusStream
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -62,6 +63,9 @@ class FakeMav:
             ])
 
     def request_data_stream_send(self, *arguments):
+        pass
+
+    def param_request_read_send(self, *arguments):
         pass
 
 
@@ -227,3 +231,57 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
     assert fake_ros.node.destroyed and fake_ros.node.callbacks == {}
     assert fake_ros.initialized is False and not connection.messages
     assert {item: signal.getsignal(item) for item in previous_handlers} == previous_handlers
+
+
+def test_vfs_status_uses_public_grid_after_packet_batch_until_source_end(monkeypatch):
+    import drone_sim_companion.configured_runtime as configured_runtime
+
+    class Stamp:
+        sec = 0
+        nanosec = 0
+
+    class Status:
+        def __init__(self):
+            self.sim_timestamp = Stamp()
+
+    published = []
+    stopped = []
+    resources = SimpleNamespace(
+        dependencies={},
+        conditions=None,
+        status_publisher=SimpleNamespace(publish=published.append),
+        status_type=Status,
+        status_stream=VehicleStatusStream(),
+        frame_source=SimpleNamespace(stop=stopped.append),
+        vision=SimpleNamespace(close=lambda: stopped.append("vision")),
+    )
+    protocol = Protocol()
+    connection = FakeConnection()
+    fake_ros = FakeRos(None)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    monkeypatch.setattr(configured_runtime, "_configure_vfs_resources", lambda *_args, **_kwargs: resources)
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission_plan=parse_mission_plan({
+            "schema_version": 1,
+            "steps": [{"tool": "set_mode", "args": {"mode": "GUIDED"}}],
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+        course_path="course.yaml",
+        scenario_path="scenario.yaml",
+    )
+
+    assert run_configured(config) == 0
+    assert [
+        message.sim_timestamp.sec * 1_000_000_000
+        + message.sim_timestamp.nanosec
+        for message in published
+    ] == [100_000_000, 200_000_000, 300_000_000]
+    assert [message.sequence_id for message in published] == [0, 1, 2]
+    assert all(message.mode == "GUIDED" for message in published)
+    assert stopped == ["configured runtime stopped", "vision"]

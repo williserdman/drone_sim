@@ -29,7 +29,7 @@ from .model import (
     WriteRuntimeFailure,
     WriteSourceFinished,
 )
-from ..ros_adapter.topics import gazebo_topics_for_world
+from ..ros_adapter.topics import COMPETITION_WORLDS, gazebo_topics_for_world
 
 
 _FLIGHT_STATUS_SERVICE = "/model/iris/ardupilot/status"
@@ -76,11 +76,11 @@ class GazeboTransport:
         if world_name not in {
             "phase3_foundation",
             "vertical_descent",
-            "competition_mission",
+            *COMPETITION_WORLDS,
         }:
             raise ValueError("world_name must identify an approved local world")
         self._environment = dict(environment)
-        self._flight = world_name in {"vertical_descent", "competition_mission"}
+        self._flight = world_name in {"vertical_descent", *COMPETITION_WORLDS}
         self._topics = gazebo_topics_for_world(world_name)
         self._control_service = f"/world/{world_name}/control"
         self._stats_topic = f"/world/{world_name}/stats"

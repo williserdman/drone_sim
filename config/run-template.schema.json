@@ -38,16 +38,18 @@
       "else": {"not": {"required": ["simulation"]}}
     },
     {
-      "if": {
-        "properties": {
-          "mission": {"const": "comp2026_auto"}
-        }
-      },
+      "if": {"anyOf": [
+        {"properties": {"mission": {"const": "comp2026_auto"}}, "required": ["mission"]},
+        {"properties": {"scenario": {"const": "competition_2027_v1"}}, "required": ["scenario"]}
+      ]},
       "then": {"properties": {"recording": {"$ref": "#/$defs/competition_recording"}}},
       "else": {"properties": {"recording": {"$ref": "#/$defs/baseline_recording"}}}
     },
     {
-      "if": {"properties": {"mission": {"const": "comp2026_auto"}}},
+      "if": {"anyOf": [
+        {"properties": {"mission": {"const": "comp2026_auto"}}, "required": ["mission"]},
+        {"properties": {"scenario": {"const": "competition_2027_v1"}}, "required": ["scenario"]}
+      ]},
       "then": {"required": ["competition"]}
     },
     {
@@ -57,6 +59,27 @@
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
       "else": {"not": {"required": ["mission_plan"]}}
+    },
+    {
+      "if": {
+        "properties": {"scenario": {"const": "competition_2027_v1"}},
+        "required": ["scenario"]
+      },
+      "then": {
+        "required": ["runtime_profile", "simulation", "competition", "mission_plan"],
+        "properties": {
+          "world": {"const": "competition_2027"},
+          "vehicle": {"const": "iris_competition_2027"},
+          "mission": {"const": "configured"},
+          "runtime_profile": {"const": "phase3"},
+          "mission_plan": {
+            "properties": {"schema_version": {"const": 2}}
+          },
+          "simulation": {
+            "properties": {"duration_sim_seconds": {"minimum": 780}}
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -103,13 +126,20 @@
       "additionalProperties": false,
       "required": ["schema_version", "steps"],
       "properties": {
-        "schema_version": {"const": 1},
+        "schema_version": {"enum": [1, 2]},
         "steps": {
           "type": "array",
-          "minItems": 1,
-          "items": {"$ref": "#/$defs/mission_step"}
+          "minItems": 1
         }
-      }
+      },
+      "allOf": [{
+        "if": {"properties": {"schema_version": {"const": 1}}},
+        "then": {"properties": {"steps": {"items": {"$ref": "#/$defs/mission_step"}}}},
+        "else": {"properties": {"steps": {"items": {"oneOf": [
+          {"$ref": "#/$defs/mission_step"},
+          {"$ref": "#/$defs/outer_conditional_group"}
+        ]}}}}
+      }]
     },
     "mission_step": {
       "type": "object",
@@ -119,6 +149,45 @@
         "tool": {"type": "string", "minLength": 1},
         "args": {"type": "object"},
         "timeout_sim_s": {"type": "number", "exclusiveMinimum": 0, "default": 60}
+      }
+    },
+    "outer_conditional_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "steps"],
+      "properties": {
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["any_payload_eligible"],
+          "properties": {"any_payload_eligible": {"const": true}}
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"oneOf": [
+            {"$ref": "#/$defs/mission_step"},
+            {"$ref": "#/$defs/payload_conditional_group"}
+          ]}
+        }
+      }
+    },
+    "payload_conditional_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "steps"],
+      "properties": {
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["payload_eligible"],
+          "properties": {"payload_eligible": {"enum": [2, 3, 4]}}
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/mission_step"}
+        }
       }
     },
     "simulation": {

@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from .mission import Ack, CommandKind, Telemetry
+from .precision_landing import BodyFrd, PRECISION_PARAMETERS
 
 
 class MavlinkAdapter:
@@ -15,6 +16,7 @@ class MavlinkAdapter:
         self._mode: str | None = None
         self._armed: bool | None = None
         self._landed: bool | None = None
+        self._parameters: dict[str, float] = {}
 
     def send(self, command: CommandKind, altitude_m: float | None) -> None:
         mavlink = self._mavutil.mavlink
@@ -88,6 +90,77 @@ class MavlinkAdapter:
             0.0,
         )
 
+    def send_mode(self, mode: str) -> None:
+        custom_mode = {"GUIDED": 4, "LAND": 9}.get(mode)
+        if custom_mode is None:
+            raise ValueError(f"unsupported mode {mode!r}")
+        mavlink = self._mavutil.mavlink
+        self._connection.mav.command_long_send(
+            self._connection.target_system,
+            self._connection.target_component,
+            mavlink.MAV_CMD_DO_SET_MODE,
+            0,
+            mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            custom_mode,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+
+    def send_landing_target(self, vector: BodyFrd) -> None:
+        values = (vector.forward_m, vector.right_m, vector.down_m)
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) for value in values):
+            raise ValueError("landing target must contain finite body-FRD values")
+        if vector.down_m <= 0:
+            raise ValueError("landing target must be below the vehicle")
+        # ArduPilot reconstructs body forward from -angle_y and body right
+        # from angle_x for the legacy eight-field LANDING_TARGET message.
+        angle_x = math.atan2(vector.right_m, vector.down_m)
+        angle_y = math.atan2(-vector.forward_m, vector.down_m)
+        distance = math.sqrt(sum(float(value) ** 2 for value in values))
+        self._connection.mav.landing_target_send(
+            0,
+            0,
+            self._mavutil.mavlink.MAV_FRAME_BODY_FRD,
+            angle_x,
+            angle_y,
+            distance,
+            0.0,
+            0.0,
+        )
+
+    def request_precision_parameters(self) -> None:
+        request = getattr(self._connection.mav, "param_request_read_send", None)
+        if request is None:
+            raise RuntimeError("MAVLink parameter requests are unavailable")
+        for name in PRECISION_PARAMETERS:
+            request(
+                self._connection.target_system,
+                self._connection.target_component,
+                name.encode("ascii"),
+                -1,
+            )
+
+    def request_vfs_baseline(self) -> None:
+        mavlink = self._mavutil.mavlink
+        self._connection.mav.command_long_send(
+            self._connection.target_system,
+            self._connection.target_component,
+            mavlink.MAV_CMD_REQUEST_MESSAGE,
+            0,
+            getattr(mavlink, "MAVLINK_MSG_ID_HOME_POSITION", 242),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        self.request_precision_parameters()
+
     def request_telemetry(self, *, rate_hz: int = 10) -> None:
         if not isinstance(rate_hz, int) or isinstance(rate_hz, bool) or rate_hz <= 0:
             raise ValueError("telemetry rate must be a positive integer")
@@ -98,19 +171,23 @@ class MavlinkAdapter:
             rate_hz,
             1,
         )
-        self._connection.mav.command_long_send(
-            self._connection.target_system,
-            self._connection.target_component,
-            self._mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-            0,
+        for message_id in (
             245,  # EXTENDED_SYS_STATE
-            1_000_000 // rate_hz,
-            0,
-            0,
-            0,
-            0,
-            0,
-        )
+            getattr(self._mavutil.mavlink, "MAVLINK_MSG_ID_HEARTBEAT", 0),
+        ):
+            self._connection.mav.command_long_send(
+                self._connection.target_system,
+                self._connection.target_component,
+                self._mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                0,
+                message_id,
+                1_000_000 // rate_hz,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
 
     def poll(self, timestamp_ns: int) -> Telemetry | None:
         message = self._connection.recv_match(blocking=False)
@@ -121,12 +198,20 @@ class MavlinkAdapter:
         if kind == "HEARTBEAT":
             self._mode = str(self._mavutil.mode_string_v10(message)).upper()
             self._armed = bool(message.base_mode & mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+            bad_states = {
+                getattr(mavlink, name)
+                for name in ("MAV_STATE_CRITICAL", "MAV_STATE_EMERGENCY", "MAV_STATE_FLIGHT_TERMINATION")
+                if hasattr(mavlink, name)
+            }
+            system_status = getattr(message, "system_status", None)
             return Telemetry(
                 timestamp_ns,
                 heartbeat=True,
                 mode=self._mode,
                 armed=self._armed,
                 landed=self._landed,
+                failsafe=system_status in bad_states if system_status is not None else None,
+                failsafe_reason=("autopilot state is critical" if system_status in bad_states else None),
             )
         if kind == "COMMAND_ACK":
             commands = {
@@ -161,9 +246,38 @@ class MavlinkAdapter:
                 landed=self._landed,
                 relative_altitude_m=float(message.relative_alt) / 1000.0,
                 vertical_speed_m_s=-float(message.vz) / 100.0,
+                horizontal_velocity_north_m_s=(
+                    float(message.vx) / 100.0 if getattr(message, "vx", None) is not None else None
+                ),
+                horizontal_velocity_east_m_s=(
+                    float(message.vy) / 100.0 if getattr(message, "vy", None) is not None else None
+                ),
                 latitude_deg=float(latitude) / 1e7 if latitude is not None else None,
                 longitude_deg=float(longitude) / 1e7 if longitude is not None else None,
             )
+        if kind == "ATTITUDE":
+            return Telemetry(
+                timestamp_ns,
+                roll_rad=float(message.roll),
+                pitch_rad=float(message.pitch),
+                yaw_rad=float(message.yaw),
+            )
+        if kind == "HOME_POSITION":
+            return Telemetry(
+                timestamp_ns,
+                home_latitude_deg=float(message.latitude) / 1e7,
+                home_longitude_deg=float(message.longitude) / 1e7,
+                home_altitude_m=float(message.altitude) / 1000.0,
+            )
+        if kind == "PARAM_VALUE":
+            raw_name = message.param_id
+            if isinstance(raw_name, bytes):
+                name = raw_name.decode("ascii", errors="strict").rstrip("\x00")
+            else:
+                name = str(raw_name).rstrip("\x00")
+            if name in PRECISION_PARAMETERS:
+                self._parameters[name] = float(message.param_value)
+            return Telemetry(timestamp_ns, precision_parameters=dict(self._parameters))
         if kind == "EXTENDED_SYS_STATE":
             self._landed = int(message.landed_state) == mavlink.MAV_LANDED_STATE_ON_GROUND
             return Telemetry(

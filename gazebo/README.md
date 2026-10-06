@@ -28,7 +28,9 @@ resources as a substitute for public physical truth.
 - [ros_adapter/node.py](src/drone_sim_gazebo/ros_adapter/node.py) is the sole
   public Gazebo ROS publisher; its pure validation and epoch logic live beside it.
 - [competition_config.py](src/drone_sim_gazebo/competition_config.py) validates
-  the fixed competition geometry shared with mission/scenario configuration.
+  the fixed 2026 competition geometry. The shared
+  [VFS contract](../artifacts/src/artifacts/vfs_contract.py) validates the 2027
+  course and scenario used by asset generation and runtime consumers.
 - [resources/](resources/) contains the runtime-owned worlds, vehicle models,
   payload models, meshes, and marker textures. Resolution is local and
   fail-closed; remote model fallback is not part of the contract.
@@ -71,6 +73,9 @@ The runtime publishes it through the
 - Camera and aligned physical-truth samples advance at the configured 20 Hz.
   Invalid, duplicate, regressing, misaligned, or excess samples latch the first
   adapter fault; later input cannot repair it.
+- In `competition_2027`, vehicle ground contact is the epoch-aligned union of
+  leg contact and support through a payload that is both attached and grounded.
+  Missing payload support truth faults instead of becoming an airborne sample.
 - Flight readiness requires a paused ArduPilot/Gazebo round trip with servo,
   motor-update, and JSON-send progress and no frame gaps or send errors.
 - The passive `phase3_foundation` world has no ArduPilot exchange, so the typed
@@ -84,6 +89,9 @@ The runtime publishes it through the
 - `GZ_SIM_RESOURCE_PATH` is replaced with the local models directory. Resource
   and provenance updates must follow the audit/refresh procedure in the
   [runbook](../docs/runbook.md); do not hand-edit generated competition assets.
+- `competition_2027` uses visual-only S/D/L and H/A/B/C paint. Its payloads use
+  distinct resource directories while retaining public IDs 2, 3, and 4 and the
+  existing private coordinator topics.
 
 ## Focused tests
 

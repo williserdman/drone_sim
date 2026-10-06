@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RESOURCES = ROOT / "gazebo/resources"
 COURSE = ROOT / "config/course.yaml"
 SCENARIO = ROOT / "config/scenario.yaml"
+VFS_2027_COURSE = ROOT / "config/course-2027.yaml"
+VFS_2027_SCENARIO = ROOT / "config/scenario-2027.yaml"
 
 
 def _prepare_assets(output_root: Path) -> Path:
@@ -26,6 +28,93 @@ def _prepare_assets(output_root: Path) -> Path:
     finally:
         sys.path.remove(str(scripts))
     return prepare_assets(RESOURCES, output_root, COURSE, SCENARIO)
+
+
+def _prepare_vfs_2027_assets(output_root: Path) -> Path:
+    scripts = ROOT / "gazebo/scripts"
+    sys.path.insert(0, str(scripts))
+    try:
+        from prepare_competition_assets import VFS_2027_PROFILE, prepare_assets
+    finally:
+        sys.path.remove(str(scripts))
+    return prepare_assets(
+        RESOURCES,
+        output_root,
+        VFS_2027_COURSE,
+        VFS_2027_SCENARIO,
+        profile=VFS_2027_PROFILE,
+        generate_markers=False,
+    )
+
+
+def test_generated_vfs_2027_assets_are_detached_flat_and_physically_sized(tmp_path):
+    output = _prepare_vfs_2027_assets(tmp_path)
+    world = ET.parse(output).getroot().find("world")
+    vehicle = ET.parse(
+        tmp_path / "models/iris_competition_2027/model.sdf"
+    ).getroot().find("model")
+
+    assert output == tmp_path / "worlds/competition_2027.sdf"
+    assert world is not None and world.attrib["name"] == "competition_2027"
+    assert vehicle is not None and vehicle.attrib["name"] == "iris_competition_2027"
+    assert sum(
+        float(node.text)
+        for node in vehicle.findall(".//link/inertial/mass")
+    ) == pytest.approx(1.66001, abs=1e-9)
+    assert world.findtext("include[uri='model://iris_competition_2027']/name") == "iris"
+    assert vehicle.findtext("link[@name='payload_hardpoint']/pose") == (
+        "0 0 -0.1569 0 0 0"
+    )
+    assert all(
+        joint.findtext("initially_attached") == "false"
+        for joint in vehicle.findall(
+            "plugin[@name='drone_sim::gazebo::DetachableJoint']"
+        )
+    )
+
+    for name in ("s", "h", "l", "d", "a", "b", "c"):
+        marking = world.find(f"model[@name='mark_{name}']")
+        assert marking is not None
+        assert marking.findall(".//collision") == []
+        assert marking.findall(".//*[@name='wall_north_collision']") == []
+    assert world.findtext(
+        "model[@name='mark_s']/link/visual/geometry/plane/size"
+    ) == "15.24 19.812"
+    assert world.findtext(
+        "model[@name='mark_h']/link/visual/geometry/cylinder/radius"
+    ) == "2.286"
+    assert world.findtext("model[@name='mark_a']/pose").split()[:2] == [
+        "-86.106",
+        "3.048",
+    ]
+    assert world.find("model[@name='pad_f2']") is None
+
+    expected_xy = {2: ("-3", "-3"), 3: ("-3", "0"), 4: ("-3", "3")}
+    for marker_id in (2, 3, 4):
+        include = next(
+            node
+            for node in world.findall("include")
+            if node.findtext("name") == f"payload_{marker_id}"
+        )
+        assert include.findtext("uri") == f"model://payload_2027_{marker_id}"
+        assert include.findtext("pose").split()[:3] == [
+            *expected_xy[marker_id],
+            "0.0381",
+        ]
+        payload = ET.parse(
+            tmp_path / f"models/payload_2027_{marker_id}/model.sdf"
+        )
+        assert float(payload.findtext(".//inertial/mass")) == pytest.approx(
+            1.46077711, abs=1e-9
+        )
+        assert payload.findtext(".//collision/geometry/box/size") == (
+            "0.1524 0.1524 0.0762"
+        )
+        mass = 1.46077711
+        assert float(payload.findtext(".//inertia/ixx")) == pytest.approx(
+            mass * (0.1524**2 + 0.0762**2) / 12,
+            abs=1e-6,
+        )
 
 
 def test_strict_config_is_immutable_and_home_relative():

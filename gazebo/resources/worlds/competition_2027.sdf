@@ -1,0 +1,235 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.9">
+  <world name="competition_2027">
+    <gravity>0 0 -9.8</gravity>
+    <physics name="competition_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>0.25</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <scene>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.8 0.9 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <light name="sun" type="directional">
+      <pose>0 0 10 0 0 0</pose>
+      <cast_shadows>false</cast_shadows>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact" />
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="ground_link">
+        <collision name="ground_collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>400 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="ground_visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>400 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.25 0.25 0.25 1</ambient>
+            <diffuse>0.35 0.35 0.35 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="mark_s">
+      <static>true</static>
+      <pose>0 0 0.001 0 0 0</pose>
+      <link name="paint_link">
+        <visual name="paint_visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>15.24 19.812</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.75 0.75 0.75 1</ambient>
+            <diffuse>0.75 0.75 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="mark_h">
+      <static>true</static>
+      <pose>0 0 0.001 0 0 0</pose>
+      <link name="paint_link">
+        <visual name="paint_visual">
+          <geometry>
+            <cylinder>
+              <radius>2.286</radius>
+              <length>0.001</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.04 0.04 0.04 1</ambient>
+            <diffuse>0.04 0.04 0.04 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="mark_l">
+      <static>true</static>
+      <pose>-30.48 0 0.001 0 0 0</pose>
+      <link name="paint_link">
+        <visual name="paint_visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>15.24 19.812</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.75 0.75 0.75 1</ambient>
+            <diffuse>0.75 0.75 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="mark_d">
+      <static>true</static>
+      <pose>-91.44 0 0.001 0 0 0</pose>
+      <link name="paint_link">
+        <visual name="paint_visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>15.24 19.812</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.75 0.75 0.75 1</ambient>
+            <diffuse>0.75 0.75 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="mark_a">
+      <static>true</static>
+      <pose>-86.106 3.048 0.001 0 0 0</pose>
+      <link name="paint_link">
+        <visual name="paint_visual">
+          <geometry>
+            <cylinder>
+              <radius>1.0668</radius>
+              <length>0.001</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.90 0.15 0.15 1</ambient>
+            <diffuse>0.90 0.15 0.15 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="mark_b">
+      <static>true</static>
+      <pose>-86.106 0 0.001 0 0 0</pose>
+      <link name="paint_link">
+        <visual name="paint_visual">
+          <geometry>
+            <cylinder>
+              <radius>0.762</radius>
+              <length>0.001</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.95 0.75 0.10 1</ambient>
+            <diffuse>0.95 0.75 0.10 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="mark_c">
+      <static>true</static>
+      <pose>-86.106 -3.048 0.001 0 0 0</pose>
+      <link name="paint_link">
+        <visual name="paint_visual">
+          <geometry>
+            <cylinder>
+              <radius>0.4572</radius>
+              <length>0.001</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.10 0.35 0.95 1</ambient>
+            <diffuse>0.10 0.35 0.95 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <include>
+      <uri>model://iris_competition_2027</uri>
+      <name>iris</name>
+      <pose>0 0 0.195 0 0 0</pose>
+      <static>false</static>
+      <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+        <dimensions>3</dimensions>
+        <odom_publish_frequency>20</odom_publish_frequency>
+        <odom_topic>/gazebo/private/iris/odometry</odom_topic>
+        <odom_frame>competition_2027</odom_frame>
+        <robot_base_frame>iris</robot_base_frame>
+      </plugin>
+    </include>
+    <include>
+      <uri>model://payload_2027_2</uri>
+      <name>payload_2</name>
+      <pose>-3 -3 0.0381 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://payload_2027_3</uri>
+      <name>payload_3</name>
+      <pose>-3 0 0.0381 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://payload_2027_4</uri>
+      <name>payload_4</name>
+      <pose>-3 3 0.0381 0 0 0</pose>
+    </include>
+    <model name="observer_station">
+      <pose>-76.2 -100 90 0 0.733 1.570796327</pose>
+      <static>true</static>
+      <link name="observer_link">
+        <sensor name="observer_camera" type="camera">
+          <pose>0 0 0 0 0 0</pose>
+          <topic>/gazebo/private/camera/observer/image</topic>
+          <always_on>true</always_on>
+          <update_rate>20</update_rate>
+          <visualize>false</visualize>
+          <camera>
+            <horizontal_fov>1.5</horizontal_fov>
+            <image>
+              <width>640</width>
+              <height>480</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.1</near>
+              <far>300</far>
+            </clip>
+          </camera>
+        </sensor>
+      </link>
+    </model>
+  </world>
+</sdf>

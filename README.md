@@ -54,9 +54,16 @@ build images automatically. Do not start with a bare `docker compose up`.
 
 ## Contributing or adding a mission
 
+For VFS 2027, run [configured-vfs-2027-run.json](config/configured-vfs-2027-run.json).
+It uses the configured tool runner, automatic phase checks, and ArUco IDs 2/3/4.
+All targets default to C; change `mission.targets` in
+[scenario-2027.yaml](config/scenario-2027.yaml) to select A/B/C per payload.
+The [runbook](docs/runbook.md#independent-competition-acceptance) defines physical,
+score, and evidence acceptance.
+
 For a fixed sequence, copy [configured-descent-run.json](config/configured-descent-run.json)
 and edit its `mission_plan.steps`. The [companion guide](companion/README.md#configured-diagnostic-missions)
-defines the seven tools; the [local workflow](docs/runbook.md#local-developer-workflow)
+defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow)
 covers rebuilding changed code, running one template, and running the automatic set.
 
 Read [AGENTS.md](AGENTS.md) for contribution rules, then the affected module

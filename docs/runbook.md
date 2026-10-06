@@ -95,6 +95,13 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
    ```
 
    Use `config/default-run.json` for the existing Comp2026 competition path.
+   Use `config/configured-vfs-2027-run.json` for the new VFS 2027 mission with
+   automatic judging and all three payloads targeting C. Set each payload's
+   A/B/C choice under `mission.targets` in
+   [scenario-2027.yaml](../config/scenario-2027.yaml); the template's `competition`
+   paths select the exact source files copied into each run. Target changes
+   alone do not require regenerating the world. Geometry or sensor changes do:
+   regenerate assets and rebuild before flight.
    Configured diagnostics exercise the new operation runner, not Comp2026's
    mission classes. To add a fixed sequence, copy the configured template and
    edit `mission_plan.steps` using the [tool contract](../companion/README.md#configured-diagnostic-missions).
@@ -112,7 +119,7 @@ cover the wait and flight, and targets 25 wall minutes including warmup.
 
 ### Run all automatic templates
 
-There is no `run-all` command. This Bash sequence attempts all six automatic
+There is no `run-all` command. This Bash sequence attempts all seven automatic
 templates, stops on the first failure or abort, and retains each normal run bundle:
 
 ```bash
@@ -124,6 +131,7 @@ templates, stops on the first failure or abort, and retains each normal run bund
     config/hover-roll-run.json \
     config/autotune-roll-run.json \
     config/default-run.json \
+    config/configured-vfs-2027-run.json \
     config/realtime-run.json
   do
     uv run --locked drone-sim start --config "$mission_config"
@@ -182,6 +190,7 @@ mission logs alone as a stopped process.
 | [configured-descent-run.json](../config/configured-descent-run.json) | Fixed automatic takeoff/hold/land | 30 s / 90 s / 0.1 |
 | [configured-operator-run.json](../config/configured-operator-run.json) | Operator arms/selects GUIDED, then takeoff/hold/land | 60 s / 90 s / 0.1 |
 | [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
+| [configured-vfs-2027-run.json](../config/configured-vfs-2027-run.json) | VFS 2027, automatic checks, configurable A/B/C | 780 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
 | [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |
 | [autotune-roll-run.json](../config/autotune-roll-run.json) | Roll AutoTune experiment | 120 s / 15 s / 0.1 |
@@ -191,6 +200,22 @@ Short diagnostic missions do not prove competition success. AutoTune promotion
 is a separate, explicit source change using
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py); it is not part of
 normal launch. Inspect the saved gains and resulting parameter diff before reuse.
+
+### Regenerate VFS 2027 geometry
+
+After changing course geometry, payload dimensions, or camera settings, regenerate
+tracked resources, run the Gazebo asset tests, commit, then rebuild images:
+
+```bash
+uv run --locked python gazebo/scripts/prepare_competition_assets.py \
+  --source-root gazebo/resources --output-root gazebo/resources \
+  --course config/course-2027.yaml --scenario config/scenario-2027.yaml \
+  --profile competition_2027_v1
+uv run --locked pytest gazebo/tests/test_competition_assets.py -q
+```
+
+The generation profile validates the shared configuration and empty aircraft
+mass. Changing only target assignments leaves geometry unchanged.
 
 ### Optional NVIDIA path
 
@@ -291,7 +316,16 @@ This is read-only and requires the Python environment to provide ROS Jazzy
 [acceptance implementation](../artifacts/src/artifacts/acceptance.py) and
 [inspector](../scripts/inspect_competition_run.py).
 
-It requires 150/150, valid evidence, and matching **current** parent/nested
+It checks the scenario-specific physical mission and score: Comp2026 requires
+150/150; VFS 2027 requires three valid configured-target drops, three landed L
+deliveries, timely home/disarm, and independently verified arithmetic. With all
+targets C and the default empty weight, flight points are `365 + T`, out of 380.
+GM-1 is not simulated or awarded. The VFS active clock is 600 seconds;
+inspection pauses that clock while the 780-second public recording continues.
+The rigid-container model does not simulate liquid, breakage, or judge removal
+of failed drops; see the [physical contract](../gazebo/README.md).
+
+Acceptance also requires valid evidence and matching **current** parent/nested
 revisions, dirty flags, and image digests. Running it after changing source or
 retagging images can reject an old bundle on provenance alone. Preserve its
 original checkout/images when establishing a baseline; never edit historical

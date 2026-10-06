@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import math
 
@@ -52,6 +52,17 @@ class Telemetry:
     prearm_checks_healthy: bool | None = None
     latitude_deg: float | None = None
     longitude_deg: float | None = None
+    horizontal_velocity_north_m_s: float | None = None
+    horizontal_velocity_east_m_s: float | None = None
+    roll_rad: float | None = None
+    pitch_rad: float | None = None
+    yaw_rad: float | None = None
+    home_latitude_deg: float | None = None
+    home_longitude_deg: float | None = None
+    home_altitude_m: float | None = None
+    failsafe: bool | None = None
+    failsafe_reason: str | None = None
+    precision_parameters: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

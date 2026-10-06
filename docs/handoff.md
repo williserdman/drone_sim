@@ -3,7 +3,22 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-09-21. This branch adds the fixed-sequence configured runner with
+Audited 2026-10-06. VFS 2027 implementation adds configurable A/B/C targets
+(default C), version-2 eligibility groups, camera/payload tools, and automatic
+phase judging to the existing configured runner. Its world starts unloaded
+with three rigid marked payloads in S. The ground mission, liquid/breakage, and
+physical removal of failed drops remain deferred. Operator commands and current
+contracts live in the [runbook](runbook.md) and module guides.
+
+Fresh VFS image, physical mission, score, and full-window artifact verification
+are pending. Full host gate: 2,093 passed, 27 skipped in 57.79 s. Bundled mission
+gate: 1,126 passed in 24.46 s. All eight templates resolve and schema-check;
+mixed A/B/C targets survive source snapshots and change resolved aimpoints.
+Phase 3 Compose config, lock check, compile, and local documentation link checks
+passed. These checks do not prove live ROS/Gazebo/SITL behavior; host skips include
+ROS-dependent recording cases.
+
+Historical audit, 2026-09-21: this branch added the fixed-sequence configured runner with
 seven basic tools and two diagnostic templates. The existing competition path
 is unchanged from `main`. Competition conversion, search-and-deliver, camera,
 and QGC work remain on `archive/configured-missions-full-20260921` for separate

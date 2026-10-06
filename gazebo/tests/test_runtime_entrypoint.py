@@ -76,6 +76,15 @@ def test_flight_transport_discovers_and_controls_the_flight_world():
     assert "/world/vertical_descent/control" in calls[-1][0]
 
 
+def test_vfs_transport_is_an_approved_typed_flight_world():
+    transport = GazeboTransport(
+        environment={"GZ_PARTITION": "vfs"},
+        world_name="competition_2027",
+    )
+
+    transport.assert_typed_readiness_supported()
+
+
 def test_competition_transport_requires_every_physical_source_topic():
     """Gazebo-ready must not precede any payload, range, or joint publisher."""
     from drone_sim_gazebo.ros_adapter.topics import gazebo_topics_for_world

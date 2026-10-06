@@ -15,7 +15,8 @@ flowchart LR
     M -->|payload request| EM[Electromagnet: payload coordination]
     EM <-->|request / physical confirmation| GZ
     GZ -->|clock / physical truth| SC[Scorekeeper: evaluation]
-    M -->|mission events| SC
+    M -->|mission events / observed flight status| SC
+    SC -->|VFS judge decisions / active clock| M
     EM -->|payload events| SC
     GZ -->|images / truth / native state| REC
     SC -->|score evidence| REC
@@ -73,6 +74,34 @@ The plan is frozen under the run configuration checksum. Each operation waits
 for observed success before the next starts; failure ends the sequence. Final
 success requires landing and disarm. Any local LAND recovery remains separate
 from mission success; scoring and artifact validity remain independent.
+
+The configured [VFS 2027 template](../config/configured-vfs-2027-run.json) extends
+that runner with camera acquisition, guarded precision landing, physically
+confirmed payload actions, and automatic phase checks. Version-2 groups read a
+correlated, frozen FM-2 eligibility decision; every branch is validated before
+flight. The companion receives eligibility and timing, while camera observations
+provide retrieval positions. Public payload truth is reserved for the payload
+authority, judge, recordings, and independent validation.
+
+The [shared VFS configuration](../artifacts/src/artifacts/vfs_contract.py) contains
+immutable course, payload, target, and timing values. It contains no flight or
+scoring policy. The [judge](../scorekeeper/src/drone_sim_scorekeeper/vfs.py)
+combines Gazebo contact/poses with observed
+[`VehicleStatus`](../ros_ws/src/simulation_interfaces/msg/VehicleStatus.msg),
+then publishes correlated
+[`JudgeDecision`](../ros_ws/src/simulation_interfaces/msg/JudgeDecision.msg) and
+continuous [`AttemptStatus`](../ros_ws/src/simulation_interfaces/msg/AttemptStatus.msg).
+First physical takeoff starts the 600-second active clock; inspection after
+FM-2 home landing/disarm pauses it; FM-3 takeoff resumes it. Public simulation
+and recording time continue throughout. The companion uses these timing facts
+to cancel expired payload work and attempt bounded home recovery through its
+existing command owner. A recovered landing cannot turn failure into success.
+
+Gazebo's vehicle contact includes support through an attached, grounded payload
+from the same physical epoch. The judge checks actual support footprints for
+circle eligibility and landed delivery. The independent artifact evaluator
+reconstructs the outcome and score from recorded evidence; command intent,
+eligibility, points, and full-mission acceptance are separate facts.
 
 After passive readiness, matching RUNNING, and accepted public clock, the
 companion publishes typed `MissionExecutionReadyStatus`. Gazebo selects this
