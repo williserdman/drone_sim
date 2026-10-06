@@ -316,14 +316,18 @@ mission logs alone as a stopped process.
 | [configured-operator-run.json](../config/configured-operator-run.json) | Operator arms/selects GUIDED, then takeoff/hold/land | 60 s / 90 s / 0.1 |
 | [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
-| [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |
-| [autotune-roll-run.json](../config/autotune-roll-run.json) | Roll AutoTune experiment | 120 s / 15 s / 0.1 |
+| [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 90 s / 0.1 |
+| [autotune-roll-run.json](../config/autotune-roll-run.json) | Roll AutoTune experiment | 120 s / 90 s / 0.1 |
 | [realtime-run.json](../config/realtime-run.json) | Competition with a higher speed target, not a speed guarantee | 600 s / 90 s / 1.0 |
 
 Short diagnostic missions do not prove competition success. AutoTune promotion
 is a separate, explicit source change using
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py); it is not part of
 normal launch. Inspect the saved gains and resulting parameter diff before reuse.
+The calibrated roll diagnostics use the same 90-second empirical private warmup
+as the other calibrated consumers so their complete parameter readback can finish
+before the fixed public epoch. This is a runtime allowance, not a MAVLink timing
+guarantee; the calibration gate still requires every configured parameter.
 
 ### Optional NVIDIA path
 

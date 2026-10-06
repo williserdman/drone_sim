@@ -347,7 +347,7 @@ def test_roll_autotune_template_uses_the_lightweight_flight_world():
         seed=2026,
         duration_ns=120_000_000_000,
         target_real_time_factor=0.1,
-        public_epoch_native_ns=15_000_000_000,
+        public_epoch_native_ns=90_000_000_000,
     )
     assert resolved.competition is None
 

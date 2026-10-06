@@ -18,6 +18,18 @@ Comp2026 suite passed 1,126 tests. Focused suite/CLI checks passed 48 tests.
 No static typechecker is configured; Python compilation passed. The fresh
 common-build flight sweep remains pending.
 
+Suite `2079a7e2-cd19-4bd0-ba31-0bc45e0338ed` from clean `76dd2b9` remains in
+progress on 2026-10-06. Its hover-roll run
+`0396e6e9-c5a0-414d-a584-691515da078f` reached the fixed 15-second private epoch
+without publishing the calibration snapshot, execution-ready status, or first
+mission command. The calibration guard remained unmet; the current evidence does
+not expose which cached parameter names were absent. Gazebo therefore retained
+the release barrier and no flight began. The roll diagnostic templates now use
+the existing 90-second calibrated-consumer warmup while retaining their 45- and
+120-second public windows, target RTF, seed, full 46-parameter gate, scoring, and
+wall deadlines. This configuration fix has no native-flight validation yet; do
+not treat the active suite or this source change as a physical result.
+
 First suite attempt `0d11a7cb-e3f3-4379-86e0-95d76b274ef1` from clean `8f628be`
 built all seven images and passed Comp2026 import smoke, then failed preflight
 before allocating a flight. Compose returned identical image identities in
