@@ -48,6 +48,63 @@ def test_autonomy_ignores_disarmed_preflight_mode_but_not_failsafe():
     assert not _autonomous("FM1", failed, 3)
 
 
+def test_active_clock_does_not_pause_on_home_contact_inherited_by_fm2():
+    from artifacts._adapters.rosbag import (
+        GroundTruthEvidence,
+        MissionEventEvidence,
+        PhysicalBagEvidence,
+        VehicleStatusEvidence,
+    )
+    from artifacts.vfs_contract import load_vfs_course
+    from artifacts.vfs_score_validation import _active_elapsed_from_physics
+
+    second = 1_000_000_000
+
+    def ground_truth(seconds: float, *, contact: bool) -> GroundTruthEvidence:
+        return GroundTruthEvidence(
+            int(seconds * second),
+            "iris",
+            (0.0, 0.0, 0.0 if contact else 1.0),
+            (0.0, 0.0, 0.0, 1.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            contact,
+        )
+
+    evidence = PhysicalBagEvidence(
+        "a" * 64,
+        "b" * 64,
+        (),
+        tuple(
+            ground_truth(seconds, contact=contact)
+            for seconds, contact in (
+                (0, True),
+                (3.2, False),
+                (83.5, True),
+                (85.6, True),
+                (88.85, False),
+                (294, True),
+                (296, True),
+            )
+        ),
+        (),
+        mission_events=(
+            MissionEventEvidence(0, 0, "FM1", "STARTED", ""),
+            MissionEventEvidence(85_600_000_000, 1, "FM2", "STARTED", ""),
+        ),
+        vehicle_statuses=(
+            VehicleStatusEvidence(85_500_000_000, 0, "iris", False, "LAND", False, ""),
+            VehicleStatusEvidence(85_600_000_000, 1, "iris", False, "LAND", False, ""),
+            VehicleStatusEvidence(296_000_000_000, 2, "iris", False, "LAND", False, ""),
+        ),
+    )
+    course = load_vfs_course(ROOT / "config/course-2027.yaml")
+
+    assert _active_elapsed_from_physics(296_100_000_000, evidence, course) == (
+        292_800_000_000
+    )
+
+
 def test_tilted_payload_projection_does_not_forge_circle_contact():
     from artifacts._adapters.rosbag import PayloadStateEvidence
     from artifacts.vfs_contract import load_vfs_course, load_vfs_scenario

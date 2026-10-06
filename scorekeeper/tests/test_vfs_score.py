@@ -167,6 +167,33 @@ def test_attempt_clock_starts_pauses_and_resumes_from_physical_truth():
     assert judge.attempt_status.active_elapsed_ns == 15_000_000_000
 
 
+def test_fm2_inherited_home_contact_does_not_pause_before_fm2_airborne_leg():
+    judge = VfsJudge(RUN_ID, COURSE, Scenario())
+    judge.accept_ground_truth(truth(0, 0, 0, 0, True))
+    judge.accept_mission_event(
+        MissionEventSample(RUN_ID, 0, 0, "FM1", "STARTED", "")
+    )
+    judge.accept_ground_truth(truth(3.2, 0, 0, 1, False))
+    judge.accept_ground_truth(truth(83.5, 0, 0, 0, True))
+    judge.accept_vehicle_status(status(85.5, 0, armed=False))
+    judge.accept_ground_truth(truth(85.6, 0, 0, 0, True))
+
+    judge.accept_mission_event(
+        MissionEventSample(RUN_ID, 85_600_000_000, 1, "FM2", "STARTED", "")
+    )
+    judge.accept_vehicle_status(status(85.6, 1, armed=False))
+
+    assert judge.attempt_status.state is AttemptState.ACTIVE
+
+    judge.accept_ground_truth(truth(88.85, 0, 0, 1, False))
+    judge.accept_ground_truth(truth(294, 0, 0, 0, True))
+    judge.accept_ground_truth(truth(296, 0, 0, 0, True))
+    judge.accept_vehicle_status(status(296, 2, armed=False))
+
+    assert judge.attempt_status.state is AttemptState.PAUSED
+    assert judge.attempt_status.active_elapsed_ns == 292_800_000_000
+
+
 def test_approval_to_takeoff_over_sixty_seconds_finishes_attempt():
     judge = VfsJudge(RUN_ID, COURSE, Scenario())
     judge.accept_ground_truth(truth(0, 0, 0, 0, True))

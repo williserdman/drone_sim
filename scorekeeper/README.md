@@ -60,6 +60,8 @@ the matching 10 Hz vehicle status when due. It applies truth, payload, then
 status before publishing that epoch's attempt state. A phase check waits for its
 exact physical epoch, retains its original timestamp and correlation, and fails
 closed if the epoch remains incomplete for 500 ms of observed simulation time.
+FM-2 can pause the active clock at H only after that phase has observed an
+airborne leg; inherited grounded state from FM-1 cannot pause it.
 
 The exact scoring data authorities are
 [competition_v1.json](rules/competition_v1.json) and

@@ -20,8 +20,16 @@ intentionally inert for both competition profiles; VFS uses payload events,
 judge decisions, and attempt status. Its validator now applies the existing
 competition empty-diagnostic exception to VFS as well, retaining every required
 VFS stream check. The regression and missing-judge/attempt controls passed within
-72 focused checks (four ROS skips). The failed manifest remains unchanged;
-a matching rebuilt validator and a fresh accepted full-window run are pending.
+72 focused checks (four ROS skips). Native full decoding also validated both
+15,600-frame videos. Replaying the preserved bag then exposed a separate timing
+bug: independent replay treated the FM2 start at 85.60 seconds as an inspection
+pause before FM2 takeoff at 88.85. The judge and replay now require FM2 airborne
+evidence before a home/disarm pause; inherited FM1 home contact cannot pause the
+clock. Both new regressions failed before the correction and passed afterward,
+with 42 focused checks. Native source-bound replay now agrees with all four judge
+decisions and independently validates 579.7 active seconds and 365/380 points.
+These checks are diagnostic only: the original failed manifest remains unchanged.
+Matching rebuilt runtime images and a fresh accepted full-window run are pending.
 
 The preceding integration failures below are historical evidence. All seven VFS
 runtime images first built successfully at `26e0d07`. First launch

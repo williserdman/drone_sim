@@ -374,6 +374,7 @@ class VfsJudge:
         self._takeoff_count = 0
         self._fm1_d_approved = False
         self._fm2_approved = False
+        self._fm2_airborne = False
         self._fm2_eligible_ids: tuple[int, ...] = ()
         self._leg_peak_agl_m = 0.0
 
@@ -431,6 +432,8 @@ class VfsJudge:
             self._terminal_failure_reason = "approval_timeout"
         if previous is not None and previous.in_contact and not sample.in_contact:
             self._takeoff_count += 1
+            if self._phase == "FM2":
+                self._fm2_airborne = True
             self._leg_peak_agl_m = sample.position_xyz[2] - ground_z_m
             if self._started_at_ns is None:
                 self._started_at_ns = sample.sim_timestamp_ns
@@ -474,6 +477,7 @@ class VfsJudge:
         self._status = sample
         if (
             self._phase == "FM2"
+            and self._fm2_airborne
             and self._started_at_ns is not None
             and self._active_since_ns is not None
             and not sample.armed
@@ -660,6 +664,8 @@ class VfsJudge:
         self._same_run(event)
         if event.state == "STARTED" and event.phase in {"FM1", "FM2", "FM3"}:
             self._phase = event.phase
+            if event.phase == "FM2":
+                self._fm2_airborne = self._truth is not None and not self._truth.in_contact
             return ()
         if event.state != "CHECK_REQUESTED":
             return ()

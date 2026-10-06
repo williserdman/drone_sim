@@ -11,6 +11,7 @@ from typing import cast
 
 from ._adapters.rosbag import (
     GroundTruthEvidence,
+    MissionEventEvidence,
     PayloadStateEvidence,
     PhysicalBagEvidence,
     ScoreEventEvidence,
@@ -243,22 +244,15 @@ def _active_elapsed_from_physics(
     evidence: PhysicalBagEvidence,
     course: VfsCourse,
 ) -> int:
-    mission_starts = sorted(
-        (event.sim_timestamp_ns, event.phase)
-        for event in evidence.mission_events
-        if event.state == "STARTED"
-    )
-
-    def phase_at(stamp: int) -> str:
-        return next(
-            (phase for start, phase in reversed(mission_starts) if start <= stamp),
-            "",
-        )
-
     events = sorted(
         (
             *((row.sim_timestamp_ns, 0, "truth", row) for row in evidence.ground_truth),
             *((row.sim_timestamp_ns, 1, "status", row) for row in evidence.vehicle_statuses),
+            *(
+                (row.sim_timestamp_ns, 2, "phase", row)
+                for row in evidence.mission_events
+                if row.state == "STARTED"
+            ),
         ),
         key=lambda item: (item[0], item[1]),
     )
@@ -268,6 +262,8 @@ def _active_elapsed_from_physics(
     accumulated = 0
     paused = False
     status: VehicleStatusEvidence | None = None
+    phase = ""
+    fm2_airborne = False
     for stamp, _priority, kind, row in events:
         if stamp > timestamp_ns:
             break
@@ -275,6 +271,8 @@ def _active_elapsed_from_physics(
             row = cast(GroundTruthEvidence, row)
             latest_truth = row
             if previous_truth is not None and previous_truth.in_contact and not row.in_contact:
+                if phase == "FM2":
+                    fm2_airborne = True
                 if active_since is None:
                     active_since = stamp
                     paused = False
@@ -282,7 +280,7 @@ def _active_elapsed_from_physics(
                 previous_truth is not None
                 and not previous_truth.in_contact
                 and row.in_contact
-                and phase_at(stamp) == "FM3"
+                and phase == "FM3"
                 and course.waypoints["H"].contains(
                     row.position_xyz[:2], course.attempt.aircraft_radius_m
                 )
@@ -292,11 +290,17 @@ def _active_elapsed_from_physics(
                 active_since = None
                 paused = True
             previous_truth = row
-        else:
+        elif kind == "status":
             status = cast(VehicleStatusEvidence, row)
+        else:
+            row = cast(MissionEventEvidence, row)
+            phase = row.phase
+            if phase == "FM2":
+                fm2_airborne = latest_truth is not None and not latest_truth.in_contact
         if kind == "status" and (
             status is not None
-            and phase_at(stamp) == "FM2"
+            and phase == "FM2"
+            and fm2_airborne
             and not status.armed
             and latest_truth is not None
             and latest_truth.in_contact

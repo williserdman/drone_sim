@@ -116,7 +116,9 @@ vehicle-status interval, then emits the request with its current simulation
 timestamp. Judge rejection remains terminal.
 First physical takeoff starts the 600-second active clock; inspection after
 FM-2 home landing/disarm pauses it; FM-3 takeoff resumes it. Public simulation
-and recording time continue throughout. The companion uses these timing facts
+and recording time continue throughout. An FM-2 pause requires airborne evidence
+from that phase; inherited FM-1 home contact cannot pause the clock.
+The companion uses these timing facts
 to cancel expired payload work and attempt bounded home recovery through its
 existing command owner. A recovered landing cannot turn failure into success.
 
