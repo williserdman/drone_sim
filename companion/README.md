@@ -77,7 +77,11 @@ Configured missions never launch the Comp2026 automatic worker. The VFS profile
 reuses its calibrated ArUco transform and guarded precision-policy values through
 tick-driven operations, preserving one flight-output owner and responsive
 simulation-time aborts. Marker processing runs on a worker that cannot issue
-flight commands. Search remains bounded to the configured acquisition hover;
+flight commands. Its bounded wall-time frame wait accommodates slowed rendering;
+observation freshness and mission deadlines remain measured in simulation time.
+Precision reacquisition counts fresh camera observations; intervening telemetry
+or clock ticks preserve the count, while a fresh invalid observation resets it.
+Search remains bounded to the configured acquisition hover;
 course-wide search is not implemented. For local commands, see the
 [runbook](../docs/runbook.md#local-developer-workflow).
 

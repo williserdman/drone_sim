@@ -49,6 +49,18 @@ image dimensions. The existing calibration now declares the simulator's
 640×480 dimensions; its focal length matches the configured 0.6 rad field of
 view. Precision-readiness checks remain enforced. Full payload flight and
 artifact acceptance remain pending.
+Sixth launch `503793a8-f88c-497a-91d1-efbbca910de6` at `a1c4988` passed FM1
+and acquired marker 2 at 130.35 s, then failed precision reacquisition at
+159.35 s. A read-only live capture proved the actual 640×480 RGB8 image; the
+installed camera backend detected ID 2 with a 4.668 m down vector. A slow-frame
+reproduction showed the 0.1 s wall wait repeatedly cancelling the camera's
+acquisition worker before 0.31 s frames could commit. The worker now waits up to
+1 s in wall time while retaining the 500 ms simulation-time freshness limit.
+Precision hold counts fresh frames across intervening telemetry/clock ticks;
+fresh invalid observations still reset the count. The real-manager slow-frame
+handoff and interleaved-tick regressions passed within 58 focused checks;
+relevant type checks passed. Full payload flight and artifact acceptance remain
+pending.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact

@@ -32,7 +32,7 @@ class RangeObservation:
 class ConfiguredVision:
     """Adapt the imported Comp2026 camera to nonblocking requested-ID reads."""
 
-    def __init__(self, camera, *, frame_timeout_s: float = 0.1) -> None:
+    def __init__(self, camera, *, frame_timeout_s: float = 1.0) -> None:
         self._camera = camera
         self._frame_timeout_s = frame_timeout_s
         self._results: Queue[MarkerObservation | BaseException] = Queue()

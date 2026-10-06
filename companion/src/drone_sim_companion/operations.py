@@ -573,9 +573,10 @@ class DroneOperations:
                 self._values["relative_altitude_m"],
             )
             active.context["next_hold_ns"] = self._clock_ns + HOLD_REFRESH_NS
-        active.context["reacquired"] = (
-            active.context["reacquired"] + 1 if healthy else 0
-        )
+        if candidate_observation is not None:
+            active.context["reacquired"] = (
+                active.context["reacquired"] + 1 if healthy else 0
+            )
         if active.context["reacquired"] >= REACQUIRE_FRAMES:
             self._vehicle.send_mode("LAND")
             active.context.update(

@@ -4,6 +4,8 @@ import json
 import math
 from pathlib import Path
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,6 +19,7 @@ from drone.sensors.camera._camera_manager import CameraManager
 from drone.sensors.camera.camera import Camera
 from drone_sim_companion.mission_plan import Condition
 from drone_sim_companion.mission import Telemetry
+from drone_sim_companion.configured_vision import ConfiguredVision
 from drone_sim_companion.vfs_operations import (
     ConfiguredRangefinder,
     PayloadActions,
@@ -224,3 +227,71 @@ def test_gazebo_calibration_is_precision_ready_at_configured_image_dimensions() 
     assert observation.metadata.raw_image_size_px == (
         scenario.camera.width_px, scenario.camera.height_px
     )
+
+
+def test_configured_vision_survives_slow_live_frame_after_request_handover() -> None:
+    calibration_path = (
+        ROOT / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+    )
+    mounting_path = ROOT / "companion/src/drone_sim_companion/gazebo_camera_mounting.json"
+
+    class Source:
+        def __init__(self):
+            self.delay_s = 0.02
+            self.last_timestamp_ns = None
+            self.calls = 0
+            self.lock = threading.Lock()
+
+        def capture_frame(self, quality=4):
+            assert quality == 4
+            with self.lock:
+                delay = self.delay_s
+            time.sleep(delay)
+            with self.lock:
+                self.calls += 1
+                self.last_timestamp_ns = self.calls * 50_000_000
+            return np.zeros((480, 640, 3), dtype=np.uint8)
+
+    class MarkerManager(CameraManager):
+        def get_coords(self, _frame):
+            return [object()], np.array([[2]]), []
+
+        def estimate_pose_3d(self, *_args, **_kwargs):
+            return np.array([0.0, 0.0, 4_572.0])
+
+    source = Source()
+    manager = MarkerManager(
+        frame_source=source,
+        calibration_path=calibration_path,
+        clock=lambda: source.last_timestamp_ns or 0,
+        max_exposure_age_ns=500_000_000,
+    )
+    vision = ConfiguredVision(
+        Camera(100, manager=manager, mounting_path=mounting_path)
+    )
+    vision.request(2, 0)
+    detections = []
+    deadline = time.monotonic() + 2.0
+    while len(detections) < 5 and time.monotonic() < deadline:
+        observation = vision.poll()
+        if observation is not None:
+            detections.append(observation)
+        time.sleep(0.005)
+    assert len(detections) == 5
+
+    with source.lock:
+        source.delay_s = 0.31
+    time.sleep(0.05)
+    after_sequence = manager._frame_sequence
+    while vision.poll() is not None:
+        pass
+    vision.request(2, after_sequence)
+    resumed = None
+    deadline = time.monotonic() + 1.2
+    while resumed is None and time.monotonic() < deadline:
+        resumed = vision.poll()
+        time.sleep(0.005)
+    vision.close()
+
+    assert resumed is not None
+    assert resumed.sequence > after_sequence

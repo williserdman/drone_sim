@@ -51,6 +51,9 @@ to exercise lifecycle and recording infrastructure.
 Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
+Configured camera acquisition waits for frames on its worker with a bounded
+wall-time wait; exposure freshness remains a simulation-time guarantee. Precision
+reacquisition advances on fresh observations rather than telemetry/clock ticks.
 
 ## Where to read or change code
 

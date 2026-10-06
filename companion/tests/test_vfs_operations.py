@@ -364,11 +364,26 @@ def test_precision_land_reacquires_five_frames_before_resuming_land() -> None:
     operations.tick(800_000_000)
     assert vehicle.commands[-1] == ("mode", "GUIDED")
 
-    for sequence in range(7, 12):
-        stamp = 800_000_000 + (sequence - 6) * 50_000_000
+    for sequence in range(7, 10):
+        stamp = 800_000_000 + (sequence - 6) * 100_000_000
         vision.add(MarkerObservation(2, sequence, stamp, stamp,
                                      0.0, 0.0, 4.572))
         observe_flight(operations, stamp, relative_altitude_m=4.572)
+        operations.tick(stamp + 50_000_000)
+
+    invalid_stamp = 1_150_000_000
+    vision.add(MarkerObservation(2, 10, invalid_stamp, invalid_stamp,
+                                 1.0, 0.0, 4.572))
+    observe_flight(operations, invalid_stamp, relative_altitude_m=4.572)
+
+    for sequence in range(11, 16):
+        stamp = 1_150_000_000 + (sequence - 10) * 100_000_000
+        vision.add(MarkerObservation(2, sequence, stamp, stamp,
+                                     0.0, 0.0, 4.572))
+        observe_flight(operations, stamp, relative_altitude_m=4.572)
+        if sequence < 15:
+            operations.tick(stamp + 50_000_000)
+            assert vehicle.commands[-1] != ("mode", "LAND")
     assert vehicle.commands[-1] == ("mode", "LAND")
     assert operations.operation_status(operation_id).state == "running"
 
