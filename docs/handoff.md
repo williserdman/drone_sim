@@ -34,6 +34,15 @@ side-by-side return/landing clip at original playback speed are retained beneath
 observer left and onboard right. Source videos remain in the run bundle.
 Landing speed, physical scoring and saved-gain verification are unchanged.
 
+Static integration contract checks updated 2026-10-07: the frozen Compose
+source order now includes the optional operator actor, explicitly excluded from
+the Phase 2 profile, and the exact private SITL endpoint set includes SERIAL1
+port 5762. The seven main Phase 3 services and prohibition on host-published
+flight ports remain enforced. The two previously failing static checks now
+pass; the two static contract files plus the host operator checks passed 73
+tests. Runtime behavior and flight/scoring results are unchanged. The existing
+orchestration README, architecture and runbook already describe these interfaces.
+
 Implementation update 2026-10-05: branch `feat/manual-ci-suite` implements the
 approved [11-setup design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
 and [plan](superpowers/plans/2026-10-05-full-ci-suite.md). The shared local `suite`

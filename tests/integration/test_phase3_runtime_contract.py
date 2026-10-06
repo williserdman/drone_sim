@@ -389,7 +389,9 @@ def test_phase3_internal_flight_endpoints_are_exact_and_never_published_to_host(
         assert "ports" not in service
         assert "network_mode" not in service
     assert services["gazebo-runtime"]["expose"] == ["9002/udp"]
-    assert set(services["ardupilot-sitl"]["expose"]) == {"5760/tcp", "9003/udp"}
+    assert set(services["ardupilot-sitl"]["expose"]) == {
+        "5760/tcp", "5762/tcp", "9003/udp"
+    }
     assert services["ardupilot-sitl"]["environment"]["SIM_GAZEBO_HOST"] == "gazebo-runtime"
     assert (
         services["companion-runtime"]["environment"]["SIM_MAVLINK_ENDPOINT"]
