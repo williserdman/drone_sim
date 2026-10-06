@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from drone_sim_companion.configured_vision import MarkerObservation, RangeObservation
-from drone_sim_companion.mission import Telemetry
+from drone_sim_companion.mission import CommandKind, Telemetry
 from drone_sim_companion.operations import DroneOperations
 from drone_sim_companion.precision_landing import PRECISION_PARAMETERS
 
@@ -441,3 +441,45 @@ def test_approval_to_takeoff_deadline_fails_waiting_payload_work() -> None:
     status = operations.operation_status(operation_id)
     assert status.state == "failed"
     assert status.error == "approval-to-takeoff deadline expired"
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "forbidden"),
+    [
+        ("set_mode", {"mode": "GUIDED"}, CommandKind.SET_GUIDED),
+        ("arm", {}, CommandKind.ARM),
+        ("takeoff", {"altitude_m": 10.0}, CommandKind.TAKEOFF),
+    ],
+)
+def test_finished_pending_approval_expiry_blocks_flight_command_before_dispatch(
+    tool, args, forbidden
+) -> None:
+    attempt = Attempt()
+    attempt.state = 4  # FINISHED after the pending approval expired.
+    attempt.approval_timestamp_ns = 1
+    vehicle = Vehicle()
+    operations = DroneOperations(vehicle, course=course(), attempt=attempt)
+    observe_flight(
+        operations,
+        60_000_000_001,
+        prearm_checks_healthy=True,
+    )
+
+    operation_id = operations.start(tool, args)
+
+    status = operations.operation_status(operation_id)
+    assert status.state == "failed"
+    assert status.error == "approval-to-takeoff deadline expired"
+    assert all(command[0] is not forbidden for command in vehicle.commands)
+
+
+def test_finished_attempt_without_pending_approval_does_not_invent_expiry() -> None:
+    attempt = Attempt()
+    attempt.state = 4
+    attempt.approval_timestamp_ns = 0
+    operations = DroneOperations(Vehicle(), course=course(), attempt=attempt)
+    observe_flight(operations, 60_000_000_001)
+
+    operation_id = operations.start("hold", {"duration_sim_s": 1.0})
+
+    assert operations.operation_status(operation_id).state == "running"

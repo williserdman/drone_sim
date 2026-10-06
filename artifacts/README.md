@@ -55,7 +55,8 @@ timestamps, not raw image pixels. Pixel recordings are `video/onboard.mp4` and
 `video/observer.mp4`; losing an MP4 cannot be repaired from the bag. Competition
 runs extend the base bag with their physical/scoring evidence as selected by
 [`RecordingRuntimeConfig.topics`](src/artifacts/runtime_configuration.py).
-The `competition_2027_v1` profile records the complete 780-second public window
+The `competition_2027_v1` profile records the complete configured public window
+(at least 780 seconds; 780 by default)
 at 640×480 and 20 Hz. Its inventory adds observed vehicle status at 10 Hz,
 authoritative attempt status at 20 Hz, and durable correlated judge decisions.
 Validation requires continuous physical and payload truth, exact stream cadence,

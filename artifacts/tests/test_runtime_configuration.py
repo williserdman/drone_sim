@@ -68,7 +68,8 @@ def test_competition_profile_preserves_resolved_640x480_geometry_and_topics():
     assert contract.topics == COMPETITION_TOPICS
 
 
-def test_vfs_2027_profile_records_full_public_window_and_judge_streams():
+@pytest.mark.parametrize("duration", [780, 900])
+def test_vfs_2027_profile_records_full_public_window_and_judge_streams(duration):
     from artifacts._adapters.rosbag import VFS_2027_TOPICS
 
     contract = resolve_recording_runtime_config(
@@ -83,11 +84,11 @@ def test_vfs_2027_profile_records_full_public_window_and_judge_streams():
                 "fps": 20,
                 "encoding": "rgb8",
             },
-            "simulation": {"duration_sim_seconds": 780},
+            "simulation": {"duration_sim_seconds": duration},
         }
     )
 
-    assert contract.expected_camera_frames == 15_600
+    assert contract.expected_camera_frames == duration * 20
     assert contract.ruleset_id == "competition_2027_v1"
     assert contract.topics == VFS_2027_TOPICS
 

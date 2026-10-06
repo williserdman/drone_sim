@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 
 _FRAME_INTERVAL_NS = 50_000_000
@@ -55,18 +55,18 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
         raise ValueError(
             "recording configuration must equal 320x240 or 640x480 rgb8 at 20 FPS"
         )
-    width_px, height_px, fps, encoding = geometry
+    width_px, height_px, fps, encoding = cast(tuple[int, int, int, str], geometry)
     ruleset_id = requested_scenario
     if ruleset_id == "competition_2027_v1":
         if (
             document.get("schema_version") != 2
             or document.get("mission") != "configured"
             or (width_px, height_px) != (640, 480)
-            or document.get("simulation", {}).get("duration_sim_seconds") != 780
+            or document.get("runtime_profile") != "phase3"
         ):
             raise ValueError(
                 "competition_2027_v1 requires version 2 configured mission and "
-                "640x480 rgb8 at 20 FPS for 780 public seconds"
+                "640x480 rgb8 at 20 FPS in phase3"
             )
     if ruleset_id == "competition_v1" and (width_px, height_px) != (640, 480):
         raise ValueError("competition_v1 recording must equal 640x480 rgb8 at 20 FPS")
@@ -107,6 +107,8 @@ def resolve_recording_runtime_config(document: Mapping[str, Any]) -> RecordingRu
     duration_ns = nanoseconds_numerator // denominator
     if duration_ns % _FRAME_INTERVAL_NS:
         raise ValueError("simulation duration must contain an integral camera frame count")
+    if ruleset_id == "competition_2027_v1" and duration_ns < 780_000_000_000:
+        raise ValueError("competition_2027_v1 requires at least 780 public seconds")
     return RecordingRuntimeConfig(
         expected_camera_frames=duration_ns // _FRAME_INTERVAL_NS,
         synthetic_camera_ack=False,

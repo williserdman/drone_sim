@@ -159,6 +159,11 @@ class DroneOperations:
             "operation_id": operation_id, "tool": tool, "args": args,
             "timeout_sim_s": timeout,
         })
+        expiry = self._attempt_expiry_reason()
+        if expiry is not None:
+            self._finish("failed", expiry)
+            self._start_home_recovery()
+            return operation_id
         try:
             self._dispatch(tool, args)
             self._evaluate()
@@ -687,11 +692,9 @@ class DroneOperations:
         duration = getattr(self._course.attempt, "duration_seconds", 600)
         if self._attempt.active_elapsed_ns >= int(float(duration) * 1e9):
             return "active attempt deadline expired"
-        approved_state = getattr(self._attempt, "APPROVED", 3)
         approval_timestamp_ns = getattr(self._attempt, "approval_timestamp_ns", 0)
         approval_timeout_s = getattr(self._course.attempt, "approval_timeout_s", 60.0)
-        if (getattr(self._attempt, "state", None) == approved_state
-                and approval_timestamp_ns > 0
+        if (approval_timestamp_ns > 0
                 and self._clock_ns - approval_timestamp_ns >= int(approval_timeout_s * 1e9)):
             return "approval-to-takeoff deadline expired"
         return None

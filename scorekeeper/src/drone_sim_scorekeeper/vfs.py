@@ -369,10 +369,12 @@ class VfsJudge:
         self._approval_ns = 0
         self._phase = ""
         self._finished = False
+        self._terminal_failure_reason: str | None = None
         self._payload_grounded_since: dict[int, int] = {}
         self._takeoff_count = 0
         self._fm1_d_approved = False
         self._fm2_approved = False
+        self._fm2_eligible_ids: tuple[int, ...] = ()
         self._leg_peak_agl_m = 0.0
 
     @property
@@ -417,11 +419,11 @@ class VfsJudge:
         if (
             self._paused
             and self._approval_ns
-            and sample.in_contact
             and sample.sim_timestamp_ns - self._approval_ns
             > int(float(self.course.attempt.approval_timeout_s) * 1e9)
         ):
             self._finished = True
+            self._terminal_failure_reason = "approval_timeout"
         if previous is not None and previous.in_contact and not sample.in_contact:
             self._takeoff_count += 1
             self._leg_peak_agl_m = sample.position_xyz[2] - ground_z_m
@@ -448,8 +450,12 @@ class VfsJudge:
             self._active_accumulated_ns += sample.sim_timestamp_ns - self._active_since_ns
             self._active_since_ns = None
             self._paused = True
-        if self.active_elapsed_ns >= int(float(self.course.attempt.duration_seconds) * 1e9):
+        if self.active_elapsed_ns > int(float(self.course.attempt.duration_seconds) * 1e9):
+            if self._active_since_ns is not None:
+                self._active_accumulated_ns += sample.sim_timestamp_ns - self._active_since_ns
+                self._active_since_ns = None
             self._finished = True
+            self._terminal_failure_reason = "active_deadline_exceeded"
         self._status_sequence += 1
         return self.attempt_status
 
@@ -527,7 +533,11 @@ class VfsJudge:
         outcome = JudgeOutcome.REJECTED
         reason = "physical_requirements_not_met"
         eligible: tuple[int, ...] = ()
-        refs = (f"mission-events#{event.event_id}",)
+        refs = [f"mission-events#{event.event_id}"]
+        if self._truth is not None:
+            refs.append(f"groundtruth#{self._truth.sim_timestamp_ns}")
+        if self._status is not None:
+            refs.append(f"vehicle-status#{self._status.sequence_id}")
         if (
             self._truth is None
             or not 0 <= event.sim_timestamp_ns - self._truth.sim_timestamp_ns <= 50_000_000
@@ -560,6 +570,11 @@ class VfsJudge:
                     self._fm1_d_approved = True
         elif event.phase == "FM2" and checkpoint == "":
             targets = _payload_targets(self.scenario)
+            refs.extend(
+                f"payload-state#{marker}/{self._payloads[marker].sim_timestamp_ns}"
+                for marker in sorted(targets)
+                if marker in self._payloads
+            )
             payload_evidence_current = all(
                 marker in self._payloads
                 and 0 <= event.sim_timestamp_ns - self._payloads[marker].sim_timestamp_ns <= 50_000_000
@@ -586,14 +601,37 @@ class VfsJudge:
                 self._paused = True
                 self._approval_ns = event.sim_timestamp_ns
                 self._fm2_approved = True
+                self._fm2_eligible_ids = eligible
                 if not eligible:
                     self._finished = True
         elif event.phase == "FM3" and checkpoint == "":
+            refs.extend(
+                f"payload-state#{marker}/{self._payloads[marker].sim_timestamp_ns}"
+                for marker in self._fm2_eligible_ids
+                if marker in self._payloads
+            )
             inside = _waypoint_contains(
                 self.course.waypoints["H"], self._truth.position_xyz[0], self._truth.position_xyz[1],
                 inward=float(self.course.attempt.aircraft_radius_m),
             )
-            if (
+            payload_evidence_current = all(
+                marker in self._payloads
+                and 0 <= event.sim_timestamp_ns - self._payloads[marker].sim_timestamp_ns <= 50_000_000
+                for marker in self._fm2_eligible_ids
+            )
+            payloads_retrieved = payload_evidence_current and all(
+                self._payloads[marker].grounded
+                and not self._payloads[marker].attached
+                and self._contained(self._payloads[marker], self.course.waypoints["L"])
+                for marker in self._fm2_eligible_ids
+            )
+            if self._terminal_failure_reason is not None:
+                reason = self._terminal_failure_reason
+            elif not payload_evidence_current:
+                outcome, reason = JudgeOutcome.ERROR, "evidence_stale_or_missing"
+            elif not payloads_retrieved:
+                reason = "payload_retrieval_incomplete"
+            elif (
                 self._phase == "FM3"
                 and self._fm2_approved
                 and self._truth.in_contact
@@ -608,7 +646,7 @@ class VfsJudge:
         decision = JudgeDecision(
             self.run_id, event.sim_timestamp_ns, self._decision_id, request_id,
             event.event_id, event.phase, checkpoint, outcome, eligible,
-            self.active_elapsed_ns, reason, refs,
+            self.active_elapsed_ns, reason, tuple(refs),
         )
         self._decision_id += 1
         return decision

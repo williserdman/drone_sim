@@ -184,6 +184,59 @@ def test_approval_to_takeoff_over_sixty_seconds_finishes_attempt():
     assert judge.attempt_status.state is AttemptState.FINISHED
 
 
+def test_expired_fm2_approval_cannot_resume_or_complete_fm3():
+    judge = VfsJudge(RUN_ID, COURSE, Scenario())
+    judge.accept_ground_truth(truth(0, 0, 0, 0, True))
+    judge.accept_mission_event(MissionEventSample(RUN_ID, 0, 0, "FM2", "STARTED", ""))
+    judge.accept_ground_truth(truth(1, 0, 0, 10, False))
+    judge.accept_ground_truth(truth(10, 0, 0, 0, True))
+    judge.accept_vehicle_status(status(10, 0, armed=False))
+    for marker, x, y in ((2, -86.106, -3.048), (3, -80, 0), (4, -80, 0)):
+        judge.accept_payload_state(payload(9, marker, x, y, grounded=True))
+        judge.accept_payload_state(payload(10, marker, x, y, grounded=True))
+    assert judge.accept_mission_event(request(10, 1, "FM2"))[0].outcome is JudgeOutcome.APPROVED
+    judge.accept_mission_event(MissionEventSample(RUN_ID, 11_000_000_000, 2, "FM3", "STARTED", ""))
+
+    judge.accept_ground_truth(truth(71, 0, 0, 1, False))
+    judge.accept_ground_truth(truth(72, 0, 0, 0, True))
+    judge.accept_vehicle_status(status(72, 1, armed=False))
+    decision = judge.accept_mission_event(request(72, 3, "FM3"))[0]
+
+    assert judge.attempt_status.state is AttemptState.FINISHED
+    assert decision.outcome is JudgeOutcome.REJECTED
+    assert decision.reason_code == "approval_timeout"
+
+
+def test_fm3_home_at_active_deadline_is_lawful_but_over_deadline_is_terminal():
+    def complete(final_seconds: float) -> JudgeDecision:
+        judge = VfsJudge(RUN_ID, COURSE, Scenario())
+        judge.accept_ground_truth(truth(0, 0, 0, 0, True))
+        judge.accept_mission_event(MissionEventSample(RUN_ID, 0, 0, "FM2", "STARTED", ""))
+        judge.accept_ground_truth(truth(1, 0, 0, 10, False))
+        judge.accept_ground_truth(truth(10, 0, 0, 0, True))
+        judge.accept_vehicle_status(status(10, 0, armed=False))
+        for marker, x, y in ((2, -86.106, -3.048), (3, -80, 0), (4, -80, 0)):
+            judge.accept_payload_state(payload(9, marker, x, y, grounded=True))
+            judge.accept_payload_state(payload(10, marker, x, y, grounded=True))
+        assert judge.accept_mission_event(request(10, 1, "FM2"))[0].eligible_aruco_ids == (2,)
+        judge.accept_mission_event(MissionEventSample(RUN_ID, 11_000_000_000, 2, "FM3", "STARTED", ""))
+        judge.accept_ground_truth(truth(20, 0, 0, 10, False))
+        judge.accept_payload_state(payload(final_seconds, 2, -30.48, 0, grounded=True))
+        judge.accept_ground_truth(truth(final_seconds, 0, 0, 0, True))
+        judge.accept_vehicle_status(status(final_seconds, 1, armed=False))
+        return judge.accept_mission_event(request(final_seconds, 3, "FM3"))[0]
+
+    boundary = complete(611)
+    assert boundary.active_elapsed_ns == 600_000_000_000
+    assert boundary.outcome is JudgeOutcome.APPROVED
+    assert boundary.reason_code == "attempt_complete"
+
+    late = complete(612)
+    assert late.active_elapsed_ns == 601_000_000_000
+    assert late.outcome is JudgeOutcome.REJECTED
+    assert late.reason_code == "active_deadline_exceeded"
+
+
 def test_fm3_home_touchdown_stops_active_clock_before_check_request():
     judge = VfsJudge(RUN_ID, COURSE, Scenario())
     judge.accept_ground_truth(truth(0, 0, 0, 0, True))
@@ -450,3 +503,33 @@ def test_attached_payload_in_l_cannot_earn_cp():
     scorer.accept_judge_decision(_approved_decision("FM3"))
     result = scorer.finalize(2_000_000_000)
     assert {row.rule_id: row.awarded_points for row in result.rule_results}["CP"] == 0.0
+
+
+def test_fm3_judge_rejects_home_completion_when_frozen_payload_is_outside_l():
+    judge = VfsJudge(RUN_ID, COURSE, Scenario())
+    judge.accept_ground_truth(truth(0, 0, 0, 0, True))
+    judge.accept_mission_event(MissionEventSample(RUN_ID, 0, 0, "FM2", "STARTED", ""))
+    judge.accept_ground_truth(truth(1, 0, 0, 10, False))
+    judge.accept_ground_truth(truth(10, 0, 0, 0, True))
+    judge.accept_vehicle_status(status(10, 0, armed=False))
+    for marker, x, y in ((2, -86.106, -3.048), (3, -80, 0), (4, -80, 0)):
+        judge.accept_payload_state(payload(9, marker, x, y, grounded=True))
+        judge.accept_payload_state(payload(10, marker, x, y, grounded=True))
+    fm2 = judge.accept_mission_event(request(10, 1, "FM2"))[0]
+    assert fm2.eligible_aruco_ids == (2,)
+    assert fm2.evidence_refs == (
+        "mission-events#1", "groundtruth#10000000000", "vehicle-status#0",
+        "payload-state#2/10000000000", "payload-state#3/10000000000",
+        "payload-state#4/10000000000",
+    )
+    judge.accept_mission_event(MissionEventSample(RUN_ID, 11_000_000_000, 2, "FM3", "STARTED", ""))
+    judge.accept_ground_truth(truth(12, 0, 0, 10, False))
+    judge.accept_payload_state(payload(20, 2, -80, 0, grounded=True))
+    judge.accept_ground_truth(truth(20, 0, 0, 0, True))
+    judge.accept_vehicle_status(status(20, 1, armed=False))
+
+    decision = judge.accept_mission_event(request(20, 3, "FM3"))[0]
+
+    assert decision.outcome is JudgeOutcome.REJECTED
+    assert decision.reason_code == "payload_retrieval_incomplete"
+    assert "payload-state#2/20000000000" in decision.evidence_refs
