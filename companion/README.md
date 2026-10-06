@@ -83,6 +83,10 @@ Each marker request begins after the current camera sequence, so a frame cached
 before the request cannot satisfy acquisition after travel.
 Precision reacquisition counts fresh camera observations; intervening telemetry
 or clock ticks preserve the count, while a fresh invalid observation resets it.
+During LAND tracking, fresh range at or below 0.75 m takes precedence over camera
+polling until touchdown/disarm. Each camera request owns its result queue, so a
+cancelled request cannot fail a later acquisition. Camera failures above that
+range retain their underlying exception details in the terminal diagnostic.
 Search remains bounded to the configured acquisition hover;
 course-wide search is not implemented. For local commands, see the
 [runbook](../docs/runbook.md#local-developer-workflow).

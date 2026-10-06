@@ -175,8 +175,9 @@ the search hover. ArduPilot owns stabilization and descent execution, but only
 accepted observations reach its `LANDING_TARGET` input. No target messages are
 sent during the GUIDED hold. Once LiDAR reports an AGL at or below the overlay's
 `PLND_ALT_MIN`, the companion keeps LAND active and no longer requires marker
-visibility; ArduPilot then owns the final descent and touchdown decision. The
-parameter overlay remains the durable source of flight-controller settings, and
+visibility; ArduPilot then owns the final descent and touchdown decision.
+The configured operation checks that fresh range guard before polling the camera.
+The parameter overlay remains the durable source of flight-controller settings, and
 the companion reads those live settings before entering the first precision
 LAND.
 

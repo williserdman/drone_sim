@@ -351,3 +351,69 @@ def test_configured_vision_skips_cached_stale_frame_at_new_marker_request() -> N
     assert result.aruco_id == 4
     assert result.sequence == 2
     assert result.exposure_timestamp_ns == 1_000_000_000
+
+
+def test_configured_vision_reports_camera_worker_root_cause() -> None:
+    class FailedCamera:
+        cm = SimpleNamespace(last_frame_metadata=None)
+
+        def vec_to_marker_3d_bounded(self, *_args, **_kwargs):
+            try:
+                raise ValueError("Frame exposure timestamp is in the future")
+            except ValueError as cause:
+                raise RuntimeError("Camera acquisition worker failed") from cause
+
+    vision = ConfiguredVision(FailedCamera())
+    vision.request(4, 0)
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        try:
+            vision.poll()
+        except RuntimeError as error:
+            assert str(error) == (
+                "configured vision failed: Camera acquisition worker failed; "
+                "caused by ValueError: Frame exposure timestamp is in the future"
+            )
+            assert isinstance(error.__cause__, RuntimeError)
+            return
+        time.sleep(0.005)
+    pytest.fail("configured vision did not report the camera worker failure")
+
+
+def test_new_vision_request_discards_cancelled_worker_failure() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    old_done = threading.Event()
+
+    class Camera:
+        cm = SimpleNamespace(last_frame_metadata=None)
+
+        def vec_to_marker_3d_bounded(self, aruco_id, **_kwargs):
+            if aruco_id == 2:
+                entered.set()
+                assert release.wait(1.0)
+                old_done.set()
+                raise RuntimeError("cancelled request failed late")
+            assert old_done.wait(1.0)
+            return (
+                SimpleNamespace(x=0.0, y=0.0, z=4.0),
+                SimpleNamespace(
+                    sequence=2, exposure_timestamp_ns=100,
+                    receipt_timestamp_ns=100,
+                ),
+            )
+
+    vision = ConfiguredVision(Camera())
+    vision.request(2, 0)
+    assert entered.wait(1.0)
+    vision.request(4, 0)
+    release.set()
+    result = None
+    deadline = time.monotonic() + 1.0
+    while result is None and time.monotonic() < deadline:
+        result = vision.poll()
+        time.sleep(0.005)
+    vision.close()
+
+    assert result is not None
+    assert result.aruco_id == 4

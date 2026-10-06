@@ -71,6 +71,16 @@ the camera's current sequence; stale exposures remain rejected. The exact
 cached-stale/fresh-frame handoff passed within 34 focused checks, and the worker
 type check passed. FM2 eligibility
 and full payload/artifact acceptance remain unverified.
+Eighth launch `4f5fdb39-c230-4aa8-bf2d-924782915ed1` at `6245893` passed
+the first two C drops and acquired marker 4, then failed precision landing at 244.65 s
+with a generic camera-worker error. DataFlash confirms LAND; the final MCAP
+chunk is unreadable, so neither fresh ROS range nor the underlying camera error
+can be recovered. The configured landing policy now checks its fresh near-ground
+range guard before polling the camera. New requests isolate their result queues,
+and terminal camera errors retain their cause chain. These changes passed 35
+focused tests and relevant type checks; they do not establish this run's root
+camera cause or a completed mission. Full three-payload flight, score, and
+artifact acceptance remain pending.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact

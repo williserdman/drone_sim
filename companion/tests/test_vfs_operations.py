@@ -347,6 +347,51 @@ def test_precision_land_near_ground_marker_loss_waits_for_touchdown_and_disarm()
     assert operations.operation_status(operation_id).state == "succeeded"
 
 
+@pytest.mark.parametrize(
+    ("distance_m", "expected_state"), [(0.70, "running"), (0.76, "failed")]
+)
+def test_precision_land_camera_failure_respects_fresh_range_floor(
+    distance_m: float, expected_state: str
+) -> None:
+    class FailingVision(Vision):
+        failed = False
+
+        def poll(self) -> MarkerObservation | None:
+            if self.failed:
+                raise RuntimeError("camera worker failed")
+            return super().poll()
+
+    vision = FailingVision()
+    vehicle = Vehicle()
+    rangefinder = Rangefinder(4.572)
+    operations = DroneOperations(
+        vehicle, course=course(), scenario=scenario(), vision=vision,
+        rangefinder=rangefinder,
+    )
+    observe_flight(
+        operations, 0, relative_altitude_m=4.572,
+        precision_parameters=dict(PRECISION_PARAMETERS),
+    )
+    acquire_marker(operations, vision)
+    operation_id = operations.start("precision_land", {"aruco_id": 2})
+    vision.add(MarkerObservation(
+        2, 6, 300_000_000, 300_000_000, 0.0, 0.0, 4.572
+    ))
+    observe_flight(operations, 300_000_000, relative_altitude_m=4.572)
+    assert vehicle.commands[-1] == ("mode", "LAND")
+
+    rangefinder.distance_m = distance_m
+    vision.failed = True
+    observe_flight(
+        operations, 350_000_000, mode="LAND",
+        relative_altitude_m=distance_m,
+    )
+
+    status = operations.operation_status(operation_id)
+    assert status.state == expected_state
+    assert status.error == ("" if expected_state == "running" else "camera worker failed")
+
+
 def test_precision_land_reacquires_five_frames_before_resuming_land() -> None:
     vision = Vision()
     vehicle = Vehicle()

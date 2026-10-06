@@ -519,11 +519,16 @@ class DroneOperations:
             range_observation = self._rangefinder.latest(self._clock_ns)
         except RuntimeError:
             range_observation = None
+        phase = active.context["phase"]
+        if (phase == "tracking"
+                and self._values.get("mode") == "LAND"
+                and range_observation is not None
+                and range_observation.distance_m <= NEAR_GROUND_M):
+            return False
         candidate_observation = self._vision.poll()
         candidate = self._marker_candidate(
             candidate_observation, aruco_id, acquisition_height=False
         )
-        phase = active.context["phase"]
         healthy = False
         if candidate is not None:
             anchor = active.context["anchor"]

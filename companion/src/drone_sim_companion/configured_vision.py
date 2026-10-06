@@ -48,17 +48,25 @@ class ConfiguredVision:
         if type(cached_sequence) is int and cached_sequence >= 0:
             after_sequence = max(after_sequence, cached_sequence)
         stop = threading.Event()
+        results: Queue[MarkerObservation | BaseException] = Queue()
         self._stop = stop
+        self._results = results
         self._thread = threading.Thread(
             target=self._run,
-            args=(stop, aruco_id, after_sequence),
+            args=(stop, results, aruco_id, after_sequence),
             name=f"configured-aruco-{aruco_id}",
             daemon=True,
         )
         self._threads.append(self._thread)
         self._thread.start()
 
-    def _run(self, stop: threading.Event, aruco_id: int, sequence: int) -> None:
+    def _run(
+        self,
+        stop: threading.Event,
+        results: Queue[MarkerObservation | BaseException],
+        aruco_id: int,
+        sequence: int,
+    ) -> None:
         while not stop.is_set():
             try:
                 vector, metadata = self._camera.vec_to_marker_3d_bounded(
@@ -70,12 +78,15 @@ class ConfiguredVision:
             except TimeoutError:
                 continue
             except BaseException as error:
-                self._results.put(error)
+                if not stop.is_set():
+                    results.put(error)
+                return
+            if stop.is_set():
                 return
             sequence = metadata.sequence
             if vector is None or metadata.exposure_timestamp_ns is None:
                 continue
-            self._results.put(MarkerObservation(
+            results.put(MarkerObservation(
                 aruco_id=aruco_id,
                 sequence=metadata.sequence,
                 exposure_timestamp_ns=metadata.exposure_timestamp_ns,
@@ -91,7 +102,14 @@ class ConfiguredVision:
         except Empty:
             return None
         if isinstance(result, BaseException):
-            raise RuntimeError(f"configured vision failed: {result}") from result
+            detail = str(result)
+            cause = result.__cause__
+            seen = {id(result)}
+            while cause is not None and id(cause) not in seen:
+                seen.add(id(cause))
+                detail += f"; caused by {type(cause).__name__}: {cause}"
+                cause = cause.__cause__
+            raise RuntimeError(f"configured vision failed: {detail}") from result
         return result
 
     def cancel(self) -> None:
