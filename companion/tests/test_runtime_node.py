@@ -34,6 +34,49 @@ from drone_sim_companion.mission import CommandKind, Telemetry
 RUN_ID = "00000000-0000-4000-8000-000000000001"
 
 
+def test_all_axis_global_position_decoder_normalizes_return_telemetry() -> None:
+    sample = runtime_node._decode_global_position(
+        SimpleNamespace(
+            vx=30,
+            vy=40,
+            vz=-12,
+            relative_alt=5123,
+            lat=374003371,
+            lon=-1220800351,
+        ),
+        7_000_000_000,
+    )
+
+    assert sample == (
+        7_000_000_000,
+        0.5,
+        0.12,
+        5.123,
+        37.4003371,
+        -122.0800351,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("lat", True), ("lat", 910_000_000), ("lon", float("nan")), ("lon", -1_810_000_000)],
+)
+def test_all_axis_global_position_decoder_rejects_invalid_coordinates(
+    field: str, value: object
+) -> None:
+    message = SimpleNamespace(
+        vx=0,
+        vy=0,
+        vz=0,
+        relative_alt=0,
+        lat=374003371,
+        lon=-1220800351,
+    )
+    setattr(message, field, value)
+
+    assert runtime_node._decode_global_position(message, 0) is None
+
+
 def test_imported_calibration_readiness_blocks_until_complete_and_reports_once() -> None:
     trace: list[tuple[str, object]] = []
     protocol = SimpleNamespace(

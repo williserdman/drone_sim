@@ -154,9 +154,16 @@ requires normal ArduPilot prearm checks, reads back `AUTOTUNE_AXES=7` and
 AUTOTUNE with neutral sticks. After ArduPilot reports success, the companion
 returns to LOITER and sends `MAV_CMD_DO_AUX_FUNCTION` function 180 at HIGH.
 The command ACK, the complete pilot-testing status, and matching live gain
-readback are all required before a two-second stable settle and native LAND.
-The runtime refreshes neutral RC overrides twice per wall second until LAND
-owns descent; an earlier disarm fails immediately.
+readback are all required before a two-second stable settle. The mission captures
+fresh launch coordinates while disarmed, then returns to them in GUIDED at 5 m
+after tuning. LAND requires two continuous seconds within 0.5 m horizontally and
+vertically of that waypoint, speed at most 0.2 m/s, and roll/pitch within 5 degrees.
+The return is bounded by 60 simulated seconds and the existing landing reserve;
+missing/stale position cannot qualify arrival. Return target and arrival events
+are recorded. This is a GPS waypoint return, not a marker-guided precision landing.
+The runtime refreshes neutral RC overrides twice per wall second through LOITER
+and tuning, then clears them before the GUIDED return. An earlier disarm fails
+immediately; native LAND and gain saving remain under ArduPilot control.
 
 Completion requires the all-axis saved-gains status, observed disarm, and a
 post-disarm readback matching the tested values. Flight decisions use only the

@@ -210,7 +210,8 @@ separately. Actual flight/provider verification remains in [handoff](handoff.md)
 
 ```mermaid
 flowchart LR
-    T[Roll, pitch, yaw AutoTune] --> L[Native LAND and saved gains]
+    T[Roll, pitch, yaw AutoTune] --> R[GUIDED return to launch zone]
+    R --> L[Native LAND and saved gains]
     L --> A[Independent calibration acceptance]
     A --> H[Fresh SITL: load gains, verify, hover and land]
     H --> M[Mission suite uses the same frozen gains]
@@ -241,14 +242,19 @@ before tuning so calibration does not silently change an unexported base setting
 After tuning succeeds, the companion observes LOITER, invokes
 `MAV_CMD_DO_AUX_FUNCTION` with function 180 and position 2 to activate tuned
 gains, and waits for the matching testing status and live parameter readback.
-It then settles and commands native LAND. An ACK alone does not prove that
+It then settles, clears pilot overrides, and switches to GUIDED. A global-relative
+waypoint returns to the fresh ground position captured before arming, at 5 m.
+The return must finish within 60 simulated seconds and before the landing reserve.
+Two continuous seconds within 0.5 m horizontally and vertically, with speed at
+most 0.2 m/s and roll/pitch within 5 degrees, qualify native LAND. Stale or invalid
+position never qualifies arrival. An ACK alone does not prove that
 AutoTune accepted the gain-selection command. Unexpected mode changes, failed
 tuning, stale telemetry, or expired simulation deadlines fail calibration.
 Recovery landing never converts failure into success.
 Neutral RC overrides must be refreshed throughout LOITER and tuning: the pinned
 ArduPilot default expires them after three simulated seconds. An unexpected
 disarm before native landing fails immediately, even if the mode still reports
-AUTOTUNE. Overrides are cleared when commanding LAND.
+AUTOTUNE. Overrides remain cleared during the GUIDED return and native LAND.
 
 This order matters in the
 [pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):
@@ -264,7 +270,9 @@ throttle-only descent and must not be presented as this implementation.
 Calibration gets its own acceptance contract. It requires completed tuning for
 all requested axes, independent airborne/contact/stable-landing evidence, safe
 preimpact speed, observed disarm, and a coherent saved-parameter artifact. It does
-not require touchdown at the origin marker. Its physical checks retain the
+not score touchdown position at the origin marker. The mission now verifies its
+return above the launch zone before LAND; this waypoint check does not establish
+marker-relative touchdown precision. Its physical checks retain the
 airborne, preimpact-speed, and stable-contact thresholds from the original
 [descent rules](../scorekeeper/rules/descent_v1_legacy.json). Raw descent and precision-land scoring retain their location requirements.
 Hover and roll diagnostics accept safe airborne/contact and stable landing

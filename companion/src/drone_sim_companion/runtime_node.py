@@ -272,6 +272,35 @@ def autotune_control_timestamp_ns(
     return 0 if first_command_pending else None
 
 
+def _decode_global_position(
+    message: Any, timestamp_ns: int
+) -> tuple[int, float, float, float, float, float] | None:
+    raw = tuple(
+        getattr(message, name, None)
+        for name in ("vx", "vy", "vz", "relative_alt", "lat", "lon")
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in raw
+    ):
+        return None
+    vx, vy, vz, relative_alt, latitude, longitude = (float(value) for value in raw)
+    latitude /= 10_000_000.0
+    longitude /= 10_000_000.0
+    if not -90.0 <= latitude <= 90.0 or not -180.0 <= longitude <= 180.0:
+        return None
+    return (
+        timestamp_ns,
+        math.hypot(vx, vy) / 100.0,
+        abs(vz) / 100.0,
+        relative_alt / 1000.0,
+        latitude,
+        longitude,
+    )
+
+
 def autotune_failure_recovery_complete(
     *, recovery_started_ns: int, timestamp_ns: int, armed: bool | None
 ) -> bool:
@@ -1075,7 +1104,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
 
 
 def _run_autotune(config: RuntimeConfig) -> int:
-    """Run all-axis AutoTune, activate its gains, settle, and use native LAND."""
+    """Tune all axes, activate gains, return to launch, and use native LAND."""
     protocol = _ProductionProtocol(config)
     lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
     lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
@@ -1128,7 +1157,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
     parameter_generations: dict[str, int] = {}
     parameter_generation_counter = 0
     aux_ack = False
-    position_sample: tuple[int, float, float, float] | None = None
+    position_sample: tuple[int, float, float, float, float, float] | None = None
     attitude_sample: tuple[int, float, float] | None = None
     locked = threading.Lock()
 
@@ -1157,9 +1186,9 @@ def _run_autotune(config: RuntimeConfig) -> int:
         nonlocal position_sample
         stamp = latest_clock_ns
         if stamp is None: return
-        values = (getattr(message, "vx", None), getattr(message, "vy", None), getattr(message, "vz", None), getattr(message, "relative_alt", None))
-        if all(isinstance(value, (int, float)) for value in values):
-            with locked: position_sample = (stamp, math.hypot(float(values[0]), float(values[1])) / 100.0, abs(float(values[2])) / 100.0, float(values[3]) / 1000.0)
+        decoded = _decode_global_position(message, stamp)
+        if decoded is not None:
+            with locked: position_sample = decoded
     def attitude_callback(_vehicle: Any, _name: str, message: Any) -> None:
         nonlocal attitude_sample
         stamp = latest_clock_ns
@@ -1225,7 +1254,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 mode_value = getattr(vehicle, "mode", None); mode = getattr(mode_value, "name", str(mode_value))
                 armed_seen = armed_seen or armed is True
                 telemetry_stamp = min(pos[0], att[0]) if pos and att else None
-                observation = calibration_autotune.Observation(timestamp_ns=stamp, heartbeat=heartbeat, prearm_checks_healthy=armable, mode=mode, armed=armed, landed=armed is False and pos is not None and pos[3] <= .3, relative_altitude_m=pos[3] if pos else None, status_text=status, aux_ack=ack, parameters=parameters, parameter_generation=generation, telemetry_timestamp_ns=telemetry_stamp, horizontal_speed_m_s=pos[1] if pos else None, vertical_speed_m_s=pos[2] if pos else None, roll_rad=att[1] if att else None, pitch_rad=att[2] if att else None)
+                observation = calibration_autotune.Observation(timestamp_ns=stamp, heartbeat=heartbeat, prearm_checks_healthy=armable, mode=mode, armed=armed, landed=armed is False and pos is not None and pos[3] <= .3, relative_altitude_m=pos[3] if pos else None, status_text=status, aux_ack=ack, parameters=parameters, parameter_generation=generation, telemetry_timestamp_ns=telemetry_stamp, position_timestamp_ns=pos[0] if pos else None, horizontal_speed_m_s=pos[1] if pos else None, vertical_speed_m_s=pos[2] if pos else None, latitude_deg=pos[4] if pos else None, longitude_deg=pos[5] if pos else None, roll_rad=att[1] if att else None, pitch_rad=att[2] if att else None)
                 previous = state.phase
                 try:
                     transition = calibration_autotune.advance(state, observation)
@@ -1239,6 +1268,18 @@ def _run_autotune(config: RuntimeConfig) -> int:
                     state = transition.state
                 except Exception as error: failure = f"all-axis AutoTune control failed: {error}"
                 if state.phase is not previous: lifecycle.emit("autotune_phase", stamp, {"phase": state.phase.value})
+                if previous is calibration_autotune.Phase.WAIT_RETURN_GUIDED and state.phase is calibration_autotune.Phase.RETURNING:
+                    lifecycle.emit("autotune_return_target", stamp, {
+                        "latitude_deg": state.home_latitude_deg,
+                        "longitude_deg": state.home_longitude_deg,
+                        "relative_altitude_m": 5.0,
+                    })
+                elif previous is calibration_autotune.Phase.RETURNING and state.phase is calibration_autotune.Phase.WAIT_LAND:
+                    lifecycle.emit("autotune_return_arrived", stamp, {
+                        "latitude_deg": observation.latitude_deg,
+                        "longitude_deg": observation.longitude_deg,
+                        "relative_altitude_m": observation.relative_altitude_m,
+                    })
                 evidence_stage = None
                 if previous is calibration_autotune.Phase.WAIT_GUIDED and state.phase is calibration_autotune.Phase.WAIT_ARMED:
                     evidence_stage = "baseline"

@@ -11,6 +11,8 @@ from typing import Any, Callable, Mapping
 from pymavlink import mavutil
 from artifacts.calibration import CALIBRATION_PARAMETERS, PRESERVED_PARAMETERS
 
+from .mavlink_adapter import MavlinkAdapter
+
 
 GAIN_PARAMETERS = CALIBRATION_PARAMETERS
 
@@ -26,6 +28,8 @@ class Phase(str, Enum):
     WAIT_POST_TUNE_LOITER = "WAIT_POST_TUNE_LOITER"
     WAIT_GAIN_ACTIVATION = "WAIT_GAIN_ACTIVATION"
     SETTLING = "SETTLING"
+    WAIT_RETURN_GUIDED = "WAIT_RETURN_GUIDED"
+    RETURNING = "RETURNING"
     WAIT_LAND = "WAIT_LAND"
     LANDING = "LANDING"
     POST_DISARM_READBACK = "POST_DISARM_READBACK"
@@ -38,6 +42,7 @@ class ActionKind(str, Enum):
     SET_MODE = "SET_MODE"
     ARM = "ARM"
     TAKEOFF = "TAKEOFF"
+    WAYPOINT = "WAYPOINT"
     NEUTRAL_OVERRIDE = "NEUTRAL_OVERRIDE"
     CLEAR_OVERRIDES = "CLEAR_OVERRIDES"
     AUX_FUNCTION = "AUX_FUNCTION"
@@ -51,6 +56,7 @@ class Action:
     name: str = ""
     value: float | None = None
     second_value: float | None = None
+    destination: tuple[float, float, float] | None = None
 
     @classmethod
     def parameter(cls, name: str, value: float) -> "Action": return cls(ActionKind.SET_PARAMETER, name, value)
@@ -60,6 +66,9 @@ class Action:
     def arm(cls) -> "Action": return cls(ActionKind.ARM)
     @classmethod
     def takeoff(cls, altitude_m: float) -> "Action": return cls(ActionKind.TAKEOFF, value=altitude_m)
+    @classmethod
+    def waypoint(cls, latitude_deg: float, longitude_deg: float, altitude_m: float) -> "Action":
+        return cls(ActionKind.WAYPOINT, destination=(latitude_deg, longitude_deg, altitude_m))
     @classmethod
     def neutral_override(cls) -> "Action": return cls(ActionKind.NEUTRAL_OVERRIDE)
     @classmethod
@@ -90,6 +99,9 @@ class Observation:
     vertical_speed_m_s: float | None = None
     roll_rad: float | None = None
     pitch_rad: float | None = None
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
+    position_timestamp_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +119,8 @@ class AllAxisState:
     activation_generation: int = 0
     settle_started_ns: int | None = None
     landing_started_ns: int | None = None
+    home_latitude_deg: float | None = None
+    home_longitude_deg: float | None = None
     failure_reason: str = ""
 
     @classmethod
@@ -151,6 +165,28 @@ def _stable_sample(observation: Observation) -> bool:
     )
 
 
+def _fresh_position(observation: Observation) -> bool:
+    values = (observation.latitude_deg, observation.longitude_deg, observation.relative_altitude_m)
+    return bool(
+        observation.position_timestamp_ns is not None
+        and 0 <= observation.timestamp_ns - observation.position_timestamp_ns <= 500_000_000
+        and all(type(value) in (int, float) and math.isfinite(value) for value in values)
+        and -90 <= observation.latitude_deg <= 90
+        and -180 <= observation.longitude_deg <= 180
+    )
+
+
+def _arrived_home(state: AllAxisState, observation: Observation) -> bool:
+    if not _fresh_position(observation) or not _stable_sample(observation):
+        return False
+    if state.home_latitude_deg is None or state.home_longitude_deg is None:
+        return False
+    north = math.radians(observation.latitude_deg - state.home_latitude_deg) * 6_371_000
+    longitude_delta = (observation.longitude_deg - state.home_longitude_deg + 180) % 360 - 180
+    east = math.radians(longitude_delta) * 6_371_000 * math.cos(math.radians(state.home_latitude_deg))
+    return math.hypot(north, east) <= .5 and abs(observation.relative_altitude_m - 5.0) <= .5
+
+
 def parameter_readback_generation(
     values: Mapping[str, float],
     generations: Mapping[str, int],
@@ -189,6 +225,8 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         Phase.WAIT_POST_TUNE_LOITER,
         Phase.WAIT_GAIN_ACTIVATION,
         Phase.SETTLING,
+        Phase.WAIT_RETURN_GUIDED,
+        Phase.RETURNING,
         Phase.WAIT_LAND,
     } and observation.armed is False:
         return _failed(current, stamp, "vehicle disarmed before native LAND")
@@ -204,7 +242,7 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
     if stamp >= state.public_deadline_ns - 60_000_000_000 and state.phase not in {Phase.LANDING}:
         return _failed(current, stamp, "AutoTune reserved landing window reached")
     wait_limit = 10_000_000_000
-    if state.phase in {Phase.WAIT_GUIDED, Phase.WAIT_PRE_TUNE_LOITER, Phase.WAIT_AUTOTUNE, Phase.WAIT_POST_TUNE_LOITER, Phase.WAIT_GAIN_ACTIVATION, Phase.WAIT_LAND} and stamp - state.phase_started_ns > wait_limit:
+    if state.phase in {Phase.WAIT_GUIDED, Phase.WAIT_PRE_TUNE_LOITER, Phase.WAIT_AUTOTUNE, Phase.WAIT_POST_TUNE_LOITER, Phase.WAIT_GAIN_ACTIVATION, Phase.WAIT_RETURN_GUIDED, Phase.WAIT_LAND} and stamp - state.phase_started_ns > wait_limit:
         return _failed(current, stamp, f"{state.phase.value} timed out")
 
     if state.phase is Phase.WAIT_READY:
@@ -222,8 +260,16 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
             return _failed(current, stamp, "body-rate feedforward must already be enabled")
         if profile["AUTOTUNE_AXES"] != 7.0:
             return _failed(current, stamp, "AUTOTUNE_AXES readback does not equal 7")
+        if observation.armed is True:
+            return _failed(current, stamp, "vehicle already armed before capturing the return position")
+        if observation.armed is not False or not _fresh_position(observation) or abs(observation.relative_altitude_m) > .3:
+            return Transition(current)
         preserved = tuple((name, float(profile[name])) for name in PRESERVED_PARAMETERS)
-        return Transition(_enter(current, Phase.WAIT_ARMED, stamp, preserved_parameters=preserved, baseline_generation=observation.parameter_generation), (Action.arm(),))
+        return Transition(_enter(
+            current, Phase.WAIT_ARMED, stamp,
+            preserved_parameters=preserved, baseline_generation=observation.parameter_generation,
+            home_latitude_deg=observation.latitude_deg, home_longitude_deg=observation.longitude_deg,
+        ), (Action.arm(),))
     if state.phase is Phase.WAIT_ARMED:
         if observation.mode != "GUIDED": return _failed(current, stamp, "left GUIDED before arming")
         if observation.armed is not True: return Transition(current)
@@ -272,9 +318,31 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         started = state.settle_started_ns if state.settle_started_ns is not None else stamp
         current = replace(current, settle_started_ns=started)
         if stamp - started < 2_000_000_000: return Transition(current)
+        if state.home_latitude_deg is None or state.home_longitude_deg is None:
+            return _failed(current, stamp, "return position was not captured before arming")
+        return Transition(_enter(current, Phase.WAIT_RETURN_GUIDED, stamp, settle_started_ns=None), (Action.clear_overrides(), Action.mode("GUIDED")))
+    if state.phase is Phase.WAIT_RETURN_GUIDED:
+        if observation.mode not in {"LOITER", "GUIDED"}:
+            return _failed(current, stamp, "unexpected mode while entering return GUIDED")
+        if observation.mode != "GUIDED": return Transition(current)
+        if state.home_latitude_deg is None or state.home_longitude_deg is None:
+            return _failed(current, stamp, "return position was not captured before arming")
+        return Transition(_enter(current, Phase.RETURNING, stamp), (
+            Action.waypoint(state.home_latitude_deg, state.home_longitude_deg, 5.0),
+        ))
+    if state.phase is Phase.RETURNING:
+        if observation.mode != "GUIDED":
+            return _failed(current, stamp, "left GUIDED while returning to the landing zone")
+        if stamp - state.phase_started_ns > 60_000_000_000:
+            return _failed(current, stamp, "return to landing zone timed out")
+        if not _arrived_home(state, observation):
+            return Transition(replace(current, settle_started_ns=None))
+        started = state.settle_started_ns if state.settle_started_ns is not None else stamp
+        current = replace(current, settle_started_ns=started)
+        if stamp - started < 2_000_000_000: return Transition(current)
         return Transition(_enter(current, Phase.WAIT_LAND, stamp, landing_started_ns=stamp), (Action.clear_overrides(), Action.mode("LAND")))
     if state.phase is Phase.WAIT_LAND:
-        if observation.mode not in {"LOITER", "LAND"}:
+        if observation.mode not in {"GUIDED", "LAND"}:
             return _failed(current, stamp, "unexpected mode while entering native LAND")
         if observation.mode != "LAND":
             return Transition(current)
@@ -337,6 +405,10 @@ def execute_actions(
         elif action.kind is ActionKind.SET_MODE: vehicle.mode = mode_factory(action.name)
         elif action.kind is ActionKind.ARM: vehicle.armed = True
         elif action.kind is ActionKind.TAKEOFF: vehicle.simple_takeoff(float(action.value))
+        elif action.kind is ActionKind.WAYPOINT:
+            if action.destination is None:
+                raise ValueError("waypoint requires a destination")
+            MavlinkAdapter(master, mavutil).send_waypoint(*action.destination)
         elif action.kind is ActionKind.NEUTRAL_OVERRIDE: vehicle.channels.overrides = {str(i): 1500 for i in range(1, 5)}
         elif action.kind is ActionKind.CLEAR_OVERRIDES: vehicle.channels.overrides = {}
         elif action.kind is ActionKind.AUX_FUNCTION:

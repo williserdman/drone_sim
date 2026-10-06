@@ -8,6 +8,14 @@ world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. The core-runner
 PR and imported `companion/comp2026` source remain unchanged.
 
+Calibration return update 2026-10-06: the companion now captures the disarmed
+launch position, returns there in GUIDED at 5 m after tuning/gain activation,
+and requires two stable seconds within 0.5 m before native LAND. Checks passed
+2,285 host/module tests with 27 skips and 1,126 imported Comp2026 tests. Fresh
+flight/recording validation is pending;
+the older accepted and rejected landings below had no return command. Landing
+speed, physical scoring and saved-gain verification are unchanged.
+
 Implementation update 2026-10-05: branch `feat/manual-ci-suite` implements the
 approved [11-setup design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
 and [plan](superpowers/plans/2026-10-05-full-ci-suite.md). The shared local `suite`
@@ -59,7 +67,7 @@ that readback within export precision.
 
 The lifecycle completed without diagnostics, but physical scoring awarded
 60/100 and independent acceptance rejected the required 100/100 gate. The
-first contact sample at 740.850 seconds retained 0.438518 m/s impact speed,
+first contact sample at 740.850 seconds reported 0.438518 m/s smoothed speed,
 above the stable-contact limit; the following ten samples were at most
 0.001304 m/s. Contact and tilt passed throughout the evaluated half-second
 interval. Calibration still uses the first-contact interval, unlike descent's
@@ -76,6 +84,35 @@ canonical 60/100 result remain under `runs/local-ci/20261006-04aa25a/`.
 The landing-scoring contract decision is pending; no scoring rule or historical
 evidence was changed, and this attempt does not validate the consumer startup
 fixes or establish an all-11 pass.
+
+Read-only comparison of the preserved native Gazebo recordings on 2026-10-06
+found contact at native 611.487 seconds in accepted calibration `684758ab` and
+830.850 seconds in rejected calibration `b75e44b6`. Their first public contact
+samples correspond to native 611.500 and 830.850 seconds: respectively 13 ms
+after contact and the same simulation epoch as contact. Both approach at about
+0.50 m/s and their recorded poses stop descending within milliseconds. The
+retained failed image uses Gazebo OdometryPublisher 8.11.0, whose
+[velocity calculation](https://github.com/gazebosim/gz-sim/blob/gz-sim8_8.11.0/src/systems/odometry_publisher/OdometryPublisher.cc#L364-L451)
+smooths per-step pose differences before publishing at this world's 20 Hz.
+The first-contact stability check therefore depends on whether that sample's
+velocity window still contains preimpact motion. Native pose reconstruction
+supports this explanation; it is approximate because serialized poses are
+rounded. The old accepted core images are no longer retained, so executable
+equality across the two runs cannot be established. No scoring change follows
+from this observation. The exact failing-image diagnostic repeat `509424dc`
+observed physical contact at public 376.822 seconds and its first public contact
+sample 28 ms later at 376.850 seconds: the preceding speed was 0.500456 m/s and
+the contact sample 0.000796 m/s. The companion reported LANDED at 379.25 seconds.
+The full recording then exceeded its 7,200-second wall deadline; lifecycle FAILED,
+raw 0/100 with `ground_truth_sample_count_mismatch`, and rejected recording
+acceptance are separate from that physical observation. The raw probe is retained
+under `runs/diagnostics/20261006-calibration-repeat-04aa25a/`; this is diagnostic
+evidence, not an accepted CI calibration.
+Video inspection also found that both observer recordings miss the aircraft at
+touchdown; the onboard view shows featureless ground. These recordings cannot
+support visual landing acceptance. The rigid collision model and velocity/contact
+score contain no landing-gear damage or payload-shock criterion, so passing this
+contract does not establish a hardware-safe touchdown speed.
 
 First suite attempt `0d11a7cb-e3f3-4379-86e0-95d76b274ef1` from clean `8f628be`
 built all seven images and passed Comp2026 import smoke, then failed preflight

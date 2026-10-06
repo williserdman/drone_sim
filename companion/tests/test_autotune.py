@@ -422,7 +422,7 @@ def test_driver_retries_arm_while_waiting_for_transient_prearm_check(
     assert vehicle.armed is True
 
 
-def test_all_axis_autotune_uses_native_land_and_exports_only_saved_disarm() -> None:
+def test_all_axis_autotune_returns_to_launch_then_lands_and_exports_saved_gains() -> None:
     calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
     state = calibration.AllAxisState.initial(public_deadline_ns=600_000_000_000)
 
@@ -444,6 +444,8 @@ def test_all_axis_autotune_uses_native_land_and_exports_only_saved_disarm() -> N
     assert observe(
         1, mode="GUIDED", armed=False,
         parameters={**baseline, "AUTOTUNE_AXES": 7.0},
+        latitude_deg=37.4, longitude_deg=-122.08,
+        relative_altitude_m=0.0, position_timestamp_ns=1,
     ).actions == (calibration.Action.arm(),)
     assert observe(2, mode="GUIDED", armed=True).actions == (
         calibration.Action.takeoff(5.0),
@@ -484,26 +486,124 @@ def test_all_axis_autotune_uses_native_land_and_exports_only_saved_disarm() -> N
     observe(10_000_000_000, telemetry_timestamp_ns=10_000_000_000, **stable)
     assert observe(
         12_000_000_000, telemetry_timestamp_ns=12_000_000_000, **stable
-    ).actions == (calibration.Action.clear_overrides(), calibration.Action.mode("LAND"))
+    ).actions == (calibration.Action.clear_overrides(), calibration.Action.mode("GUIDED"))
     transition = observe(12_100_000_000, mode="LOITER", armed=True)
+    assert transition.state.phase is calibration.Phase.WAIT_RETURN_GUIDED
+    transition = observe(12_200_000_000, mode="GUIDED", armed=True)
+    assert transition.state.phase is calibration.Phase.RETURNING
+    assert transition.actions == (calibration.Action.waypoint(37.4, -122.08, 5.0),)
+    arrived = dict(
+        **{**stable, "mode": "GUIDED"},
+        latitude_deg=37.4, longitude_deg=-122.08, relative_altitude_m=5.0,
+    )
+    assert observe(
+        13_000_000_000, telemetry_timestamp_ns=13_000_000_000,
+        position_timestamp_ns=13_000_000_000, **arrived,
+    ).actions == ()
+    assert observe(
+        15_000_000_000, telemetry_timestamp_ns=15_000_000_000,
+        position_timestamp_ns=15_000_000_000, **arrived,
+    ).actions == (calibration.Action.clear_overrides(), calibration.Action.mode("LAND"))
+    transition = observe(15_100_000_000, mode="GUIDED", armed=True)
     assert transition.state.phase is calibration.Phase.WAIT_LAND
-    transition = observe(12_200_000_000, mode="LAND", armed=True)
+    transition = observe(15_200_000_000, mode="LAND", armed=True)
     assert transition.state.phase is calibration.Phase.LANDING
     assert observe(
-        13_000_000_000, mode="LAND", armed=True,
+        16_000_000_000, mode="LAND", armed=True,
         status_text="AutoTune: Saved gains for Roll Pitch Yaw(E)",
     ).actions == ()
     transition = observe(
-        14_000_000_000, mode="LAND", armed=False, landed=True, parameters={**baseline, **tuned},
+        17_000_000_000, mode="LAND", armed=False, landed=True, parameters={**baseline, **tuned},
         parameter_generation=1,
     )
     assert transition.actions == (calibration.Action.request_parameters(),)
     transition = observe(
-        15_000_000_000, mode="LAND", armed=False, landed=True, parameters={**baseline, **tuned},
+        18_000_000_000, mode="LAND", armed=False, landed=True, parameters={**baseline, **tuned},
         parameter_generation=2,
     )
     assert transition.state.phase is calibration.Phase.COMPLETE
     assert transition.actions == (calibration.Action.export(),)
+
+
+@pytest.mark.parametrize("changed", [
+    {"latitude_deg": 37.4001},  # More than 11 m north of the launch point.
+    {"longitude_deg": -122.0799},
+    {"relative_altitude_m": 4.0},
+    {"horizontal_speed_m_s": 0.3},
+    {"position_timestamp_ns": 1_000_000_000},
+    {"latitude_deg": math.nan},
+])
+def test_all_axis_return_requires_fresh_stationary_arrival(changed) -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.AllAxisState(
+        phase=calibration.Phase.RETURNING, phase_started_ns=0,
+        public_deadline_ns=600_000_000_000,
+        home_latitude_deg=37.4, home_longitude_deg=-122.08,
+        settle_started_ns=1_000_000_000,
+    )
+    observation = dict(
+        timestamp_ns=3_000_000_000, mode="GUIDED", armed=True,
+        latitude_deg=37.4, longitude_deg=-122.08, relative_altitude_m=5.0,
+        position_timestamp_ns=3_000_000_000, telemetry_timestamp_ns=3_000_000_000,
+        horizontal_speed_m_s=0.0, vertical_speed_m_s=0.0, roll_rad=0.0, pitch_rad=0.0,
+    )
+    transition = calibration.advance(state, calibration.Observation(**{**observation, **changed}))
+    assert transition.actions == ()
+    assert transition.state.phase is calibration.Phase.RETURNING
+    assert transition.state.settle_started_ns is None
+
+
+@pytest.mark.parametrize("changed", [
+    {"timestamp_ns": 60_000_000_001}, {"mode": "LOITER"}, {"armed": False},
+])
+def test_all_axis_return_failure_cannot_command_successful_landing(changed) -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.AllAxisState(
+        phase=calibration.Phase.RETURNING, phase_started_ns=0,
+        public_deadline_ns=600_000_000_000,
+        home_latitude_deg=37.4, home_longitude_deg=-122.08,
+    )
+    observation = {"timestamp_ns": 1, "mode": "GUIDED", "armed": True, **changed}
+    transition = calibration.advance(state, calibration.Observation(**observation))
+    assert transition.state.phase is calibration.Phase.FAILED
+    assert transition.actions == ()
+
+
+@pytest.mark.parametrize("changed", [
+    {"latitude_deg": None}, {"latitude_deg": math.nan}, {"longitude_deg": 181.0},
+    {"position_timestamp_ns": 0}, {"relative_altitude_m": 5.0},
+])
+def test_all_axis_does_not_arm_without_valid_ground_return_position(changed) -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.AllAxisState(
+        phase=calibration.Phase.WAIT_GUIDED, phase_started_ns=0,
+        public_deadline_ns=600_000_000_000,
+    )
+    parameters = {name: 1.0 for name in (*calibration.GAIN_PARAMETERS, *calibration.PRESERVED_PARAMETERS)}
+    parameters["AUTOTUNE_AXES"] = 7.0
+    observation = dict(
+        timestamp_ns=1_000_000_000, mode="GUIDED", armed=False, parameters=parameters,
+        latitude_deg=37.4, longitude_deg=-122.08, relative_altitude_m=0.0,
+        position_timestamp_ns=1_000_000_000,
+    )
+    transition = calibration.advance(state, calibration.Observation(**{**observation, **changed}))
+    assert transition.state.phase is calibration.Phase.WAIT_GUIDED
+    assert transition.actions == ()
+
+
+def test_all_axis_return_waypoint_uses_global_relative_altitude_frame() -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    commands = []
+    vehicle = SimpleNamespace(_master=SimpleNamespace(
+        target_system=7, target_component=1,
+        mav=SimpleNamespace(set_position_target_global_int_send=lambda *args: commands.append(args)),
+    ))
+    calibration.execute_actions(
+        vehicle, (calibration.Action.waypoint(37.4, -122.08, 5.0),),
+        mode_factory=lambda name: name, export=lambda: None,
+    )
+    assert commands == [(0, 7, 1, 6, 3576, 374000000, -1220800000, 5.0,
+                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)]
 
 
 def test_all_axis_autotune_stale_settle_sample_resets_window() -> None:
