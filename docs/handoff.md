@@ -42,6 +42,13 @@ navigation now freezes the first complete observed home pair. H and payload
 target regressions retain their original ENU coordinates after later home
 updates; 65 focused checks and the operations type check passed. That run shut
 down normally. Full three-payload flight and artifact acceptance remain pending.
+Fifth launch `034f5639-8e00-4e48-bd89-6578e664e830` at `37104be` passed both
+FM1 checks (D 48.1 s, H 96.2 s). It reached payload 2's 4.572 m acquisition
+hover, then failed at 117.5 s because the Gazebo calibration lacked verified
+image dimensions. The existing calibration now declares the simulator's
+640×480 dimensions; its focal length matches the configured 0.6 rad field of
+view. Precision-readiness checks remain enforced. Full payload flight and
+artifact acceptance remain pending.
 The first image build exposed an unavailable Ubuntu Python venv
 pin; three affected runtime Dockerfiles now use the available `.17` revision.
 The FFmpeg lock now uses available `libpciaccess0` `.3`; both exact artifact

@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
+ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(ROOT / "companion/comp2026/src"))
+
+from artifacts.vfs_contract import load_vfs_scenario
+from drone.sensors.camera._camera_manager import CameraManager
+from drone.sensors.camera.camera import Camera
 from drone_sim_companion.mission_plan import Condition
 from drone_sim_companion.mission import Telemetry
 from drone_sim_companion.vfs_operations import (
@@ -12,7 +23,6 @@ from drone_sim_companion.vfs_operations import (
     PhaseExchange,
     VehicleStatusStream,
 )
-
 
 def test_phase_check_detail_is_canonical_and_eligibility_is_frozen() -> None:
     events = []
@@ -170,3 +180,47 @@ def test_disarmed_readiness_requires_fresh_published_state_and_resets_on_armed()
     assert not stream.disarmed_ready(700_000_001)
     stream.observe(Telemetry(700_000_001, armed=True))
     assert not stream.disarmed_ready(700_000_001)
+
+
+def test_gazebo_calibration_is_precision_ready_at_configured_image_dimensions() -> None:
+    calibration_path = (
+        ROOT / "companion/src/drone_sim_companion/gazebo_camera_calibration.json"
+    )
+    mounting_path = ROOT / "companion/src/drone_sim_companion/gazebo_camera_mounting.json"
+    scenario = load_vfs_scenario(ROOT / "config/scenario-2027.yaml")
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    assert calibration["dimensions_verified"] is True
+    assert (
+        calibration["image_width_px"], calibration["image_height_px"]
+    ) == (scenario.camera.width_px, scenario.camera.height_px)
+    expected_focal_px = scenario.camera.width_px / (
+        2.0 * math.tan(scenario.camera.horizontal_fov_rad / 2.0)
+    )
+    assert calibration["camera_matrix"][0][0] == pytest.approx(expected_focal_px)
+    assert calibration["camera_matrix"][0][2] == scenario.camera.width_px / 2
+    assert calibration["camera_matrix"][1][2] == scenario.camera.height_px / 2
+
+    class FrameSource:
+        last_timestamp_ns = None
+
+        def capture_frame(self, quality=4):
+            assert quality == 4
+            self.last_timestamp_ns = 100
+            return np.zeros(
+                (scenario.camera.height_px, scenario.camera.width_px, 3),
+                dtype=np.uint8,
+            )
+
+    manager = CameraManager(
+        frame_source=FrameSource(),
+        calibration_path=calibration_path,
+        clock=lambda: 100,
+        max_exposure_age_ns=500_000_000,
+    )
+    camera = Camera(100, manager=manager, mounting_path=mounting_path)
+    observation = manager.capture_observation()
+
+    assert camera.precision_readiness(observation).ready
+    assert observation.metadata.raw_image_size_px == (
+        scenario.camera.width_px, scenario.camera.height_px
+    )

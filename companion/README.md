@@ -120,6 +120,10 @@ Camera identity is recorded through
 although autonomy consumes the image itself rather than subscribing to the
 redundant metadata stream. The ownership, ordering, timing, and durable-status
 contracts are centralized in the [architecture guide](../docs/architecture.md).
+The [Gazebo calibration](src/drone_sim_companion/gazebo_camera_calibration.json)
+declares verified image dimensions matching the simulated camera. Precision
+observations require matching captured dimensions, bounded exposure age, and
+the verified [mounting](src/drone_sim_companion/gazebo_camera_mounting.json).
 
 The companion provides MAVLink commands, correlated payload service requests,
 ordered mission events, structured diagnostics, and its own readiness,
