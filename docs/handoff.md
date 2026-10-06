@@ -3,14 +3,34 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-06. VFS 2027 implementation adds configurable A/B/C targets
+Audited 2026-10-07. VFS 2027 implementation adds configurable A/B/C targets
 (default C), version-2 eligibility groups, camera/payload tools, and automatic
 phase judging to the existing configured runner. Its world starts unloaded
 with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-Current VFS flight evidence is run `ed9d6023-aa59-4d26-8d77-61dd34c7dc86`
+Current VFS flight evidence is run `a75d91ae-d05b-4f55-a11c-7706e2425bed`
+at frozen runtime revision `caae0b8e14604af9a5fdecf85922ac3c2d276cc3`.
+All three payloads were dropped at C, retrieved, and released grounded in L;
+the aircraft returned to H and disarmed. FM3 was approved at 575.00 public
+seconds and 566.25 active seconds. The finalized score was 366/380, including
+one time-bonus point. Both videos and the bag finalized over the full 780-second
+window, but the terminal bundle was `FAILED` with `scoring_provenance_invalid`.
+The scorer repeated FM2 and FM3 evidence references in its aggregate list;
+the host and manifest require unique references. Native installed-image replay
+independently verified the physical mission, all four exact judge clocks, and
+366/380. This diagnostic pass does not change the failed manifest, whose SHA-256
+is `8668ad2c256a2baeb4f591f54ab18c344cace15a4481ce28cefad2787c392d62`.
+The scorer now aggregates each reference once in first-use order, while keeping
+shared per-rule references intact. Independent validation requires the same
+aggregate, and the host's uniqueness checks remain unchanged. Both regressions
+failed before the fix; the 32 affected scorer/validator checks and production
+type checks passed afterward. A fresh accepted full-window run remains required.
+
+The following VFS runs and fixes are preserved historical evidence.
+
+Earlier VFS flight evidence is run `ed9d6023-aa59-4d26-8d77-61dd34c7dc86`
 at runtime revision `34d85c0`. All three payloads were dropped at C, retrieved,
 and released grounded in L; the aircraft returned to H and disarmed. FM3 was
 approved at 588.5 public seconds and 579.7 active seconds, with 365/380 points.
@@ -35,8 +55,9 @@ then completed all three C drops and received FM2 approval at 293.50 public
 seconds and 290.15 active seconds, freezing IDs 2, 3, and 4. FM3 failed on its
 first retrieval at 346.20 public seconds with `precision target reacquisition
 failed`. The aircraft touched down on payload 2 but remained armed in GUIDED;
-no L delivery or FM3 approval occurred. Its score was 215/380; terminal artifact
-finalization is pending. The original run remains failed evidence.
+No L delivery or FM3 approval occurred. Its standalone score was 215/380.
+Terminal finalization completed as `FAILED` with incomplete artifacts; that
+score is not accepted evidence.
 
 Focused regressions reproduced two configured landing gaps: a future range scan
 hid the last clock-current scan, and fresh near-ground range did not refresh
@@ -44,9 +65,11 @@ target health. A subsequent scan gap could therefore immediately switch LAND
 to GUIDED. The adapter now uses the existing mission's committed/pending scan
 pattern, and near-ground tracking refreshes health within the unchanged 500 ms
 timeout. Three new regressions failed before the fix; 53 focused companion
-checks passed afterward. The exact triggering callback order of that flight remains unrecorded;
-these deterministic regressions do not establish a successful physical flight.
-Matching rebuilt images and a fresh accepted full-window run remain pending.
+checks passed afterward. The exact triggering callback order of that flight
+remains unrecorded; the regressions alone do not establish physical success. All seven images rebuilt
+at `caae0b8`; the installed companion passed all three range/landing probes with
+source hashes matched. The later flight above passed the physical mission;
+its separate provenance failure still prevents bundle acceptance.
 
 The preceding integration failures below are historical evidence. All seven VFS
 runtime images first built successfully at `26e0d07`. First launch
@@ -220,6 +243,7 @@ score alone is not a pass.
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
 | --- | --- | --- | --- | --- |
+| VFS 2027 all-C run `a75d91ae-d05b-4f55-a11c-7706e2425bed` | Three C drops; three grounded L deliveries; H landing/disarm; FM3 approved at 566.25 active seconds | 366/380; independently replayed | `FAILED`; full 780-second recording, duplicate aggregate score references rejected | Frozen runtime `caae0b8`; diagnostic replay does not repair the terminal manifest |
 | [Accepted competition baseline](verification/comp2026-mvp.md), run `3dc895c3-a5aa-4651-a893-d21884fa43f5` | Returned Home and disarmed in the accepted 600-second run | 150/150 | `COMPLETED`; accepted bundle | Historical external evidence; does not prove current source or images |
 | [Payload timestamp verification](payload-timestamp-fix.md), run `259863d9-c558-4102-ae34-fe6c31f5cf94` | Completed all three payloads and Home | 150/150 | `FAILED`; terminal artifacts invalid after a later downward-range timestamp/grid fault | Proves the recorded physical flight, not a full-window pass |
 | Fast precision-landing recovery, run `b3dfad75-4630-4233-84e3-836943459903` | Payload 2 released; payloads 3 and 4 attached, lifted, and released; Home disarmed and completed at 261.15 s | 150/150 | `COMPLETED`; canonical semantic acceptance passed; manifest SHA-256 `9ed6496414746e76d2e146128d5055e95a2a2c219c6ece83d724add9040e85a7` | Machine-local run directory; preserve the complete bundle when transferring |
@@ -227,7 +251,7 @@ score alone is not a pass.
 Run directories and absolute paths in verification notes are ignored, machine-local
 evidence. Transfer a needed bundle with its manifest, checksums, configuration, and provenance intact.
 
-## Current source verification
+## Historical precision-landing source verification
 
 Focused verification for the precision-landing branch passed 171 host companion
 and ArduPilot tests and 81 nested mission tests. The profile now preserves
@@ -288,20 +312,21 @@ dependency or a consequence, so this is not a full pass. The prior baseline was 
 Independent task reviews 1-14 and final Standards/Spec reviews passed after
 scoped review fixes; no Critical, Important, or Minor findings remain.
 
-## Image and runtime boundary
+## Historical cleanup image and runtime boundary
 
-No image was rebuilt or retagged. Existing tags predate these changes and are
-stale and unrun for this revision. That cleanup worktree had no
+For that historical cleanup branch, no image was rebuilt or retagged. Its tags
+predated its source changes and were unrun for that revision. That worktree had no
 `companion/comp2026`; no symlink was created and no Phase 3 build was claimed.
 
-Campaign outcomes are separate: physical mission `not run`; score `not produced`;
-artifact validity `not evaluated`; images `not rebuilt`. Source tests do not change them.
+For that cleanup branch, physical mission was `not run`, score `not produced`,
+artifact validity `not evaluated`, and images `not rebuilt`. Source tests did not
+change those outcomes.
 
 ## Active priorities
 
-1. Diagnose the historical range-stream sample loss, then obtain a fresh pinned,
-   full-window competition baseline. Check physical behavior, score, and artifact
-   validity separately while keeping the timestamp and physical checks strict.
+1. Rebuild matching images and obtain a fresh pinned, accepted full-window VFS
+   run. Preserve the strict unique-reference, physical, timestamp, and
+   independent-score checks.
 
 Lower-priority work remains deferred: improve zero-budget Compose timeout
 diagnostics; freeze final flight-exchange counters; investigate rare process and

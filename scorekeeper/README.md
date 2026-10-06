@@ -94,6 +94,8 @@ documentation. The persisted schema is defined by
   container ground contact, including tilted corner/edge support.
 - Missing point components may yield an honest finalized partial score when the
   evidence grammar and terminal conditions remain valid.
+- Aggregate `evidence_paths` retain each referenced path once in first-use order.
+  Individual rule results keep their own reference even when two rules share it.
 - Evidence is persisted before reliable score-event publication is flushed and
   before `score-finished` is created. Existing score evidence is never replaced.
   Finalization then writes quiescence and produces no further output.

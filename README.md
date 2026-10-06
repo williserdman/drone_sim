@@ -15,10 +15,11 @@ validated run bundle establish what actually happened.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
-**Current caveat:** a physical three-payload flight and return home have been
-verified, but the latest documented verification run failed later in the
-recording window. A score of 150/150 alone does not mean the run passed.
-See the [evidence and limitations](docs/handoff.md#verified-behavior-and-limits).
+**Current status:** VFS 2027 all-C flight completed three drops, three grounded
+L deliveries, and return home in 566.25 active seconds, scoring 366/380.
+Its full 780-second bundle failed on duplicate score evidence references;
+a fresh accepted run remains required. See the
+[evidence and limits](docs/handoff.md#verified-behavior-and-limits).
 
 ## First local check
 

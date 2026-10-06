@@ -961,7 +961,9 @@ class VfsScorer:
         )
         return ScoreResult(
             self.run_id, self.rules.ruleset_id, self._diagnostic is None, achieved, 380.0,
-            self.rules.scoring_checksum, tuple(row.evidence_ref for row in rows), rows,
+            self.rules.scoring_checksum,
+            tuple(dict.fromkeys(row.evidence_ref for row in rows)),
+            rows,
             events, self._diagnostic,
         )
 

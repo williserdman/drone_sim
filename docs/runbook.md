@@ -262,8 +262,8 @@ run, **not** an artifact guaranteed by ordinary launches.
 
 Three distinct questions must be answered: did the vehicle physically perform
 the mission, what points were awarded, and did the full evidence bundle validate?
-Use [the latest documented failure](payload-timestamp-fix.md) as an example of
-150 points coexisting with a failed run.
+Use the [documented payload timestamp failure](payload-timestamp-fix.md) as an
+example of 150 points coexisting with a failed run.
 
 Precision-landing recovery records one compact JSON object per rejected
 observation and state transition. Inspect it without changing the bundle:

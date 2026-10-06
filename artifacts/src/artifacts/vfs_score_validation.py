@@ -457,7 +457,8 @@ def validate_vfs_score_outputs(
     if tuple(values) != independently_computed:
         raise ScoreValidationError("persisted VFS components do not match independently replayed evidence")
     expected_total = max(0.0, values[0] + values[3] * (values[1] + values[2]) + sum(values[4:7]) - values[7])
-    if achieved != expected_total or document.get("evidence_paths") != refs:
+    aggregate_refs = list(dict.fromkeys(refs))
+    if achieved != expected_total or document.get("evidence_paths") != aggregate_refs:
         raise ScoreValidationError("VFS total or evidence paths are inconsistent")
     events = _persisted_events(directory, run_id, deadline_check)
     if events != physical_evidence.score_events or not events or events[-1].event_type != "score.finalized" or events[-1].value != achieved:
@@ -477,7 +478,7 @@ def validate_vfs_score_outputs(
     bag = validate_tree(directory, "rosbag", deadline_check=deadline_check)
     if bag.status is not ValidationStatus.VALID or bag.sha256 != physical_evidence.bag_sha256:
         raise ScoreValidationError("VFS physical evidence bag digest changed")
-    return ValidatedScoreMetadata(achieved, maximum, checksum, tuple(refs))
+    return ValidatedScoreMetadata(achieved, maximum, checksum, tuple(aggregate_refs))
 
 
 __all__ = ["validate_vfs_score_outputs"]

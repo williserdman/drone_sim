@@ -99,6 +99,8 @@ the [`manifest.json` schema](schemas/manifest.schema.json).
   maximum time bonus. Replay independently checks settled physical target contact,
   observed armed-mode autonomy, and active time reconstructed from takeoff and
   home/disarm transitions rather than trusting judge summary fields.
+  Replay requires ordered-unique aggregate evidence paths while preserving each
+  component's evidence reference, including references shared by multiple rules.
   An FM-2 pause requires airborne evidence from that phase, so the replay does
   not reinterpret inherited FM-1 home contact as an inspection pause.
 - The shared protocol helper operates within the cooperative trust boundary

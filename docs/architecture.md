@@ -134,6 +134,8 @@ before publishing vehicle truth. The judge checks actual support footprints for
 circle eligibility and landed delivery. The independent artifact evaluator
 reconstructs the outcome and score from recorded evidence; command intent,
 eligibility, points, and full-mission acceptance are separate facts.
+Scoring aggregates evidence paths once in first-use order; per-rule results may
+share the same evidence reference.
 
 After passive readiness, matching RUNNING, and accepted public clock, the
 companion publishes typed `MissionExecutionReadyStatus`. Gazebo selects this

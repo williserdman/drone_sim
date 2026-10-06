@@ -193,6 +193,134 @@ def test_vfs_rules_checksum_is_verified_before_score_is_trusted(tmp_path):
         )
 
 
+def test_vfs_aggregate_provenance_is_unique_when_components_share_evidence(
+    tmp_path, monkeypatch
+):
+    from artifacts._adapters.rosbag import PhysicalBagEvidence, ScoreEventEvidence
+    from artifacts.score_validation import ScoreValidationError
+    from artifacts.validation import validate_tree
+    import artifacts.vfs_score_validation as validation
+
+    scoring = tmp_path / "scoring"
+    scoring.mkdir()
+    rosbag = tmp_path / "rosbag"
+    rosbag.mkdir()
+    (rosbag / "data.mcap").write_bytes(b"mcap")
+    rules = ROOT / "scorekeeper/rules/competition_2027_v1.json"
+    rule_ids = ("A", "BP", "CP", "R", "BA", "CA", "T", "deductions")
+    available = (65.0, 90.0, 90.0, 1.5, 15.0, 15.0, 15.0, 0.0)
+    refs = (
+        "mission-events#2",
+        "mission-events#4",
+        "mission-events#6",
+        "rules#R",
+        "mission-events#4",
+        "mission-events#6",
+        "rules#T",
+        "rules#deductions",
+    )
+    unique_refs = (
+        "mission-events#2",
+        "mission-events#4",
+        "mission-events#6",
+        "rules#R",
+        "rules#T",
+        "rules#deductions",
+    )
+    events = tuple(
+        ScoreEventEvidence(
+            780_000_000_000,
+            index,
+            f"competition_2027.{rule_id}",
+            value,
+            ref,
+        )
+        for index, (rule_id, value, ref) in enumerate(
+            zip(rule_ids, available, refs, strict=True)
+        )
+    ) + (
+        ScoreEventEvidence(
+            780_000_000_000,
+            8,
+            "competition_2027.unloaded_weight_lb",
+            9.0,
+            "configuration/scenario.yaml#aircraft_empty_mass_kg",
+        ),
+        ScoreEventEvidence(
+            780_000_000_000,
+            9,
+            "score.finalized",
+            380.0,
+            "scoring/result.json",
+        ),
+    )
+    (scoring / "events.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "run_id": RUN_ID,
+                    "sim_timestamp_ns": event.sim_timestamp_ns,
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "value": event.value,
+                    "evidence_ref": event.evidence_ref,
+                }
+            )
+            + "\n"
+            for event in events
+        ),
+        encoding="utf-8",
+    )
+    document = {
+        "run_id": RUN_ID,
+        "ruleset_id": "competition_2027_v1",
+        "complete": True,
+        "achieved_score": 380.0,
+        "maximum_available_score": 380.0,
+        "scoring_checksum": hashlib.sha256(rules.read_bytes()).hexdigest(),
+        "evidence_paths": list(unique_refs),
+        "rule_results": [
+            {
+                "rule_id": rule_id,
+                "passed": True,
+                "awarded_points": value,
+                "available_points": value,
+                "evidence_ref": ref,
+            }
+            for rule_id, value, ref in zip(rule_ids, available, refs, strict=True)
+        ],
+        "diagnostic": None,
+    }
+    result_path = scoring / "result.json"
+    result_path.write_text(json.dumps(document), encoding="utf-8")
+    bag_sha256 = validate_tree(tmp_path, "rosbag").sha256
+    assert bag_sha256 is not None
+    physical = PhysicalBagEvidence(bag_sha256, "b" * 64, (), (), events)
+    monkeypatch.setattr(
+        validation,
+        "_independent_values",
+        lambda _directory, _evidence, _rules: available,
+    )
+
+    metadata = validation.validate_vfs_score_outputs(
+        tmp_path,
+        run_id=RUN_ID,
+        rules_path=rules,
+        physical_evidence=physical,
+    )
+
+    assert metadata.evidence_paths == unique_refs
+    document["evidence_paths"] = list(refs)
+    result_path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ScoreValidationError, match="evidence paths"):
+        validation.validate_vfs_score_outputs(
+            tmp_path,
+            run_id=RUN_ID,
+            rules_path=rules,
+            physical_evidence=physical,
+        )
+
+
 def test_independent_replay_uses_configured_a_b_c_targets(tmp_path):
     import yaml
     from artifacts._adapters.rosbag import (

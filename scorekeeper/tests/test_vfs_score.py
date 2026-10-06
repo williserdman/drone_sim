@@ -320,7 +320,10 @@ def test_fm1_home_approval_requires_d_checkpoint_and_return_takeoff():
     assert approved.outcome is JudgeOutcome.APPROVED
 
 
-def test_full_autonomous_all_c_score_is_365_plus_time_bonus():
+def test_full_autonomous_all_c_score_has_manifest_compatible_provenance(tmp_path):
+    from drone_sim_scorekeeper.output import persist_score_outputs
+    from orchestration.controller import RunController
+
     rules = load_vfs_rules("scorekeeper/rules/competition_2027_v1.json")
     scorer = VfsScorer(RUN_ID, rules, COURSE, Scenario(), unloaded_weight_lb=9.0)
     scorer.record_fm1(autonomous=True, complete=True, evidence_ref="judge#fm1")
@@ -337,6 +340,25 @@ def test_full_autonomous_all_c_score_is_365_plus_time_bonus():
         "A": 65.0, "BP": 90.0, "CP": 90.0, "R": 1.5,
         "BA": 15.0, "CA": 15.0, "T": 15.0, "deductions": 0.0,
     }
+    refs = {row.rule_id: row.evidence_ref for row in result.rule_results}
+    assert refs["BP"] == refs["BA"] == "judge#fm2"
+    assert refs["CP"] == refs["CA"] == "judge#fm3"
+    assert result.evidence_paths == (
+        "judge#fm1",
+        "judge#fm2",
+        "judge#fm3",
+        "rules#R",
+        "rules#T",
+        "rules#deductions",
+    )
+
+    persist_score_outputs(tmp_path, result)
+    assert RunController()._score_metadata(tmp_path) == (
+        380.0,
+        380.0,
+        result.scoring_checksum,
+        result.evidence_paths,
+    )
 
 
 def test_adjustments_and_deductions_clamp_flight_total_to_zero():
