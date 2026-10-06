@@ -11,7 +11,11 @@ physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
 Fresh VFS image, physical mission, score, and full-window artifact verification
-are pending. Full host gate on `06ff611`: 2,093 passed, 27 skipped in 57.79 s. Bundled mission
+are pending. The first image build exposed an unavailable Ubuntu Python venv
+pin; the affected Docker/lock entries now use the available `.17` revision.
+The exact artifact apt set simulated successfully; Gazebo provenance checks
+passed seven tests. This is build dependency evidence, not a flight pass.
+Full host gate on `06ff611`: 2,093 passed, 27 skipped in 57.79 s. Bundled mission
 gate: 1,126 passed in 24.46 s. All eight templates resolve and schema-check;
 mixed A/B/C targets survive source snapshots and change resolved aimpoints.
 Phase 3 Compose config, lock check, compile, and local documentation link checks
