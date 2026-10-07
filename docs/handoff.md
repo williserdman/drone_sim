@@ -5,8 +5,30 @@
 
 Audited 2026-10-07. Branch `design/moving-pad-landing` adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
-SITL overlay, physical scoring, and independent artifact checks. The core-runner
-PR and imported `companion/comp2026` source remain unchanged.
+SITL overlay, physical scoring, and independent artifact checks. Imported
+`companion/comp2026` history and provenance remain preserved.
+
+Slower native-LAND diagnostic, verified 2026-10-07: run
+`f6b40251-efe5-46c0-9982-5d52fcd3aa52` used the clean `9416c22` source and a
+separately labelled ArduPilot image with only `LAND_SPD_MS` changed from 0.50 to
+0.30. The 5 m takeoff, two-second hold and native LAND completed with observed
+disarm and `LANDED` at public 29.10 seconds. DataFlash confirms 0.30; measured
+precontact descent was 0.299800 m/s. All 11 samples in the unchanged calibration
+first-contact window passed, with maximum speed 0.001000 m/s and continuous
+contact. Touchdown was 0.00397 m from the origin; raw descent score was 100/100.
+Fresh inventory hashes/sizes and MCAP validation passed. Evidence is under
+`runs/diagnostics/20261007-slower-native-land/`. This short base-gain experiment
+is not an accepted calibration or an all-suite result. The earlier failed
+AutoTune flight used different gains; slower LAND still requires full AutoTune,
+native gain saving and reload validation. Checked-in landing profiles and
+scoring remain unchanged.
+
+Comp2026 integration repair, 2026-10-07: the automatic sequencer now requires a
+validated precision policy before starting any phase and passes the same policy
+to both FM3 calls. Its README documents the interface; focused automatic-mission,
+import-smoke and host checks passed 108 tests. The parent simulation
+host still needs the simulation-specific policy, observation/authority wiring,
+supervisor and pinned home; this repair alone does not enable competition flight.
 
 Calibration return update 2026-10-07: the companion now captures the disarmed
 launch position, returns there in GUIDED at 5 m after tuning/gain activation,
