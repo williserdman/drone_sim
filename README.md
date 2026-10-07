@@ -15,10 +15,12 @@ validated run bundle establish what actually happened.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
-**Current status:** VFS 2027 all-C flight completed three drops, three grounded
-L deliveries, and return home in 566.25 active seconds, scoring 366/380.
-Its full 780-second bundle failed on duplicate score evidence references;
-a fresh accepted run remains required. See the
+**Current status:** VFS 2027 all-C run
+`42588d99-a262-4b5b-bfa0-e45bf6cd1827` completed three C drops, three grounded
+L deliveries, and Home landing/disarm in 574.90 active seconds. It scored
+365/380; the full 780-second bundle finished `COMPLETED` and passed independent
+physical, scoring, artifact, and provenance acceptance. Runtime revision:
+`a6b9c8d47ebf7ebb16a15364a73d24520ef9ef40`. See the
 [evidence and limits](docs/handoff.md#verified-behavior-and-limits).
 
 ## First local check

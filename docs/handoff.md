@@ -10,7 +10,37 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-Latest VFS attempt `08ee1b09-78ae-4950-8919-adea7a2a0c33` at runtime
+Latest accepted VFS run `42588d99-a262-4b5b-bfa0-e45bf6cd1827` used runtime
+revision `a6b9c8d47ebf7ebb16a15364a73d24520ef9ef40` with both source revisions
+clean and all seven image IDs independently checked against external build pins.
+It completed three C drops, three camera-guided retrievals and grounded L
+releases, and Home contact with disarm. FM2 froze eligible IDs `[2, 3, 4]`;
+FM3 was approved at 583.70 public seconds and 574.90 active seconds. The canonical
+score and independent replay both gave 365/380, with zero time bonus or deductions.
+It terminated `COMPLETED` at `2026-10-07T05:29:01.304420Z`; manifest SHA-256
+`57b730d1ee2c05a5c3144210fee0191063e7fe3b26a6f3633473cd650bd8fe23`.
+All 25 artifact entries were valid, with no incomplete paths. Both videos contain
+15,600 frames at 20 Hz over 780 seconds; the MCAP bag passed full-window grids,
+physical placement, phase correlation, and judge-clock checks. Native read-only
+independent acceptance returned `accepted: true`; all run containers were removed.
+The [acceptance report](../runs/verification/42588d99-a262-4b5b-bfa0-e45bf6cd1827/acceptance.json),
+[inspection log](../runs/verification/42588d99-a262-4b5b-bfa0-e45bf6cd1827/acceptance.log),
+and [external image pins](../runs/verification/42588d99-a262-4b5b-bfa0-e45bf6cd1827/image_ids.json)
+are stored outside the immutable bundle. Report SHA-256:
+`362bac1a5e0f410c8ae6b01e615a0da975a00f3bf400b98aafde35dff76357fb`.
+This runtime evidence remains tied to `a6b9c8d`; a later documentation-only HEAD
+requires matching rebuilt image provenance before another launch.
+
+The preceding launch `44f7cc92-511d-4899-b182-35a6fb5185e5` never started the
+simulation: Docker exhausted its predefined network address pools. It finalized
+`FAILED` at `2026-10-07T03:20:30.526902Z`, with null score; manifest SHA-256
+`8580752f392ea2066ff40b5d672248c3fb63aa15e0924506e32aa17d5e26c919`.
+The failed run 17 network had zero containers. Its inspection was saved to
+`/tmp/vfs_run17_unused_network_inspect.json` before that exact owned network was
+removed to free one subnet. The [runbook](runbook.md#remove-one-unused-run-network-after-startup-failure)
+records the guarded procedure. Automated terminal-network cleanup is deferred.
+
+Previous VFS attempt `08ee1b09-78ae-4950-8919-adea7a2a0c33` at runtime
 revision `a916537` completed three C drops and FM2, then failed the first FM3
 retrieval at 340.00 public seconds with
 `configured vision failed: Frame exposure is older than the acquisition limit`.
@@ -28,8 +58,12 @@ fresh input. Expired vectors are never forwarded; plain errors with the same
 text and future timestamps remain fatal. The 500 ms freshness, 200 ms pose
 association, target-health, and operation deadlines are unchanged. All 95
 focused companion/camera checks and changed-production type checks passed.
-Native new-image verification and a fresh accepted full-window flight remain
-required.
+The installed old image failed both expiry-recovery cases; the new image passed
+post-processing expiry and acquisition-worker expiry recovery, while a plain
+`RuntimeError` with the same text and future exposure remained fatal. Its manager
+and configured-worker hashes matched the committed source. All three installed
+range-health regressions also passed. Run 19 supplies current end-to-end evidence;
+the broader suite and one review remain the dated historical checks below.
 
 Previous VFS attempt `2c73c705-dea5-4388-8c8e-4a1e1a409416` at runtime
 revision `defef6f` completed two C drops, then failed the third FM2 pickup at
@@ -74,7 +108,7 @@ level. The persistent-goal fix passed 54 focused checks and native old-image RED
 new-image GREEN probes. Flight 16 confirmed that fix, then exposed the ascent
 budget defect above. These preserved failed runs do not establish acceptance.
 
-The latest completed physical VFS flight is run `a75d91ae-d05b-4f55-a11c-7706e2425bed`
+An earlier completed physical VFS flight is run `a75d91ae-d05b-4f55-a11c-7706e2425bed`
 at frozen runtime revision `caae0b8e14604af9a5fdecf85922ac3c2d276cc3`.
 All three payloads were dropped at C, retrieved, and released grounded in L;
 the aircraft returned to H and disarmed. FM3 was approved at 575.00 public
@@ -90,7 +124,8 @@ The scorer now aggregates each reference once in first-use order, while keeping
 shared per-rule references intact. Independent validation requires the same
 aggregate, and the host's uniqueness checks remain unchanged. Both regressions
 failed before the fix; the 32 affected scorer/validator checks and production
-type checks passed afterward. A fresh accepted full-window run remains required.
+type checks passed afterward. Run 19 verified the corrected aggregate during
+normal finalization and independent acceptance.
 
 The following VFS runs and fixes are preserved historical evidence.
 
@@ -307,6 +342,8 @@ score alone is not a pass.
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
 | --- | --- | --- | --- | --- |
+| Accepted VFS 2027 all-C run `42588d99-a262-4b5b-bfa0-e45bf6cd1827` | Three C drops; three grounded L deliveries; H contact/disarm; FM3 approved at 574.90 active seconds | 365/380; independently replayed | `COMPLETED`; accepted full 780-second bundle; both videos 15,600 frames | Runtime `a6b9c8d`; source and all seven image pins verified; machine-local proof linked above |
+| VFS startup failure, run `44f7cc92-511d-4899-b182-35a6fb5185e5` | No simulation or flight started | Null | `FAILED`; manifest preserved | Runtime `a6b9c8d`; Docker address pools exhausted before startup |
 | VFS frame-expiry failure, run `08ee1b09-78ae-4950-8919-adea7a2a0c33` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone | `FAILED`; all 15 artifact paths invalid; manifest score null | Runtime `a916537`; delayed-pose association worked; processing expiry terminated vision |
 | VFS third-pickup failure, run `2c73c705-dea5-4388-8c8e-4a1e1a409416` | Two C drops; third FM2 pickup failed before attachment | 65/380 standalone | `FAILED`; all 15 artifact paths invalid; manifest score null; no accepted full-window bundle | Runtime `defef6f`; fixed search goal persisted, but retry window included ascent |
 | VFS retry failure, run `666ac910-6e57-471a-bdc4-f5874ff06f9f` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone; manifest score null | `FAILED` with `precision target reacquisition failed`; all 15 artifact paths invalid at finalization; manifest SHA-256 `86589632ec115533c7aa9e9985536dbda554e20aa4057a6b3abb35a1f9be96e0` | Runtime `5761946`; standalone score is not accepted evidence |
@@ -391,9 +428,9 @@ change those outcomes.
 
 ## Active priorities
 
-1. Rebuild matching images and obtain a fresh pinned, accepted full-window VFS
-   run. Preserve the strict unique-reference, physical, timestamp, and
-   independent-score checks.
+The VFS flight MVP now has accepted full-window evidence. Ground mission,
+liquid/breakage modeling, physical removal of failed drops, automatic terminal
+network cleanup, and the broader Gazebo dependency-lock refresh remain deferred.
 
 Lower-priority work remains deferred: improve zero-budget Compose timeout
 diagnostics; freeze final flight-exchange counters; investigate rare process and

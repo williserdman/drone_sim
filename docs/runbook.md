@@ -176,6 +176,58 @@ status until terminal. Avoid killing containers or deleting the run directory;
 recorders need finalization to publish their files. `start` exits 0 for
 `COMPLETED`, 1 for `FAILED`, 130 for `ABORTED`; CLI/config errors use exit 2.
 
+### Remove one unused run network after startup failure
+
+If Compose reports `all predefined address pools have been fully subnetted`,
+first let `drone-sim start` finish with terminal `FAILED`. Inspect one network
+owned by a failed run and remove it only when it has no containers:
+
+```bash
+RUN_ID=replace-with-failed-run-uuid
+COMPOSE_PROJECT="drone-sim-${RUN_ID//-/}"
+NETWORK="${COMPOSE_PROJECT}_default"
+INSPECT_BACKUP="/tmp/${RUN_ID}-network-inspect.json"
+MANIFEST="runs/${RUN_ID}/manifest.json"
+
+if ! docker network inspect "$NETWORK" > "$INSPECT_BACKUP"; then
+  echo "network inspection failed; nothing removed" >&2
+  exit 1
+fi
+
+if python3 - "$MANIFEST" "$INSPECT_BACKUP" "$COMPOSE_PROJECT" "$NETWORK" <<'PY'
+import json
+import sys
+
+manifest_path, inspect_path, expected_project, expected_network = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as stream:
+    manifest = json.load(stream)
+with open(inspect_path, encoding="utf-8") as stream:
+    inspected = json.load(stream)
+
+valid = (
+    manifest.get("terminal_status") == "FAILED"
+    and len(inspected) == 1
+    and inspected[0].get("Name") == expected_network
+    and inspected[0].get("Labels", {}).get("com.docker.compose.project")
+    == expected_project
+    and inspected[0].get("Containers") == {}
+)
+if not valid:
+    raise SystemExit("refusing removal: failed-run ownership or emptiness check failed")
+PY
+then
+  docker network rm "$NETWORK"
+else
+  echo "network checks failed; inspection retained at $INSPECT_BACKUP" >&2
+  exit 1
+fi
+```
+
+Keep the inspection JSON with the failure diagnostics. Do not use
+`docker network prune`, `docker system prune`, or change Docker address-pool
+configuration for this recovery. Automatic cleanup of terminal run networks is
+deferred.
+
 ### Why it can take so long
 
 The default has a 90-second **native simulation** warmup followed by a
@@ -259,6 +311,9 @@ there may not be a manifest yet; use status and available logs. Normal videos
 may not have final names until recorders close. The `review_video/` files linked
 from the payload issue note were an independent recording for that particular
 run, **not** an artifact guaranteed by ordinary launches.
+
+The [accepted VFS 2027 run](handoff.md#verified-behavior-and-limits) separately
+verified all three physical deliveries, 365/380, and the full 780-second bundle.
 
 Three distinct questions must be answered: did the vehicle physically perform
 the mission, what points were awarded, and did the full evidence bundle validate?
