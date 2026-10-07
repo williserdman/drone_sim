@@ -94,6 +94,10 @@ The plan is frozen under the run configuration checksum. Each operation waits
 for observed success before the next starts; failure ends the sequence. Final
 success requires landing and disarm. Any local LAND recovery remains separate
 from mission success; scoring and artifact validity remain independent.
+An optional first `configure_flight` step applies only the five documented flight
+settings while landed and disarmed, then verifies the reported ArduPilot values.
+The companion [tool contract](../companion/README.md#configured-diagnostic-missions)
+is authoritative; the SITL image overlay supplies defaults.
 
 The configured [VFS 2027 template](../config/configured-vfs-2027-run.json) extends
 that runner with camera acquisition, guarded precision landing, physically

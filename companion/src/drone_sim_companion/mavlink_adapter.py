@@ -9,6 +9,16 @@ from .mission import Ack, CommandKind, Telemetry
 from .precision_landing import BodyFrd, PRECISION_PARAMETERS
 
 
+FLIGHT_PARAMETERS = frozenset({
+    "WP_SPD",
+    "WP_ACC",
+    "WP_JERK",
+    "LAND_SPD_HIGH_MS",
+    "LAND_ALT_LOW_M",
+})
+OBSERVED_PARAMETERS = frozenset(PRECISION_PARAMETERS) | FLIGHT_PARAMETERS
+
+
 class MavlinkAdapter:
     def __init__(self, connection: Any, mavutil_module: Any) -> None:
         self._connection = connection
@@ -138,6 +148,39 @@ class MavlinkAdapter:
             raise RuntimeError("MAVLink parameter requests are unavailable")
         for name in PRECISION_PARAMETERS:
             request(
+                self._connection.target_system,
+                self._connection.target_component,
+                name.encode("ascii"),
+                -1,
+            )
+
+    def configure_flight(self, parameters: dict[str, float]) -> None:
+        for name, value in parameters.items():
+            if name not in FLIGHT_PARAMETERS:
+                raise ValueError(f"unknown flight parameter: {name!r}")
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise ValueError(f"flight parameter {name} must be a finite number")
+
+        set_parameter = getattr(self._connection.mav, "param_set_send", None)
+        request_parameter = getattr(
+            self._connection.mav, "param_request_read_send", None
+        )
+        if set_parameter is None or request_parameter is None:
+            raise RuntimeError("MAVLink parameter configuration is unavailable")
+
+        for name in parameters:
+            self._parameters.pop(name, None)
+        for name, value in parameters.items():
+            set_parameter(
+                self._connection.target_system,
+                self._connection.target_component,
+                name.encode("ascii"),
+                float(value),
+                self._mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+            )
+        for name in parameters:
+            request_parameter(
                 self._connection.target_system,
                 self._connection.target_component,
                 name.encode("ascii"),
@@ -275,7 +318,7 @@ class MavlinkAdapter:
                 name = raw_name.decode("ascii", errors="strict").rstrip("\x00")
             else:
                 name = str(raw_name).rstrip("\x00")
-            if name in PRECISION_PARAMETERS:
+            if name in OBSERVED_PARAMETERS:
                 self._parameters[name] = float(message.param_value)
             return Telemetry(timestamp_ns, precision_parameters=dict(self._parameters))
         if kind == "EXTENDED_SYS_STATE":

@@ -19,7 +19,21 @@ _POSITIVE = _number(exclusive=True)
 _GUIDED = {"type": "string", "enum": ["GUIDED"]}
 _PAYLOAD_ID = {"type": "integer", "enum": [2, 3, 4]}
 _PHASE = {"type": "string", "enum": ["FM1", "FM2", "FM3"]}
+FLIGHT_TUNING_PARAMETERS = {
+    "transit_speed_m_s": "WP_SPD",
+    "horizontal_acceleration_m_s2": "WP_ACC",
+    "horizontal_jerk_m_s3": "WP_JERK",
+    "landing_high_speed_m_s": "LAND_SPD_HIGH_MS",
+    "landing_transition_altitude_m": "LAND_ALT_LOW_M",
+}
 _ARGUMENTS = {
+    "configure_flight": ({
+        "transit_speed_m_s": _number(minimum=0.1, maximum=15),
+        "horizontal_acceleration_m_s2": _number(minimum=0.1, maximum=5),
+        "horizontal_jerk_m_s3": _number(minimum=0.1, maximum=10),
+        "landing_high_speed_m_s": _number(minimum=0, maximum=3),
+        "landing_transition_altitude_m": _number(minimum=1, maximum=10),
+    }, list(FLIGHT_TUNING_PARAMETERS)),
     "set_mode": ({"mode": _GUIDED}, ["mode"]),
     "arm": ({}, []),
     "wait_for_state": ({

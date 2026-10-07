@@ -8,7 +8,7 @@ import math
 from typing import Any, Protocol
 
 from .mission import CommandKind, Telemetry
-from .mission_plan import positive_seconds, validate_arguments
+from .mission_plan import FLIGHT_TUNING_PARAMETERS, positive_seconds, validate_arguments
 from .precision_landing import (
     ANCHOR_DRIFT_M,
     BodyFrd,
@@ -27,6 +27,7 @@ from .precision_landing import (
 
 
 class Vehicle(Protocol):
+    def configure_flight(self, parameters: dict[str, float]) -> None: ...
     def send(self, command: CommandKind, altitude_m: float | None) -> None: ...
     def send_waypoint(self, latitude_deg: float, longitude_deg: float, altitude_m: float) -> None: ...
     def send_mode(self, mode: str) -> None: ...
@@ -185,6 +186,19 @@ class DroneOperations:
             return
         if not self._fresh("heartbeat"):
             raise RuntimeError("fresh vehicle heartbeat required")
+        if tool == "configure_flight":
+            if (not self._fresh("armed", "landed")
+                    or self._values.get("armed") is not False
+                    or self._values.get("landed") is not True):
+                raise RuntimeError("configure_flight requires fresh landed/disarmed state")
+            parameters = {name: float(args[field]) for field, name in FLIGHT_TUNING_PARAMETERS.items()}
+            self._active.context["parameters"] = parameters
+            cached = self._values.get("precision_parameters", {})
+            self._values["precision_parameters"] = {
+                name: value for name, value in cached.items() if name not in parameters
+            }
+            self._vehicle.configure_flight(parameters)
+            return
         if tool in {"takeoff", "goto_waypoint", "goto_course_waypoint", "find_marker", "precision_land", "hold"}:
             if self._values.get("armed") is not True or self._values.get("mode") != "GUIDED":
                 raise RuntimeError(f"{tool} requires observed armed GUIDED state")
@@ -312,7 +326,25 @@ class DroneOperations:
         if active.expected_ack is not None and not active.acknowledged:
             return
         complete = False
-        if tool == "wait_for_state":
+        if tool == "configure_flight":
+            if (not self._fresh("armed", "landed")
+                    or values.get("armed") is not False
+                    or values.get("landed") is not True):
+                self._finish("failed", "landed/disarmed state lost during configure_flight")
+                return
+            expected = active.context["parameters"]
+            observed = values.get("precision_parameters", {})
+            complete = self._after_start("precision_parameters") and all(
+                isinstance(observed.get(name), (int, float))
+                and not isinstance(observed[name], bool)
+                and math.isclose(observed[name], value, rel_tol=0.0, abs_tol=1e-3)
+                for name, value in expected.items()
+            )
+            if complete:
+                self._emit("flight_configuration_confirmed", self._clock_ns, {
+                    "parameters": {name: observed[name] for name in expected},
+                })
+        elif tool == "wait_for_state":
             complete = self._fresh("heartbeat", *args) and all(values.get(key) == value for key, value in args.items())
         elif tool == "set_mode":
             complete = self._after_start("mode") and values.get("mode") == args["mode"]

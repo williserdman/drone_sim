@@ -36,6 +36,7 @@ numbers fail before ROS or MAVLink resources open.
 
 | Tool | Arguments and observed completion |
 | --- | --- |
+| `configure_flight` | `transit_speed_m_s`, `horizontal_acceleration_m_s2`, `horizontal_jerk_m_s3`, `landing_high_speed_m_s`, and `landing_transition_altitude_m`; requires fresh landed/disarmed state. Place before arming. It clears cached values, waits for every requested parameter's readback to match within `1e-3`, logs confirmed values, and fails on its simulation-time deadline. |
 | `wait_for_state` | Any of `armed`, `mode`, `landed`; waits for fresh matching telemetry. |
 | `set_mode` | `mode: GUIDED`; requires acceptance and observed mode. |
 | `arm` | Empty arguments; requires fresh GUIDED/prearm readiness and observed arming. |
@@ -64,6 +65,9 @@ a rejected decision still ends the operation.
 at a time, advancing on telemetry and simulation-clock ticks so observation and
 abort remain responsive. Deadlines use simulation time; the run wall deadline
 bounds stalled infrastructure. An ACK alone does not establish flight completion.
+`configure_flight` is the only runtime parameter override. The checksum-bound
+mission plan maps its five SI values to fixed ArduPilot parameters; it does not
+expose an arbitrary parameter API. Image-overlay defaults remain the fallback.
 
 [configured_runtime.py](src/drone_sim_companion/configured_runtime.py) publishes
 execution readiness after passive readiness, matching RUNNING, and public clock.

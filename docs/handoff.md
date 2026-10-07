@@ -3,7 +3,17 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-07. VFS 2027 implementation adds configurable A/B/C targets
+Audited 2026-10-08. Configured VFS templates now request 12 m/s transit,
+3 m/s² horizontal acceleration, 2 m/s³ jerk, and 1.5 m/s LAND descent above
+2 m, retaining 0.5 m/s touchdown speed. The new `configure_flight` operation
+requires landed/disarmed state and matching live parameter readback before
+continuing. All 138 focused companion operation, adapter, plan, and runtime
+checks passed. Physical speed improvement is pending the
+[one-payload diagnostic](../config/configured-vfs-2027-speed-probe.json);
+this change has no new full-mission acceptance result yet. Full timing tuning,
+simulation-rate changes, and automatic early diagnostic completion are deferred.
+
+VFS 2027 implementation adds configurable A/B/C targets
 (default C), version-2 eligibility groups, camera/payload tools, and automatic
 phase judging to the existing configured runner. Its world starts unloaded
 with three rigid marked payloads in S. The ground mission, liquid/breakage, and

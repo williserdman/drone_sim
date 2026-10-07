@@ -106,6 +106,19 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
    mission classes. To add a fixed sequence, copy the configured template and
    edit `mission_plan.steps` using the [tool contract](../companion/README.md#configured-diagnostic-missions).
 
+   The marker-2 speed probe uses 12 m/s transit, 3 m/s² horizontal acceleration,
+   2 m/s³ horizontal jerk, 1.5 m/s high landing speed, and a 2 m transition:
+
+   ```bash
+   uv run --locked drone-sim start --config config/configured-vfs-2027-speed-probe.json
+   ```
+
+   After `runs/RUN_ID/.status/mission-finished.json` appears, preserve the short
+   diagnostic recording with `uv run --locked drone-sim abort RUN_ID`. Keep the
+   foreground `start` process alive through finalization. The resulting bundle is
+   intentionally `ABORTED`; it does not replace the full 780-second acceptance
+   run, though finalization preserves its bag, videos, and logs.
+
 3. Copy the UUID from the `run_starting` JSON line and follow [monitoring](#run-and-monitor).
    The final `run_result` reports the terminal state. Results and recordings live
    under `runs/RUN_ID/`; see [evidence paths](#find-evidence-and-debug-a-run).

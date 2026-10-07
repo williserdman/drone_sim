@@ -25,6 +25,8 @@ class FakeMav:
     stream_calls: list[tuple[object, ...]] = field(default_factory=list)
     global_position_target_calls: list[tuple[object, ...]] = field(default_factory=list)
     landing_target_calls: list[tuple[object, ...]] = field(default_factory=list)
+    parameter_set_calls: list[tuple[object, ...]] = field(default_factory=list)
+    parameter_read_calls: list[tuple[object, ...]] = field(default_factory=list)
 
     def command_long_send(self, *arguments: object) -> None:
         self.calls.append(arguments)
@@ -37,6 +39,12 @@ class FakeMav:
 
     def landing_target_send(self, *arguments: object) -> None:
         self.landing_target_calls.append(arguments)
+
+    def param_set_send(self, *arguments: object) -> None:
+        self.parameter_set_calls.append(arguments)
+
+    def param_request_read_send(self, *arguments: object) -> None:
+        self.parameter_read_calls.append(arguments)
 
 
 class FakeConnection:
@@ -67,6 +75,7 @@ def mavutil() -> SimpleNamespace:
         MAV_SYS_STATUS_PREARM_CHECK=0x10000000,
         MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
         MAV_FRAME_BODY_FRD=12,
+        MAV_PARAM_TYPE_REAL32=9,
         POSITION_TARGET_TYPEMASK_VX_IGNORE=8,
         POSITION_TARGET_TYPEMASK_VY_IGNORE=16,
         POSITION_TARGET_TYPEMASK_VZ_IGNORE=32,
@@ -150,6 +159,77 @@ def test_waypoint_rejects_invalid_coordinates_before_output(
         adapter.send_waypoint(latitude_deg, longitude_deg, altitude_m)
 
     assert connection.mav.global_position_target_calls == []
+
+
+def test_configure_flight_sets_and_requests_allowlisted_parameters() -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    adapter.configure_flight({"WP_SPD": 12.0, "LAND_ALT_LOW_M": 2.5})
+
+    assert connection.mav.parameter_set_calls == [
+        (1, 1, b"WP_SPD", 12.0, 9),
+        (1, 1, b"LAND_ALT_LOW_M", 2.5, 9),
+    ]
+    assert connection.mav.parameter_read_calls == [
+        (1, 1, b"WP_SPD", -1),
+        (1, 1, b"LAND_ALT_LOW_M", -1),
+    ]
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"UNKNOWN": 1.0},
+        {"WP_SPD": float("nan")},
+        {"WP_ACC": float("inf")},
+        {"WP_JERK": True},
+        {"LAND_SPD_HIGH_MS": "1.0"},
+    ],
+)
+def test_configure_flight_rejects_invalid_parameters_before_output(
+    parameters: dict[str, object],
+) -> None:
+    connection = FakeConnection()
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    with pytest.raises(ValueError, match="flight parameter"):
+        adapter.configure_flight(parameters)  # type: ignore[arg-type]
+
+    assert connection.mav.parameter_set_calls == []
+    assert connection.mav.parameter_read_calls == []
+
+
+def test_configure_flight_clears_selected_cached_values_before_readback() -> None:
+    connection = FakeConnection([
+        Message("PARAM_VALUE", param_id=b"WP_SPD", param_value=10.0),
+        Message("PARAM_VALUE", param_id=b"LAND_SPD_MS", param_value=0.5),
+        Message("PARAM_VALUE", param_id=b"LAND_SPD_MS", param_value=0.5),
+    ])
+    adapter = MavlinkAdapter(connection, mavutil())
+    adapter.poll(1)
+    adapter.poll(2)
+
+    adapter.configure_flight({"WP_SPD": 12.0})
+    telemetry = adapter.poll(3)
+
+    assert telemetry is not None
+    assert telemetry.precision_parameters == {"LAND_SPD_MS": 0.5}
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["WP_SPD", "WP_ACC", "WP_JERK", "LAND_SPD_HIGH_MS", "LAND_ALT_LOW_M"],
+)
+def test_poll_collects_configurable_flight_parameters(name: str) -> None:
+    connection = FakeConnection([
+        Message("PARAM_VALUE", param_id=name.encode("ascii"), param_value=3.25)
+    ])
+
+    telemetry = MavlinkAdapter(connection, mavutil()).poll(10)
+
+    assert telemetry is not None
+    assert telemetry.precision_parameters == {name: 3.25}
 
 
 def test_telemetry_request_keeps_generic_stream_and_requests_landed_state() -> None:
