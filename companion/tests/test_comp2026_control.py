@@ -134,6 +134,63 @@ def test_composes_real_guards_and_staged_telemetry_from_same_policy(tmp_path):
     assert control.telemetry_collector.verified is True
 
 
+def test_first_mavlink2_packet_preserves_guarded_dronekit_queue(monkeypatch, tmp_path):
+    from drone.control import drone_control
+    from dronekit import Vehicle
+    from dronekit.mavlink import MAVConnection
+    from pymavlink import mavutil
+    from pymavlink.dialects.v20 import ardupilotmega as mavlink2
+
+    # Reproduce a fresh process whose default encoder is MAVLink 1.
+    monkeypatch.delenv("MAVLINK20", raising=False)
+    monkeypatch.setattr(mavutil, "mavlink", mavutil.mavlink)
+    monkeypatch.setattr(mavutil, "current_dialect", mavutil.current_dialect)
+    mavutil.set_dialect("ardupilotmega")
+    assert mavutil.mavlink.WIRE_PROTOCOL_VERSION == "1.0"
+    connections = []
+
+    def connect_without_flight(_endpoint, **options):
+        connection = MAVConnection(
+            "udpin:127.0.0.1:0",
+            source_system=options["source_system"],
+            source_component=options["source_component"],
+        )
+        connections.append(connection)
+        connection.target_system = 1
+        encoder = mavlink2.MAVLink(None, srcSystem=1, srcComponent=1)
+        heartbeat = encoder.heartbeat_encode(2, 3, 0, 0, 3)
+        connection.master.auto_mavlink_version(heartbeat.pack(encoder))
+        return Vehicle(connection)
+
+    monkeypatch.setattr(drone_control, "connect", connect_without_flight)
+    try:
+        control = SimulationCompetitionControl(
+            policy(), run_id="wire-test", run_directory=tmp_path,
+            endpoint="unused", heartbeat_timeout=3.0,
+            guided_output_delivery_callback=lambda: None,
+            telemetry_factory=FakeCollector,
+        )
+        checks = []
+
+        def check_enqueue(enqueue):
+            checks.append(True)
+            return enqueue()
+
+        vehicle = control.controller.vehicle
+        message = vehicle.message_factory.heartbeat_encode(6, 8, 0, 0, 3)
+        control.controller._transport_output_transaction(
+            lambda: vehicle.send_mavlink(message), check_enqueue
+        )
+        assert checks == [True]
+        assert connections[0].out_queue.get_nowait()[0] == 0xFD
+    finally:
+        for connection in connections:
+            # No network worker threads were started by this connection probe.
+            connection.mavlink_thread_in = None
+            connection.mavlink_thread_out = None
+            connection.master.close()
+
+
 def test_ground_readiness_attempt_and_original_phase_order(tmp_path):
     control, _ = make_control(tmp_path)
     seed_ground(control)

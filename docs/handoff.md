@@ -3,10 +3,44 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-07. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-10-08. Branch `feat/manual-ci-suite` extends
+`design/moving-pad-landing`, which adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. Imported
 `companion/comp2026` history and provenance remain preserved.
+
+The fresh common-build suite `be09da8c-d096-4b34-82ac-de5b05d25d30`, from clean
+`d1335a3`, attempted all 11 cases and finished **FAILED**, six passed and five
+failed, on 2026-10-07 at 21:50 UTC. It ran for 6 h 4 min. All 11 manifests
+match the suite's frozen source and seven image identities. No simulation
+containers remained when checked after completion. Evidence root:
+`/home/willis/projects/drone_sim/runs/local-ci/20261007-d1335a3`; the full verdicts
+and bundle paths are in `suites/be09da8c-d096-4b34-82ac-de5b05d25d30/report.json`.
+
+- Calibration `43cc89d8-9080-47ab-a4ef-c56ec8e4becf`, fresh reload,
+  configured descent, operator wait, controlled descent, and moving pad each
+  established `LANDED`, scored 100/100, and passed independent acceptance.
+- Hover roll and roll AutoTune failed with `clock_source_stall`; their incomplete
+  ground-truth streams also failed sample-count validation. Neither flew a
+  completed accepted mission. The partial parameter cache kept calibration
+  readiness closed. The roll host now requests one complete list during private
+  warmup; its regression and all 65 runtime tests pass. Native reruns are pending.
+- Stationary pad failed its final precision-handoff deadline.
+- Both competition timings failed before flight with
+  `a guarded transport enqueue transaction is required`. A real DroneKit
+  connection probe reproduced the cause: automatic MAVLink 1-to-2 switching
+  replaces its output queue writer. The simulation composition now selects
+  MAVLink 2 before opening the connection; the new regression and runtime checks
+  passed 73 tests. Native verification of this repair remains pending.
+
+After both startup repairs, the full host/module checks passed 2,350 tests with
+27 environment skips; all 1,129 imported mission tests passed. Lockfile,
+compilation and diff checks passed. Companion rebuild and focused native
+reruns remain pending; these tests do not replace flight evidence.
+
+The five failed cases reported 0 points and no independently accepted physical
+outcome. Their bundles remain unchanged. This is evidence of honest per-case
+failure reporting and independent continuation, not an all-suite pass.
 
 Slower native-LAND diagnostic, verified 2026-10-07: run
 `f6b40251-efe5-46c0-9982-5d52fcd3aa52` used the clean `9416c22` source and a
@@ -18,10 +52,15 @@ first-contact window passed, with maximum speed 0.001000 m/s and continuous
 contact. Touchdown was 0.00397 m from the origin; raw descent score was 100/100.
 Fresh inventory hashes/sizes and MCAP validation passed. Evidence is under
 `runs/diagnostics/20261007-slower-native-land/`. This short base-gain experiment
-is not an accepted calibration or an all-suite result. The earlier failed
-AutoTune flight used different gains; slower LAND still requires full AutoTune,
-native gain saving and reload validation. Checked-in landing profiles and
-scoring remain unchanged.
+is not an accepted calibration or an all-suite result. A later controlled pair
+used identical saved gains: 0.50 m/s run `eb27fc47-7613-4cd2-8e5b-514fb9702cea`
+and 0.30 m/s run `18e415bd-53f5-4c38-a178-b2339f44fa92` both landed/disarmed,
+scored 100/100, passed all 11 strict first-contact checks, and had valid inventory
+and MCAP evidence. LAND-to-contact took 10.4 versus 17.0 simulated seconds.
+Neither reproduced the earlier failure, so this pair does not establish improved
+reliability. Evidence and the 22-second comparison clip are under
+`runs/diagnostics/20261007-saved-gain-land-compare/`. Checked-in landing profiles
+and scoring remain unchanged.
 
 The full 0.30 m/s AutoTune diagnostic `7ec54605-c40c-4499-9dc6-6145dba3c09f`
 failed on 2026-10-07 at public 109.80 seconds during Pitch Rate P Up. Roll had
@@ -44,9 +83,10 @@ Competition alone supplies native RC input through the JSON FDM connection and
 loads the matching mode-channel overlay. Docker packaging includes the import
 closure and canonical policy resources. Full host/module checks passed 2,349
 tests with 27 skips; imported mission checks passed 1,129. Python compilation,
-lockfile verification and diff checks passed. The native plugin patch applies to
-its pinned source, but C++ compilation, rebuilt images and competition flights
-remain unverified. These source checks do not establish an all-suite pass.
+lockfile verification and diff checks passed. The native plugin compiled and
+all four C++ checks passed. All seven images built, and the real companion-image
+import smoke passed. The subsequent competition startup failures and full-suite
+outcome are recorded above; these checks do not establish an all-suite pass.
 
 Calibration return update 2026-10-07: the companion now captures the disarmed
 launch position, returns there in GUIDED at 5 m after tuning/gain activation,
@@ -102,8 +142,8 @@ command builds once, gates consumers on accepted calibration/fresh reload and
 reports mission-specific independent results. After the final review fixes,
 host/module checks passed 2,257 tests with 27 environment skips; the imported
 Comp2026 suite passed 1,126 tests. Focused suite/CLI checks passed 48 tests.
-No static typechecker is configured; Python compilation passed. The fresh
-common-build flight sweep remains pending.
+No static typechecker is configured; Python compilation passed. The latest
+common-build flight sweep and its remaining failures are recorded above.
 
 Suite `2079a7e2-cd19-4bd0-ba31-0bc45e0338ed` from clean `76dd2b9` was gracefully
 interrupted at 02:15 UTC on 2026-10-06 to test the startup fixes. Calibration,
@@ -276,24 +316,14 @@ the full host sweep passed 2,264 tests with 27 environment skips. The recorder
 contract now requires 18,000 calibration camera frames at 20 Hz. All 79 local
 links in the edited guides resolve; external URLs and anchors were not checked.
 
-The competition adapter needs a larger compatibility change. Identities alone
-satisfy only the constructor: native missions also require pinned home,
-FlightState/supervisor/output transactions, release/clearance configuration, and
-an explicit precision policy. The hardware/QGC initializer requires deployment
-artifacts absent from simulator configuration. Sensor geometry and physical
-attachment confirmation exist, but required safety and precision policy values
-are not defined. Do not bypass those guards, use ground truth as onboard
-evidence, or treat test-only policies as deployment configuration. No common-build
-full-suite pass is claimed.
-
-The manual Actions workflow is implemented. On 2026-10-07, GitHub reported the
-registered runner online and idle with the required labels. The operator also
+The manual Actions workflow is implemented. The operator
 added the missing `workflow` authentication scope; publishing the workflow is
 no longer blocked on that scope. The workflow remains absent from default
 branch `main`, so provider dispatch is still unrun. Official runner v2.337.0 is
-registered as `drone-sim-workstation` with label `drone-sim`. A temporary user
-listener connected at 16:33 UTC and GitHub reports online. The persistent service
-remains pending: noninteractive sudo is unavailable, so installation/start requires
+registered as `drone-sim-workstation` with label `drone-sim`. The temporary user
+listener was stopped for the service handoff. On 2026-10-08, the service file was
+absent and GitHub reported the runner offline. Noninteractive sudo is unavailable,
+so installation/start requires
 the operator steps in the [runbook](runbook.md#manual-workstation-ci).
 Actions dispatch remains unrun until the workflow exists on default branch
 `main` and the runner service is online. No current end-to-end pass is claimed.
@@ -303,7 +333,7 @@ vehicle variants, tunes all axes and saves gains after native LAND. It adds
 independent calibration acceptance and a fresh-SITL validation consumer.
 Calibration and fresh-SITL validation both passed independent acceptance at
 100/100. This completes the first calibration/reload milestone; the new suite wires the dependency,
-but its current all-setup flight proof remains pending. The sweep below used the older
+but the latest all-setup sweep still has five failures, described above. The sweep below used the older
 `33da957` profile; its passes do not establish compatibility with the new body or
 gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
 

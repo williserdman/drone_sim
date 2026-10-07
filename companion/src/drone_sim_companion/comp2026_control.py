@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import Callable
 
+from pymavlink import mavutil
+
 from drone import timebase
 from drone.control.drone_control import DroneControl
 from drone.control.flight_state import FlightState, RCInput
@@ -109,6 +111,9 @@ class SimulationCompetitionControl:
             recovery_policy=policy.recovery_policy,
             enabled_phases=(FM1, FM2, FM3),
         )
+        # A later wire-version upgrade would replace DroneKit's queue writer.
+        os.environ["MAVLINK20"] = "1"
+        mavutil.set_dialect("ardupilotmega")
         self.controller = controller_factory(
             endpoint,
             source_identity=profile.companion_target,

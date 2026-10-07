@@ -866,6 +866,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     command_delivered = False
     failure: str | None = None
     last_override_refresh = 0.0
+    parameters_requested = False
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
@@ -963,6 +964,12 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 heartbeat_observed=heartbeat,
                 prearm_checks_healthy=armable,
             )
+            if calibration.required and heartbeat and not parameters_requested:
+                vehicle._master.mav.param_request_list_send(
+                    vehicle._master.target_system,
+                    vehicle._master.target_component,
+                )
+                parameters_requested = True
             calibration.observe_cached(getattr(vehicle, "parameters", {}))
             if calibration.failure is not None:
                 failure = calibration.failure

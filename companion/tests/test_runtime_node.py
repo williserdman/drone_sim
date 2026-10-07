@@ -164,7 +164,7 @@ def test_imported_calibration_readiness_exposes_terminal_mismatch() -> None:
     assert not readiness.release(object(), object(), RUN_ID, 0)
 
 
-def test_roll_seed_override_is_recorded_after_import_verification(
+def test_roll_requests_partial_import_during_warmup_before_initial_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -172,6 +172,18 @@ def test_roll_seed_override_is_recorded_after_import_verification(
     statuses: list[object] = []
     subscriptions: dict[str, object] = {}
     parameter_writes: list[tuple[str, float]] = []
+    parameter_requests: list[tuple[int, int]] = []
+    public_running = False
+
+    class DroneKitParameters:
+        def __init__(self) -> None:
+            self.values = {"ATC_RAT_RLL_P": 0.041}
+
+        def get(self, name: str, *, wait_ready: bool = True) -> float | None:
+            assert wait_ready is False
+            return self.values.get(name)
+
+    parameters = DroneKitParameters()
 
     class Protocol:
         def __init__(self, _config: object) -> None:
@@ -207,6 +219,14 @@ def test_roll_seed_override_is_recorded_after_import_verification(
             self.name = name
 
     class Mav:
+        def param_request_list_send(self, system: int, component: int) -> None:
+            assert public_running is False
+            parameter_requests.append((system, component))
+            parameters.values.update({
+                "ATC_RAT_RLL_I": 0.041,
+                "INS_GYRO_FILTER": 20.0,
+            })
+
         def param_set_send(
             self,
             _system: int,
@@ -223,7 +243,7 @@ def test_roll_seed_override_is_recorded_after_import_verification(
         mode=Mode("STABILIZE"),
         armed=False,
         location=SimpleNamespace(global_relative_frame=SimpleNamespace(alt=0.0)),
-        parameters={"ATC_RAT_RLL_P": 0.041},
+        parameters=parameters,
         channels=SimpleNamespace(overrides={}),
         _master=SimpleNamespace(target_system=1, target_component=1, mav=Mav()),
         add_message_listener=lambda *_args: None,
@@ -234,10 +254,11 @@ def test_roll_seed_override_is_recorded_after_import_verification(
     spins = 0
 
     def spin_once(_node: object, *, timeout_sec: float) -> None:
-        nonlocal spins
+        nonlocal public_running, spins
         assert timeout_sec == 0.02
         spins += 1
-        if spins == 1:
+        if spins == 2:
+            public_running = True
             subscriptions["/simulation/run_state"](
                 SimpleNamespace(run_id=RUN_ID, state=1)
             )
@@ -252,7 +273,7 @@ def test_roll_seed_override_is_recorded_after_import_verification(
         monkeypatch.setitem(sys.modules, name, value)
 
     module("dronekit", VehicleMode=Mode, connect=object())
-    module("rclpy", init=lambda: None, ok=lambda: spins < 2, spin_once=spin_once, shutdown=lambda: None)
+    module("rclpy", init=lambda: None, ok=lambda: spins < 3, spin_once=spin_once, shutdown=lambda: None)
     module("rclpy.node", Node=Node)
     module(
         "rclpy.qos",
@@ -272,8 +293,11 @@ def test_roll_seed_override_is_recorded_after_import_verification(
         run_directory=tmp_path,
         mission="autotune_roll",
         calibration_json=json.dumps({
-            "gains": {"ATC_RAT_RLL_P": 0.041},
-            "profile": {"baseline_parameters": {}},
+            "gains": {
+                "ATC_RAT_RLL_P": 0.041,
+                "ATC_RAT_RLL_I": 0.041,
+            },
+            "profile": {"baseline_parameters": {"INS_GYRO_FILTER": 20.0}},
         }),
     )
 
@@ -291,6 +315,7 @@ def test_roll_seed_override_is_recorded_after_import_verification(
         "parameters": dict(parameter_writes),
         "reason": "roll diagnostic seed",
     }
+    assert parameter_requests == [(1, 1)]
     assert statuses.index(MissionExecutionReadyStatus(RUN_ID, 0)) < statuses.index(
         MissionCommandDeliveredStatus(RUN_ID, 0)
     )

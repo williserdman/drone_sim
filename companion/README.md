@@ -55,7 +55,9 @@ the profile's effective baseline before its first flight command. Version-2
 imports include scenario precision settings; legacy profiles use their preserved
 baseline. MAVLink hosts request one complete list; DroneKit hosts inspect the
 current cache with `parameters.get(name, wait_ready=False)`. This avoids a
-blocking complete-parameter wait inside the runtime loop. Every value must match
+blocking complete-parameter wait inside the runtime loop. The roll host requests
+one complete list on its first healthy heartbeat during private warmup, before
+the public clock or RUNNING gate. Every value must match
 before execution readiness or the first flight command; missing values remain
 bounded by the run wall deadline,
 and a mismatch fails without arming. Calibration values use the artifact's
@@ -226,6 +228,9 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   parameters, competition vehicle, and selected competition world. The image
   carries these files at their repository-relative paths under `/opt/drone_sim`
   because policy construction verifies their contents before flight.
+  The composition selects MAVLink 2 before opening DroneKit so the first native
+  packet cannot trigger a protocol upgrade that replaces its guarded output
+  queue. Transport guards remain required before any flight command.
 - Building the Phase 3 companion image requires
   `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. Compose
   leaves the build argument empty when it is not supplied so inactive profiles
