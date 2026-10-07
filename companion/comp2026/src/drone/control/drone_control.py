@@ -392,6 +392,7 @@ class DroneControl:
         home_request_timeout_s: float | None = None,
         telemetry_poll_interval_s: float | None = None,
         guided_output_delivery_callback: Callable[[], None] | None = None,
+        vehicle_class: type | None = None,
     ):
         if not isinstance(source_identity, SourceIdentity):
             raise ValueError("source_identity must be explicit")
@@ -464,14 +465,16 @@ class DroneControl:
         ):
             raise ValueError("guided_output_delivery_callback must be callable or None")
         print(f"Connecting to {connection_port} …")
-        vehicle = connect(
-            connection_port,
-            wait_ready=wait_ready,
-            heartbeat_timeout=heartbeat_timeout,
-            timeout=120,
-            source_system=source_identity.system_id,
-            source_component=source_identity.component_id,
-        )
+        connect_options = {
+            "wait_ready": wait_ready,
+            "heartbeat_timeout": heartbeat_timeout,
+            "timeout": 120,
+            "source_system": source_identity.system_id,
+            "source_component": source_identity.component_id,
+        }
+        if vehicle_class is not None:
+            connect_options["vehicle_class"] = vehicle_class
+        vehicle = connect(connection_port, **connect_options)
         actual_wire_protocol = getattr(
             getattr(vehicle, "_master", None), "WIRE_PROTOCOL_VERSION", None
         )

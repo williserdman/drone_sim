@@ -332,6 +332,13 @@ without replacing the shared artifact, recording its seed writes separately. Thi
 rewrite the tracked baseline through
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py).
 
+Simulation DroneKit connections suppress the library's automatic indexed
+parameter retry bursts. The simulation subclass leaves DroneKit's real cache,
+count changes, completion state, explicit full-list requests, and manual reads
+intact. Its callback runs after DroneKit 2.9.2's base `PARAM_VALUE` callback and
+restores the private retry duration to infinity. Hardware connections retain the
+default DroneKit vehicle class and retry behavior.
+
 [calibration_v1](../scorekeeper/rules/calibration_v1.json) awards 20 points for
 airborne/contact, 40 for safe preimpact speed and 40 for stable contact. Acceptance
 requires all 100 plus the saved-parameter evidence. The fresh validation flight

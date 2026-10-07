@@ -142,6 +142,10 @@ transport or creating output devices. The current contract requires:
 | `VisionConfig` and `PrecisionMissionPolicy` | FM3-only verified calibration/mounting paths, source/receipt timing, shared clock, and bounded acquisition controls |
 | `RuntimeConfiguration` | Fixed waypoint path, enabled phases, common cruise/drop heights, FC-home tolerances, attempt deadline, idle poll, and cleanup bound |
 
+`DroneControl` passes an optional DroneKit vehicle class through to `connect`.
+The default omits that keyword and preserves hardware behavior. The parent
+simulation composition supplies its simulation-only parameter retry adapter.
+
 `LiveComponentFactories.telemetry_startup_mode` defaults to `complete`. That
 mode preserves the full configure-and-collect proof before QGC listener
 installation for physical hardware and ordinary injected tests. Only the

@@ -23,20 +23,53 @@ and bundle paths are in `suites/be09da8c-d096-4b34-82ac-de5b05d25d30/report.json
 - Hover roll and roll AutoTune failed with `clock_source_stall`; their incomplete
   ground-truth streams also failed sample-count validation. Neither flew a
   completed accepted mission. The partial parameter cache kept calibration
-  readiness closed. The roll host now requests one complete list during private
-  warmup; its regression and all 65 runtime tests pass. Native reruns are pending.
-- Stationary pad failed its final precision-handoff deadline.
+  readiness closed. Requesting a complete list during private warmup did not
+  resolve this: focused hover run `277a9bdb-fc64-4fbb-bef1-2a1f9d605a5a`
+  stopped advancing at the 90-second private boundary with incomplete readback.
+  A normal diagnostic abort finalized it as `ABORTED`, 0/100, without acceptance.
+- Stationary pad failed its final precision-handoff deadline. Recorded physical
+  contact remained continuous and world height stopped changing, but EKF3 still
+  estimated downward motion after touchdown. The 25 Hz DataFlash IMU log cannot
+  establish whether the nominal 1 kHz collision impulse reached SITL. A passive
+  raw Gazebo IMU / transmitted FDM comparison is queued to locate that boundary.
 - Both competition timings failed before flight with
   `a guarded transport enqueue transaction is required`. A real DroneKit
   connection probe reproduced the cause: automatic MAVLink 1-to-2 switching
   replaces its output queue writer. The simulation composition now selects
-  MAVLink 2 before opening the connection; the new regression and runtime checks
-  passed 73 tests. Native verification of this repair remains pending.
+  MAVLink 2 before opening the connection. Rebuilt companion run
+  `792196c6-7c5f-4796-b654-74cd1507885e` passed that constructor boundary, then
+  failed before flight on absent/stale safe-ground telemetry. It scored 0/150
+  and was not accepted.
 
-After both startup repairs, the full host/module checks passed 2,350 tests with
-27 environment skips; all 1,129 imported mission tests passed. Lockfile,
-compilation and diff checks passed. Companion rebuild and focused native
-reruns remain pending; these tests do not replace flight evidence.
+At `8896714`, the full host/module checks passed 2,350 tests with 27 environment
+skips; all 1,129 imported mission tests passed. Lockfile, compilation and diff
+checks passed. The companion image rebuilt successfully and its real import
+smoke passed before the focused native cases above. Their source and all seven
+image identities remain frozen in
+`runs/diagnostics/20261008-8896714-startup-paths/`.
+
+The isolated startup repair now waits for actual fresh ground observations,
+live heartbeat, healthy prearm state and matching parameters before declaring
+competition readiness. It preserves the existing startup deadline and command
+admission guard. Focused checks passed 81 parent and 236 imported tests. Its
+native verification is still pending.
+
+Passive MAVLink capture of roll AutoTune run
+`bfb4face-517a-41ac-876d-9526afbc9812` established a separate parameter retry
+flood: by native 70 seconds, 38,301 indexed requests had produced 3,545 values
+containing 742 unique names. Twelve required parameters were still missing.
+DroneKit starts these wall-clock retries on early unsolicited values, before
+the complete-list request. The simulation adapter now suppresses automatic
+indexed retries while preserving real cache contents, completion state, explicit
+requests and the unchanged readback gate. Native verification remains pending;
+this repair does not establish a flight or suite pass.
+
+The combined isolated repairs passed 2,358 host/module tests with 27 skips and
+all 1,130 imported mission tests. One host test failed because the live native
+diagnostic already held the real workstation suite lock. Rerun
+`test_suite_lock_spans_different_output_roots` after both queued diagnostics
+finish; the runtime lock remains unchanged. Lockfile, compilation and diff
+checks passed. No image containing these isolated repairs has flown yet.
 
 The five failed cases reported 0 points and no independently accepted physical
 outcome. Their bundles remain unchanged. This is evidence of honest per-case

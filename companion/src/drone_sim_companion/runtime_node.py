@@ -508,10 +508,14 @@ def connect_autotune_vehicle(
     """Connect only after ROS can receive the READY state that starts simulation."""
     if run_state_subscription is None:
         raise RuntimeError("AutoTune requires a run-state subscription before connecting")
+    _enable_dronekit_python312_compatibility()
+    from .dronekit_sim import SimulationVehicle
+
     return factory(
         endpoint,
         wait_ready=False,
         heartbeat_timeout=heartbeat_timeout,
+        vehicle_class=SimulationVehicle,
     )
 
 

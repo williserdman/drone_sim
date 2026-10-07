@@ -214,6 +214,7 @@ def test_composes_real_guards_and_staged_telemetry_from_same_policy(tmp_path):
     assert control.controller.kwargs["clearance_calibration"] is selected.clearance_calibration
     assert control.controller.kwargs["release_stability_config"] is selected.release_stability
     assert control.controller.kwargs["wait_ready"] is False
+    assert control.controller.kwargs["vehicle_class"].__name__ == "SimulationVehicle"
     assert control.controller.output_transactions.keys() == {"dependency_transaction", "supervisor_transaction"}
 
     control.prepare()

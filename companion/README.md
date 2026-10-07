@@ -64,6 +64,13 @@ and a mismatch fails without arming. Calibration values use the artifact's
 float32-aware relative/absolute tolerances; the moving precision profile keeps
 its stricter absolute tolerance. A single `calibration_parameters_verified`
 event records the accepted pre-arm values before mission execution starts.
+Simulation DroneKit connections use `SimulationVehicle` to disable DroneKit's
+automatic indexed parameter retries while retaining the real parameter cache,
+count handling, loaded transition, explicit full-list requests, and manual reads.
+This narrow adapter depends on DroneKit 2.9.2 registering its base `PARAM_VALUE`
+cache listener before the adapter's callback; the later callback restores the
+private `_params_duration` field to infinity after every base update. Hardware
+connections omit the optional vehicle class and keep DroneKit's default behavior.
 Roll diagnostics freeze the verified snapshot before their deliberate seed
 writes and record those writes as `calibration_parameters_overridden`; their
 run-local saved gains never replace the shared calibration.

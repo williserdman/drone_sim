@@ -1823,10 +1823,16 @@ def test_first_heartbeat_ignores_startup_wall_deadline_after_transport_connects(
 
 
 def test_autotune_vehicle_connection_requires_run_state_subscription() -> None:
-    calls: list[tuple[str, bool, float]] = []
+    calls: list[tuple[str, bool, float, type]] = []
 
-    def connect(endpoint: str, *, wait_ready: bool, heartbeat_timeout: float) -> object:
-        calls.append((endpoint, wait_ready, heartbeat_timeout))
+    def connect(
+        endpoint: str,
+        *,
+        wait_ready: bool,
+        heartbeat_timeout: float,
+        vehicle_class: type,
+    ) -> object:
+        calls.append((endpoint, wait_ready, heartbeat_timeout, vehicle_class))
         return object()
 
     with pytest.raises(RuntimeError, match="run-state subscription"):
@@ -1846,7 +1852,14 @@ def test_autotune_vehicle_connection_requires_run_state_subscription() -> None:
     )
 
     assert vehicle is not None
-    assert calls == [("tcp:ardupilot-sitl:5760", False, 120.0)]
+    assert len(calls) == 1
+    endpoint, wait_ready, timeout, vehicle_class = calls[0]
+    assert (endpoint, wait_ready, timeout) == (
+        "tcp:ardupilot-sitl:5760",
+        False,
+        120.0,
+    )
+    assert vehicle_class.__name__ == "SimulationVehicle"
 
 
 def test_runtime_config_rejects_config_outside_current_run(tmp_path: Path) -> None:

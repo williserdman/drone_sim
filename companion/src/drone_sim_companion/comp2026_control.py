@@ -30,6 +30,8 @@ from drone.control.mission_supervisor import (
     MissionSupervisor,
 )
 
+from .dronekit_sim import SimulationVehicle
+
 
 class SimulationCompetitionControl:
     """Compose imported observation, authority, mission, and output guards."""
@@ -139,6 +141,7 @@ class SimulationCompetitionControl:
             home_request_timeout_s=policy.startup_timeout_s,
             telemetry_poll_interval_s=policy.telemetry_poll_interval_s,
             guided_output_delivery_callback=guided_output_delivery_callback,
+            vehicle_class=SimulationVehicle,
         )
         self.controller.install_output_transactions(
             dependency_transaction=self.decoders.output_transaction,
