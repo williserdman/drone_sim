@@ -90,6 +90,16 @@ production writer. The separate operator consumes this fact before its commands.
 Other missions keep their existing command-delivery gate. See the
 [tool contract](../companion/README.md#configured-diagnostic-missions).
 
+The Comp2026 companion publishes `MissionReadyStatus` only after its real
+MAVLink callbacks provide every fresh safe-ground observation and its full
+calibration cache matches, while DroneKit reports a live heartbeat and healthy
+prearm checks. Missing or stale observations keep the public epoch and mission
+admission closed until the companion startup deadline; positively unsafe
+observations fail admission. Orchestration may publish RUNNING only after this
+durable status. The companion then waits for an accepted public clock before
+releasing the worker, and FM1 admission repeats the full ground check before the
+first guarded GUIDED command.
+
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.
 Gazebo rebases native timestamps onto the public epoch; the first 20 Hz camera

@@ -267,12 +267,19 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   older-than-0.5-second evidence cannot continue a valid sample sequence;
   `get_distance()` retains the original scalar compatibility API.
 - Comp2026 startup separates process readiness from permission to enter the
-  original mission. Sensor, service, heartbeat, and armability predicates are
-  refreshed atomically and fail closed; downward range expires after 0.5
-  simulated seconds. The runtime must enqueue guarded GUIDED output and write
-  its durable delivery fact no later than the inclusive 50 ms public-time
-  deadline, then verify acknowledgement and mode before entering the original
-  sequencer. The executable owners are the
+  original mission. During private warmup, `MissionReadyStatus` waits for a
+  complete fresh safe-ground snapshot, the complete calibration cache, a live
+  DroneKit heartbeat, and observed healthy prearm checks. Missing or stale
+  ground fields remain pending until the startup wall deadline; observed armed,
+  airborne, unhealthy RC, wrong RC slot, or failsafe state fails immediately.
+  The runtime records pending fields only when they change. After RUNNING, it
+  waits for the first accepted public clock before releasing the worker, whose
+  FM1 admission rechecks the full ground guard. Sensor, service,
+  heartbeat, and armability predicates are refreshed atomically and fail closed;
+  downward range expires after 0.5 simulated seconds. The runtime must enqueue
+  guarded GUIDED output and write its durable delivery fact no later than the
+  inclusive 50 ms public-time deadline, then verify acknowledgement and mode
+  before entering the original sequencer. The executable owners are the
   [delivery window and lifecycle writer](src/drone_sim_companion/lifecycle.py),
   [start gate](src/drone_sim_companion/comp2026_host.py), and
   [runtime composition](src/drone_sim_companion/runtime_node.py); the shared

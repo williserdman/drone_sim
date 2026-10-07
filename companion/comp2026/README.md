@@ -153,6 +153,12 @@ until complete requested telemetry arrives after that gate on strictly
 advancing shared simulation time. Cleanup closes the collector and startup
 request capability even if QGC sends no command.
 
+The safe-ground snapshot guard reports absent or stale required fields through
+`GroundTelemetryPending`, a `CommandRejected` subtype with ordered field
+reasons. A simulation host may poll only that transient case. Observed airborne,
+armed, unhealthy RC, wrong RC slot, failsafe, and dependency failures remain
+immediate rejections, and final FM1 admission repeats the complete guard.
+
 The stable composition interfaces are:
 
 ```python

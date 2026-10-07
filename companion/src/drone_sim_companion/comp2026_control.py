@@ -14,6 +14,7 @@ from drone import timebase
 from drone.control.drone_control import DroneControl
 from drone.control.flight_state import FlightState, RCInput
 from drone.control.listener import (
+    GroundTelemetryPending,
     TelemetryStartupCollector,
     _mission_home_from_snapshot,
     _require_fresh_ground_snapshot,
@@ -65,6 +66,7 @@ class SimulationCompetitionControl:
         digest = hashlib.sha256(run_id.encode("utf-8")).digest()
         self._attempt_id = int.from_bytes(digest[:3], "big") % MAX_ATTEMPT_ID + 1
         self._pending_home = None
+        self._ground_telemetry_pending_reasons: tuple[str, ...] = ()
         self._phase_events = (
             ("FM1", "STARTED"),
             ("FM1", "COMPLETE"),
@@ -159,8 +161,17 @@ class SimulationCompetitionControl:
         return snapshot
 
     def ready_for_initial_command(self) -> bool:
-        self._ready_snapshot()
+        try:
+            self._ready_snapshot()
+        except GroundTelemetryPending as error:
+            self._ground_telemetry_pending_reasons = error.reasons
+            return False
+        self._ground_telemetry_pending_reasons = ()
         return True
+
+    @property
+    def ground_telemetry_pending_reasons(self) -> tuple[str, ...]:
+        return self._ground_telemetry_pending_reasons
 
     def prepare(self) -> None:
         self.telemetry_collector.prepare()

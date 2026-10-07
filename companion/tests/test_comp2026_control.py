@@ -3,12 +3,14 @@ import sys
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
+from pymavlink import mavutil
 
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "companion/comp2026/src"))
 
 from drone import timebase
 from drone.common_types import MissionHome
+from drone.control import drone_control
 from drone.control.flight_profile import FlightProfile, TelemetryRequest
 from drone.control.flight_state import RCModeBand, SourceIdentity
 from drone.control.listener_runtime import AutopilotVersionContract, TelemetryStartupPolicy
@@ -54,6 +56,29 @@ class FakeCollector:
         self.closed = True
 
 
+class CallbackVehicle:
+    def __init__(self):
+        self.listeners = {}
+        self._handler = SimpleNamespace(target_system=1, target_component=1)
+        self._master = SimpleNamespace(WIRE_PROTOCOL_VERSION="2.0")
+
+    def on_message(self, message_names):
+        def register(callback):
+            for name in message_names if isinstance(message_names, list) else [message_names]:
+                self.listeners[name] = callback
+            return callback
+
+        return register
+
+    def emit(self, name, **fields):
+        message = SimpleNamespace(
+            get_srcSystem=lambda: 1,
+            get_srcComponent=lambda: 1,
+            **fields,
+        )
+        self.listeners[name](self, name, message)
+
+
 def policy():
     companion = SourceIdentity(1, 191)
     fc = SourceIdentity(1, 1)
@@ -95,6 +120,71 @@ def make_control(tmp_path, selected_policy=None):
         controller_factory=FakeController, telemetry_factory=FakeCollector,
     )
     return control, selected_policy
+
+
+def make_callback_control(tmp_path, monkeypatch):
+    vehicle = CallbackVehicle()
+    monkeypatch.setattr(drone_control, "connect", lambda *_args, **_kwargs: vehicle)
+    monkeypatch.setattr(
+        drone_control.DroneControl,
+        "install_output_transactions",
+        lambda self, **transactions: setattr(self, "output_transactions", transactions),
+    )
+    control = SimulationCompetitionControl(
+        policy(), run_id="callback-run", run_directory=tmp_path,
+        endpoint="unused", heartbeat_timeout=3.0,
+        guided_output_delivery_callback=lambda: None,
+        telemetry_factory=FakeCollector,
+    )
+    return control, vehicle
+
+
+def emit_safe_ground(vehicle, *, armed=False, rc_pwm=1500, include_home=True):
+    vehicle.emit(
+        "HEARTBEAT",
+        type=2,
+        autopilot=3,
+        base_mode=mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED if armed else 0,
+        custom_mode=5,
+        system_status=4,
+    )
+    vehicle.emit(
+        "SYS_STATUS",
+        onboard_control_sensors_present=65_536,
+        onboard_control_sensors_enabled=65_536,
+        onboard_control_sensors_health=65_536,
+    )
+    vehicle.emit("RC_CHANNELS", chan7_raw=rc_pwm)
+    vehicle.emit(
+        "GLOBAL_POSITION_INT",
+        lat=374003371,
+        lon=-1220800351,
+        alt=0,
+        relative_alt=0,
+        vx=0,
+        vy=0,
+        vz=0,
+    )
+    vehicle.emit(
+        "ATTITUDE",
+        roll=0.0,
+        pitch=0.0,
+        yaw=0.0,
+        rollspeed=0.0,
+        pitchspeed=0.0,
+        yawspeed=0.0,
+    )
+    vehicle.emit(
+        "EXTENDED_SYS_STATE",
+        landed_state=mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
+    )
+    if include_home:
+        vehicle.emit(
+            "HOME_POSITION",
+            latitude=374003371,
+            longitude=-1220800351,
+            altitude=0,
+        )
 
 
 def seed_ground(control, *, rc_pwm=1500, include_home=True):
@@ -212,14 +302,93 @@ def test_ground_readiness_attempt_and_original_phase_order(tmp_path):
         control.phase_event("HOME", "COMPLETE")
 
 
-@pytest.mark.parametrize("change", ["stale", "false_rc", "no_home"])
-def test_readiness_rejects_missing_or_unsafe_ground_proof(tmp_path, change):
+def test_real_callbacks_keep_startup_pending_until_ground_snapshot_is_complete(
+    tmp_path, monkeypatch
+):
+    control, vehicle = make_callback_control(tmp_path, monkeypatch)
+
+    assert control.ready_for_initial_command() is False
+    assert control.ground_telemetry_pending_reasons == (
+        "heartbeat absent",
+        "mode absent",
+        "location absent",
+        "velocity absent",
+        "attitude absent",
+        "landed_state absent",
+        "armed absent",
+        "home absent",
+        "rc_input absent",
+        "failsafe absent",
+    )
+
+    emit_safe_ground(vehicle, include_home=False)
+    assert control.ready_for_initial_command() is False
+    assert control.ground_telemetry_pending_reasons == ("home absent",)
+
+    vehicle.emit(
+        "HOME_POSITION",
+        latitude=374003371,
+        longitude=-1220800351,
+        altitude=0,
+    )
+    assert control.ready_for_initial_command() is True
+    assert control.ground_telemetry_pending_reasons == ()
+
+
+def test_stale_ground_snapshot_remains_pending_with_ordered_reasons(
+    tmp_path, monkeypatch
+):
+    class Clock:
+        now = 10.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    monkeypatch.setattr(timebase, "monotonic", clock)
     control, _ = make_control(tmp_path)
-    seed_ground(control, rc_pwm=1900 if change == "false_rc" else 1500, include_home=change != "no_home")
-    if change == "stale":
-        control.flight_state.invalidate_observations(("heartbeat",), source_system=1, source_component=1)
-    with pytest.raises((CommandRejected, RuntimeError)):
+    seed_ground(control)
+    clock.now = 12.0
+
+    assert control.ready_for_initial_command() is False
+    assert control.ground_telemetry_pending_reasons == (
+        "heartbeat stale",
+        "mode stale",
+        "location stale",
+        "velocity stale",
+        "attitude stale",
+        "landed_state stale",
+        "armed stale",
+        "home stale",
+        "rc_input stale",
+        "failsafe stale",
+    )
+
+
+@pytest.mark.parametrize(
+    ("armed", "rc_pwm", "reason"),
+    [
+        (True, 1500, "requires disarmed state"),
+        (False, 1900, "initial RC selection must be the companion slot"),
+    ],
+)
+def test_real_callbacks_reject_observed_unsafe_ground_state(
+    tmp_path, monkeypatch, armed, rc_pwm, reason
+):
+    control, vehicle = make_callback_control(tmp_path, monkeypatch)
+    emit_safe_ground(vehicle, armed=armed, rc_pwm=rc_pwm)
+
+    with pytest.raises(CommandRejected, match=reason):
         control.ready_for_initial_command()
+
+
+def test_begin_attempt_rechecks_complete_ground_guard(tmp_path):
+    control, _ = make_control(tmp_path)
+
+    assert control.ready_for_initial_command() is False
+    with pytest.raises(CommandRejected, match="safe-ground telemetry is absent or stale"):
+        control.begin_attempt()
+    assert not (tmp_path / ".comp2026-attempt-consumed.json").exists()
 
 
 def test_attempt_token_is_durable_and_single_use(tmp_path):

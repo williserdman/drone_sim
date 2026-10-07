@@ -58,6 +58,7 @@ from .comp2026_host import (
     RosFrameSource,
     RosLidar,
     SimulationClock,
+    _heartbeat_is_live,
     load_course_waypoints,
     refresh_comp2026_start_gate,
 )
@@ -330,6 +331,15 @@ class _CalibrationReadiness:
     @property
     def failure(self) -> str | None:
         return self.gate.failure
+
+    @property
+    def ready(self) -> bool:
+        return self.gate.ready
+
+    @property
+    def pending_parameters(self) -> tuple[str, ...]:
+        observed = self.gate.snapshot()
+        return tuple(name for name in self.expected if name not in observed)
 
     def observe(self, name: str, value: float) -> None:
         if self.reported:
@@ -1481,6 +1491,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     mission_worker: threading.Thread | None = None
     initial_command_allowed = threading.Event()
     last_start_readiness: dict[str, bool] | None = None
+    competition_start_admitted = False
+    last_ground_telemetry_pending: tuple[str, ...] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         shutdown_admission.request_stop_from_signal()
@@ -1690,6 +1702,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     )
     sensor_subscriptions_active = True
     overall_wall_deadline = time.monotonic() + config.max_wall_seconds
+    competition_start_deadline = time.monotonic() + config.startup_timeout_seconds
     clock_scope = timebase.configured(clock)
     clock_scope.__enter__()
     try:
@@ -1722,13 +1735,6 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             )
             mission_worker.start()
             gate.mark_process_ready()
-            # Preserve the established status schema. For this mission these
-            # booleans attest to the initialized DroneKit/gated worker seam;
-            # RUNNING-era armability is independently required by the gate.
-            lifecycle.observe_mission_readiness(
-                heartbeat_observed=True,
-                prearm_checks_healthy=True,
-            )
 
         while (
             rclpy.ok()
@@ -1741,6 +1747,71 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 )
                 if calibration.failure is not None:
                     attempt_failure.fail(calibration.failure)
+            if (
+                competition_control is not None
+                and not competition_start_admitted
+                and not attempt_failure.failed
+            ):
+                try:
+                    ground_ready = competition_control.ready_for_initial_command()
+                    pending = competition_control.ground_telemetry_pending_reasons
+                    if pending and pending != last_ground_telemetry_pending:
+                        lifecycle.emit(
+                            "ground_telemetry_pending",
+                            None,
+                            {"reasons": list(pending)},
+                        )
+                    last_ground_telemetry_pending = pending
+                    heartbeat_observed = _heartbeat_is_live(
+                        getattr(controller.vehicle, "last_heartbeat", None)
+                    )
+                    prearm_checks_healthy = (
+                        getattr(controller.vehicle, "is_armable", False) is True
+                    )
+                    deadline_expired = time.monotonic() >= competition_start_deadline
+                    if (
+                        ground_ready
+                        and calibration.ready
+                        and heartbeat_observed
+                        and prearm_checks_healthy
+                        and not deadline_expired
+                    ):
+                        lifecycle.observe_mission_readiness(
+                            heartbeat_observed=heartbeat_observed,
+                            prearm_checks_healthy=prearm_checks_healthy,
+                        )
+                        competition_start_admitted = True
+                except Exception as error:
+                    attempt_failure.fail(
+                        f"competition startup readiness failed: {error}"
+                    )
+                if (
+                    not competition_start_admitted
+                    and not attempt_failure.failed
+                    and time.monotonic() >= competition_start_deadline
+                ):
+                    if last_ground_telemetry_pending:
+                        detail = (
+                            "safe-ground telemetry is absent or stale: "
+                            + ", ".join(last_ground_telemetry_pending)
+                        )
+                    elif calibration.pending_parameters:
+                        missing_parameters = calibration.pending_parameters
+                        detail = (
+                            "calibration parameters unavailable: "
+                            + ", ".join(missing_parameters)
+                        )
+                    elif not _heartbeat_is_live(
+                        getattr(controller.vehicle, "last_heartbeat", None)
+                    ):
+                        detail = "DroneKit heartbeat is unavailable"
+                    elif getattr(controller.vehicle, "is_armable", False) is not True:
+                        detail = "vehicle prearm checks are not healthy"
+                    else:
+                        detail = "startup deadline expired"
+                    attempt_failure.fail(
+                        f"competition startup readiness timed out: {detail}"
+                    )
             if controller is not None and comp2026_start_gate_poll_required(
                 mission_running=mission_running,
                 mission_start_ready=gate.mission_start_ready,
@@ -1769,9 +1840,10 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 if (
                     mission_running
                     and gate.mission_ready
+                    and gate.readiness["clock"]
+                    and competition_start_admitted
                     and not initial_command_delivered
                     and not initial_command_allowed.is_set()
-                    and competition_control.ready_for_initial_command()
                     and calibration.release(
                         protocol,
                         lifecycle,

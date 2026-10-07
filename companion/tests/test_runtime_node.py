@@ -662,6 +662,11 @@ def install_comp2026_runtime_fakes(
     allow_input_failure: threading.Event | None = None,
     runtime_callbacks: dict[str, object] | None = None,
     installed_signal_handlers: dict[int, object] | None = None,
+    ground_ready: threading.Event | None = None,
+    readiness_checked: threading.Event | None = None,
+    clock_allowed: threading.Event | None = None,
+    running_delivered: threading.Event | None = None,
+    prepare_delay_seconds: float = 0.0,
 ) -> tuple[list[object], InitialCommandVehicle]:
     statuses: list[object] = []
     terminal = threading.Event()
@@ -672,6 +677,10 @@ def install_comp2026_runtime_fakes(
     vehicle.is_armable = True  # type: ignore[attr-defined]
     vehicle.close = lambda: None  # type: ignore[attr-defined]
     vehicle.guarded_bootstrap = []  # type: ignore[attr-defined]
+    mission_ready_written = threading.Event()
+    if ground_ready is None:
+        ground_ready = threading.Event()
+        ground_ready.set()
 
     def ns_stamp(value: int) -> object:
         return SimpleNamespace(
@@ -685,6 +694,8 @@ def install_comp2026_runtime_fakes(
 
         def write_status(self, status: object) -> None:
             statuses.append(status)
+            if isinstance(status, MissionReadyStatus):
+                mission_ready_written.set()
             if isinstance(status, MissionCommandDeliveredStatus):
                 command_write_started.set()
                 assert allow_command_write.wait(1.0)
@@ -732,9 +743,18 @@ def install_comp2026_runtime_fakes(
             pass
 
         def spin(self) -> None:
+            while not mission_ready_written.wait(0.01):
+                if executor_stopped.is_set():
+                    return
             subscriptions["/simulation/run_state"](
                 SimpleNamespace(run_id=RUN_ID, state=RunState.RUNNING)
             )
+            if running_delivered is not None:
+                running_delivered.set()
+            if clock_allowed is not None:
+                while not clock_allowed.wait(0.01):
+                    if executor_stopped.is_set():
+                        return
             subscriptions["/clock"](SimpleNamespace(clock=ns_stamp(timestamp_ns)))
             if input_failure_started is not None:
                 assert allow_input_failure is not None
@@ -813,10 +833,18 @@ def install_comp2026_runtime_fakes(
             vehicle.guarded_bootstrap.append("constructed")
 
         def prepare(self):
+            if prepare_delay_seconds:
+                threading.Event().wait(prepare_delay_seconds)
             vehicle.guarded_bootstrap.append("prepared")
 
         def ready_for_initial_command(self):
-            return True
+            if readiness_checked is not None:
+                readiness_checked.set()
+            return ground_ready.is_set()
+
+        @property
+        def ground_telemetry_pending_reasons(self):
+            return () if ground_ready.is_set() else ("home absent",)
 
         def begin_attempt(self):
             vehicle.guarded_bootstrap.append("begin")
@@ -959,6 +987,247 @@ def test_run_comp2026_keeps_worker_blocked_until_command_status_is_durable(
     assert vehicle.guarded_bootstrap == ["constructed", "prepared", "begin"]
 
 
+def test_run_comp2026_publishes_mission_ready_only_after_ground_and_calibration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ground_ready = threading.Event()
+    readiness_checked = threading.Event()
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+        ground_ready=ground_ready,
+        readiness_checked=readiness_checked,
+    )
+    vehicle.parameters = {"ATC_RAT_RLL_P": 0.041}
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+        calibration_json=json.dumps({
+            "gains": {"ATC_RAT_RLL_P": 0.041},
+            "profile": {"baseline_parameters": {}},
+        }),
+    )
+    result: list[int] = []
+    runtime = threading.Thread(
+        target=lambda: result.append(runtime_node._run_comp2026(config))
+    )
+    runtime.start()
+    try:
+        assert readiness_checked.wait(1.0)
+        assert not any(isinstance(status, MissionReadyStatus) for status in statuses)
+        assert vehicle.assigned_modes == []
+        ground_ready.set()
+        runtime.join(timeout=2.0)
+    finally:
+        ground_ready.set()
+        runtime.join(timeout=2.0)
+
+    assert result == [0]
+    ready_indexes = [
+        index for index, status in enumerate(statuses)
+        if isinstance(status, MissionReadyStatus)
+    ]
+    assert len(ready_indexes) == 1
+    assert ready_indexes[0] < statuses.index(
+        MissionExecutionReadyStatus(RUN_ID, 50_000_000)
+    )
+    assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
+
+
+@pytest.mark.parametrize(
+    ("vehicle_field", "pending_value", "ready_value"),
+    [
+        ("is_armable", False, True),
+        ("last_heartbeat", None, 0.0),
+    ],
+)
+def test_run_comp2026_waits_for_observed_vehicle_readiness_before_mission_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    vehicle_field: str,
+    pending_value: object,
+    ready_value: object,
+) -> None:
+    readiness_checked = threading.Event()
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+        readiness_checked=readiness_checked,
+    )
+    setattr(vehicle, vehicle_field, pending_value)
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+    )
+    result: list[int] = []
+    runtime = threading.Thread(
+        target=lambda: result.append(runtime_node._run_comp2026(config))
+    )
+    runtime.start()
+    try:
+        assert readiness_checked.wait(1.0)
+        assert not any(isinstance(status, MissionReadyStatus) for status in statuses)
+        assert vehicle.assigned_modes == []
+        setattr(vehicle, vehicle_field, ready_value)
+        runtime.join(timeout=2.0)
+    finally:
+        setattr(vehicle, vehicle_field, ready_value)
+        runtime.join(timeout=2.0)
+
+    assert result == [0]
+    assert [status for status in statuses if isinstance(status, MissionReadyStatus)] == [
+        MissionReadyStatus(RUN_ID)
+    ]
+
+
+def test_run_comp2026_startup_deadline_includes_prepare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+        prepare_delay_seconds=0.06,
+    )
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        startup_timeout_seconds=0.05,
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+    )
+
+    assert runtime_node._run_comp2026(config) == 1
+
+    assert vehicle.assigned_modes == []
+    assert not any(isinstance(status, MissionReadyStatus) for status in statuses)
+    failures = [status for status in statuses if isinstance(status, RuntimeFailureStatus)]
+    assert [status.reason for status in failures] == [
+        "competition startup readiness timed out: startup deadline expired"
+    ]
+
+
+def test_run_comp2026_bounds_missing_ground_telemetry_before_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ground_ready = threading.Event()
+    readiness_checked = threading.Event()
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+        ground_ready=ground_ready,
+        readiness_checked=readiness_checked,
+    )
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        startup_timeout_seconds=0.05,
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+    )
+
+    assert runtime_node._run_comp2026(config) == 1
+
+    assert readiness_checked.is_set()
+    assert vehicle.assigned_modes == []
+    assert not any(isinstance(status, MissionReadyStatus) for status in statuses)
+    failures = [status for status in statuses if isinstance(status, RuntimeFailureStatus)]
+    assert [status.reason for status in failures] == [
+        "competition startup readiness timed out: "
+        "safe-ground telemetry is absent or stale: home absent"
+    ]
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    pending = [event for event in events if event["event"] == "ground_telemetry_pending"]
+    assert [event["fields"] for event in pending] == [{"reasons": ["home absent"]}]
+
+
+def test_run_comp2026_waits_for_public_clock_before_initial_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock_allowed = threading.Event()
+    running_delivered = threading.Event()
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+        clock_allowed=clock_allowed,
+        running_delivered=running_delivered,
+    )
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+    )
+    result: list[int] = []
+    runtime = threading.Thread(
+        target=lambda: result.append(runtime_node._run_comp2026(config))
+    )
+    runtime.start()
+    try:
+        assert running_delivered.wait(1.0)
+        assert MissionReadyStatus(RUN_ID) in statuses
+        assert vehicle.assigned_modes == []
+        clock_allowed.set()
+        runtime.join(timeout=2.0)
+    finally:
+        clock_allowed.set()
+        runtime.join(timeout=2.0)
+
+    assert result == [0]
+    assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
+
+
 def test_run_comp2026_verifies_imported_parameters_before_guided(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1044,6 +1313,7 @@ def test_run_comp2026_calibration_mismatch_emits_zero_flight_commands(
     assert [status.reason for status in failures] == [
         "effective required parameter ATC_RAT_RLL_P is 0.05, expected 0.041"
     ]
+    assert not any(isinstance(status, MissionReadyStatus) for status in statuses)
     assert not any(isinstance(status, MissionExecutionReadyStatus) for status in statuses)
 
 
