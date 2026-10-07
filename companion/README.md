@@ -97,12 +97,21 @@ cannot hide a still-fresh prior scan or satisfy a decision before its timestamp.
 Each camera request owns its result queue, so a
 cancelled request cannot fail a later acquisition. Camera failures above that
 range retain their underlying exception details in the terminal diagnostic.
+Marker geometry uses the closest buffered GPS and attitude samples to the frame
+exposure, each within the existing 200 ms association bound. Each pose field
+retains up to 32 distinct simulation timestamps. This lets a frame delivered
+250–450 ms late use its exposure-associated pose; the 500 ms exposure limit and
+fresh flight-state guards still apply.
 GUIDED reacquisition holds the waypoint captured when tracking stops. Its
 200 ms refreshes preserve that goal despite later telemetry drift. The single
 search retry replaces the goal with the acquired anchor at the configured
-acquisition height; refreshes retain that search goal while climbing. Five fresh consistent observations are
-still required before LAND resumes, within the existing hold and operation
-deadlines. Search remains bounded to the configured acquisition hover;
+acquisition height; refreshes retain that search goal while climbing. The retry
+waits for fresh position and altitude within 0.25 m of that goal before starting
+its five-second reacquisition window. The original 60-second operation deadline
+also bounds the climb. Five fresh consistent observations are still required
+before LAND resumes. Structured `precision_observation` logs record frame and
+telemetry timestamps, range, rejection reason, and the preceding reacquisition
+count; `precision_recovery` records search arrival. Search remains bounded to the configured acquisition hover;
 course-wide search is not implemented. For local commands, see the
 [runbook](../docs/runbook.md#local-developer-workflow).
 

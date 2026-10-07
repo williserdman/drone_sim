@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field, replace
 import math
 from typing import Any, Protocol
@@ -75,6 +76,10 @@ class DroneOperations:
         self._sequence = 0
         self._values: dict[str, Any] = {}
         self._observed: dict[str, tuple[int, int]] = {}
+        self._pose_history: dict[str, deque[tuple[int, float]]] = {
+            name: deque(maxlen=32)
+            for name in ("latitude_deg", "longitude_deg", "roll_rad", "pitch_rad", "yaw_rad")
+        }
         self._operations: dict[str, OperationStatus] = {}
         self._active: _Active | None = None
         self._stopped_reason: str | None = None
@@ -241,6 +246,11 @@ class DroneOperations:
                 continue
             self._values[name] = value
             self._observed[name] = (self._clock_ns, self._sequence)
+            if name in self._pose_history:
+                history = self._pose_history[name]
+                if history and history[-1][0] == self._clock_ns:
+                    history.pop()
+                history.append((self._clock_ns, float(value)))
         if telemetry.failsafe_reason is not None:
             self._values["failsafe_reason"] = telemetry.failsafe_reason
         if telemetry.precision_parameters:
@@ -421,40 +431,60 @@ class DroneOperations:
         assert self._active is not None
         assert self._rangefinder is not None
         assert self._course is not None
+        self._active.context["marker_rejection"] = "no_observation"
+        self._active.context["marker_pose_timestamps"] = {}
         if observation is None or observation.aruco_id != aruco_id:
             return None
         if observation.sequence <= self._active.context.get("last_sequence", 0):
+            self._active.context["marker_rejection"] = "repeated_frame"
             return None
         self._active.context["last_sequence"] = observation.sequence
         self._last_marker_sequence = max(self._last_marker_sequence, observation.sequence)
-        if (not observation.exposure_timestamp_ns <= observation.receipt_timestamp_ns <= self._clock_ns
-                or self._clock_ns - observation.exposure_timestamp_ns > 500_000_000):
+        if not observation.exposure_timestamp_ns <= observation.receipt_timestamp_ns <= self._clock_ns:
+            self._active.context["marker_rejection"] = "frame_clock_order"
+            return None
+        if self._clock_ns - observation.exposure_timestamp_ns > 500_000_000:
+            self._active.context["marker_rejection"] = "frame_age"
             return None
         required = ("latitude_deg", "longitude_deg", "roll_rad", "pitch_rad", "yaw_rad")
         if not self._fresh(*required):
+            self._active.context["marker_rejection"] = "telemetry_unavailable"
             return None
-        if any(abs(self._observed[name][0] - observation.exposure_timestamp_ns) > 200_000_000
-               for name in required):
-            return None
+        pose = {}
+        for name in required:
+            stamp, value = min(
+                self._pose_history[name],
+                key=lambda row: abs(row[0] - observation.exposure_timestamp_ns),
+            )
+            self._active.context["marker_pose_timestamps"][name] = stamp
+            if abs(stamp - observation.exposure_timestamp_ns) > 200_000_000:
+                self._active.context["marker_rejection"] = "telemetry_skew"
+                return None
+            pose[name] = value
+        self._active.context["marker_pose"] = pose
         if observation.down_m <= 0:
+            self._active.context["marker_rejection"] = "invalid_depth"
             return None
         try:
             range_observation = self._rangefinder.latest(self._clock_ns)
         except RuntimeError:
+            self._active.context["marker_rejection"] = "range_unavailable"
             return None
         acquisition = getattr(self._course.attempt, "acquisition_agl_m", 4.572)
         if (not 0 <= self._clock_ns - range_observation.timestamp_ns <= 500_000_000
                 or (acquisition_height
                     and abs(range_observation.distance_m - acquisition) > 1.0)):
+            self._active.context["marker_rejection"] = "range_age_or_height"
             return None
+        self._active.context["marker_rejection"] = "healthy"
         north, east = marker_offset_ne(
             observation,
-            roll_rad=self._values["roll_rad"],
-            pitch_rad=self._values["pitch_rad"],
-            yaw_rad=self._values["yaw_rad"],
+            roll_rad=pose["roll_rad"],
+            pitch_rad=pose["pitch_rad"],
+            yaw_rad=pose["yaw_rad"],
         )
         return offset_gps(
-            self._values["latitude_deg"], self._values["longitude_deg"], north, east
+            pose["latitude_deg"], pose["longitude_deg"], north, east
         )
 
     def _evaluate_find_marker(self, active: _Active, aruco_id: int) -> bool:
@@ -520,6 +550,27 @@ class DroneOperations:
         except RuntimeError:
             range_observation = None
         phase = active.context["phase"]
+        if phase == "retry_transit":
+            if self._clock_ns >= active.context["next_hold_ns"]:
+                self._vehicle.send_waypoint(*active.context["hold_target"])
+                active.context["next_hold_ns"] = self._clock_ns + HOLD_REFRESH_NS
+            latitude, longitude, altitude = active.context["hold_target"]
+            arrived = (
+                self._fresh("latitude_deg", "longitude_deg", "relative_altitude_m")
+                and horizontal_distance_m(
+                    (self._values["latitude_deg"], self._values["longitude_deg"]),
+                    (latitude, longitude),
+                ) <= 0.25
+                and abs(self._values["relative_altitude_m"] - altitude) <= 0.25
+            )
+            if not arrived:
+                self._vision.poll()
+                return False
+            phase = "hold"
+            active.context.update(phase=phase, hold_started_ns=self._clock_ns, reacquired=0)
+            self._emit("precision_recovery", self._clock_ns, {
+                "aruco_id": aruco_id, "phase": "search_arrived", "retry": active.context["retry"],
+            })
         if (phase == "tracking"
                 and self._values.get("mode") == "LAND"
                 and range_observation is not None
@@ -531,19 +582,40 @@ class DroneOperations:
             candidate_observation, aruco_id, acquisition_height=False
         )
         healthy = False
+        reason = active.context["marker_rejection"]
         if candidate is not None:
             anchor = active.context["anchor"]
             healthy = horizontal_distance_m(
                 candidate, (anchor.latitude_deg, anchor.longitude_deg)
             ) <= ANCHOR_DRIFT_M
+            if not healthy:
+                reason = "anchor_drift"
             if healthy and phase in {"await_first", "hold"}:
+                pose = active.context["marker_pose"]
                 north, east = marker_offset_ne(
                     candidate_observation,
-                    roll_rad=float(self._values["roll_rad"]),
-                    pitch_rad=float(self._values["pitch_rad"]),
-                    yaw_rad=float(self._values["yaw_rad"]),
+                    roll_rad=pose["roll_rad"],
+                    pitch_rad=pose["pitch_rad"],
+                    yaw_rad=pose["yaw_rad"],
                 )
                 healthy = math.hypot(north, east) <= 0.50
+                if not healthy:
+                    reason = "not_centered"
+        if candidate_observation is not None:
+            self._emit("precision_observation", self._clock_ns, {
+                "aruco_id": aruco_id, "phase": phase, "retry": active.context["retry"],
+                "frame_sequence": candidate_observation.sequence,
+                "exposure_timestamp_ns": candidate_observation.exposure_timestamp_ns,
+                "receipt_timestamp_ns": candidate_observation.receipt_timestamp_ns,
+                "healthy": healthy, "reason": reason,
+                "reacquired_frames_before": active.context["reacquired"],
+                "telemetry_timestamps_ns": active.context["marker_pose_timestamps"],
+                "range_timestamp_ns": None if range_observation is None else range_observation.timestamp_ns,
+                "range_m": None if range_observation is None else range_observation.distance_m,
+                "forward_m": candidate_observation.forward_m,
+                "right_m": candidate_observation.right_m,
+                "down_m": candidate_observation.down_m,
+            })
         if phase == "await_first":
             if not healthy:
                 return False
@@ -600,7 +672,7 @@ class DroneOperations:
                 getattr(self._course.attempt, "acquisition_agl_m", 4.572),
             )
             active.context.update(
-                retry=1, hold_started_ns=self._clock_ns,
+                phase="retry_transit", retry=1, hold_started_ns=None,
                 next_hold_ns=self._clock_ns + HOLD_REFRESH_NS, reacquired=0,
                 hold_target=(anchor.latitude_deg, anchor.longitude_deg,
                              getattr(self._course.attempt, "acquisition_agl_m", 4.572)),

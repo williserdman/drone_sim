@@ -101,6 +101,11 @@ home latitude/longitude. Rearming away from H can update live home telemetry,
 but cannot change the course origin or resolved payload targets.
 During precision recovery, the command owner preserves the selected GUIDED hold
 or search goal across telemetry updates; only the explicit retry replaces it.
+The retry starts its five-second camera reacquisition window after fresh telemetry
+confirms arrival at the search goal. The entire climb and landing remain bounded
+by the original 60-second precision deadline. Marker geometry uses buffered GPS
+and attitude samples associated with exposure within 200 ms, rather than the
+latest pose at processing time; camera exposure still expires after 500 ms.
 
 The [shared VFS configuration](../artifacts/src/artifacts/vfs_contract.py) contains
 immutable course, payload, target, and timing values. It contains no flight or

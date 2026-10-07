@@ -10,20 +10,47 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-Latest VFS attempt `666ac910-6e57-471a-bdc4-f5874ff06f9f` at `5761946`
+Latest VFS attempt `2c73c705-dea5-4388-8c8e-4a1e1a409416` at runtime
+revision `defef6f` completed two C drops, then failed the third FM2 pickup at
+259.70 public seconds with `precision target reacquisition failed`. Its standalone
+score is 65/380. It terminated `FAILED` at `2026-10-07T01:47:44.764088Z`;
+manifest SHA-256
+`46daf13d5d78062fc2c9eb5e67afc8b593b756cff45cd0ec6821fb9e4bd6c093`.
+All 15 artifact paths were invalid at the finalization deadline; manifest score
+was null. Native DataFlash
+confirms the selected 4.572 m search goal persisted across every 200 ms refresh.
+The remaining timing defect started the retry's five-second reacquisition window
+when ascent began at 254.70 seconds. Arrival took about 3.4 seconds, leaving only
+about 1.6 seconds at search height. The imported mission waits for search arrival
+before reacquiring. The configured operation now does the same, using fresh
+position and altitude within 0.25 m; the original 60-second overall deadline still
+bounds ascent and landing. Regressions were RED before this fix. All 60 focused
+companion checks and production type checks passed afterward, including the full
+post-arrival window, five fresh frames, and timeout during ascent. Frame rejection
+reasons and timestamps now appear in structured companion logs. Actual bag
+metadata also showed 250–450 ms camera delivery lag while range and payload
+streams stayed within 50 ms. Detector logs contained centered markers throughout
+the failure. The old geometry path required the latest pose to match exposure
+within 200 ms, discarding delayed frames even when an associated pose was
+available. A new regression reproduced that rejection; geometry now selects
+from 32 buffered pose samples per field, preserving the 200 ms association and
+500 ms exposure limits. Missing associated poses still fail closed. The exact
+per-frame rejection in this historical flight was not recorded; the timing
+evidence supports this cause without proving which frame hit which gate. Native image
+verification and a fresh accepted full-window flight remain required.
+
+Previous attempt `666ac910-6e57-471a-bdc4-f5874ff06f9f` at `5761946`
 completed three C drops and FM2, then failed its first retrieval at 346.60 public
-seconds with `precision target reacquisition failed`. Its standalone score was
-215/380; normal failed artifact finalization is pending. Native DataFlash
-confirms a recovery defect: at 341.60 seconds the companion commanded the
-4.572 m search hover, then its next 200 ms refresh replaced that goal with the
-current 3.63 m altitude. The preceding failed retrieval at `6637136` shows the
-same overwrite at ground level. The completed physical flight below reacquired
-before reaching this retry path. The waypoint now stays fixed during GUIDED
-hold, and the single retry replaces it with the search anchor; subsequent
-refreshes cannot cancel that climb. The new regression failed before the fix.
-All 54 focused companion checks and relevant type checks passed afterward,
-including five-frame reacquisition and bounded touchdown/disarm. Matching
-rebuilt images and a fresh accepted full-window run remain required.
+seconds with `precision target reacquisition failed`. It terminated `FAILED` at
+`2026-10-07T00:36:28.033847Z`; manifest SHA-256
+`86589632ec115533c7aa9e9985536dbda554e20aa4057a6b3abb35a1f9be96e0`.
+All 15 artifact paths were invalid at the finalization deadline; manifest score
+was null. Its standalone 215/380 score is not accepted evidence. DataFlash showed
+that a search hover command was overwritten by the next 200 ms hold refresh.
+The preceding failed retrieval at `6637136` showed the same overwrite at ground
+level. The persistent-goal fix passed 54 focused checks and native old-image RED /
+new-image GREEN probes. Flight 16 confirmed that fix, then exposed the ascent
+budget defect above. These preserved failed runs do not establish acceptance.
 
 The latest completed physical VFS flight is run `a75d91ae-d05b-4f55-a11c-7706e2425bed`
 at frozen runtime revision `caae0b8e14604af9a5fdecf85922ac3c2d276cc3`.
@@ -258,7 +285,8 @@ score alone is not a pass.
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
 | --- | --- | --- | --- | --- |
-| VFS retry failure, run `666ac910-6e57-471a-bdc4-f5874ff06f9f` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone | Failed finalization pending; no full-window acceptance | DataFlash confirms search-hover goal overwritten; runtime `5761946` |
+| VFS third-pickup failure, run `2c73c705-dea5-4388-8c8e-4a1e1a409416` | Two C drops; third FM2 pickup failed before attachment | 65/380 standalone | `FAILED`; all 15 artifact paths invalid; manifest score null; no accepted full-window bundle | Runtime `defef6f`; fixed search goal persisted, but retry window included ascent |
+| VFS retry failure, run `666ac910-6e57-471a-bdc4-f5874ff06f9f` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone; manifest score null | `FAILED` with `precision target reacquisition failed`; all 15 artifact paths invalid at finalization; manifest SHA-256 `86589632ec115533c7aa9e9985536dbda554e20aa4057a6b3abb35a1f9be96e0` | Runtime `5761946`; standalone score is not accepted evidence |
 | VFS 2027 all-C run `a75d91ae-d05b-4f55-a11c-7706e2425bed` | Three C drops; three grounded L deliveries; H landing/disarm; FM3 approved at 566.25 active seconds | 366/380; independently replayed | `FAILED`; full 780-second recording, duplicate aggregate score references rejected | Frozen runtime `caae0b8`; diagnostic replay does not repair the terminal manifest |
 | [Accepted competition baseline](verification/comp2026-mvp.md), run `3dc895c3-a5aa-4651-a893-d21884fa43f5` | Returned Home and disarmed in the accepted 600-second run | 150/150 | `COMPLETED`; accepted bundle | Historical external evidence; does not prove current source or images |
 | [Payload timestamp verification](payload-timestamp-fix.md), run `259863d9-c558-4102-ae34-fe6c31f5cf94` | Completed all three payloads and Home | 150/150 | `FAILED`; terminal artifacts invalid after a later downward-range timestamp/grid fault | Proves the recorded physical flight, not a full-window pass |

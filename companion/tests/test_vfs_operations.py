@@ -518,6 +518,119 @@ def test_precision_land_search_retry_keeps_acquisition_target_while_climbing() -
     assert operations.operation_status(operation_id).state == "succeeded"
 
 
+@pytest.mark.parametrize("reacquire", [True, False, None])
+def test_precision_retry_reacquisition_window_starts_after_search_arrival(reacquire: bool | None) -> None:
+    vision, vehicle, rangefinder = Vision(), Vehicle(), Rangefinder()
+    operations = DroneOperations(
+        vehicle, course=course(), scenario=scenario(), vision=vision,
+        rangefinder=rangefinder,
+    )
+    observe_flight(operations, 0, relative_altitude_m=4.572,
+                   precision_parameters=dict(PRECISION_PARAMETERS))
+    acquire_marker(operations, vision)
+    operation_id = operations.start("precision_land", {"aruco_id": 2})
+    vision.add(MarkerObservation(2, 6, 300_000_000, 300_000_000, 0.0, 0.0, 4.572))
+    observe_flight(operations, 300_000_000, relative_altitude_m=4.572)
+    rangefinder.distance_m = 1.0
+    observe_flight(operations, 800_000_000, mode="LAND", relative_altitude_m=1.0)
+    observe_flight(operations, 5_800_000_000, relative_altitude_m=0.79)
+    observe_flight(operations, 11_000_000_000, relative_altitude_m=3.0)
+    assert operations.operation_status(operation_id).state == "running"
+    assert vehicle.commands[-1] == ("waypoint", 41.0, -81.0, 4.572)
+    if reacquire is None:
+        observe_flight(operations, 60_250_000_000, relative_altitude_m=3.0)
+        status = operations.operation_status(operation_id)
+        assert status.state == "failed"
+        assert "timeout" in status.error
+        assert vision.cancelled
+        return
+
+    rangefinder.distance_m = 4.572
+    observe_flight(operations, 12_000_000_000, relative_altitude_m=4.572)
+    if reacquire:
+        for sequence in range(7, 12):
+            stamp = 16_500_000_000 + (sequence - 6) * 100_000_000
+            vision.add(MarkerObservation(2, sequence, stamp, stamp, 0.0, 0.0, 4.572))
+            observe_flight(operations, stamp, relative_altitude_m=4.572)
+            if sequence < 11:
+                assert vehicle.commands[-1] != ("mode", "LAND")
+        assert vehicle.commands[-1] == ("mode", "LAND")
+        observe_flight(operations, 17_100_000_000, mode="LAND", armed=False,
+                       landed=True, relative_altitude_m=0.195)
+        assert operations.operation_status(operation_id).state == "succeeded"
+    else:
+        observe_flight(operations, 16_900_000_000, relative_altitude_m=4.572)
+        assert operations.operation_status(operation_id).state == "running"
+        observe_flight(operations, 17_000_000_000, relative_altitude_m=4.572)
+        status = operations.operation_status(operation_id)
+        assert status.state == "failed"
+        assert status.error == "precision target reacquisition failed"
+
+
+@pytest.mark.parametrize("associated_pose", [True, False])
+def test_precision_delayed_frame_uses_associated_pose_and_rejects_missing_pose(associated_pose: bool) -> None:
+    events = []
+    vision, vehicle = Vision(), Vehicle()
+    operations = DroneOperations(
+        vehicle, lambda event, stamp, fields: events.append((event, stamp, fields)),
+        course=course(), scenario=scenario(), vision=vision, rangefinder=Rangefinder(),
+    )
+    observe_flight(operations, 0, relative_altitude_m=4.572,
+                   precision_parameters=dict(PRECISION_PARAMETERS))
+    acquire_marker(operations, vision)
+    operations.start("precision_land", {"aruco_id": 2})
+    vision.add(MarkerObservation(2, 6, 300_000_000, 300_000_000, 0.0, 0.0, 4.572))
+    observe_flight(operations, 300_000_000, relative_altitude_m=4.572)
+    if associated_pose:
+        observe_flight(operations, 700_000_000, mode="LAND", relative_altitude_m=4.572)
+    moved_latitude, moved_longitude = offset_gps(41.0, -81.0, 0.30, 0.0)
+    vision.add(MarkerObservation(2, 7, 700_000_000, 900_000_000, 0.10, 0.0, 4.572))
+    observe_flight(
+        operations, 1_000_000_000, mode="LAND", relative_altitude_m=4.572,
+        latitude_deg=moved_latitude, longitude_deg=moved_longitude, pitch_rad=0.20,
+    )
+    rows = [row for row in events if row[0] == "precision_observation"]
+    if associated_pose:
+        assert vehicle.commands[-1][0] == "landing_target"
+        assert rows[-1][2]["healthy"] is True
+        assert set(rows[-1][2]["telemetry_timestamps_ns"].values()) == {700_000_000}
+    else:
+        assert vehicle.commands[-1] == ("mode", "GUIDED")
+        assert rows[-1][2]["reason"] == "telemetry_skew"
+
+
+def test_precision_observation_logs_rejected_age_and_accepted_reacquisition() -> None:
+    events = []
+    vision, vehicle = Vision(), Vehicle()
+    operations = DroneOperations(
+        vehicle, lambda event, stamp, fields: events.append((event, stamp, fields)),
+        course=course(), scenario=scenario(), vision=vision, rangefinder=Rangefinder(),
+    )
+    observe_flight(operations, 0, relative_altitude_m=4.572,
+                   precision_parameters=dict(PRECISION_PARAMETERS))
+    acquire_marker(operations, vision)
+    operation_id = operations.start("precision_land", {"aruco_id": 2})
+    vision.add(MarkerObservation(2, 6, 300_000_000, 300_000_000, 0.0, 0.0, 4.572))
+    observe_flight(operations, 300_000_000, relative_altitude_m=4.572)
+    operations.tick(800_000_000)
+    vision.add(MarkerObservation(2, 7, 300_000_000, 300_000_000, 0.0, 0.0, 4.572))
+    observe_flight(operations, 1_000_000_000, relative_altitude_m=4.572)
+    rows = [row for row in events if row[0] == "precision_observation"]
+    assert rows[-1][1] == 1_000_000_000
+    assert rows[-1][2]["reason"] == "frame_age"
+    assert rows[-1][2]["frame_sequence"] == 7
+    assert rows[-1][2]["exposure_timestamp_ns"] == 300_000_000
+    assert rows[-1][2]["receipt_timestamp_ns"] == 300_000_000
+    assert rows[-1][2]["phase"] == "hold"
+    assert rows[-1][2]["healthy"] is False
+    vision.add(MarkerObservation(2, 8, 1_050_000_000, 1_050_000_000, 0.0, 0.0, 4.572))
+    observe_flight(operations, 1_050_000_000, relative_altitude_m=4.572)
+    rows = [row for row in events if row[0] == "precision_observation"]
+    assert rows[-1][2]["reason"] == "healthy"
+    assert rows[-1][2]["healthy"] is True
+    assert operations.operation_status(operation_id).state == "running"
+
+
 def test_precision_land_is_bounded_to_sixty_simulated_seconds_and_abort_cancels() -> None:
     vision = Vision()
     operations = DroneOperations(
