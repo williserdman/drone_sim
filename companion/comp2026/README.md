@@ -217,6 +217,11 @@ from one stage cannot skip later safe stages or replace the original run or
 observer error. Authority loss stops the payload cleanup operation that
 encountered it; cleanup does not retry flight or actuator output.
 
+The automatic single-attempt sequencer requires one validated
+`PrecisionMissionPolicy` before it starts FM1. It passes that same policy to
+both active FM3 payload cycles; missing or invalid policy fails before mission
+state, events, or flight output.
+
 `RuntimeConfiguration.components` selects exactly one component binding. Calling
 `build_live_listener` without explicit factories requires
 `HardwareComponentConfig` and selects the fixed `physical-hardware-v1` backend.
