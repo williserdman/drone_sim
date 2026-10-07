@@ -497,6 +497,7 @@
         <cmd_min>-3.4</cmd_min>
         <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
       </control>
+      <rc_input_pwm>1500 1500 1000 1500 1500 1500 1500</rc_input_pwm>
     </plugin>
     <link name="competition_sensor_link">
       <pose>0 0 0 0 0 0</pose>

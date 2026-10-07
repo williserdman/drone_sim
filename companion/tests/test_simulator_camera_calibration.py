@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from drone_sim_companion.comp2026_host import SimulationClock
 import drone_sim_companion.runtime_node as runtime_node
 
 
@@ -23,6 +24,7 @@ def test_competition_runtime_uses_gazebo_camera_intrinsics(
         CameraManager,
         Camera,
         frame_source=object(),
+        clock=SimulationClock(),
     )
     rendered_corners = [
         np.array(

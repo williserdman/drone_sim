@@ -171,6 +171,9 @@ def test_competition_generator_preserves_the_validated_flight_motor_layout(tmp_p
     generated = ET.parse(
         tmp_path / "models/iris_competition/model.sdf"
     ).getroot().find("model")
+    moving = ET.parse(
+        tmp_path / "models/iris_moving_pad/model.sdf"
+    ).getroot().find("model")
 
     source_controls = source.findall("plugin[@name='ArduPilotPlugin']/control")
     generated_controls = generated.findall(
@@ -185,6 +188,21 @@ def test_competition_generator_preserves_the_validated_flight_motor_layout(tmp_p
     assert [node.findtext("multiplier") for node in generated_controls] == [
         node.findtext("multiplier") for node in source_controls
     ] == ["838", "838", "-838", "-838"]
+
+    assert generated.findtext(
+        "plugin[@name='ArduPilotPlugin']/rc_input_pwm"
+    ) == "1500 1500 1000 1500 1500 1500 1500"
+    assert source.find("plugin[@name='ArduPilotPlugin']/rc_input_pwm") is None
+    assert moving.find("plugin[@name='ArduPilotPlugin']/rc_input_pwm") is None
+
+
+def test_ardupilot_patch_writes_configured_rc_pwm_in_native_json_units():
+    patch = (ROOT / "gazebo/plugin/0001-paused-initial-json.patch").read_text()
+
+    assert 'sdfClone->Get<std::string>("rc_input_pwm")' in patch
+    assert 'writer.Key("rc")' in patch
+    assert 'writer.Key(("rc_" + std::to_string(index + 1)).c_str())' in patch
+    assert "writer.Uint(this->dataPtr->rcInputPwm[index])" in patch
 
 
 def test_flight_world_retains_project_cameras_marker_and_exact_sim_cadence():

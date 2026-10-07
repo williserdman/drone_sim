@@ -84,7 +84,10 @@ replace `SOURCE_RUN_ID` with an accepted `autotune` run ID before launch.
 The explicit `calibration_validation: true` role selects reload hover checks;
 ordinary calibrated missions retain their own contracts. Imported profiles bind
 the consumer model, ordered scenario overlays and effective baseline. The
-original unloaded version-1 profile remains valid only for `iris_flight`.
+competition consumer includes the native RC mode-channel overlay from
+[`competition.parm`](../ardupilot_sitl/params/competition.parm) in that identity
+and preflight readback; it does not change the shared physical airframe.
+The original unloaded version-1 profile remains valid only for `iris_flight`.
 
 The [moving-pad template](../config/configured-moving-pad-run.json) binds
 `configured`, `iris_moving_pad`, and `moving_pad_v1` to the moving-pad world,

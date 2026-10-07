@@ -16,7 +16,7 @@ index 8309c37..2250d09 100755
  #include <chrono>
  #include <functional>
  #include <memory>
-@@ -368,6 +371,23 @@ class gz::sim::systems::ArduPilotPluginPrivate
+@@ -368,6 +371,26 @@ class gz::sim::systems::ArduPilotPluginPrivate
    /// \brief Last sent JSON string, so we can resend if needed.
    public: std::string json_str;
  
@@ -37,10 +37,13 @@ index 8309c37..2250d09 100755
 +  public: std::atomic<uint64_t> lastServoFrame{0};
 +  public: std::atomic<uint64_t> lastJsonSimTimeNs{0};
 +
++  /// \brief Optional native PWM values supplied through the JSON FDM link.
++  public: std::vector<uint16_t> rcInputPwm;
++
    /// \brief A copy of the most recently received signal.
    public: int signal{0};
  
-@@ -517,9 +537,47 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
+@@ -517,9 +540,68 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
    this->dataPtr->isNoTimeSync =
      sdfClone->Get("no_time_sync", this->dataPtr->isNoTimeSync).first;
  
@@ -48,6 +51,27 @@ index 8309c37..2250d09 100755
 +  this->dataPtr->have32Channels =
      sdfClone->Get("have_32_channels", false).first;
  
++  if (sdfClone->HasElement("rc_input_pwm"))
++  {
++    const auto configured = sdfClone->Get<std::string>("rc_input_pwm");
++    std::istringstream values(configured);
++    unsigned int pwm;
++    while (values >> pwm)
++    {
++      if (pwm < 1000 || pwm > 2000)
++      {
++        gzerr << "rc_input_pwm values must be within 1000..2000\n";
++        return;
++      }
++      this->dataPtr->rcInputPwm.push_back(static_cast<uint16_t>(pwm));
++    }
++    if (!values.eof() || this->dataPtr->rcInputPwm.size() != 7)
++    {
++      gzerr << "rc_input_pwm must contain exactly seven PWM values\n";
++      return;
++    }
++  }
++
 +  // Advertise only after the flight UDP socket is bound. This gives the
 +  // local runtime a fail-closed observation of plugin acquisition and bind.
 +  const std::string statusService =
@@ -241,7 +265,20 @@ index 8309c37..2250d09 100755
      }
  
      // it is assumed that the imu orientation conforms to the
-@@ -2019,21 +2089,30 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+@@ -2018,22 +2109,43 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
++    if (!this->dataPtr->rcInputPwm.empty())
++    {
++        writer.Key("rc");
++        writer.StartObject();
++        for (size_t index = 0; index < this->dataPtr->rcInputPwm.size(); ++index)
++        {
++            writer.Key(("rc_" + std::to_string(index + 1)).c_str());
++            writer.Uint(this->dataPtr->rcInputPwm[index]);
++        }
++        writer.EndObject();
++    }
++
+     writer.EndObject();
  
      // get JSON
      this->dataPtr->json_str = "\n" + std::string(s.GetString()) + "\n";

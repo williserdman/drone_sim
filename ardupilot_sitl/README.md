@@ -82,6 +82,10 @@ that SITL exited, and it always attempts to close the protocol.
   missed pickup through the scorer or by silently overriding these values at
   runtime; inspect [descent.parm](params/descent.parm) and its executable
   assertions in [test_config.py](tests/test_config.py).
+- The `competition_v1` scenario loads [competition.parm](params/competition.parm)
+  between the base profile and imported calibration gains. It enables native
+  flight-mode input on RC7: 1000 selects STABILIZE, 1500 selects GUIDED, and
+  2000 selects LOITER. Other scenarios retain `FLTMODE_CH=0`.
 - A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
   comma-separated `--defaults` argument. The current moving-only experiment
   selects stock `AHRS_EKF_TYPE=3` and native precision `PLND_EST_TYPE=1`, with

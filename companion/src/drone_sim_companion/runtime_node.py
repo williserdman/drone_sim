@@ -444,8 +444,29 @@ def _deliver_comp2026_initial_command(
     return claimed and delivered
 
 
-class _InitialCommandWindowMissed(Exception):
+class _InitialCommandWindowMissed(RuntimeError):
     pass
+
+
+def _comp2026_initial_transport(clock, controller, native_transaction):
+    """Keep the first guarded GUIDED enqueue inside the public clock window."""
+    def transaction(output, before_final):
+        if controller._guided_output_delivery_reported:
+            return native_transaction(output, before_final)
+        result = []
+
+        def enqueue(timestamp_ns):
+            if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
+                raise _InitialCommandWindowMissed(
+                    "initial GUIDED command missed the 50 ms delivery window"
+                )
+            result.append(native_transaction(output, before_final))
+
+        if not clock.run_at_current_timestamp(enqueue):
+            raise RuntimeError("initial GUIDED command requires the public clock")
+        return result[0]
+
+    return transaction
 
 
 def comp2026_start_gate_poll_required(
@@ -1355,13 +1376,18 @@ def _create_simulator_camera(
     camera_manager_type: Any,
     camera_type: Any,
     frame_source: Any,
+    *,
+    clock: SimulationClock,
 ) -> Any:
     calibration_path = Path(__file__).with_name("gazebo_camera_calibration.json")
+    mounting_path = Path(__file__).with_name("gazebo_camera_mounting.json")
     manager = camera_manager_type(
         frame_source=frame_source,
         calibration_path=calibration_path,
+        clock=lambda: clock.timestamp_ns,
+        max_exposure_age_ns=250_000_000,
     )
-    return camera_type(100, manager=manager)
+    return camera_type(100, manager=manager, mounting_path=mounting_path)
 
 
 def _run_comp2026(config: RuntimeConfig) -> int:
@@ -1378,11 +1404,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     import rclpy
     from drone.auto_attempt import run_auto_attempt
     from drone import timebase
-    from drone.control.drone_control import DroneControl
     from drone.control.mission_info import MissonTracker
     from drone.sensors.camera._camera_manager import CameraManager
     from drone.sensors.camera.camera import Camera
-    from dronekit import VehicleMode
+    from .comp2026_control import SimulationCompetitionControl
+    from .comp2026_policy import build_competition_policy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
@@ -1403,6 +1429,9 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             ),
         )
 
+    policy = build_competition_policy(
+        config.run_directory / "configuration/run.json", clock=timebase.monotonic
+    )
     rclpy.init()
     node = Node("drone_sim_companion")
     clock_callback_group = MutuallyExclusiveCallbackGroup()
@@ -1420,7 +1449,9 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     frame_source = RosFrameSource(width_px=640, height_px=480)
     lidar = RosLidar(clock)
     gate = Comp2026StartGate()
-    calibration = _CalibrationReadiness(calibration_parameters(config))
+    calibration = _CalibrationReadiness({
+        **policy.parameter_expectations, **calibration_parameters(config),
+    })
     mission_publisher = node.create_publisher(
         MissionEvent,
         "/simulation/mission_events",
@@ -1439,7 +1470,9 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     runtime_failure_lock = threading.Lock()
     exit_code = 0
     controller: Any | None = None
+    competition_control: Any | None = None
     mission_worker: threading.Thread | None = None
+    initial_command_allowed = threading.Event()
     last_start_readiness: dict[str, bool] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
@@ -1512,25 +1545,19 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             runtime_failure_written = True
 
     def best_effort_recovery() -> None:
-        if controller is None:
+        if competition_control is None:
             return
         with timebase.configured(clock):
-            for name, action in (
-                ("RTL", controller.rtl),
-                ("LAND", controller.simple_land),
-                ("DISARM", controller.disarm),
-            ):
-                try:
-                    action()
-                except Exception as error:
-                    lifecycle.emit(
-                        "recovery_failed",
-                        clock.timestamp_ns,
-                        {"action": name, "reason": str(error)},
-                    )
+            try:
+                competition_control.recover()
+            except Exception as error:
+                lifecycle.emit("recovery_failed", clock.timestamp_ns, {"reason": str(error)})
 
     def stop_attempt(reason: str) -> None:
+        if competition_control is not None:
+            competition_control.abort(reason)
         gate.stop(reason)
+        initial_command_allowed.set()
         frame_source.stop(reason)
         payload_client.stop()
         clock.stop(reason)
@@ -1551,17 +1578,38 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         recover=best_effort_recovery,
     )
 
+    def guided_delivered() -> None:
+        nonlocal initial_command_delivered
+        timestamp = clock.timestamp_ns
+        if timestamp is None or timestamp > INITIAL_COMMAND_WINDOW_NS:
+            raise RuntimeError("initial GUIDED command missed the 50 ms delivery window")
+        lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, timestamp)
+        initial_command_delivered = True
+
+    def mission_event(phase: str, state: str) -> None:
+        assert competition_control is not None
+        competition_control.phase_event(phase, state)
+        emitter(phase, state)
+
     def run_original_attempt() -> None:
         try:
+            initial_command_allowed.wait()
+            if shutdown_admission.shutdown_requested or attempt_failure.failed:
+                return
+            assert competition_control is not None
+            competition_control.begin_attempt()
+            competition_control.controller.set_guided_mode()
+            gate.mark_command_delivered()
             gate.wait_until_ready()
             assert controller is not None
-            current_home = controller.get_current_gps()
-            home = GPSCoord(current_home.lat, current_home.long, 0.0)
+            current_home = controller.mission_home
+            home = GPSCoord(current_home.lat, current_home.lon, 0.0)
             waypoints = load_course_waypoints(config.course_path, home)
             camera = _create_simulator_camera(
                 CameraManager,
                 Camera,
                 frame_source,
+                clock=clock,
             )
             tracker = MissonTracker(600)
             payloads = {
@@ -1576,7 +1624,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     lidar=lidar,
                     payloads=payloads,
                     waypoints=waypoints,
-                    emit=emitter,
+                    emit=mission_event,
+                    precision_policy=policy.precision_policy,
                 )
             if not emitter.home_complete:
                 raise RuntimeError("original attempt returned without HOME/COMPLETE")
@@ -1588,6 +1637,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     )
                 )
             )
+        except _InitialCommandWindowMissed as error:
+            attempt_failure.fail(str(error))
         except Exception as error:
             if shutdown_admission.shutdown_requested:
                 return
@@ -1632,12 +1683,26 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     )
     sensor_subscriptions_active = True
     overall_wall_deadline = time.monotonic() + config.max_wall_seconds
+    clock_scope = timebase.configured(clock)
+    clock_scope.__enter__()
     try:
         try:
-            controller = DroneControl(
-                config.mavlink_endpoint,
-                wait_ready=False,
+            competition_control = SimulationCompetitionControl(
+                policy=policy,
+                run_id=config.run_id,
+                run_directory=config.run_directory,
+                endpoint=config.mavlink_endpoint,
                 heartbeat_timeout=config.startup_timeout_seconds,
+                guided_output_delivery_callback=guided_delivered,
+            )
+            controller = competition_control.controller
+            competition_control.prepare()
+            controller.install_output_transactions(
+                dependency_transaction=competition_control.decoders.output_transaction,
+                supervisor_transaction=competition_control.supervisor.output_transaction,
+                transport_transaction=_comp2026_initial_transport(
+                    clock, controller, controller._transport_output_transaction
+                ),
             )
         except Exception as error:
             attempt_failure.fail(f"DroneKit connection failed: {error}")
@@ -1698,6 +1763,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     mission_running
                     and gate.mission_ready
                     and not initial_command_delivered
+                    and not initial_command_allowed.is_set()
+                    and competition_control.ready_for_initial_command()
                     and calibration.release(
                         protocol,
                         lifecycle,
@@ -1705,19 +1772,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         clock.timestamp_ns or 0,
                     )
                 ):
-                    def mark_initial_command_delivered() -> None:
-                        nonlocal initial_command_delivered
-                        initial_command_delivered = True
-
-                    _deliver_comp2026_initial_command(
-                        vehicle=controller.vehicle,
-                        vehicle_mode_type=VehicleMode,
-                        lifecycle=lifecycle,
-                        gate=gate,
-                        attempt_failure=attempt_failure,
-                        clock=clock,
-                        mark_delivered=mark_initial_command_delivered,
-                        shutdown_admission=shutdown_admission,
+                    attempt_failure.finish_success(
+                        lambda: shutdown_admission.run_if_active(initial_command_allowed.set)
                     )
             if (
                 sensor_subscriptions_active
@@ -1746,6 +1802,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             ):
                 attempt_failure.recover_once()
             node.destroy_node()
+            if competition_control is not None:
+                competition_control.close()
             if controller is not None:
                 try:
                     controller.vehicle.close()
@@ -1764,6 +1822,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         )
         protocol.close()
         rclpy.shutdown()
+        clock_scope.__exit__(None, None, None)
     return exit_code
 
 

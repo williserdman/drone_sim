@@ -646,6 +646,7 @@ def install_comp2026_runtime_fakes(
     vehicle.last_heartbeat = 0.0  # type: ignore[attr-defined]
     vehicle.is_armable = True  # type: ignore[attr-defined]
     vehicle.close = lambda: None  # type: ignore[attr-defined]
+    vehicle.guarded_bootstrap = []  # type: ignore[attr-defined]
 
     def ns_stamp(value: int) -> object:
         return SimpleNamespace(
@@ -771,6 +772,49 @@ def install_comp2026_runtime_fakes(
         def disarm(self) -> None:
             pass
 
+    class SimulationCompetitionControl:
+        def __init__(self, **options):
+            self.controller = DroneControl()
+            self.controller.mission_home = SimpleNamespace(lat=1.0, lon=2.0, amsl_m=0.19)
+            self.controller._guided_output_delivery_reported = False
+            self.controller._transport_output_transaction = lambda output, before: (before(), output())[-1]
+            self.controller.install_output_transactions = lambda **values: setattr(
+                self.controller, "_transport_output_transaction", values["transport_transaction"]
+            )
+            self.decoders = SimpleNamespace(output_transaction=lambda operation: operation())
+            self.supervisor = SimpleNamespace(output_transaction=lambda operation: operation())
+            self.controller.set_guided_mode = self.set_guided_mode
+            self.delivery = options["guided_output_delivery_callback"]
+            vehicle.guarded_bootstrap.append("constructed")
+
+        def prepare(self):
+            vehicle.guarded_bootstrap.append("prepared")
+
+        def ready_for_initial_command(self):
+            return True
+
+        def begin_attempt(self):
+            vehicle.guarded_bootstrap.append("begin")
+
+        def set_guided_mode(self):
+            def output():
+                vehicle.mode = InitialCommandMode("GUIDED")
+                self.controller._guided_output_delivery_reported = True
+                self.delivery()
+            self.controller._transport_output_transaction(output, lambda: None)
+
+        def phase_event(self, _phase, _state):
+            pass
+
+        def abort(self, _reason):
+            pass
+
+        def recover(self):
+            pass
+
+        def close(self):
+            pass
+
     class RunState:
         RUNNING = 1
         FINALIZING = 2
@@ -790,7 +834,7 @@ def install_comp2026_runtime_fakes(
         monkeypatch.setitem(sys.modules, name, result)
         return result
 
-    timebase = module("drone.timebase", configured=lambda _clock: nullcontext())
+    timebase = module("drone.timebase", configured=lambda _clock: nullcontext(), monotonic=lambda: 0.0)
     drone = module("drone", timebase=timebase)
     del drone
     module(
@@ -805,6 +849,8 @@ def install_comp2026_runtime_fakes(
     module("drone.sensors.camera._camera_manager", CameraManager=lambda **_kwargs: object())
     module("drone.sensors.camera.camera", Camera=lambda *_args, **_kwargs: object())
     module("dronekit", VehicleMode=InitialCommandMode)
+    module("drone_sim_companion.comp2026_control", SimulationCompetitionControl=SimulationCompetitionControl)
+    module("drone_sim_companion.comp2026_policy", build_competition_policy=lambda *_args, **_kwargs: SimpleNamespace(parameter_expectations={}, precision_policy=object()))
     rclpy = module(
         "rclpy",
         init=lambda: None,
@@ -885,6 +931,7 @@ def test_run_comp2026_keeps_worker_blocked_until_command_status_is_durable(
     assert mission_entered.is_set()
     assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
     assert MissionCommandDeliveredStatus(RUN_ID, 50_000_000) in statuses
+    assert vehicle.guarded_bootstrap == ["constructed", "prepared", "begin"]
 
 
 def test_run_comp2026_verifies_imported_parameters_before_guided(
@@ -1612,20 +1659,21 @@ def test_runtime_has_no_gazebo_ground_truth_dependency() -> None:
 def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> None:
     source = (
         Path(__file__).parents[1]
-        / "src/drone_sim_companion/runtime_node.py"
+        / "src/drone_sim_companion/comp2026_control.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    run_comp2026 = next(
+    constructor = next(
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_run_comp2026"
+        if isinstance(node, ast.ClassDef)
+        and node.name == "SimulationCompetitionControl"
     )
     constructors = [
         node
-        for node in ast.walk(run_comp2026)
+        for node in ast.walk(constructor)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "DroneControl"
+        and node.func.id == "controller_factory"
     ]
 
     assert len(constructors) == 1
@@ -1637,10 +1685,8 @@ def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> Non
     assert isinstance(wait_ready, ast.Constant)
     assert wait_ready.value is False
     heartbeat_timeout = keywords["heartbeat_timeout"]
-    assert isinstance(heartbeat_timeout, ast.Attribute)
-    assert isinstance(heartbeat_timeout.value, ast.Name)
-    assert heartbeat_timeout.value.id == "config"
-    assert heartbeat_timeout.attr == "startup_timeout_seconds"
+    assert isinstance(heartbeat_timeout, ast.Name)
+    assert heartbeat_timeout.id == "heartbeat_timeout"
 
 
 def test_competition_ros_callbacks_separate_ordered_control_from_camera_work() -> None:

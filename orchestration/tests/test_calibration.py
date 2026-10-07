@@ -30,7 +30,10 @@ def test_source_profile_binds_all_compatible_vehicle_models():
 def test_calibration_import_binds_consumer_and_effective_overlay(tmp_path, vehicle):
     project = Path(__file__).parents[2]
     source, _ = _source(tmp_path, project)
-    scenario = "moving_pad_v1" if vehicle == "iris_moving_pad" else "descent_v1"
+    scenario = {
+        "iris_moving_pad": "moving_pad_v1",
+        "iris_competition": "competition_v1",
+    }.get(vehicle, "descent_v1")
     frozen = freeze_calibration_import(
         source, project_directory=project, consumer_vehicle=vehicle,
         consumer_scenario=scenario,
@@ -47,6 +50,17 @@ def test_calibration_import_binds_consumer_and_effective_overlay(tmp_path, vehic
     if vehicle == "iris_moving_pad":
         assert profile["effective_baseline_parameters"]["AHRS_EKF_TYPE"] == 3.0
         assert profile["effective_baseline_parameters"]["PLND_LAG"] == 0.04
+        assert len(profile["overlay_parameter_sha256s"]) == 1
+    elif vehicle == "iris_competition":
+        assert {
+            name: profile["effective_baseline_parameters"][name]
+            for name in ("FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6")
+        } == {
+            "FLTMODE_CH": 7.0,
+            "FLTMODE1": 0.0,
+            "FLTMODE4": 4.0,
+            "FLTMODE6": 5.0,
+        }
         assert len(profile["overlay_parameter_sha256s"]) == 1
 
 

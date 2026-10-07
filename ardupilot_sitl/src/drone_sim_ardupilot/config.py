@@ -14,6 +14,7 @@ from uuid import UUID
 
 
 MOVING_PAD_PARAMETERS = Path("/opt/drone_sim/ardupilot/params/moving-pad.parm")
+COMPETITION_PARAMETERS = Path("/opt/drone_sim/ardupilot/params/competition.parm")
 CALIBRATION_PARAMETERS = (
     "ATC_ANG_RLL_P",
     "ATC_RAT_RLL_P",
@@ -102,9 +103,10 @@ def parameter_files_from_environment(
             raise ValueError(
                 "config_sha256 does not match the frozen configuration"
             )
-    overlay = (
-        MOVING_PAD_PARAMETERS if document.get("scenario") == "moving_pad_v1" else None
-    )
+    overlay = {
+        "moving_pad_v1": MOVING_PAD_PARAMETERS,
+        "competition_v1": COMPETITION_PARAMETERS,
+    }.get(document.get("scenario"))
     return overlay, _verified_calibration(document, run_directory)
 
 

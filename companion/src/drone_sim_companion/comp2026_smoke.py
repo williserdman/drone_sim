@@ -12,6 +12,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "drone.sensors.camera.camera",
             "drone.sensors.lidar.clearance",
             "drone.sensors.lidar.lidar",
+            "drone_sim_companion.comp2026_control",
+            "drone_sim_companion.comp2026_policy",
         ):
             importlib.import_module(name)
         functions = importlib.import_module("drone.auto_attempt")._original_mission_functions()
@@ -20,7 +22,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ImportError, AttributeError) as error:
         print(f"Comp2026 import smoke failed: {error}", file=sys.stderr)
         return 1
-    print("Comp2026 FM1/FM2/FM3 import smoke passed")
+    print("Comp2026 FM1/FM2/FM3 and guarded control/policy import smoke passed")
     return 0
 
 

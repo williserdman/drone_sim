@@ -29,6 +29,10 @@ def airframe_fingerprint(model_xml: bytes) -> str:
             "libdrone_sim_detachable_joint_system.so",
         }:
             model.remove(plugin)
+        elif plugin.get("name") == "ArduPilotPlugin":
+            rc_input = plugin.find("rc_input_pwm")
+            if rc_input is not None:
+                plugin.remove(rc_input)
     canonical = ET.canonicalize(ET.tostring(document, encoding="unicode"), strip_text=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
 

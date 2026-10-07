@@ -23,12 +23,30 @@ AutoTune flight used different gains; slower LAND still requires full AutoTune,
 native gain saving and reload validation. Checked-in landing profiles and
 scoring remain unchanged.
 
-Comp2026 integration repair, 2026-10-07: the automatic sequencer now requires a
-validated precision policy before starting any phase and passes the same policy
-to both FM3 calls. Its README documents the interface; focused automatic-mission,
-import-smoke and host checks passed 108 tests. The parent simulation
-host still needs the simulation-specific policy, observation/authority wiring,
-supervisor and pinned home; this repair alone does not enable competition flight.
+The full 0.30 m/s AutoTune diagnostic `7ec54605-c40c-4499-9dc6-6145dba3c09f`
+failed on 2026-10-07 at public 109.80 seconds during Pitch Rate P Up. Roll had
+completed, but pitch could not level between tests; yaw never began. The
+companion requested recovery LAND after the native failure. The planned return,
+landing and gain-save sequence was not reached, and no calibration was exported.
+This failure occurred before the landing-speed comparison could be made and
+does not establish that slower LAND caused it. The manifest also marks the
+rosbag invalid because its camera/ground-truth counts differ from the configured
+window; the postflight analyzer therefore rejected inventory validation.
+DataFlash remains diagnostic evidence, not accepted calibration. The unchanged
+bundle is under `runs/diagnostics/20261007-autotune-slow-land/`.
+
+Comp2026 integration repair, 2026-10-07: the parent host now composes the imported
+source/authority guards, mission supervisor, output transactions and observed
+home using a simulation-specific policy. The original automatic sequencer
+receives the validated precision policy for both FM3 calls. Timestamped LiDAR
+samples and verified camera geometry satisfy its current sensor interfaces.
+Competition alone supplies native RC input through the JSON FDM connection and
+loads the matching mode-channel overlay. Docker packaging includes the import
+closure and canonical policy resources. Full host/module checks passed 2,349
+tests with 27 skips; imported mission checks passed 1,129. Python compilation,
+lockfile verification and diff checks passed. The native plugin patch applies to
+its pinned source, but C++ compilation, rebuilt images and competition flights
+remain unverified. These source checks do not establish an all-suite pass.
 
 Calibration return update 2026-10-07: the companion now captures the disarmed
 launch position, returns there in GUIDED at 5 m after tuning/gain activation,

@@ -24,6 +24,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.package-data]
 drone_sim_companion = [
     "gazebo_camera_calibration.json",
+    "gazebo_camera_mounting.json",
     "moving_pad_camera_calibration.json",
     "moving_pad_camera_mounting.json",
 ]

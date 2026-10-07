@@ -51,6 +51,13 @@ Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
 
+For `competition_v1`, Gazebo's private JSON exchange also carries seven native
+RC PWM inputs. ArduPilot owns their receiver health and mode-switch effect: RC7
+at 1500 selects GUIDED, while 1000 and 2000 select STABILIZE and LOITER takeover
+slots. This input is scoped to the competition vehicle and is distinct from
+MAVLink RC override or fabricated telemetry. Other scenarios do not receive RC
+fields through the JSON bridge.
+
 ## Where to read or change code
 
 Start with the module relevant to your task. Each guide links its executable
@@ -120,13 +127,23 @@ flight readiness evidence.
 
 Comp2026 process readiness does not release the original mission worker. The
 [runtime composition](../companion/src/drone_sim_companion/runtime_node.py)
-must assign the initial GUIDED mode and complete the durable
+must enqueue the initial GUIDED command through the imported output guards and complete the durable
 [`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
 write by the inclusive 50 ms public-time limit before the
 [start gate](../companion/src/drone_sim_companion/comp2026_host.py) can release
 that worker. The [companion lifecycle](../companion/src/drone_sim_companion/lifecycle.py)
 owns the executable deadline and status write. A missed deadline, mode-setting
 error, or status-write error fails the attempt and leaves the gate closed.
+The worker then requires the native acknowledgement and observed GUIDED state
+before entering the original sequencer. Its
+[simulation control composition](../companion/src/drone_sim_companion/comp2026_control.py)
+uses real source-filtered telemetry, RC authority, a consumed run-scoped attempt,
+and the observed launch position including AMSL home altitude. Telemetry request
+and firmware checks run before public release; cadence is checked on advancing
+public simulation time after GUIDED. Clock freshness, mission phases and output
+transactions retain the imported controller's guards. The simulation policy
+binds the pinned firmware, course, scenario, model and parameter inputs and does
+not approve physical-aircraft deployment.
 
 For payload precision landing, the camera boundary returns a marker vector and
 its source timestamp atomically; a side-channel timestamp is not sufficient

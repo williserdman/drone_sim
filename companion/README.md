@@ -216,12 +216,16 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   `comp2026_auto` mission. Keep changes there focused and preserve its imported
   history and provenance. The Docker context admits only its explicit import
   closure.
-- The current `comp2026_auto` host is incompatible with the imported guarded
-  flight API. Both competition suite cases fail before flight. The adapter needs
-  explicit identities, supervisor/home setup, and validated release/precision
-  policies; those policies are absent from the competition configuration.
-  See the dated evidence in [handoff](../docs/handoff.md). Import smoke alone
-  does not establish flight compatibility.
+- The `comp2026_auto` host composes the imported observation decoders, source
+  identities, telemetry startup collector, mission supervisor, one-use attempt
+  token, output transactions, home checks, and recovery policy in
+  [comp2026_control.py](src/drone_sim_companion/comp2026_control.py). The
+  fail-closed simulation policy in
+  [comp2026_policy.py](src/drone_sim_companion/comp2026_policy.py) binds those
+  guards to the checked-in course, scenario, ArduPilot provenance and
+  parameters, competition vehicle, and selected competition world. The image
+  carries these files at their repository-relative paths under `/opt/drone_sim`
+  because policy construction verifies their contents before flight.
 - Building the Phase 3 companion image requires
   `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. Compose
   leaves the build argument empty when it is not supplied so inactive profiles
@@ -232,8 +236,8 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   `missions/fm3.py` is the deployed implementation.
 - After changing the import closure, run `python3 -m
   drone_sim_companion.comp2026_smoke` in the built companion image. It imports
-  the deployed control, camera, LiDAR and original mission functions without
-  opening devices or executing a mission.
+  the guarded control and policy, deployed camera and LiDAR, and original
+  mission functions without opening devices or executing a mission.
 - That deployed `mock_mission.py` owns payload-marker acquisition and precision
   landing recovery. It establishes a five-frame earth-fixed target anchor,
   rejects stale or inconsistent camera/range observations before MAVLink,
@@ -245,16 +249,25 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   this avoids treating the marker's normal near-ground exit from the camera
   view as a recovery event. The exact flight settings are owned by
   [descent.parm](../ardupilot_sitl/params/descent.parm).
-- The nested camera API returns the marker vector and source frame timestamp as
-  one observation. `comp2026_host.py` supplies bounded, strictly newer frames;
-  camera silence therefore becomes an unhealthy observation instead of
-  blocking the mission thread.
+- The nested camera API returns the marker vector and source exposure timestamp
+  as one observation. The simulator factory supplies the verified 640x480,
+  0.6-radian camera intrinsics and body-FLU mounting from the competition SDF.
+  It checks exposure age against the public simulation clock with a 0.25-second
+  limit. `comp2026_host.py` supplies strictly newer frames, so stale exposure,
+  mismatched dimensions, and camera silence fail readiness.
+- The hosted LiDAR `get_sample()` returns the imported `LidarSample` with the
+  accepted public timestamp, a sequence that changes only for a distinct frame,
+  and an invalidation generation that changes when evidence is revoked.
+  Repeated reads retain their frame identity. Invalid, malformed, regressed, or
+  older-than-0.5-second evidence cannot continue a valid sample sequence;
+  `get_distance()` retains the original scalar compatibility API.
 - Comp2026 startup separates process readiness from permission to enter the
   original mission. Sensor, service, heartbeat, and armability predicates are
   refreshed atomically and fail closed; downward range expires after 0.5
-  simulated seconds. The runtime must assign the initial GUIDED mode and write
+  simulated seconds. The runtime must enqueue guarded GUIDED output and write
   its durable delivery fact no later than the inclusive 50 ms public-time
-  deadline before the original worker can enter. The executable owners are the
+  deadline, then verify acknowledgement and mode before entering the original
+  sequencer. The executable owners are the
   [delivery window and lifecycle writer](src/drone_sim_companion/lifecycle.py),
   [start gate](src/drone_sim_companion/comp2026_host.py), and
   [runtime composition](src/drone_sim_companion/runtime_node.py); the shared

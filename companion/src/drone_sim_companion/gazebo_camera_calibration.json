@@ -4,5 +4,10 @@
         [0.0, 1034.4730060050647, 240.0],
         [0.0, 0.0, 1.0]
     ],
-    "dist_coeff": [[0.0, 0.0, 0.0, 0.0, 0.0]]
+    "dist_coeff": [[0.0, 0.0, 0.0, 0.0, 0.0]],
+    "image_width_px": 640,
+    "image_height_px": 480,
+    "dimensions_verified": true,
+    "horizontal_fov_rad": 0.6,
+    "source": "iris_competition/downward_camera SDF pinhole geometry"
 }

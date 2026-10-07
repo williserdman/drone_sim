@@ -28,3 +28,14 @@ def test_unknown_plugin_remains_bound():
     original = (ROOT / "gazebo/resources/models/iris_flight/model.sdf").read_bytes()
     changed = original.replace(b"</model>", b'<plugin name="unknown" filename="unknown.so"/></model>')
     assert airframe_fingerprint(original) != airframe_fingerprint(changed)
+
+
+def test_competition_rc_input_does_not_change_physical_fingerprint():
+    original = (ROOT / "gazebo/resources/models/iris_flight/model.sdf").read_bytes()
+    configured = original.replace(
+        b"<have_32_channels>0</have_32_channels>",
+        b"<have_32_channels>0</have_32_channels>"
+        b"<rc_input_pwm>1500 1500 1000 1500 1500 1500 1500</rc_input_pwm>",
+    )
+
+    assert airframe_fingerprint(original) == airframe_fingerprint(configured)

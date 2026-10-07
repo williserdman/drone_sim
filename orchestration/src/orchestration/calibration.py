@@ -192,7 +192,10 @@ def freeze_calibration_import(
     frozen_profile["baseline_parameters"] = dict(sorted(read_baseline(source).items()))
     if not legacy:
         model = _model_path(root, consumer_vehicle)
-        overlays = [root / "ardupilot_sitl/params/moving-pad.parm"] if consumer_scenario == "moving_pad_v1" else []
+        overlays = {
+            "moving_pad_v1": [root / "ardupilot_sitl/params/moving-pad.parm"],
+            "competition_v1": [root / "ardupilot_sitl/params/competition.parm"],
+        }.get(consumer_scenario, [])
         settings = _parameters(root / "ardupilot_sitl/params/descent.parm")
         for overlay in overlays:
             settings.update(_parameters(overlay))
@@ -200,6 +203,10 @@ def freeze_calibration_import(
         for name in settings:
             if name in effective or name.startswith("PLND_") or name == "LAND_SPD_MS" or (
                 consumer_scenario == "moving_pad_v1" and name in {"AHRS_EKF_TYPE", "PSC_NE_POS_P"}
+            ) or (
+                consumer_scenario == "competition_v1" and name in {
+                    "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
+                }
             ):
                 effective[name] = settings[name]
         frozen_profile.update(

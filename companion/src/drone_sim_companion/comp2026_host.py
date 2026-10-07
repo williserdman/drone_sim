@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
-from typing import Callable, ClassVar, Protocol
+from typing import TYPE_CHECKING, Callable, ClassVar, Protocol
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from drone.sensors.lidar.lidar import LidarSample
 
 
 EARTH_RADIUS_M = 6_378_137.0
@@ -231,12 +234,16 @@ class RosLidar:
         self._lock = threading.Lock()
         self._distance_m: float | None = None
         self._timestamp_ns: int | None = None
-        self._pending_distance_m: float | None = None
-        self._pending_timestamp_ns: int | None = None
+        self._sequence: int | None = None
+        self._next_sequence = 1
+        self._invalidation_generation = 0
+        self._pending: list[tuple[int, float, int]] = []
 
     @property
     def ready(self) -> bool:
+        now_ns = self._clock.timestamp_ns
         with self._lock:
+            self._promote_pending_through(now_ns)
             return self._timestamp_ns is not None
 
     def accept(self, message: object, sim_timestamp_ns: int) -> None:
@@ -244,11 +251,17 @@ class RosLidar:
             ranges = list(message.ranges)  # type: ignore[attr-defined]
             range_min = float(message.range_min)  # type: ignore[attr-defined]
             range_max = float(message.range_max)  # type: ignore[attr-defined]
-        except (AttributeError, TypeError, ValueError) as error:
+        except (AttributeError, TypeError, ValueError, OverflowError) as error:
+            self._invalidate()
             raise ValueError("downward range message is malformed") from error
         if len(ranges) != 1:
+            self._invalidate()
             raise ValueError("downward range must contain exactly one beam")
-        distance_m = float(ranges[0])
+        try:
+            distance_m = float(ranges[0])
+        except (TypeError, ValueError, OverflowError) as error:
+            self._invalidate()
+            raise ValueError("downward range is invalid") from error
         if (
             not math.isfinite(distance_m)
             or not math.isfinite(range_min)
@@ -257,53 +270,98 @@ class RosLidar:
             or range_max <= range_min
             or not range_min <= distance_m <= range_max
         ):
+            self._invalidate()
             raise ValueError("downward range is invalid")
         if isinstance(sim_timestamp_ns, bool) or not isinstance(sim_timestamp_ns, int):
+            self._invalidate()
             raise TypeError("range simulation timestamp must be an integer")
         current_clock_ns = self._clock.timestamp_ns
         with self._lock:
             self._promote_pending_through(current_clock_ns)
-            latest_timestamp_ns = (
-                self._pending_timestamp_ns
-                if self._pending_timestamp_ns is not None
-                else self._timestamp_ns
-            )
+            latest_timestamp_ns = self._latest_timestamp_ns()
             if latest_timestamp_ns is not None and sim_timestamp_ns < latest_timestamp_ns:
+                self._invalidate_locked()
                 raise ValueError("downward range timestamp regressed")
+            sequence = self._next_sequence
+            self._next_sequence += 1
             if current_clock_ns is not None and sim_timestamp_ns <= current_clock_ns:
                 self._timestamp_ns = sim_timestamp_ns
                 self._distance_m = distance_m
-                self._pending_timestamp_ns = None
-                self._pending_distance_m = None
+                self._sequence = sequence
             else:
-                self._pending_timestamp_ns = sim_timestamp_ns
-                self._pending_distance_m = distance_m
+                self._pending.append((sim_timestamp_ns, distance_m, sequence))
+
+    def get_sample(self) -> LidarSample:
+        from drone.sensors.lidar.lidar import LidarSample
+
+        distance_m, timestamp_ns, sequence, invalidation_generation = (
+            self._current_values()
+        )
+        return LidarSample(
+            distance_m,
+            timestamp_ns / 1_000_000_000,
+            sequence,
+            invalidation_generation,
+        )
 
     def get_distance(self) -> float:
+        distance_m, _, _, _ = self._current_values()
+        return distance_m
+
+    def _current_values(self) -> tuple[float, int, int, int]:
         now_ns = self._clock.timestamp_ns
         with self._lock:
             self._promote_pending_through(now_ns)
             timestamp_ns = self._timestamp_ns
             distance_m = self._distance_m
-        if timestamp_ns is None or distance_m is None or now_ns is None:
+            sequence = self._sequence
+            invalidation_generation = self._invalidation_generation
+        if (
+            timestamp_ns is None
+            or distance_m is None
+            or sequence is None
+            or now_ns is None
+        ):
             raise StaleSensorError("downward range is not ready")
         age_ns = now_ns - timestamp_ns
         if age_ns < 0:
             raise StaleSensorError("downward range is newer than the current clock")
         if age_ns > MAX_RANGE_AGE_NS:
+            with self._lock:
+                if self._timestamp_ns == timestamp_ns and self._sequence == sequence:
+                    self._timestamp_ns = None
+                    self._distance_m = None
+                    self._sequence = None
+                    self._invalidation_generation += 1
             raise StaleSensorError("downward range is older than 0.5 simulated seconds")
-        return distance_m
+        return distance_m, timestamp_ns, sequence, invalidation_generation
 
     def _promote_pending_through(self, clock_timestamp_ns: int | None) -> None:
-        if (
-            clock_timestamp_ns is not None
-            and self._pending_timestamp_ns is not None
-            and self._pending_timestamp_ns <= clock_timestamp_ns
-        ):
-            self._timestamp_ns = self._pending_timestamp_ns
-            self._distance_m = self._pending_distance_m
-            self._pending_timestamp_ns = None
-            self._pending_distance_m = None
+        if clock_timestamp_ns is None:
+            return
+        promoted = [sample for sample in self._pending if sample[0] <= clock_timestamp_ns]
+        if promoted:
+            self._timestamp_ns, self._distance_m, self._sequence = promoted[-1]
+            self._pending = [
+                sample for sample in self._pending if sample[0] > clock_timestamp_ns
+            ]
+
+    def _latest_timestamp_ns(self) -> int | None:
+        if self._pending:
+            return self._pending[-1][0]
+        return self._timestamp_ns
+
+    def _invalidate(self) -> None:
+        with self._lock:
+            self._invalidate_locked()
+
+    def _invalidate_locked(self) -> None:
+        if self._timestamp_ns is not None or self._pending:
+            self._invalidation_generation += 1
+        self._timestamp_ns = None
+        self._distance_m = None
+        self._sequence = None
+        self._pending.clear()
 
 
 @dataclass(frozen=True)

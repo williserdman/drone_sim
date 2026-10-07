@@ -42,6 +42,25 @@ def _moving_parameters() -> dict[str, str]:
     }
 
 
+def _competition_parameters() -> dict[str, str]:
+    parameter_file = Path(__file__).parents[1] / "params/competition.parm"
+    return {
+        name: value
+        for line in parameter_file.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+        for name, value in (line.split(),)
+    }
+
+
+def test_competition_parameters_map_native_rc7_slots() -> None:
+    assert _competition_parameters() == {
+        "FLTMODE_CH": "7",
+        "FLTMODE1": "0",
+        "FLTMODE4": "4",
+        "FLTMODE6": "5",
+    }
+
+
 def test_descent_parameters_disable_rc_flight_mode_override() -> None:
     assert _descent_parameters()["FLTMODE_CH"] == "0"
 
@@ -243,6 +262,25 @@ def test_moving_profile_overlays_ekf3_and_native_precision_estimator(tmp_path: P
         "PLND_LAG": "0.04",
         "PSC_NE_POS_P": "1",
     }
+
+
+def test_competition_scenario_selects_native_rc_overlay(tmp_path: Path) -> None:
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    config_path = configuration / "run.json"
+    config_path.write_text(
+        json.dumps({"run_id": RUN_ID, "scenario": "competition_v1"}),
+        encoding="utf-8",
+    )
+
+    overlay, calibration = parameter_files_from_environment(
+        {"SIM_CONFIG_PATH": str(config_path)},
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+    )
+
+    assert overlay == Path("/opt/drone_sim/ardupilot/params/competition.parm")
+    assert calibration is None
 
 
 def test_frozen_calibration_is_verified_and_loaded_after_scenario(tmp_path: Path) -> None:

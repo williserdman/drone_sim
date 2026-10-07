@@ -65,6 +65,12 @@ server-log, and quiescence evidence. Payload command authorization belongs to
 the electromagnet; the Gazebo-side coordinator only applies a correlated
 private command and reports confirmed joint state.
 
+The competition Iris adds seven fixed, safe RC PWM values to the native
+ArduPilot JSON sensor packet. Channels 1, 2, 4, 5, 6, and 7 are 1500; throttle
+channel 3 is 1000. ArduPilot therefore observes a real healthy SITL receiver
+with RC7 initially in the companion GUIDED slot. Diagnostic and moving-pad
+models omit these fields.
+
 The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
 defines those durable facts. In particular, typed Gazebo readiness contains a
 real bidirectional ArduPilot [`FlightExchange`](../artifacts/src/artifacts/runtime_status.py).
