@@ -60,7 +60,13 @@ ahead of that clock remain queued; clock acceptance wakes waiting acquisition.
 Superseded or stale queued images are discarded before
 camera acquisition; the adapter waits for fresh input within the existing
 operation and infrastructure deadlines. The camera's own freshness check remains
-enforced. Recording consumers retain their complete public frame grids.
+enforced. A typed camera `FrameExpiredError` distinguishes rejected expired
+input from integrity failures. The producer continues after an expired
+candidate; the configured worker skips an observation that expires during
+processing and waits after its sequence. It forwards no expired geometry.
+Target-health and operation deadlines still bound unavailable camera input;
+future timestamps and other integrity errors remain fatal. Recording consumers
+retain their complete public frame grids.
 The configured downward-range adapter likewise retains a clock-current sample
 while a newer scan awaits its public timestamp, keeping the 500 ms freshness
 limit. Fresh range below the precision-landing floor refreshes target health;

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from drone.sensors.camera import _camera_manager as camera_manager_module
-from drone.sensors.camera._camera_manager import CameraManager
+from drone.sensors.camera._camera_manager import CameraManager, FrameExpiredError
 from drone.sensors.camera.camera import Camera
 
 
@@ -99,7 +99,7 @@ def test_direct_observation_rechecks_age_at_final_handover(tmp_path):
         max_exposure_age_ns=100,
     )
 
-    with pytest.raises(RuntimeError, match="older than"):
+    with pytest.raises(FrameExpiredError, match="older than"):
         manager.capture_observation()
 
     assert manager.last_frame_metadata is None
@@ -147,7 +147,7 @@ def test_direct_handover_resamples_age_after_publication_lock_contention(tmp_pat
     capture.join(1.0)
 
     assert len(results) == 1
-    assert isinstance(results[0], RuntimeError)
+    assert isinstance(results[0], FrameExpiredError)
     assert "older than" in str(results[0])
     assert manager.last_frame_metadata is None
 
@@ -180,7 +180,7 @@ def test_stale_exposure_is_rejected_instead_of_restamped(tmp_path):
         max_exposure_age_ns=100,
     )
 
-    with pytest.raises(RuntimeError, match="older than"):
+    with pytest.raises(FrameExpiredError, match="older than"):
         manager.capture_frame()
 
     assert manager.last_frame_timestamp is None
@@ -559,7 +559,7 @@ def test_latest_observation_rechecks_age_at_handover(tmp_path):
     manager._latest_observation = observation
     clock.now_ns = 1_101
 
-    with pytest.raises(RuntimeError, match="older than"):
+    with pytest.raises(FrameExpiredError, match="older than"):
         manager.latest_observation(after_sequence=0, timeout_s=0.01)
 
 
@@ -691,7 +691,7 @@ def test_vector_rechecks_age_after_pose_processing(tmp_path):
     camera = Camera(100, manager=manager, mounting_path=mounting)
     observation = manager.capture_observation()
 
-    with pytest.raises(RuntimeError, match="older than"):
+    with pytest.raises(FrameExpiredError, match="older than"):
         camera.vector_from_observation_3d(observation, 3)
 
 

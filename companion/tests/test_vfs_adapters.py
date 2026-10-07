@@ -16,7 +16,7 @@ ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "companion/comp2026/src"))
 
 from artifacts.vfs_contract import load_vfs_scenario
-from drone.sensors.camera._camera_manager import CameraManager
+from drone.sensors.camera._camera_manager import CameraManager, FrameExpiredError
 from drone.sensors.camera.camera import Camera
 from drone_sim_companion.comp2026_host import RosFrameSource
 from drone_sim_companion.comp2026_host import StaleSensorError
@@ -726,15 +726,60 @@ def test_configured_vision_skips_cached_stale_frame_at_new_marker_request() -> N
     assert result.exposure_timestamp_ns == 1_000_000_000
 
 
-def test_configured_vision_reports_camera_worker_root_cause() -> None:
+@pytest.mark.parametrize("known_sequence", [False, True])
+def test_configured_vision_skips_expired_frame_and_waits_after_its_sequence(known_sequence: bool) -> None:
+    calls = []
+    stop = threading.Event()
+
+    class ExpiringCamera:
+        cm = SimpleNamespace(last_frame_metadata=None)
+
+        def vec_to_marker_3d_bounded(self, _aruco_id, *, after_sequence, **_kwargs):
+            calls.append(after_sequence)
+            if len(calls) == 1:
+                self.cm.last_frame_metadata = SimpleNamespace(sequence=1)
+                raise FrameExpiredError(
+                    "Frame exposure is older than the acquisition limit",
+                    sequence=1 if known_sequence else None,
+                )
+            if len(calls) == 2:
+                return SimpleNamespace(x=0.0, y=0.0, z=4.572), SimpleNamespace(
+                    sequence=2, exposure_timestamp_ns=1_000_000_000,
+                    receipt_timestamp_ns=1_000_000_000,
+                )
+            stop.wait(0.05)
+            raise TimeoutError("waiting for next frame")
+
+    vision = ConfiguredVision(ExpiringCamera())
+    vision.request(4, 0)
+    try:
+        result = None
+        deadline = time.monotonic() + 1.0
+        while result is None and time.monotonic() < deadline:
+            result = vision.poll()
+            time.sleep(0.005)
+        assert result is not None
+        assert result.sequence == 2
+        assert result.exposure_timestamp_ns == 1_000_000_000
+        assert calls[:2] == [0, 1]
+    finally:
+        stop.set()
+        vision.close()
+
+
+@pytest.mark.parametrize("cause", [
+    ValueError("Frame exposure timestamp is in the future"),
+    RuntimeError("Frame exposure is older than the acquisition limit"),
+])
+def test_configured_vision_reports_camera_worker_root_cause(cause: Exception) -> None:
     class FailedCamera:
         cm = SimpleNamespace(last_frame_metadata=None)
 
         def vec_to_marker_3d_bounded(self, *_args, **_kwargs):
             try:
-                raise ValueError("Frame exposure timestamp is in the future")
-            except ValueError as cause:
-                raise RuntimeError("Camera acquisition worker failed") from cause
+                raise cause
+            except Exception as error:
+                raise RuntimeError("Camera acquisition worker failed") from error
 
     vision = ConfiguredVision(FailedCamera())
     vision.request(4, 0)
@@ -745,7 +790,7 @@ def test_configured_vision_reports_camera_worker_root_cause() -> None:
         except RuntimeError as error:
             assert str(error) == (
                 "configured vision failed: Camera acquisition worker failed; "
-                "caused by ValueError: Frame exposure timestamp is in the future"
+                f"caused by {type(cause).__name__}: {cause}"
             )
             assert isinstance(error.__cause__, RuntimeError)
             return

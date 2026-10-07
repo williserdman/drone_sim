@@ -86,7 +86,12 @@ images already older than the 500 ms simulation-time exposure limit. It
 rechecks age after copying pixels and waits for a newer image when the queue is
 stale. An image ahead of the accepted public clock remains queued until that
 clock timestamp arrives. The camera manager retains the same final 500 ms
-handoff guard.
+handoff guard. Exposure expiry uses the typed `FrameExpiredError`: the camera
+producer discards expired candidates, and the configured worker skips a frame
+that expires during processing before waiting after its sequence. Expired
+vectors never reach flight operations. Future timestamps, regressions, and
+other camera errors remain fatal; target-health and operation deadlines remain
+unchanged.
 Precision reacquisition counts fresh camera observations; intervening telemetry
 or clock ticks preserve the count, while a fresh invalid observation resets it.
 During LAND tracking, fresh range at or below 0.75 m takes precedence over camera

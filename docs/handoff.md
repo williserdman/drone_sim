@@ -10,7 +10,28 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-Latest VFS attempt `2c73c705-dea5-4388-8c8e-4a1e1a409416` at runtime
+Latest VFS attempt `08ee1b09-78ae-4950-8919-adea7a2a0c33` at runtime
+revision `a916537` completed three C drops and FM2, then failed the first FM3
+retrieval at 340.00 public seconds with
+`configured vision failed: Frame exposure is older than the acquisition limit`.
+No L delivery occurred. Its standalone score is 215/380. It terminated `FAILED`
+at `2026-10-07T03:07:29.860842Z`; manifest SHA-256
+`85b26516f1e838aafc9f5630b7b480d8bd7398b6bf7eb274fbc5fd49066f0500`.
+All 15 artifact paths were invalid at the finalization deadline; manifest score
+was null. The structured logs confirmed delayed frames used their associated
+poses successfully. The final exposure expired after marker geometry was
+computed and before handoff, terminating the configured worker. An installed
+old-image probe reproduced that exact path and acquisition-worker expiry.
+Expiry now raises typed `FrameExpiredError`: the producer skips expired
+candidates, and the configured worker skips expired sequences while waiting for
+fresh input. Expired vectors are never forwarded; plain errors with the same
+text and future timestamps remain fatal. The 500 ms freshness, 200 ms pose
+association, target-health, and operation deadlines are unchanged. All 95
+focused companion/camera checks and changed-production type checks passed.
+Native new-image verification and a fresh accepted full-window flight remain
+required.
+
+Previous VFS attempt `2c73c705-dea5-4388-8c8e-4a1e1a409416` at runtime
 revision `defef6f` completed two C drops, then failed the third FM2 pickup at
 259.70 public seconds with `precision target reacquisition failed`. Its standalone
 score is 65/380. It terminated `FAILED` at `2026-10-07T01:47:44.764088Z`;
@@ -36,8 +57,9 @@ available. A new regression reproduced that rejection; geometry now selects
 from 32 buffered pose samples per field, preserving the 200 ms association and
 500 ms exposure limits. Missing associated poses still fail closed. The exact
 per-frame rejection in this historical flight was not recorded; the timing
-evidence supports this cause without proving which frame hit which gate. Native image
-verification and a fresh accepted full-window flight remain required.
+evidence supports this cause without proving which frame hit which gate. Native
+old-image RED / new-image GREEN probes verified search arrival and delayed-pose
+association; flight 17 confirmed delayed-pose association in actual operation.
 
 Previous attempt `666ac910-6e57-471a-bdc4-f5874ff06f9f` at `5761946`
 completed three C drops and FM2, then failed its first retrieval at 346.60 public
@@ -285,6 +307,7 @@ score alone is not a pass.
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
 | --- | --- | --- | --- | --- |
+| VFS frame-expiry failure, run `08ee1b09-78ae-4950-8919-adea7a2a0c33` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone | `FAILED`; all 15 artifact paths invalid; manifest score null | Runtime `a916537`; delayed-pose association worked; processing expiry terminated vision |
 | VFS third-pickup failure, run `2c73c705-dea5-4388-8c8e-4a1e1a409416` | Two C drops; third FM2 pickup failed before attachment | 65/380 standalone | `FAILED`; all 15 artifact paths invalid; manifest score null; no accepted full-window bundle | Runtime `defef6f`; fixed search goal persisted, but retry window included ascent |
 | VFS retry failure, run `666ac910-6e57-471a-bdc4-f5874ff06f9f` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone; manifest score null | `FAILED` with `precision target reacquisition failed`; all 15 artifact paths invalid at finalization; manifest SHA-256 `86589632ec115533c7aa9e9985536dbda554e20aa4057a6b3abb35a1f9be96e0` | Runtime `5761946`; standalone score is not accepted evidence |
 | VFS 2027 all-C run `a75d91ae-d05b-4f55-a11c-7706e2425bed` | Three C drops; three grounded L deliveries; H landing/disarm; FM3 approved at 566.25 active seconds | 366/380; independently replayed | `FAILED`; full 780-second recording, duplicate aggregate score references rejected | Frozen runtime `caae0b8`; diagnostic replay does not repair the terminal manifest |

@@ -67,6 +67,8 @@ class ConfiguredVision:
         aruco_id: int,
         sequence: int,
     ) -> None:
+        from drone.sensors.camera._camera_manager import FrameExpiredError
+
         while not stop.is_set():
             try:
                 vector, metadata = self._camera.vec_to_marker_3d_bounded(
@@ -75,6 +77,15 @@ class ConfiguredVision:
                     after_sequence=sequence,
                     quality=4,
                 )
+            except FrameExpiredError as error:
+                expired_sequence = error.sequence
+                if expired_sequence is None:
+                    manager = getattr(self._camera, "cm", None)
+                    metadata = getattr(manager, "last_frame_metadata", None)
+                    expired_sequence = getattr(metadata, "sequence", None)
+                if type(expired_sequence) is int and expired_sequence >= 0:
+                    sequence = max(sequence, expired_sequence)
+                continue
             except TimeoutError:
                 continue
             except BaseException as error:
