@@ -65,11 +65,12 @@ requests and the unchanged readback gate. Native verification remains pending;
 this repair does not establish a flight or suite pass.
 
 The combined isolated repairs passed 2,358 host/module tests with 27 skips and
-all 1,130 imported mission tests. One host test failed because the live native
-diagnostic already held the real workstation suite lock. Rerun
-`test_suite_lock_spans_different_output_roots` after both queued diagnostics
-finish; the runtime lock remains unchanged. Lockfile, compilation and diff
-checks passed. No image containing these isolated repairs has flown yet.
+all 1,130 imported mission tests. One host test initially failed because the
+live native diagnostic held the real workstation suite lock. After its
+teardown, `test_suite_lock_spans_different_output_roots` passed separately,
+bringing the host/module checks to 2,359 passing tests. The runtime lock remains
+unchanged. Lockfile, compilation and diff checks passed. No image containing
+these isolated repairs has flown yet.
 
 The five failed cases reported 0 points and no independently accepted physical
 outcome. Their bundles remain unchanged. This is evidence of honest per-case
