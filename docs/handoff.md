@@ -10,7 +10,22 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-Current VFS flight evidence is run `a75d91ae-d05b-4f55-a11c-7706e2425bed`
+Latest VFS attempt `666ac910-6e57-471a-bdc4-f5874ff06f9f` at `5761946`
+completed three C drops and FM2, then failed its first retrieval at 346.60 public
+seconds with `precision target reacquisition failed`. Its standalone score was
+215/380; normal failed artifact finalization is pending. Native DataFlash
+confirms a recovery defect: at 341.60 seconds the companion commanded the
+4.572 m search hover, then its next 200 ms refresh replaced that goal with the
+current 3.63 m altitude. The preceding failed retrieval at `6637136` shows the
+same overwrite at ground level. The completed physical flight below reacquired
+before reaching this retry path. The waypoint now stays fixed during GUIDED
+hold, and the single retry replaces it with the search anchor; subsequent
+refreshes cannot cancel that climb. The new regression failed before the fix.
+All 54 focused companion checks and relevant type checks passed afterward,
+including five-frame reacquisition and bounded touchdown/disarm. Matching
+rebuilt images and a fresh accepted full-window run remain required.
+
+The latest completed physical VFS flight is run `a75d91ae-d05b-4f55-a11c-7706e2425bed`
 at frozen runtime revision `caae0b8e14604af9a5fdecf85922ac3c2d276cc3`.
 All three payloads were dropped at C, retrieved, and released grounded in L;
 the aircraft returned to H and disarmed. FM3 was approved at 575.00 public
@@ -54,7 +69,7 @@ preserved bag and exact judge clocks. Flight `6e004e62-1728-4d53-a5ca-2d04b73551
 then completed all three C drops and received FM2 approval at 293.50 public
 seconds and 290.15 active seconds, freezing IDs 2, 3, and 4. FM3 failed on its
 first retrieval at 346.20 public seconds with `precision target reacquisition
-failed`. The aircraft touched down on payload 2 but remained armed in GUIDED;
+failed`. The aircraft touched down on payload 2 but remained armed in GUIDED.
 No L delivery or FM3 approval occurred. Its standalone score was 215/380.
 Terminal finalization completed as `FAILED` with incomplete artifacts; that
 score is not accepted evidence.
@@ -66,8 +81,8 @@ to GUIDED. The adapter now uses the existing mission's committed/pending scan
 pattern, and near-ground tracking refreshes health within the unchanged 500 ms
 timeout. Three new regressions failed before the fix; 53 focused companion
 checks passed afterward. The exact triggering callback order of that flight
-remains unrecorded; the regressions alone do not establish physical success. All seven images rebuilt
-at `caae0b8`; the installed companion passed all three range/landing probes with
+remains unrecorded; the regressions alone do not establish physical success.
+All seven images rebuilt at `caae0b8`; the installed companion passed all three range/landing probes with
 source hashes matched. The later flight above passed the physical mission;
 its separate provenance failure still prevents bundle acceptance.
 
@@ -243,6 +258,7 @@ score alone is not a pass.
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
 | --- | --- | --- | --- | --- |
+| VFS retry failure, run `666ac910-6e57-471a-bdc4-f5874ff06f9f` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone | Failed finalization pending; no full-window acceptance | DataFlash confirms search-hover goal overwritten; runtime `5761946` |
 | VFS 2027 all-C run `a75d91ae-d05b-4f55-a11c-7706e2425bed` | Three C drops; three grounded L deliveries; H landing/disarm; FM3 approved at 566.25 active seconds | 366/380; independently replayed | `FAILED`; full 780-second recording, duplicate aggregate score references rejected | Frozen runtime `caae0b8`; diagnostic replay does not repair the terminal manifest |
 | [Accepted competition baseline](verification/comp2026-mvp.md), run `3dc895c3-a5aa-4651-a893-d21884fa43f5` | Returned Home and disarmed in the accepted 600-second run | 150/150 | `COMPLETED`; accepted bundle | Historical external evidence; does not prove current source or images |
 | [Payload timestamp verification](payload-timestamp-fix.md), run `259863d9-c558-4102-ae34-fe6c31f5cf94` | Completed all three payloads and Home | 150/150 | `FAILED`; terminal artifacts invalid after a later downward-range timestamp/grid fault | Proves the recorded physical flight, not a full-window pass |

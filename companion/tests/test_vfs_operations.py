@@ -468,6 +468,56 @@ def test_precision_land_reacquires_five_frames_before_resuming_land() -> None:
     assert operations.operation_status(operation_id).state == "running"
 
 
+def test_precision_land_search_retry_keeps_acquisition_target_while_climbing() -> None:
+    vision = Vision()
+    vehicle = Vehicle()
+    rangefinder = Rangefinder()
+    operations = DroneOperations(
+        vehicle, course=course(), scenario=scenario(), vision=vision,
+        rangefinder=rangefinder,
+    )
+    observe_flight(operations, 0, relative_altitude_m=4.572,
+                   precision_parameters=dict(PRECISION_PARAMETERS))
+    acquire_marker(operations, vision)
+    operation_id = operations.start("precision_land", {"aruco_id": 2})
+    vision.add(MarkerObservation(2, 6, 300_000_000, 300_000_000,
+                                 0.0, 0.0, 4.572))
+    observe_flight(operations, 300_000_000, relative_altitude_m=4.572)
+    rangefinder.distance_m = 1.0
+    observe_flight(operations, 800_000_000, mode="LAND", relative_altitude_m=1.0)
+    assert vehicle.commands[-1] == ("mode", "GUIDED")
+
+    shifted_latitude, shifted_longitude = offset_gps(41.0, -81.0, 0.05, 0.05)
+    observe_flight(
+        operations, 5_800_000_000, relative_altitude_m=0.20,
+        latitude_deg=shifted_latitude, longitude_deg=shifted_longitude,
+    )
+    assert vehicle.commands[-2] == ("waypoint", 41.0, -81.0, 1.0)
+    assert vehicle.commands[-1] == ("waypoint", 41.0, -81.0, 4.572)
+
+    observe_flight(
+        operations, 6_000_000_000, relative_altitude_m=0.22,
+        latitude_deg=shifted_latitude, longitude_deg=shifted_longitude,
+    )
+
+    assert vehicle.commands[-1] == ("waypoint", 41.0, -81.0, 4.572)
+    assert operations.operation_status(operation_id).state == "running"
+
+    rangefinder.distance_m = 4.572
+    for sequence in range(7, 12):
+        stamp = 6_000_000_000 + (sequence - 6) * 100_000_000
+        vision.add(MarkerObservation(2, sequence, stamp, stamp,
+                                     0.0, 0.0, 4.572))
+        observe_flight(operations, stamp, relative_altitude_m=4.572)
+        if sequence < 11:
+            assert vehicle.commands[-1] != ("mode", "LAND")
+    assert vehicle.commands[-1] == ("mode", "LAND")
+
+    observe_flight(operations, 6_600_000_000, mode="LAND", armed=False, landed=True,
+                   relative_altitude_m=0.195)
+    assert operations.operation_status(operation_id).state == "succeeded"
+
+
 def test_precision_land_is_bounded_to_sixty_simulated_seconds_and_abort_cancels() -> None:
     vision = Vision()
     operations = DroneOperations(

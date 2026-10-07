@@ -99,6 +99,8 @@ authority, judge, recordings, and independent validation.
 Course ENU navigation freezes the first complete observed flight-controller
 home latitude/longitude. Rearming away from H can update live home telemetry,
 but cannot change the course origin or resolved payload targets.
+During precision recovery, the command owner preserves the selected GUIDED hold
+or search goal across telemetry updates; only the explicit retry replaces it.
 
 The [shared VFS configuration](../artifacts/src/artifacts/vfs_contract.py) contains
 immutable course, payload, target, and timing values. It contains no flight or

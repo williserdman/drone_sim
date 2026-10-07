@@ -572,13 +572,13 @@ class DroneOperations:
             active.context.update(
                 phase="hold", hold_started_ns=self._clock_ns,
                 next_hold_ns=self._clock_ns, reacquired=0,
+                hold_target=(self._values["latitude_deg"],
+                             self._values["longitude_deg"],
+                             self._values["relative_altitude_m"]),
             )
             return False
         if self._clock_ns >= active.context["next_hold_ns"]:
-            self._vehicle.send_waypoint(
-                self._values["latitude_deg"], self._values["longitude_deg"],
-                self._values["relative_altitude_m"],
-            )
+            self._vehicle.send_waypoint(*active.context["hold_target"])
             active.context["next_hold_ns"] = self._clock_ns + HOLD_REFRESH_NS
         if candidate_observation is not None:
             active.context["reacquired"] = (
@@ -602,6 +602,8 @@ class DroneOperations:
             active.context.update(
                 retry=1, hold_started_ns=self._clock_ns,
                 next_hold_ns=self._clock_ns + HOLD_REFRESH_NS, reacquired=0,
+                hold_target=(anchor.latitude_deg, anchor.longitude_deg,
+                             getattr(self._course.attempt, "acquisition_agl_m", 4.572)),
             )
         return False
 
