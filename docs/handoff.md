@@ -30,8 +30,8 @@ and bundle paths are in `suites/be09da8c-d096-4b34-82ac-de5b05d25d30/report.json
 - Stationary pad failed its final precision-handoff deadline. Recorded physical
   contact remained continuous and world height stopped changing, but EKF3 still
   estimated downward motion after touchdown. The 25 Hz DataFlash IMU log cannot
-  establish whether the nominal 1 kHz collision impulse reached SITL. A passive
-  raw Gazebo IMU / transmitted FDM comparison is queued to locate that boundary.
+  establish whether the nominal 1 kHz collision impulse reached SITL. A later
+  unchanged-runtime run is recorded below; the intermittent cause remains open.
 - Both competition timings failed before flight with
   `a guarded transport enqueue transaction is required`. A real DroneKit
   connection probe reproduced the cause: automatic MAVLink 1-to-2 switching
@@ -48,7 +48,7 @@ smoke passed before the focused native cases above. Their source and all seven
 image identities remain frozen in
 `runs/diagnostics/20261008-8896714-startup-paths/`.
 
-The isolated startup repair now waits for actual fresh ground observations,
+The startup repair now waits for actual fresh ground observations,
 live heartbeat, healthy prearm state and matching parameters before declaring
 competition readiness. It preserves the existing startup deadline and command
 admission guard. Focused checks passed 81 parent and 236 imported tests. Its
@@ -56,21 +56,40 @@ native verification is still pending.
 
 Passive MAVLink capture of roll AutoTune run
 `bfb4face-517a-41ac-876d-9526afbc9812` established a separate parameter retry
-flood: by native 70 seconds, 38,301 indexed requests had produced 3,545 values
-containing 742 unique names. Twelve required parameters were still missing.
+flood: at the 90.029-second private boundary, 48,450 indexed requests had produced
+4,525 values. Only `LAND_SPD_MS` remained missing from the 46 required parameters.
+The controller then stopped responding while the sender continued retrying;
+normal diagnostic abort finalized the run as `ABORTED`, 0/100, not accepted.
 DroneKit starts these wall-clock retries on early unsolicited values, before
 the complete-list request. The simulation adapter now suppresses automatic
 indexed retries while preserving real cache contents, completion state, explicit
 requests and the unchanged readback gate. Native verification remains pending;
 this repair does not establish a flight or suite pass.
 
-The combined isolated repairs passed 2,358 host/module tests with 27 skips and
+The combined startup repairs passed 2,358 host/module tests with 27 skips and
 all 1,130 imported mission tests. One host test initially failed because the
 live native diagnostic held the real workstation suite lock. After its
 teardown, `test_suite_lock_spans_different_output_roots` passed separately,
 bringing the host/module checks to 2,359 passing tests. The runtime lock remains
 unchanged. Lockfile, compilation and diff checks passed. No image containing
-these isolated repairs has flown yet.
+these startup repairs has flown yet.
+
+Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
+`8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance
+on 2026-10-08. Native logs show an impact at 117.449658 seconds, EKF vertical
+velocity near zero by 117.529631, and disarm at 119.329026; the companion
+reported `LANDED` at public 30.05 seconds. This successful repetition does not
+explain the earlier failure. Its bundle is under
+`runs/diagnostics/20261008-8896714-stationary-sensors/`.
+
+The separate raw sensor capture missed touchdown because its diagnostic filter
+assumed a fixed SITL UDP port. Those empty files are invalid diagnostic evidence;
+they do not establish a missing acceleration pulse. The corrected observer
+discovers the actual servo peer and filters only its UDP traffic in the kernel.
+A live post-landing probe captured 1,930 FDM packets and 1,900 raw IMU messages
+at 1 ms native intervals, with zero socket drops or timestamp gaps. Another
+stationary capture will accompany the startup-repair flight checks. The flight
+controller, landing deadline and scoring remain unchanged.
 
 The five failed cases reported 0 points and no independently accepted physical
 outcome. Their bundles remain unchanged. This is evidence of honest per-case
