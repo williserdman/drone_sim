@@ -121,11 +121,20 @@ actual 17-layer ArduPilot root filesystem and full configuration matched
 ground-ray probe was inconclusive, so it does not establish a missing range
 producer.
 
-Frozen 11-case suite `6f82c124-c240-46bf-b97f-67e4a8a78981` is running under
-`runs/local-ci/20261008-0d5945c`; calibration
-`79d802a4-6172-45cb-9643-2fef4576554d` remains in progress. This is not a suite
-pass. Provider readiness checked at 03:17 UTC is also unchanged: the workflow on
-`main` returns 404 and the registered runner is offline.
+Frozen 11-case suite `6f82c124-c240-46bf-b97f-67e4a8a78981` finished `FAILED`
+at 04:12 UTC under `runs/local-ci/20261008-0d5945c`. Calibration
+`79d802a4-6172-45cb-9643-2fef4576554d` reported native
+`AutoTune: Rate D Gain Determination Failed` at public 50.75 seconds. DataFlash
+then records mode 9 LAND and `Disarming motors`, and the companion published
+`mission_failed` at 64.05. This establishes recovery and disarm, not physical
+contact: the suite report leaves `physical_outcome` null and the manifest marks
+the MCAP invalid for count mismatch. Calibration therefore has an incomplete
+0/100 score and rejected artifact acceptance; both videos are valid. The failed
+calibration gate blocked all ten later cases. The driver, wrappers and watchers
+exited, and no suite-owned containers remained. Root-cause investigation is
+open; this is not a suite pass or evidence of a fix. Provider readiness checked
+at 03:17 UTC is also unchanged: the workflow on `main` returns 404 and the
+registered runner is offline.
 
 Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
 `8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance
