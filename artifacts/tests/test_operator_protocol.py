@@ -38,6 +38,15 @@ def test_start_admission_schema_matches_protocol_domain() -> None:
 
     validator = Draft202012Validator(schema)
     assert list(validator.iter_errors(asdict(admission))) == []
+    canonical_nil_uuid = "00000000-0000-0000-0000-000000000000"
+    protocol_valid_nil = StartAdmission(
+        canonical_nil_uuid,
+        CONFIG_SHA256,
+        canonical_nil_uuid,
+        "b" * 64,
+        50_000_000,
+    )
+    assert list(validator.iter_errors(asdict(protocol_valid_nil))) == []
     invalid = {**asdict(admission), "native_epoch_ns": 50_000_001}
     assert list(validator.iter_errors(invalid))
 
