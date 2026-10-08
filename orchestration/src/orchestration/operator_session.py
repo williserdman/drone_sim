@@ -100,16 +100,19 @@ class OperatorSession:
             raise ValueError("this preset requires an accepted calibration run directory")
         if calibration_source and not preset.requires_calibration:
             raise ValueError("this preset does not request calibration import")
+        parameters = {"preset_id": preset_id, "preparation_wall_seconds": preparation_wall_seconds,
+                      "calibration_source": str(Path(calibration_source).expanduser().resolve()) if calibration_source else None}
         with self._lock:
             if self._record.get("prepare_request_id") == request_id:
-                if preset_id != self._record.get("preset_id"):
-                    raise ValueError("prepare request identity belongs to another preset")
+                if parameters != self._record.get("prepare_parameters"):
+                    raise ValueError("prepare request identity belongs to different parameters")
                 return self.snapshot()
             if self._active() or self._record["state"] == "ORPHANED":
                 raise RuntimeError("a session is active; stop and finalize it before preparing another")
             self._cancel.clear()
             self._record = {"state": "PREPARING", "run_id": None, "preset_id": preset_id,
                             "prepare_request_id": request_id, "error": "", "cleanup": "pending",
+                            "prepare_parameters": parameters,
                             "preparation_wall_seconds": preparation_wall_seconds, "owner_pid": os.getpid()}
             self._save()
             self._worker = threading.Thread(target=self._prepare_worker,
@@ -256,7 +259,7 @@ class OperatorSession:
             directory = Path(result["run_directory"])
             try:
                 status = self.controller.status(run_id, directory.parent)
-                if result["state"] not in {"ORPHANED", "INTERRUPTED"} and self._active():
+                if result["state"] not in {"ORPHANED", "INTERRUPTED", "BUILDING"} and self._active():
                     result["state"] = status.state
                     result["reason"] = status.reason
                 from artifacts.operator_protocol import OperatorProtocol

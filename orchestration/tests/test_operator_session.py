@@ -29,6 +29,9 @@ def test_prepare_is_single_owned_attempt_and_failed_prerequisites_are_actionable
     assert runtime.entered.wait(2)
     retry = session.prepare(preset_id="configured-descent", request_id="11111111-1111-4111-8111-111111111111")
     assert retry["prepare_request_id"] == first["prepare_request_id"]
+    with pytest.raises(ValueError, match="parameters"):
+        session.prepare(preset_id="configured-descent", request_id="11111111-1111-4111-8111-111111111111",
+                        preparation_wall_seconds=3600)
     with pytest.raises(RuntimeError, match="active"):
         session.prepare(preset_id="moving-pad", request_id="22222222-2222-4222-8222-222222222222")
     runtime.release.set()
