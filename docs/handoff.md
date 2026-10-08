@@ -205,10 +205,32 @@ all seven images have `:level-trace-7794284` aliases. Native BIN SHA-256 is
 `97ec9007aac306bb90832e037da02ecc679098ca5d7d97043a1eb94b12df3da4`,
 and manifest SHA-256 is
 `a5c36a48715d780074903e727350628947ab1353fd5b5b225915d93114bb9952`.
-An isolated ALT_HOLD-entry trial will test native tuning without the moving
-position-hold heading, retaining all-axis tuning, guards, gain saving and return.
-Horizontal drift during tuning remains a required observation. No diagnostic
-profile or instrumentation has been promoted to production.
+The isolated ALT_HOLD-entry trial `f7c3f698`, source `074afe4`, completed native
+all-axis tuning, returned to launch, landed, disarmed and saved its gains. The
+vehicle drifted about 386 m during tuning; its GUIDED return took 45.25 simulated
+seconds within the unchanged 60-second limit. The companion reported `LANDED`
+at public 317.25 seconds. Recorded contact at public 315.0 seconds was 1.4 mm
+from the origin, with downward precontact speed 0.500258 m/s. All 11 samples
+in the unchanged half-second stability window passed. All 15 native saved
+gains match activation and post-disarm readback; the text export matches within
+the existing tolerance.
+
+The aggregate run nevertheless failed: the original 7,200-second wall limit
+expired at 10:39:09 UTC before the required 900-second public recording ended.
+The recording contains 16,743 of 18,000 required ground-truth samples, through
+public 837.15 seconds, leaving 62.85 seconds unrecorded.
+The persisted score is incomplete 0/100 with `ground_truth_sample_count_mismatch`,
+and the manifest rejects the rosbag for insufficient samples. The driver finished
+with exit code 1 at 10:40:42 UTC; owned processes and containers are gone. The
+bundle remains under `runs/diagnostics/20261008-074afe4-alt-hold-calibration`,
+with all seven images preserved as `:alt-hold-074afe4`. This is flight diagnostic
+evidence, not accepted calibration or a suite pass. The production calibration
+mission now writes and verifies the roll seeds locally and observes ALT_HOLD
+before AUTOTUNE; the global base profile and native instrumentation are unchanged.
+Verification passed 169 focused checks, 2,399 host tests and 1,130 imported
+Comp2026 tests; 27 environment-dependent host checks were skipped. No static
+typechecker is configured. This production revision still requires a fresh
+accepted calibration, reload and full suite.
 
 Provider readiness checked again on 2026-10-08 is unchanged: zero workflows exist
 and the registered runner is offline and idle. Actions dispatch remains unverified.

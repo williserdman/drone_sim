@@ -281,11 +281,23 @@ overlays, with gains loaded last. Legacy version-1 imports remain unloaded-only.
 The explicit `calibration_validation` flag distinguishes the reload hover from
 ordinary calibrated missions.
 
-The companion takes off in GUIDED, settles in LOITER, then enters AUTOTUNE with
-`AUTOTUNE_AXES=7` for roll, pitch, and the pinned implementation's standard yaw
-error-filter tuning. Completion requires all three axes. A completed subset
-cannot release parameters to the suite. Require body-rate feedforward enabled
-before tuning so calibration does not silently change an unexported base setting.
+After a healthy heartbeat, the companion writes the run-local seeds
+`ATC_RAT_RLL_P=0.0675`, `ATC_RAT_RLL_I=0.0675`, and `AUTOTUNE_AXES=7` before
+selecting GUIDED and requesting the complete parameter list. The global base
+gains remain unchanged. Before arming, the companion requires a fresh, complete
+readback of all 15 gain inputs and preserved base parameters. Roll seeds must
+match within float32 tolerance and `AUTOTUNE_AXES` must equal 7. Missing values
+or rejected seed writes fail within the existing 10-second entry phase.
+Body-rate feedforward must already be enabled so calibration does
+not silently change an unexported base setting.
+
+The companion takes off in GUIDED, settles in LOITER for two seconds, then
+commands and observes ALT_HOLD before entering AUTOTUNE. Starting native tuning
+from ALT_HOLD disables its weak position hold and position-dependent heading
+updates, which can otherwise breach the pitch settling guard. `AUTOTUNE_AXES=7`
+requests roll, pitch, and the pinned implementation's standard yaw error-filter tuning.
+Completion requires all three axes. A completed subset cannot release parameters
+to the suite.
 
 After tuning succeeds, the companion observes LOITER, invokes
 `MAV_CMD_DO_AUX_FUNCTION` with function 180 and position 2 to activate tuned
@@ -299,10 +311,15 @@ position never qualifies arrival. An ACK alone does not prove that
 AutoTune accepted the gain-selection command. Unexpected mode changes, failed
 tuning, stale telemetry, or expired simulation deadlines fail calibration.
 Recovery landing never converts failure into success.
-Neutral RC overrides must be refreshed throughout LOITER and tuning: the pinned
-ArduPilot default expires them after three simulated seconds. An unexpected
-disarm before native landing fails immediately, even if the mode still reports
-AUTOTUNE. Overrides remain cleared during the GUIDED return and native LAND.
+Neutral RC overrides must be refreshed throughout LOITER, ALT_HOLD entry, and
+tuning: the pinned ArduPilot default expires them after three simulated seconds.
+An unexpected mode, disarm before native landing, or expired phase deadline
+fails immediately. Overrides remain cleared during the GUIDED return and native
+LAND. Tuning may drift far from launch, so the bounded GPS waypoint return remains
+mandatory. See [the measured drift and return](handoff.md) for diagnostic evidence.
+Native LAND, disarm, and gain saving still follow the stable-arrival guards.
+The 15-gain artifact, native gain guards, D and aggression settings, deadlines,
+900-second recording window, and calibration scoring remain unchanged.
 
 This order matters in the
 [pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):

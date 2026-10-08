@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib
 import math
 from pathlib import Path
@@ -657,14 +658,18 @@ def test_all_axis_autotune_returns_to_launch_then_lands_and_exports_saved_gains(
 
     assert observe(0, heartbeat=True, prearm_checks_healthy=True).actions == (
         calibration.Action.parameter("AUTOTUNE_AXES", 7.0),
+        calibration.Action.parameter("ATC_RAT_RLL_P", 0.0675),
+        calibration.Action.parameter("ATC_RAT_RLL_I", 0.0675),
         calibration.Action.mode("GUIDED"),
         calibration.Action.request_parameters(),
     )
     baseline = {name: float(index + 1) for index, name in enumerate((*calibration.GAIN_PARAMETERS, *calibration.PRESERVED_PARAMETERS))}
     baseline["ATC_RATE_FF_ENAB"] = 1.0
+    baseline.update(ATC_RAT_RLL_P=0.0675, ATC_RAT_RLL_I=0.0675)
     assert observe(
         1, mode="GUIDED", armed=False,
         parameters={**baseline, "AUTOTUNE_AXES": 7.0},
+        parameter_generation=1,
         latitude_deg=37.4, longitude_deg=-122.08,
         relative_altitude_m=0.0, position_timestamp_ns=1,
     ).actions == (calibration.Action.arm(),)
@@ -683,7 +688,12 @@ def test_all_axis_autotune_returns_to_launch_then_lands_and_exports_saved_gains(
     ).actions == ()
     assert observe(
         6_000_000_000, telemetry_timestamp_ns=6_000_000_000, **stable
+    ).actions == (calibration.Action.mode("ALT_HOLD"),)
+    assert observe(6_100_000_000, mode="LOITER", armed=True).actions == ()
+    assert observe(
+        6_200_000_000, mode="ALT_HOLD", armed=True
     ).actions == (calibration.Action.mode("AUTOTUNE"),)
+    assert observe(6_300_000_000, mode="ALT_HOLD", armed=True).actions == ()
     observe(7_000_000_000, mode="AUTOTUNE", armed=True)
     assert observe(8_000_000_000, mode="AUTOTUNE", armed=True, status_text="AutoTune: Success").actions == (
         calibration.Action.mode("LOITER"),
@@ -697,7 +707,7 @@ def test_all_axis_autotune_returns_to_launch_then_lands_and_exports_saved_gains(
     transition = observe(
         9_200_000_000, mode="LOITER", armed=True, aux_ack=True,
         status_text="AutoTune: Pilot Testing gains for Roll Pitch Yaw(E)",
-        parameters={**baseline, **tuned}, parameter_generation=1,
+        parameters={**baseline, **tuned}, parameter_generation=2,
     )
     assert transition.state.phase is calibration.Phase.SETTLING
     stable = dict(
@@ -735,12 +745,12 @@ def test_all_axis_autotune_returns_to_launch_then_lands_and_exports_saved_gains(
     ).actions == ()
     transition = observe(
         17_000_000_000, mode="LAND", armed=False, landed=True, parameters={**baseline, **tuned},
-        parameter_generation=1,
+        parameter_generation=2,
     )
     assert transition.actions == (calibration.Action.request_parameters(),)
     transition = observe(
         18_000_000_000, mode="LAND", armed=False, landed=True, parameters={**baseline, **tuned},
-        parameter_generation=2,
+        parameter_generation=3,
     )
     assert transition.state.phase is calibration.Phase.COMPLETE
     assert transition.actions == (calibration.Action.export(),)
@@ -802,14 +812,63 @@ def test_all_axis_does_not_arm_without_valid_ground_return_position(changed) -> 
     )
     parameters = {name: 1.0 for name in (*calibration.GAIN_PARAMETERS, *calibration.PRESERVED_PARAMETERS)}
     parameters["AUTOTUNE_AXES"] = 7.0
+    parameters.update(ATC_RAT_RLL_P=0.0675, ATC_RAT_RLL_I=0.0675)
     observation = dict(
         timestamp_ns=1_000_000_000, mode="GUIDED", armed=False, parameters=parameters,
+        parameter_generation=1,
         latitude_deg=37.4, longitude_deg=-122.08, relative_altitude_m=0.0,
         position_timestamp_ns=1_000_000_000,
     )
     transition = calibration.advance(state, calibration.Observation(**{**observation, **changed}))
     assert transition.state.phase is calibration.Phase.WAIT_GUIDED
     assert transition.actions == ()
+
+
+@pytest.mark.parametrize("parameter,value,generation", [
+    ("ATC_RAT_RLL_P", 0.0503722, 4),
+    ("ATC_RAT_RLL_I", 0.0503722, 4),
+    ("ATC_RAT_RLL_I", None, 4),
+    ("ATC_RAT_RLL_P", math.nan, 4),
+    ("ATC_RAT_RLL_P", 0.0675, 3),
+    ("ATC_RAT_RLL_P", 0.0675, 0),
+])
+def test_all_axis_seed_readback_blocks_arming_until_fresh_and_matching(
+    parameter, value, generation,
+) -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.advance(
+        calibration.AllAxisState.initial(public_deadline_ns=900_000_000_000),
+        calibration.Observation(
+            0, heartbeat=True, prearm_checks_healthy=True, parameter_generation=3,
+        ),
+    ).state
+    parameters = {
+        name: 1.0 for name in (*calibration.GAIN_PARAMETERS, *calibration.PRESERVED_PARAMETERS)
+    }
+    parameters.update(AUTOTUNE_AXES=7.0, ATC_RAT_RLL_P=0.0675, ATC_RAT_RLL_I=0.0675)
+    if value is None:
+        del parameters[parameter]
+    else:
+        parameters[parameter] = value
+    observation = calibration.Observation(
+        1_000_000_000, mode="GUIDED", armed=False, parameters=parameters,
+        parameter_generation=generation, latitude_deg=37.4, longitude_deg=-122.08,
+        relative_altitude_m=0.0, position_timestamp_ns=1_000_000_000,
+    )
+    blocked = calibration.advance(state, observation)
+    assert blocked.state.phase is calibration.Phase.WAIT_GUIDED
+    assert blocked.actions == ()
+
+    # A subsequent complete list with float32 seed values permits arming.
+    matching = {**parameters, "ATC_RAT_RLL_P": 0.06750000268220901, "ATC_RAT_RLL_I": 0.06750000268220901}
+    ready = calibration.advance(blocked.state, replace(observation, parameters=matching, parameter_generation=4))
+    assert ready.state.phase is calibration.Phase.WAIT_ARMED
+    assert ready.actions == (calibration.Action.arm(),)
+
+    # Missing or rejected writes retain the existing bounded prearm wait.
+    expired = calibration.advance(blocked.state, replace(observation, timestamp_ns=10_000_000_001))
+    assert expired.state.phase is calibration.Phase.FAILED
+    assert expired.actions == ()
 
 
 def test_all_axis_return_waypoint_uses_global_relative_altitude_frame() -> None:
@@ -961,6 +1020,7 @@ def test_parameter_request_clears_session_before_mavlink_send() -> None:
     "phase",
     [
         "WAIT_PRE_TUNE_LOITER",
+        "WAIT_PRE_TUNE_ALT_HOLD",
         "WAIT_AUTOTUNE",
         "TUNING",
         "WAIT_POST_TUNE_LOITER",
@@ -971,6 +1031,26 @@ def test_parameter_request_clears_session_before_mavlink_send() -> None:
 def test_all_axis_autotune_keeps_neutral_rc_override_alive(phase: str) -> None:
     calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
     assert calibration.neutral_override_required(calibration.Phase[phase])
+
+
+@pytest.mark.parametrize("mode,armed,stamp,reason", [
+    ("LOITER", True, 10_000_000_001, "WAIT_PRE_TUNE_ALT_HOLD timed out"),
+    ("RTL", True, 1, "unexpected mode before tuning ALT_HOLD"),
+    ("AUTOTUNE", True, 1, "unexpected mode before tuning ALT_HOLD"),
+    ("ALT_HOLD", False, 1, "vehicle disarmed before native LAND"),
+])
+def test_all_axis_alt_hold_handoff_failure_never_starts_tuning(mode, armed, stamp, reason) -> None:
+    calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
+    state = calibration.AllAxisState(
+        phase=calibration.Phase.WAIT_PRE_TUNE_ALT_HOLD,
+        phase_started_ns=0, public_deadline_ns=900_000_000_000,
+    )
+    transition = calibration.advance(
+        state, calibration.Observation(stamp, mode=mode, armed=armed)
+    )
+    assert transition.state.phase is calibration.Phase.FAILED
+    assert transition.state.failure_reason == reason
+    assert transition.actions == ()
 
 
 @pytest.mark.parametrize(

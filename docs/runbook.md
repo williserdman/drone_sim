@@ -139,9 +139,16 @@ and those image tags fixed through both flights and acceptance.
    uv run --locked drone-sim start --config config/autotune-run.json
    ```
 
-   The mission settles in LOITER, tunes all axes, reactivates the tuned gains,
-   settles again, then returns in GUIDED to the launch zone at 5 m before native
-   LAND. The return must reach within 0.5 m and remain steady for two seconds;
+   After a healthy heartbeat, the mission applies run-local roll P/I seeds of
+   `0.0675` and `AUTOTUNE_AXES=7`, then requires a fresh, complete,
+   float32-aware parameter readback before arming. Missing or mismatched seed
+   values fail within 10 simulated seconds; tracked base parameters remain
+   unchanged. It takes off in GUIDED, settles in LOITER for two seconds, then
+   commands and observes ALT_HOLD. It tunes all axes, reactivates the tuned
+   gains, and settles again.
+   Neutral overrides remain active through ALT_HOLD entry and tuning. It then
+   returns in GUIDED to the launch zone at 5 m before native LAND. The return
+   must reach within 0.5 m and remain steady for two seconds;
    `autotune_return_target` and `autotune_return_arrived` identify it in the logs.
    The public/warmup windows total 990
    simulated seconds at target RTF 0.25, about 66 wall minutes plus startup.

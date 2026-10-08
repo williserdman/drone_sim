@@ -15,6 +15,7 @@ from .mavlink_adapter import MavlinkAdapter
 
 
 GAIN_PARAMETERS = CALIBRATION_PARAMETERS
+ROLL_SEED_PARAMETERS = (("ATC_RAT_RLL_P", 0.0675), ("ATC_RAT_RLL_I", 0.0675))
 
 
 class Phase(str, Enum):
@@ -23,6 +24,7 @@ class Phase(str, Enum):
     WAIT_ARMED = "WAIT_ARMED"
     WAIT_ALTITUDE = "WAIT_ALTITUDE"
     WAIT_PRE_TUNE_LOITER = "WAIT_PRE_TUNE_LOITER"
+    WAIT_PRE_TUNE_ALT_HOLD = "WAIT_PRE_TUNE_ALT_HOLD"
     WAIT_AUTOTUNE = "WAIT_AUTOTUNE"
     TUNING = "TUNING"
     WAIT_POST_TUNE_LOITER = "WAIT_POST_TUNE_LOITER"
@@ -202,6 +204,7 @@ def neutral_override_required(phase: Phase) -> bool:
     """Keep all four pilot inputs neutral until native LAND owns descent."""
     return phase in {
         Phase.WAIT_PRE_TUNE_LOITER,
+        Phase.WAIT_PRE_TUNE_ALT_HOLD,
         Phase.WAIT_AUTOTUNE,
         Phase.TUNING,
         Phase.WAIT_POST_TUNE_LOITER,
@@ -220,6 +223,7 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
     if state.phase in {
         Phase.WAIT_ALTITUDE,
         Phase.WAIT_PRE_TUNE_LOITER,
+        Phase.WAIT_PRE_TUNE_ALT_HOLD,
         Phase.WAIT_AUTOTUNE,
         Phase.TUNING,
         Phase.WAIT_POST_TUNE_LOITER,
@@ -242,14 +246,15 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
     if stamp >= state.public_deadline_ns - 60_000_000_000 and state.phase not in {Phase.LANDING}:
         return _failed(current, stamp, "AutoTune reserved landing window reached")
     wait_limit = 10_000_000_000
-    if state.phase in {Phase.WAIT_GUIDED, Phase.WAIT_PRE_TUNE_LOITER, Phase.WAIT_AUTOTUNE, Phase.WAIT_POST_TUNE_LOITER, Phase.WAIT_GAIN_ACTIVATION, Phase.WAIT_RETURN_GUIDED, Phase.WAIT_LAND} and stamp - state.phase_started_ns > wait_limit:
+    if state.phase in {Phase.WAIT_GUIDED, Phase.WAIT_PRE_TUNE_LOITER, Phase.WAIT_PRE_TUNE_ALT_HOLD, Phase.WAIT_AUTOTUNE, Phase.WAIT_POST_TUNE_LOITER, Phase.WAIT_GAIN_ACTIVATION, Phase.WAIT_RETURN_GUIDED, Phase.WAIT_LAND} and stamp - state.phase_started_ns > wait_limit:
         return _failed(current, stamp, f"{state.phase.value} timed out")
 
     if state.phase is Phase.WAIT_READY:
         if not observation.heartbeat or observation.prearm_checks_healthy is not True:
             return Transition(current)
-        return Transition(_enter(current, Phase.WAIT_GUIDED, stamp), (
+        return Transition(_enter(current, Phase.WAIT_GUIDED, stamp, baseline_generation=observation.parameter_generation), (
             Action.parameter("AUTOTUNE_AXES", 7.0),
+            *(Action.parameter(name, value) for name, value in ROLL_SEED_PARAMETERS),
             Action.mode("GUIDED"), Action.request_parameters(),
         ))
     if state.phase is Phase.WAIT_GUIDED:
@@ -263,6 +268,11 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         if observation.armed is True:
             return _failed(current, stamp, "vehicle already armed before capturing the return position")
         if observation.armed is not False or not _fresh_position(observation) or abs(observation.relative_altitude_m) > .3:
+            return Transition(current)
+        if observation.parameter_generation <= state.baseline_generation or any(
+            not math.isclose(profile[name], value, rel_tol=1e-5, abs_tol=1e-7)
+            for name, value in ROLL_SEED_PARAMETERS
+        ):
             return Transition(current)
         preserved = tuple((name, float(profile[name])) for name in PRESERVED_PARAMETERS)
         return Transition(_enter(
@@ -287,9 +297,15 @@ def advance(state: AllAxisState, observation: Observation) -> Transition:
         current = replace(current, settle_started_ns=started)
         if stamp - started < 2_000_000_000:
             return Transition(current)
+        # Pinned AutoTune enables weak position hold only from LOITER/POSHOLD.
+        # Observe ALT_HOLD first to avoid position-hold yaw changes while leveling.
+        return Transition(_enter(current, Phase.WAIT_PRE_TUNE_ALT_HOLD, stamp, settle_started_ns=None), (Action.mode("ALT_HOLD"),))
+    if state.phase is Phase.WAIT_PRE_TUNE_ALT_HOLD:
+        if observation.mode not in {"LOITER", "ALT_HOLD"}: return _failed(current, stamp, "unexpected mode before tuning ALT_HOLD")
+        if observation.mode != "ALT_HOLD": return Transition(current)
         return Transition(_enter(current, Phase.WAIT_AUTOTUNE, stamp, settle_started_ns=None), (Action.mode("AUTOTUNE"),))
     if state.phase is Phase.WAIT_AUTOTUNE:
-        if observation.mode not in {"LOITER", "AUTOTUNE"}: return _failed(current, stamp, "unexpected mode while entering AUTOTUNE")
+        if observation.mode not in {"ALT_HOLD", "AUTOTUNE"}: return _failed(current, stamp, "unexpected mode while entering AUTOTUNE")
         if observation.mode != "AUTOTUNE": return Transition(current)
         return Transition(_enter(current, Phase.TUNING, stamp))
     if state.phase is Phase.TUNING:

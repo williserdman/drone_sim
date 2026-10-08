@@ -158,10 +158,18 @@ invalidated that bundle. See the [flight evidence and limits](../docs/handoff.md
 ### All-axis flight-controller tuning
 
 The `autotune` mission is the calibration path for roll, pitch, and yaw. It
-requires normal ArduPilot prearm checks, reads back `AUTOTUNE_AXES=7` and
-`ATC_RATE_FF_ENAB=1`, takes off in GUIDED, settles in LOITER, and enters
-AUTOTUNE with neutral sticks. After ArduPilot reports success, the companion
-returns to LOITER and sends `MAV_CMD_DO_AUX_FUNCTION` function 180 at HIGH.
+requires normal ArduPilot prearm checks. After the first healthy heartbeat, it
+sets `ATC_RAT_RLL_P=0.0675`, `ATC_RAT_RLL_I=0.0675`, and
+`AUTOTUNE_AXES=7`, then selects GUIDED and requests the complete parameter
+list. Arming requires a fresh, complete readback of all 15 gain inputs and
+preserved base parameters. The roll seeds must match within float32 tolerance,
+with `AUTOTUNE_AXES=7` and `ATC_RATE_FF_ENAB=1`. Missing values or rejected seed
+writes fail within the existing 10-second entry phase. These run-local seed writes
+do not change the global base-gain profile. The companion takes off in GUIDED, settles in LOITER for two
+seconds, commands and observes ALT_HOLD, then enters AUTOTUNE with neutral
+sticks. Entering from ALT_HOLD disables native position hold and its
+position-dependent heading updates. After ArduPilot reports success, the
+companion returns to LOITER and sends `MAV_CMD_DO_AUX_FUNCTION` function 180 at HIGH.
 The command ACK, the complete pilot-testing status, and matching live gain
 readback are all required before a two-second stable settle. The mission captures
 fresh launch coordinates while disarmed, then returns to them in GUIDED at 5 m
@@ -170,9 +178,10 @@ vertically of that waypoint, speed at most 0.2 m/s, and roll/pitch within 5 degr
 The return is bounded by 60 simulated seconds and the existing landing reserve;
 missing/stale position cannot qualify arrival. Return target and arrival events
 are recorded. This is a GPS waypoint return, not a marker-guided precision landing.
-The runtime refreshes neutral RC overrides twice per wall second through LOITER
-and tuning, then clears them before the GUIDED return. An earlier disarm fails
-immediately; native LAND and gain saving remain under ArduPilot control.
+The runtime refreshes neutral RC overrides twice per wall second through LOITER,
+ALT_HOLD entry, and tuning, then clears them before the GUIDED return. An
+unexpected mode, earlier disarm, or expired phase deadline fails immediately;
+native LAND and gain saving remain under ArduPilot control.
 
 Completion requires the all-axis saved-gains status, observed disarm, and a
 post-disarm readback matching the tested values. Flight decisions use only the
