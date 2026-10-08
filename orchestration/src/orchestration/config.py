@@ -25,12 +25,7 @@ _TEMPLATE_FIELDS = {
     "finalization_wall_seconds",
     "recording",
 }
-_RESOLVED_FIELDS = _TEMPLATE_FIELDS | {
-    "run_id",
-    "config_sha256",
-    "launch_mode",
-    "preparation_wall_seconds",
-}
+_RESOLVED_FIELDS = _TEMPLATE_FIELDS | {"run_id", "config_sha256"}
 _OPTIONAL_FIELDS = {
     "runtime_profile", "simulation", "competition", "mission_plan",
     "calibration", "calibration_json", "calibration_profile", "calibration_validation",
@@ -419,6 +414,11 @@ def _validate_common(
     runtime_profile = document.get("runtime_profile", "phase2")
     if runtime_profile not in {"phase2", "phase3"}:
         raise ValueError("runtime_profile must be phase2 or phase3")
+    if (
+        document.get("launch_mode", "unattended") == "operator"
+        and runtime_profile != "phase3"
+    ):
+        raise ValueError("operator launch requires runtime_profile phase3")
     if document["mission"] == "configured":
         if runtime_profile != "phase3":
             raise ValueError("configured mission requires runtime_profile phase3")
@@ -872,8 +872,8 @@ def load_run_config(path: str | Path) -> RunConfig:
             _canonical_json(document["calibration_profile"], field="calibration_profile")
             if "calibration_profile" in document else None
         ),
-        launch_mode=document["launch_mode"],
-        preparation_wall_seconds=document["preparation_wall_seconds"],
+        launch_mode=document.get("launch_mode", "unattended"),
+        preparation_wall_seconds=document.get("preparation_wall_seconds", 1800),
     )
 
 

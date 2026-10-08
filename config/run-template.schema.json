@@ -36,6 +36,16 @@
   "allOf": [
     {
       "if": {
+        "required": ["launch_mode"],
+        "properties": {"launch_mode": {"const": "operator"}}
+      },
+      "then": {
+        "required": ["runtime_profile"],
+        "properties": {"runtime_profile": {"const": "phase3"}}
+      }
+    },
+    {
+      "if": {
         "required": ["runtime_profile"],
         "properties": {"runtime_profile": {"const": "phase3"}}
       },

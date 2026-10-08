@@ -12,8 +12,6 @@
     "max_wall_seconds",
     "startup_wall_seconds",
     "finalization_wall_seconds",
-    "launch_mode",
-    "preparation_wall_seconds",
     "recording",
     "config_sha256"
   ],
@@ -27,8 +25,8 @@
     "max_wall_seconds": {"type": "integer", "minimum": 1},
     "startup_wall_seconds": {"type": "integer", "minimum": 1},
     "finalization_wall_seconds": {"type": "integer", "minimum": 1},
-    "launch_mode": {"enum": ["unattended", "operator"]},
-    "preparation_wall_seconds": {"type": "integer", "minimum": 1},
+    "launch_mode": {"enum": ["unattended", "operator"], "default": "unattended"},
+    "preparation_wall_seconds": {"type": "integer", "minimum": 1, "default": 1800},
     "recording": {"$ref": "#/$defs/recording"},
     "runtime_profile": {"enum": ["phase2", "phase3"]},
     "simulation": {"$ref": "#/$defs/simulation"},
@@ -40,6 +38,16 @@
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [
+    {
+      "if": {
+        "required": ["launch_mode"],
+        "properties": {"launch_mode": {"const": "operator"}}
+      },
+      "then": {
+        "required": ["runtime_profile"],
+        "properties": {"runtime_profile": {"const": "phase3"}}
+      }
+    },
     {
       "if": {
         "required": ["runtime_profile"],

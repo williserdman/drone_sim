@@ -497,6 +497,61 @@ def test_omitted_runtime_profile_resolves_to_frozen_phase_2_compatibility(tmp_pa
         resolved.topology.profile = "phase3"
 
 
+def test_historical_resolved_config_loads_with_unattended_defaults_and_old_checksum(
+    tmp_path,
+):
+    document = _resolved_document()
+    document.pop("launch_mode")
+    document.pop("preparation_wall_seconds")
+    document.pop("config_sha256")
+    old_checksum = hashlib.sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    document["config_sha256"] = old_checksum
+    path = tmp_path / "historical-run.json"
+    original = json.dumps(document)
+    path.write_text(original, encoding="utf-8")
+    (tmp_path / "course.yaml").write_bytes((CONFIG / "course.yaml").read_bytes())
+    (tmp_path / "scenario.yaml").write_bytes(
+        (CONFIG / "scenario.yaml").read_bytes()
+    )
+
+    loaded = load_run_config(path)
+
+    assert loaded.launch_mode == "unattended"
+    assert loaded.preparation_wall_seconds == 1800
+    assert loaded.config_sha256 == old_checksum
+    assert path.read_text(encoding="utf-8") == original
+    _load_validator("run.schema.json").validate(document)
+
+
+def test_operator_launch_rejects_phase2_template_and_resolved_config(tmp_path):
+    template = {**_phase2_document(), "launch_mode": "operator"}
+    with pytest.raises(ValueError, match="operator.*phase3"):
+        resolve_run_config(
+            _write_template(tmp_path, template),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(template)
+
+    resolved = {
+        "run_id": str(FIXED_RUN_ID),
+        **template,
+        "output_root": str((tmp_path / "runs").resolve()),
+        "preparation_wall_seconds": 1800,
+    }
+    resolved["config_sha256"] = hashlib.sha256(
+        json.dumps(resolved, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    path = tmp_path / "resolved-phase2-operator.json"
+    path.write_text(json.dumps(resolved), encoding="utf-8")
+    with pytest.raises(ValueError, match="operator.*phase3"):
+        load_run_config(path)
+    with pytest.raises(ValidationError):
+        _load_validator("run.schema.json").validate(resolved)
+
+
 def test_phase3_simulation_config_derives_exact_frame_count(tmp_path):
     value = _phase2_document()
     value["runtime_profile"] = "phase3"
