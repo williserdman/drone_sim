@@ -5,18 +5,24 @@ from types import SimpleNamespace
 
 import pytest
 
+from pymavlink.dialects.v20 import ardupilotmega as real_mavlink
+
 from drone_sim_companion.mavlink_adapter import MavlinkAdapter
 from drone_sim_companion.mission import CommandKind
 
 
 class Message:
-    def __init__(self, kind: str, **fields: object) -> None:
+    def __init__(self, kind: str, *, source_system: int = 1, **fields: object) -> None:
         self._kind = kind
+        self._source_system = source_system
         for name, value in fields.items():
             setattr(self, name, value)
 
     def get_type(self) -> str:
         return self._kind
+
+    def get_srcSystem(self) -> int:
+        return self._source_system
 
 
 @dataclass
@@ -66,6 +72,7 @@ def mavutil() -> SimpleNamespace:
         MAV_CMD_NAV_TAKEOFF=22,
         MAV_CMD_NAV_LAND=21,
         MAV_CMD_SET_MESSAGE_INTERVAL=511,
+        MAVLINK_MSG_ID_HEARTBEAT=0,
         MAV_MODE_FLAG_CUSTOM_MODE_ENABLED=1,
         MAV_MODE_FLAG_SAFETY_ARMED=128,
         MAV_RESULT_ACCEPTED=0,
@@ -90,6 +97,44 @@ def mavutil() -> SimpleNamespace:
             message.custom_mode
         ],
     )
+
+
+def real_heartbeat(*, source_system: int, source_component: int, armed: bool):
+    encoder = real_mavlink.MAVLink(
+        None, srcSystem=source_system, srcComponent=source_component
+    )
+    base_mode = real_mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+    if armed:
+        base_mode |= real_mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+    message = encoder.heartbeat_encode(
+        real_mavlink.MAV_TYPE_GCS
+        if source_system == 255
+        else real_mavlink.MAV_TYPE_QUADROTOR,
+        real_mavlink.MAV_AUTOPILOT_INVALID
+        if source_system == 255
+        else real_mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+        base_mode,
+        4,
+        real_mavlink.MAV_STATE_ACTIVE,
+    )
+    message.pack(encoder)
+    return message
+
+
+def real_ack(*, source_system: int, source_component: int):
+    encoder = real_mavlink.MAVLink(
+        None, srcSystem=source_system, srcComponent=source_component
+    )
+    message = encoder.command_ack_encode(
+        real_mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+        real_mavlink.MAV_RESULT_ACCEPTED,
+        0,
+        0,
+        0,
+        0,
+    )
+    message.pack(encoder)
+    return message
 
 
 def test_commands_translate_to_exact_mavlink_long_commands() -> None:
@@ -177,8 +222,72 @@ def test_telemetry_request_keeps_generic_stream_and_requests_landed_state() -> N
     adapter.request_telemetry(rate_hz=10)
     assert connection.mav.stream_calls == [(1, 1, 0, 10, 1)]
     assert connection.mav.calls == [
+        (1, 1, 511, 0, 0, 100_000, 0, 0, 0, 0, 0),
         (1, 1, 511, 0, 245, 100_000, 0, 0, 0, 0, 0),
     ]
+
+
+def test_foreign_and_gcs_heartbeats_cannot_change_vehicle_state() -> None:
+    connection = FakeConnection(
+        [
+            real_heartbeat(source_system=255, source_component=190, armed=True),
+            real_heartbeat(source_system=42, source_component=1, armed=True),
+            real_heartbeat(source_system=1, source_component=1, armed=False),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    assert adapter.poll(1) is None
+    assert adapter.poll(2) is None
+    vehicle = adapter.poll(3)
+
+    assert vehicle is not None
+    assert (vehicle.mode, vehicle.armed) == ("GUIDED", False)
+
+
+def test_foreign_and_source_less_command_acknowledgements_are_ignored() -> None:
+    source_less = Message("COMMAND_ACK", command=400, result=0)
+    del source_less._source_system
+    connection = FakeConnection(
+        [
+            real_ack(source_system=255, source_component=190),
+            real_ack(source_system=42, source_component=1),
+            source_less,
+            real_ack(source_system=1, source_component=1),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    assert adapter.poll(1) is None
+    assert adapter.poll(2) is None
+    assert adapter.poll(3) is None
+    vehicle = adapter.poll(4)
+
+    assert vehicle is not None and vehicle.ack is not None
+    assert vehicle.ack.command is CommandKind.ARM
+
+
+def test_outputs_stay_pinned_to_vehicle_when_connection_target_is_contaminated() -> None:
+    connection = FakeConnection()
+    connection.target_system = 255
+    connection.target_component = 190
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    adapter.send(CommandKind.LAND, None)
+
+    assert connection.mav.calls == [
+        (1, 1, 21, 0, 0, 0, 0, 0, 0, 0, 0),
+    ]
+
+
+def test_vehicle_telemetry_interval_rejection_is_diagnostic() -> None:
+    connection = FakeConnection(
+        [Message("COMMAND_ACK", command=511, result=4)]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    with pytest.raises(RuntimeError, match="telemetry interval.*result 4"):
+        adapter.poll(1)
 
 
 def test_required_parameters_use_one_complete_list_request_and_observations_are_exposed() -> None:

@@ -97,6 +97,13 @@ event records the accepted pre-arm values before mission execution starts.
 Simulation DroneKit connections use `SimulationVehicle` to disable DroneKit's
 automatic indexed parameter retries while retaining the real parameter cache,
 count handling, loaded transition, explicit full-list requests, and manual reads.
+Raw pymavlink and simulation DroneKit receive paths discard every telemetry and
+acknowledgement message outside the pinned ArduPilot system ID before it can
+change cached vehicle state. Outbound targets remain pinned to that vehicle even
+if another peer publishes a heartbeat. Each control channel explicitly requests
+10 Hz simulation-time vehicle heartbeats so a slowed SITL run still supplies the
+two-wall-second preflight freshness contract without accepting QGC traffic as
+vehicle evidence.
 This narrow adapter depends on DroneKit 2.9.2 registering its base `PARAM_VALUE`
 cache listener before the adapter's callback; the later callback restores the
 private `_params_duration` field to infinity after every base update. Hardware

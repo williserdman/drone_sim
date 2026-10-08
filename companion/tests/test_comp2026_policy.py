@@ -60,8 +60,8 @@ def test_builds_exact_pinned_simulation_policy(tmp_path):
         (1750, 2199, "LOITER"),
     ]
     intervals = {request.message_id: request.interval_us for request in policy.flight_profile.telemetry_requests}
-    assert intervals[0] == 1_000_000
-    assert set(intervals.values()) == {50_000, 1_000_000}
+    assert intervals[0] == 100_000
+    assert set(intervals.values()) == {50_000, 100_000}
     assert policy.flight_profile.freshness_bounds["heartbeat"] == 2.0
     assert policy.flight_profile.freshness_bounds["mode"] == 2.0
     assert policy.flight_profile.freshness_bounds["armed"] == 2.0

@@ -4,6 +4,7 @@ import importlib
 from types import SimpleNamespace
 
 import pytest
+from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
 
 def _simulation_vehicle_type():
@@ -20,6 +21,7 @@ class Mav:
     def __init__(self):
         self.reads = []
         self.lists = []
+        self.commands = []
 
     def param_request_read_send(self, *arguments):
         self.reads.append(arguments)
@@ -27,10 +29,13 @@ class Mav:
     def param_request_list_send(self, *arguments):
         self.lists.append(arguments)
 
+    def command_long_send(self, *arguments):
+        self.commands.append(arguments)
+
 
 class Handler:
     def __init__(self):
-        self.master = SimpleNamespace(mav=Mav())
+        self.master = SimpleNamespace(mav=Mav(), target_system=1, target_component=1)
         self.loop_listeners = []
         self.message_listeners = []
 
@@ -49,7 +54,16 @@ def parameter(*, count, index, name, value):
         param_index=index,
         param_id=name,
         param_value=value,
+        get_srcSystem=lambda: 1,
     )
+
+
+def sourced_message(message, *, system_id, component_id):
+    encoder = mavlink.MAVLink(
+        None, srcSystem=system_id, srcComponent=component_id
+    )
+    message.pack(encoder)
+    return message
 
 
 def test_simulation_vehicle_keeps_real_parameter_cache_without_automatic_reads():
@@ -97,3 +111,81 @@ def test_simulation_vehicle_keeps_real_parameter_cache_without_automatic_reads()
     handler.master.mav.param_request_read_send(1, 1, b"REAL_A", -1)
     assert handler.master.mav.lists == [(1, 1)]
     assert handler.master.mav.reads == [(1, 1, b"REAL_A", -1)]
+
+
+def test_simulation_vehicle_rejects_all_foreign_telemetry_before_dronekit_callbacks():
+    vehicle = _simulation_vehicle_type()(Handler())
+    observed = []
+    vehicle.add_message_listener("*", lambda _vehicle, name, _message: observed.append(name))
+
+    gcs_heartbeat = sourced_message(
+        mavlink.MAVLink_heartbeat_message(
+            mavlink.MAV_TYPE_GCS,
+            mavlink.MAV_AUTOPILOT_INVALID,
+            mavlink.MAV_MODE_FLAG_SAFETY_ARMED,
+            4,
+            mavlink.MAV_STATE_ACTIVE,
+            3,
+        ),
+        system_id=255,
+        component_id=190,
+    )
+    foreign_ack = sourced_message(
+        mavlink.MAVLink_command_ack_message(
+            mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            mavlink.MAV_RESULT_ACCEPTED,
+        ),
+        system_id=42,
+        component_id=1,
+    )
+    vehicle_heartbeat = sourced_message(
+        mavlink.MAVLink_heartbeat_message(
+            mavlink.MAV_TYPE_QUADROTOR,
+            mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+            0,
+            0,
+            mavlink.MAV_STATE_ACTIVE,
+            3,
+        ),
+        system_id=1,
+        component_id=1,
+    )
+
+    vehicle.notify_message_listeners("HEARTBEAT", gcs_heartbeat)
+    vehicle.notify_message_listeners("COMMAND_ACK", foreign_ack)
+    vehicle.notify_message_listeners("HEARTBEAT", vehicle_heartbeat)
+
+    assert observed == ["HEARTBEAT"]
+    assert vehicle.armed is False
+
+
+def test_simulation_vehicle_requests_frequent_vehicle_heartbeat_after_connect(monkeypatch):
+    vehicle_type = _simulation_vehicle_type()
+    vehicle = vehicle_type(Handler())
+    initialized = []
+    monkeypatch.setattr(
+        vehicle_type.__mro__[1],
+        "initialize",
+        lambda _self, *, rate, heartbeat_timeout: initialized.append(
+            (rate, heartbeat_timeout)
+        ),
+    )
+
+    vehicle.initialize(rate=4, heartbeat_timeout=30)
+
+    assert initialized == [(4, 30)]
+    assert vehicle._master.mav.commands == [
+        (
+            1,
+            1,
+            mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+            0,
+            mavlink.MAVLINK_MSG_ID_HEARTBEAT,
+            100_000,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+    ]

@@ -8,6 +8,47 @@ from typing import Any
 from .mission import Ack, CommandKind, Telemetry
 
 
+FLIGHT_CONTROLLER_SYSTEM_ID = 1
+FLIGHT_CONTROLLER_COMPONENT_ID = 1
+
+
+def is_flight_controller_message(message: Any) -> bool:
+    """Accept only messages whose MAVLink source is the pinned vehicle system."""
+    source = getattr(message, "get_srcSystem", None)
+    if not callable(source):
+        return False
+    try:
+        system_id = source()
+    except Exception:
+        return False
+    return (
+        isinstance(system_id, int)
+        and not isinstance(system_id, bool)
+        and system_id == FLIGHT_CONTROLLER_SYSTEM_ID
+    )
+
+
+def request_flight_controller_heartbeat(
+    mav: Any, mavlink: Any, *, rate_hz: int = 10
+) -> None:
+    """Request a wall-fresh heartbeat despite a slowed SITL simulation clock."""
+    if not isinstance(rate_hz, int) or isinstance(rate_hz, bool) or rate_hz <= 0:
+        raise ValueError("heartbeat rate must be a positive integer")
+    mav.command_long_send(
+        FLIGHT_CONTROLLER_SYSTEM_ID,
+        FLIGHT_CONTROLLER_COMPONENT_ID,
+        mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+        0,
+        mavlink.MAVLINK_MSG_ID_HEARTBEAT,
+        1_000_000 // rate_hz,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+
+
 class MavlinkAdapter:
     def __init__(self, connection: Any, mavutil_module: Any) -> None:
         self._connection = connection
@@ -36,8 +77,8 @@ class MavlinkAdapter:
         else:  # pragma: no cover - Enum exhaustiveness guard.
             raise ValueError(f"unsupported mission command {command!r}")
         self._connection.mav.command_long_send(
-            self._connection.target_system,
-            self._connection.target_component,
+            FLIGHT_CONTROLLER_SYSTEM_ID,
+            FLIGHT_CONTROLLER_COMPONENT_ID,
             command_id,
             0,
             *parameters,
@@ -81,8 +122,8 @@ class MavlinkAdapter:
             type_mask |= mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
         self._connection.mav.set_position_target_global_int_send(
             0,
-            self._connection.target_system,
-            self._connection.target_component,
+            FLIGHT_CONTROLLER_SYSTEM_ID,
+            FLIGHT_CONTROLLER_COMPONENT_ID,
             mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
             type_mask,
             int(round(latitude_deg * 1e7)),
@@ -136,22 +177,26 @@ class MavlinkAdapter:
             if not isinstance(name, str) or not name or len(name.encode("ascii")) > 16:
                 raise ValueError("parameter names must be nonempty MAVLink ASCII names")
         self._connection.mav.param_request_list_send(
-            self._connection.target_system,
-            self._connection.target_component,
+            FLIGHT_CONTROLLER_SYSTEM_ID,
+            FLIGHT_CONTROLLER_COMPONENT_ID,
         )
+
     def request_telemetry(self, *, rate_hz: int = 10) -> None:
         if not isinstance(rate_hz, int) or isinstance(rate_hz, bool) or rate_hz <= 0:
             raise ValueError("telemetry rate must be a positive integer")
         self._connection.mav.request_data_stream_send(
-            self._connection.target_system,
-            self._connection.target_component,
+            FLIGHT_CONTROLLER_SYSTEM_ID,
+            FLIGHT_CONTROLLER_COMPONENT_ID,
             self._mavutil.mavlink.MAV_DATA_STREAM_ALL,
             rate_hz,
             1,
         )
+        request_flight_controller_heartbeat(
+            self._connection.mav, self._mavutil.mavlink, rate_hz=rate_hz
+        )
         self._connection.mav.command_long_send(
-            self._connection.target_system,
-            self._connection.target_component,
+            FLIGHT_CONTROLLER_SYSTEM_ID,
+            FLIGHT_CONTROLLER_COMPONENT_ID,
             self._mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
             0,
             245,  # EXTENDED_SYS_STATE
@@ -167,6 +212,8 @@ class MavlinkAdapter:
         message = self._connection.recv_match(blocking=False)
         if message is None:
             return None
+        if not is_flight_controller_message(message):
+            return None
         kind = message.get_type()
         mavlink = self._mavutil.mavlink
         if kind == "HEARTBEAT":
@@ -180,6 +227,17 @@ class MavlinkAdapter:
                 landed=self._landed,
             )
         if kind == "COMMAND_ACK":
+            result = int(message.result)
+            if int(message.command) == mavlink.MAV_CMD_SET_MESSAGE_INTERVAL:
+                if result not in {
+                    mavlink.MAV_RESULT_ACCEPTED,
+                    mavlink.MAV_RESULT_IN_PROGRESS,
+                }:
+                    raise RuntimeError(
+                        "flight controller rejected telemetry interval request "
+                        f"with MAVLink result {result}"
+                    )
+                return None
             commands = {
                 mavlink.MAV_CMD_DO_SET_MODE: CommandKind.SET_GUIDED,
                 mavlink.MAV_CMD_COMPONENT_ARM_DISARM: CommandKind.ARM,
@@ -187,7 +245,6 @@ class MavlinkAdapter:
                 mavlink.MAV_CMD_NAV_LAND: CommandKind.LAND,
             }
             command = commands.get(int(message.command))
-            result = int(message.result)
             if command is None or result == mavlink.MAV_RESULT_IN_PROGRESS:
                 return None
             return Telemetry(
@@ -262,4 +319,10 @@ class MavlinkAdapter:
             )
         return None
 
-__all__ = ["MavlinkAdapter"]
+__all__ = [
+    "FLIGHT_CONTROLLER_COMPONENT_ID",
+    "FLIGHT_CONTROLLER_SYSTEM_ID",
+    "MavlinkAdapter",
+    "is_flight_controller_message",
+    "request_flight_controller_heartbeat",
+]

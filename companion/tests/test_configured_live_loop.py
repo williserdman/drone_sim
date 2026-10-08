@@ -103,10 +103,16 @@ class FakeConnection:
         self.parameter_list_requests = []
         self.parameter_values = {}
         self.closed = False
+        self.encoder = mavutil.mavlink.MAVLink(None, srcSystem=1, srcComponent=1)
 
     def recv_match(self, *, blocking):
         assert blocking is False
-        return self.messages.popleft() if self.messages else None
+        if not self.messages:
+            return None
+        message = self.messages.popleft()
+        if message.get_srcSystem() == 0:
+            message.pack(self.encoder)
+        return message
 
     def close(self):
         self.closed = True

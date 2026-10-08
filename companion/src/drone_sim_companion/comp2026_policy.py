@@ -263,7 +263,7 @@ def build_competition_policy(
     identity = SourceIdentity(1, 191)
     fc = SourceIdentity(1, 1)
     requests = tuple(
-        TelemetryRequest(message_id, 1_000_000 if message_id == 0 else 50_000)
+        TelemetryRequest(message_id, 100_000 if message_id == 0 else 50_000)
         for message_id in (0, 1, 30, 33, 65, 132, 242, 245)
     )
     flight_profile = FlightProfile(
