@@ -35,7 +35,8 @@ resources as a substitute for public physical truth.
 - [prepare_competition_assets.py](scripts/prepare_competition_assets.py) generates
   `iris_flight`, `iris_moving_pad`, and `iris_competition` from one physical
   vehicle template. Each unloaded model is 1.66001 kg with ±3.4 motor limits,
-  the competition camera/range hardware, and the payload hardpoint. Only
+  the competition camera/range hardware, the shared native ArduPilot JSON
+  range subscription, and the payload hardpoint. Only
   `iris_competition` receives mission payload attachment plugins. The same
   generator derives `vertical_descent_025.sdf` from the diagnostic world by
   changing only its physics cadence; 0.1 runs retain `vertical_descent.sdf`.
@@ -64,6 +65,13 @@ Gazebo also provides module readiness, source-finished, failure, native state,
 server-log, and quiescence evidence. Payload command authorization belongs to
 the electromagnet; the Gazebo-side coordinator only applies a correlated
 private command and reports confirmed joint state.
+
+The downward Gazebo ray has two consumers. The ROS adapter publishes it for
+companion clearance decisions. The common ArduPilot plugin subscription writes
+the same sample to JSON `rng_1`; only the competition SITL overlay enables that
+backend, which makes the flight controller the source of MAVLink
+`DISTANCE_SENSOR` telemetry. All three generated vehicle variants retain the
+same plugin subscription so their calibration fingerprint remains identical.
 
 The competition Iris adds seven fixed, safe RC PWM values to the native
 ArduPilot JSON sensor packet. Channels 1, 2, 4, 5, 6, and 7 are 1500; throttle

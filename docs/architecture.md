@@ -64,6 +64,16 @@ slots. This input is scoped to the competition vehicle and is distinct from
 MAVLink RC override or fabricated telemetry. Other scenarios do not receive RC
 fields through the JSON bridge.
 
+The shared downward ray also enters the ArduPilot plugin in every generated
+vehicle variant and is serialized as JSON `rng_1`. The competition parameter
+overlay alone enables SITL rangefinder instance 1, with the same 0.05–40 m
+limits as the Gazebo sensor. ArduPilot then publishes flight-controller
+`DISTANCE_SENSOR` for the original mission's source-filtered startup telemetry
+proof. The companion's operational clearance path remains the public ROS LiDAR
+sample with its own timestamp and freshness checks. This common plugin wiring
+is part of the calibration airframe fingerprint; the scenario-only ArduPilot
+backend settings are part of the imported effective baseline and live readback.
+
 ## Where to read or change code
 
 Start with the module relevant to your task. Each guide links its executable

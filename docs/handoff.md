@@ -105,6 +105,18 @@ wall second; focused host unit and compile checks pass. A rebuilt Gazebo image,
 fresh sensor capture, EKF response and native mission suite remain unverified.
 The flight controller, landing deadline, physics and scoring remain unchanged.
 
+Competition startup run `42bf9922-5670-414e-9e3c-700ebc9ddd9a` later reached
+GUIDED and failed the unchanged post-GUIDED telemetry proof. Its DataFlash log
+records all ten `RNGFND*_TYPE` values as zero and no `RFND` records, while the
+required profile includes MAVLink message 132. The Gazebo ray was publishing,
+but the common ArduPilot plugin had no range subscription, so no native
+flight-controller `DISTANCE_SENSOR` producer existed. The source repair now
+wires the common ray to JSON `rng_1`, enables competition-only SITL rangefinder
+instance 1 at the sensor's 0.05–40 m limits, and includes all three settings in
+calibration identity and preflight readback. Focused source tests pass. No image
+was rebuilt and no native flight has verified the repaired eight-family cadence;
+public-clock quantization may still expose a separate cadence failure.
+
 The five failed cases reported 0 points and no independently accepted physical
 outcome. Their bundles remain unchanged. This is evidence of honest per-case
 failure reporting and independent continuation, not an all-suite pass.
@@ -1007,8 +1019,9 @@ competition flights remain historical evidence.
 
 ## Active priorities
 
-1. Repair the Comp2026 Docker-context allowlist and verify imports in the built
-   image, then rerun both competition templates. Preserve the failed bundles.
+1. Rebuild the range-producer inputs, create a matching fresh calibration, then
+   rerun both competition templates and verify all eight telemetry families.
+   Preserve the failed bundles.
 2. Reconcile diagnostic mission logs with independent acceptance, and define
    appropriate AutoTune scoring expectations without relabeling its 40/100.
 3. Diagnose the intermittent private pad-contact gap exposed by the earlier stationary

@@ -84,9 +84,11 @@ replace `SOURCE_RUN_ID` with an accepted `autotune` run ID before launch.
 The explicit `calibration_validation: true` role selects reload hover checks;
 ordinary calibrated missions retain their own contracts. Imported profiles bind
 the consumer model, ordered scenario overlays and effective baseline. The
-competition consumer includes the native RC mode-channel overlay from
+competition consumer includes the native RC mode-channel and SITL rangefinder
+overlay from
 [`competition.parm`](../ardupilot_sitl/params/competition.parm) in that identity
-and preflight readback; it does not change the shared physical airframe.
+and preflight readback. The common Gazebo range subscription remains identical
+across all three vehicle variants, preserving the shared airframe fingerprint.
 The original unloaded version-1 profile remains valid only for `iris_flight`.
 
 The [moving-pad template](../config/configured-moving-pad-run.json) binds

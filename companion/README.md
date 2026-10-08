@@ -238,6 +238,10 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   The composition selects MAVLink 2 before opening DroneKit so the first native
   packet cannot trigger a protocol upgrade that replaces its guarded output
   queue. Transport guards remain required before any flight command.
+  The policy also reads back the competition rangefinder type and physical
+  limits. Its unchanged startup collector requires source-filtered MAVLink
+  `DISTANCE_SENSOR` cadence from ArduPilot; precision clearance continues to
+  use the independently timestamped ROS LiDAR adapter.
 - Building the Phase 3 companion image requires
   `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. Compose
   leaves the build argument empty when it is not supplied so inactive profiles

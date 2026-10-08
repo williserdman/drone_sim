@@ -58,6 +58,9 @@ def test_competition_parameters_map_native_rc7_slots() -> None:
         "FLTMODE1": "0",
         "FLTMODE4": "4",
         "FLTMODE6": "5",
+        "RNGFND1_MIN": "0.05",
+        "RNGFND1_MAX": "40",
+        "RNGFND1_TYPE": "100",
     }
 
 

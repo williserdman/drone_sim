@@ -54,10 +54,14 @@ EXPECTED_PARAMETERS = MappingProxyType(
         "FLTMODE1": 0,
         "FLTMODE4": 4,
         "FLTMODE6": 5,
+        "RNGFND1_MIN": 0.05,
+        "RNGFND1_MAX": 40,
+        "RNGFND1_TYPE": 100,
     }
 )
 BASE_PARAMETER_NAMES = frozenset(EXPECTED_PARAMETERS) - {
-    "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6"
+    "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
+    "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
 }
 
 
@@ -216,7 +220,10 @@ def build_competition_policy(
     competition_parameter_path = root / "ardupilot_sitl/params/competition.parm"
     _parameter_file(
         competition_parameter_path,
-        frozenset(("FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6")),
+        frozenset((
+            "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
+            "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
+        )),
     )
     model_path = root / "gazebo/resources/models/iris_competition/model.sdf"
     world_path = root / f"gazebo/resources/worlds/{world}.sdf"

@@ -51,6 +51,9 @@ def test_builds_exact_pinned_simulation_policy(tmp_path):
     assert policy.parameter_expectations["FLTMODE1"] == 0
     assert policy.parameter_expectations["FLTMODE4"] == 4
     assert policy.parameter_expectations["FLTMODE6"] == 5
+    assert policy.parameter_expectations["RNGFND1_TYPE"] == 100
+    assert policy.parameter_expectations["RNGFND1_MIN"] == 0.05
+    assert policy.parameter_expectations["RNGFND1_MAX"] == 40
     assert [(band.minimum_pwm, band.maximum_pwm, band.mode) for band in policy.flight_profile.rc_mode_bands] == [
         (801, 1230, "STABILIZE"),
         (1491, 1620, "GUIDED"),

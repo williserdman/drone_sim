@@ -206,6 +206,7 @@ def freeze_calibration_import(
             ) or (
                 consumer_scenario == "competition_v1" and name in {
                     "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
+                    "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
                 }
             ):
                 effective[name] = settings[name]

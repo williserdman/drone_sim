@@ -429,6 +429,11 @@
       <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
       <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
       <imuName>imu_link::imu_sensor</imuName>
+      <sensor>
+        <type>lidar</type>
+        <index>1</index>
+        <topic>/gazebo/private/range/downward</topic>
+      </sensor>
       <control channel="0">
         <jointName>rotor_0_joint</jointName>
         <useForce>1</useForce>

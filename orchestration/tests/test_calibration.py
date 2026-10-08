@@ -54,12 +54,18 @@ def test_calibration_import_binds_consumer_and_effective_overlay(tmp_path, vehic
     elif vehicle == "iris_competition":
         assert {
             name: profile["effective_baseline_parameters"][name]
-            for name in ("FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6")
+            for name in (
+                "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
+                "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
+            )
         } == {
             "FLTMODE_CH": 7.0,
             "FLTMODE1": 0.0,
             "FLTMODE4": 4.0,
             "FLTMODE6": 5.0,
+            "RNGFND1_MIN": 0.05,
+            "RNGFND1_MAX": 40.0,
+            "RNGFND1_TYPE": 100.0,
         }
         assert len(profile["overlay_parameter_sha256s"]) == 1
 
