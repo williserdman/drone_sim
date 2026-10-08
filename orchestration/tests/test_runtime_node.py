@@ -336,6 +336,56 @@ def test_phase3_enters_running_after_durable_flight_readiness_without_public_clo
     assert protocol.statuses == [RuntimeRunningStatus(RUN_ID, 0)]
 
 
+def test_operator_phase3_waits_for_start_admission_before_running():
+    protocol = FakeProtocol()
+    published = []
+
+    class OperatorProtocol:
+        admission = None
+
+        def read_start_admission(self):
+            return self.admission
+
+    operator = OperatorProtocol()
+    runtime = OrchestrationRuntime(
+        RUN_ID,
+        "a" * 64,
+        protocol=protocol,
+        publish=published.append,
+        required_durable_readiness=(
+            ArduPilotReadyStatus,
+            CompanionReadyStatus,
+            MissionReadyStatus,
+        ),
+        require_gazebo_ready=True,
+        launch_mode="operator",
+        operator_protocol=operator,
+    )
+    runtime.start()
+    runtime.accept_artifact_status(RUN_ID, True)
+    protocol.readable_statuses.update(
+        {
+            GazeboReadyStatus: GAZEBO_READY,
+            ArduPilotReadyStatus: ArduPilotReadyStatus(RUN_ID),
+            CompanionReadyStatus: CompanionReadyStatus(RUN_ID),
+            MissionReadyStatus: MissionReadyStatus(RUN_ID),
+        }
+    )
+
+    assert runtime.poll() is False
+    assert [event.state for event in published] == ["STARTING", "READY"]
+    assert protocol.statuses == []
+
+    class Admission:
+        sha256 = "b" * 64
+
+    operator.admission = Admission()
+    assert runtime.poll() is False
+    assert [event.state for event in published] == ["STARTING", "READY", "RUNNING"]
+    assert published[-1].admission_sha256 == "b" * 64
+    assert protocol.statuses == [RuntimeRunningStatus(RUN_ID, 0)]
+
+
 @pytest.mark.parametrize("preterminal", ["STARTING", "READY", "RUNNING"])
 @pytest.mark.parametrize("terminal", ["COMPLETED", "FAILED", "ABORTED"])
 def test_finalize_from_every_preterminal_state_leaves_live_notification_to_artifacts(

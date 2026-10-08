@@ -18,6 +18,7 @@ from artifacts import (
     SourceRevision,
 )
 from artifacts.manifest import MODULE_LOGS, REQUIRED_ARTIFACT_PATHS
+from artifacts.operator_protocol import OperatorProtocol
 from artifacts._adapters.rosbag import (
     GroundTruthEvidence,
     PhysicalBagEvidence,
@@ -115,6 +116,24 @@ def _completed_bundle(
     configuration["config_sha256"] = config_sha
     config_path = run_directory / "configuration/run.json"
     config_path.write_text(json.dumps(configuration), encoding="utf-8")
+    configuration_records = [
+        ConfigurationRecord("configuration/run.json", config_sha)
+    ]
+    if configuration.get("launch_mode", "unattended") == "operator":
+        (run_directory / ".control").mkdir()
+        (run_directory / ".status").mkdir()
+        with OperatorProtocol(run_directory, RUN_ID, config_sha) as protocol:
+            request = protocol.write_start_request(
+                "00000000-0000-4000-8000-000000000707"
+            )
+            admission = protocol.write_start_admission(
+                request, native_epoch_ns=50_000_000
+            )
+        configuration_records.append(
+            ConfigurationRecord(
+                "configuration/start-admission.json", admission.sha256
+            )
+        )
 
     def log_row(module, event, fields, sim_timestamp=None):
         return {
@@ -278,7 +297,7 @@ def _completed_bundle(
                 ImageDigest(name, EXPECTED_IMAGE_DIGESTS[name])
                 for name in PHASE3_IMAGE_NAMES
             ),
-            configuration_records=(ConfigurationRecord("configuration/run.json", config_sha),),
+            configuration_records=tuple(configuration_records),
             achieved_score=achieved,
             maximum_available_score=100.0,
             scoring_checksum=checksum,
@@ -287,7 +306,9 @@ def _completed_bundle(
     )
 
 
-def _physical_evidence(run_directory: Path, *, achieved: float) -> PhysicalBagEvidence:
+def _physical_evidence(
+    run_directory: Path, *, achieved: float, admission_sha256: str = ""
+) -> PhysicalBagEvidence:
     if achieved == 100.0:
         first_timestamp = 1_400_000_000
         samples = tuple(
@@ -348,6 +369,7 @@ def _physical_evidence(run_directory: Path, *, achieved: float) -> PhysicalBagEv
             )
             for event in events
         ),
+        admission_sha256=admission_sha256,
     )
 
 
@@ -493,10 +515,49 @@ def test_production_semantic_check_uses_configured_competition_video_geometry(
     )
 
     result = acceptance._production_semantic_check(
-        tmp_path, RUN_ID, 12_000, "b" * 64
+        tmp_path, RUN_ID, 12_000, "b" * 64, ""
     )
 
     assert result is evidence
+
+
+def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
+    tmp_path,
+):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={
+            "launch_mode": "operator",
+            "preparation_wall_seconds": 1800,
+        },
+    )
+    admission_sha256 = json.loads(
+        (tmp_path / "manifest.json").read_text(encoding="utf-8")
+    )["configurations"][1]["sha256"]
+
+    report = inspect_phase3_semantics(
+        tmp_path,
+        rules_path=RULES_PATH,
+        **_expected_provenance_kwargs(),
+        semantic_check=lambda *_args: _physical_evidence(
+            tmp_path,
+            achieved=60.0,
+            admission_sha256=admission_sha256,
+        ),
+    )
+    assert report.run_id == RUN_ID
+
+    with pytest.raises(BundleAcceptanceError, match="physical evidence admission"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256="c" * 64
+            ),
+        )
 
 
 def test_acceptance_inspector_optionally_requires_maximum_score(tmp_path):
@@ -729,7 +790,7 @@ def test_acceptance_requires_digest_bound_physical_evidence(tmp_path):
             rules_path=RULES_PATH,
             **_expected_provenance_kwargs(),
             compose_resources=lambda _project: (),
-            semantic_check=lambda _run, _run_id, _frames, _checksum: None,
+            semantic_check=lambda _run, _run_id, _frames, _checksum, _admission: None,
         )
 
 

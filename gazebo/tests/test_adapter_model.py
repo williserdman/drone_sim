@@ -117,6 +117,21 @@ def test_output_epoch_gate_maps_different_warmup_histories_to_the_same_fixed_epo
     assert late.native_epoch_ns == PUBLIC_EPOCH_NATIVE_NS
 
 
+def test_output_epoch_gate_accepts_one_dynamic_operator_epoch_before_activation():
+    gate = OutputEpochGate(expected_frames=2, public_epoch_native_ns=None)
+    gate.accept_clock(180_025_000_000)
+
+    gate.configure_epoch(180_050_000_000)
+    gate.request_activation()
+
+    assert gate.accept_clock(180_050_000_000) == 0
+    assert gate.accept_camera("onboard", 180_050_000_000) is None
+    assert gate.accept_camera("onboard", 180_100_000_000) == 50_000_000
+    assert gate.native_epoch_ns == 180_050_000_000
+    with pytest.raises(AdapterFault, match="already configured"):
+        gate.configure_epoch(180_100_000_000)
+
+
 def test_output_epoch_gate_fails_closed_when_activation_is_late():
     gate = OutputEpochGate(
         expected_frames=1_200,

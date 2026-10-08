@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import subprocess
@@ -142,6 +143,40 @@ def test_finalize_writes_expanded_schema_valid_manifest(tmp_path):
     }
     assert all(record["validation"] == "valid" for record in manifest["artifacts"])
     assert all(record["detail"] for record in manifest["artifacts"])
+
+
+def test_finalize_rejects_start_admission_record_not_matching_file(tmp_path):
+    _complete_run_directory(tmp_path)
+    admission = _write(
+        tmp_path,
+        "configuration/start-admission.json",
+        b'{"schema_version":1}\n',
+    )
+    digest = hashlib.sha256(admission.read_bytes()).hexdigest()
+    records = (
+        ConfigurationRecord("configuration/run.json", SHA_B),
+        ConfigurationRecord("configuration/start-admission.json", digest),
+    )
+
+    ArtifactSession(tmp_path).finalize(
+        _finalization_input(configuration_records=records)
+    )
+
+    other = tmp_path / "other"
+    _complete_run_directory(other)
+    _write(other, "configuration/start-admission.json", admission.read_bytes())
+    with pytest.raises(ValueError, match="start admission configuration record"):
+        ArtifactSession(other).finalize(
+            _finalization_input(
+                configuration_records=(
+                    ConfigurationRecord("configuration/run.json", SHA_B),
+                    ConfigurationRecord(
+                        "configuration/start-admission.json", "c" * 64
+                    ),
+                )
+            )
+        )
+    assert not (other / "manifest.json").exists()
 
 
 def test_finalize_deadline_check_stops_hashing_and_commits_timeout_inventory(tmp_path):

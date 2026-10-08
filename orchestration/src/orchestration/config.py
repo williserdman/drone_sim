@@ -25,10 +25,16 @@ _TEMPLATE_FIELDS = {
     "finalization_wall_seconds",
     "recording",
 }
-_RESOLVED_FIELDS = _TEMPLATE_FIELDS | {"run_id", "config_sha256"}
+_RESOLVED_FIELDS = _TEMPLATE_FIELDS | {
+    "run_id",
+    "config_sha256",
+    "launch_mode",
+    "preparation_wall_seconds",
+}
 _OPTIONAL_FIELDS = {
     "runtime_profile", "simulation", "competition", "mission_plan",
     "calibration", "calibration_json", "calibration_profile", "calibration_validation",
+    "launch_mode", "preparation_wall_seconds",
 }
 _STRING_FIELDS = ("world", "vehicle", "mission", "scenario", "output_root")
 _DEADLINE_FIELDS = (
@@ -151,6 +157,8 @@ class RunTemplate:
     calibration_source_directory: Path | None = None
     calibration_profile_json: str | None = None
     calibration_validation: bool = False
+    launch_mode: str = "unattended"
+    preparation_wall_seconds: int = 1800
 
 
 @dataclass(frozen=True)
@@ -174,6 +182,8 @@ class RunConfig:
     calibration_sources: CalibrationImport | None = None
     calibration_profile_json: str | None = None
     calibration_validation: bool = False
+    launch_mode: str = "unattended"
+    preparation_wall_seconds: int = 1800
 
     @property
     def expected_camera_frames(self) -> int:
@@ -397,6 +407,15 @@ def _validate_common(
         value = document[field]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"{field} must be a positive integer")
+    if "launch_mode" in document and document["launch_mode"] not in {
+        "unattended",
+        "operator",
+    }:
+        raise ValueError("launch_mode must be unattended or operator")
+    if "preparation_wall_seconds" in document:
+        preparation_wall_seconds = document["preparation_wall_seconds"]
+        if type(preparation_wall_seconds) is not int or preparation_wall_seconds < 1:
+            raise ValueError("preparation_wall_seconds must be a positive integer")
     runtime_profile = document.get("runtime_profile", "phase2")
     if runtime_profile not in {"phase2", "phase3"}:
         raise ValueError("runtime_profile must be phase2 or phase3")
@@ -644,6 +663,8 @@ def _template_from_document(document: dict[str, Any], template_dir: Path) -> Run
             if "calibration_profile" in document else None
         ),
         calibration_validation=document.get("calibration_validation", False),
+        launch_mode=document.get("launch_mode", "unattended"),
+        preparation_wall_seconds=document.get("preparation_wall_seconds", 1800),
     )
 
 
@@ -668,6 +689,8 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
         "max_wall_seconds": config.max_wall_seconds,
         "startup_wall_seconds": config.startup_wall_seconds,
         "finalization_wall_seconds": config.finalization_wall_seconds,
+        "launch_mode": config.launch_mode,
+        "preparation_wall_seconds": config.preparation_wall_seconds,
         "recording": {
             "width_px": config.recording.width_px,
             "height_px": config.recording.height_px,
@@ -715,11 +738,29 @@ def resolve_run_config(
     path: str | Path, run_id_factory: Callable[[], UUID] = uuid4,
     calibration_importer: Callable[[Path, str, str], CalibrationImport] | None = None,
     calibration_profile_factory: Callable[[], dict[str, Any]] | None = None,
+    launch_mode: str | None = None,
+    preparation_wall_seconds: int | None = None,
+    output_root: Path | None = None,
 ) -> RunConfig:
     """Validate an operator template and bind it to one generated run identity."""
     source = Path(path).resolve()
     document = _read_document(source)
     template = _template_from_document(document, source.parent)
+    resolved_launch_mode = template.launch_mode if launch_mode is None else launch_mode
+    if resolved_launch_mode not in {"unattended", "operator"}:
+        raise ValueError("launch_mode must be unattended or operator")
+    resolved_preparation_seconds = (
+        template.preparation_wall_seconds
+        if preparation_wall_seconds is None
+        else preparation_wall_seconds
+    )
+    if (
+        type(resolved_preparation_seconds) is not int
+        or resolved_preparation_seconds < 1
+    ):
+        raise ValueError("preparation_wall_seconds must be a positive integer")
+    if output_root is not None and not isinstance(output_root, Path):
+        raise ValueError("output_root override must be a Path")
     calibration_profile_json = template.calibration_profile_json
     if template.mission == "autotune" and calibration_profile_json is None:
         if calibration_profile_factory is None:
@@ -750,7 +791,7 @@ def resolve_run_config(
         vehicle=template.vehicle,
         mission=template.mission,
         scenario=template.scenario,
-        output_root=template.output_root,
+        output_root=(template.output_root if output_root is None else output_root.resolve()),
         max_wall_seconds=template.max_wall_seconds,
         startup_wall_seconds=template.startup_wall_seconds,
         finalization_wall_seconds=template.finalization_wall_seconds,
@@ -764,6 +805,8 @@ def resolve_run_config(
         calibration_sources=calibration,
         calibration_profile_json=calibration_profile_json,
         calibration_validation=template.calibration_validation,
+        launch_mode=resolved_launch_mode,
+        preparation_wall_seconds=resolved_preparation_seconds,
     )
     return replace(
         unresolved,
@@ -829,6 +872,8 @@ def load_run_config(path: str | Path) -> RunConfig:
             _canonical_json(document["calibration_profile"], field="calibration_profile")
             if "calibration_profile" in document else None
         ),
+        launch_mode=document["launch_mode"],
+        preparation_wall_seconds=document["preparation_wall_seconds"],
     )
 
 

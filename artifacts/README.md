@@ -31,6 +31,10 @@ required evidence is missing or invalid.
   [`RuntimeProtocol`](src/artifacts/runtime_protocol.py) is the container-side
   adapter over the strict, descriptor-safe persistence mechanics in
   [`protocol_files.py`](src/artifacts/protocol_files.py).
+- [`operator_protocol.py`](src/artifacts/operator_protocol.py) owns the
+  request-scoped operator start, live preflight, immutable admission, and flight
+  abort documents. The admitted epoch wire shape is also published as the
+  [`start-admission.json` schema](schemas/start-admission.schema.json).
 - [`acceptance.py`](src/artifacts/acceptance.py) and
   the scenario score validators, including
   [`moving_pad_score_validation.py`](src/artifacts/moving_pad_score_validation.py),
@@ -77,6 +81,14 @@ records are assembled in [`runtime_node.py`](src/artifacts/runtime_node.py).
 Manifest paths use portable POSIX-relative syntax. The executable contract is
 [`is_manifest_relative_path`](src/artifacts/manifest.py), with its JSON form in
 the [`manifest.json` schema](schemas/manifest.schema.json).
+
+An operator-mode bundle carries the immutable
+`configuration/start-admission.json` as a configuration record. Artifact
+finalization rehashes that file before manifest publication. Independent
+acceptance also validates its start request, config binding, 50 ms native epoch,
+public-zero mapping, manifest digest, and the matching admission digest recorded
+in `RunState` at `RUNNING` and `FINALIZING`. Unattended bundles carry no admission
+record and retain their configured fixed epoch.
 
 Local Colima runs set
 `SIM_MEDIA_SPOOL_DIRECTORY=/var/lib/drone-sim/media`. That directory must be a

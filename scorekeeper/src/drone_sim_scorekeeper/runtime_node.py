@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import sys
 from typing import Any, Callable, Protocol
 
+from artifacts.operator_protocol import OperatorProtocol, validate_admission_binding
 from artifacts.runtime_status import SourceFinishedStatus, canonical_run_id
 from .competition import (
     CompetitionScorer,
@@ -358,6 +359,7 @@ def _create_ros_boundary(
     logger: _StructuredLogger,
     *,
     scenario: str = "descent_v1",
+    validate_admission: Callable[[str], None] | None = None,
 ) -> _RosBoundary:
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -480,8 +482,15 @@ def _create_ros_boundary(
     def accept_clock(_message: Any) -> None:
         return
 
-    def accept_run_state(_message: Any) -> None:
-        return
+    def accept_run_state(message: Any) -> None:
+        try:
+            if message.run_id != run_id or message.state != RunState.RUNNING:
+                return
+            if validate_admission is not None:
+                validate_admission(message.admission_sha256)
+        except BaseException as error:
+            runtime_ref[0].fail("start_admission_invalid")
+            errors.append(error)
 
     node.create_subscription(
         GroundTruth,
@@ -580,6 +589,13 @@ def main() -> int:
         )
     )
     settings = load_runtime_settings(config_path, run_id)
+    config_document = json.loads(config_path.read_text(encoding="utf-8"))
+    launch_mode = config_document.get("launch_mode", "unattended")
+    operator_protocol = (
+        OperatorProtocol(run_directory, run_id, config_document["config_sha256"])
+        if launch_mode == "operator"
+        else None
+    )
     rules_path = rules_path_for_scenario(
         os.environ.get(
             "SIM_SCORE_RULES_PATH",
@@ -596,6 +612,9 @@ def main() -> int:
         runtime_ref,
         logger,
         scenario=settings.scenario,
+        validate_admission=lambda digest: validate_admission_binding(
+            operator_protocol, launch_mode, digest
+        ),
     )
     if settings.scenario == "competition_v1":
         rules = load_competition_rules(rules_path)
@@ -694,6 +713,8 @@ def main() -> int:
         logger.silent = True
     finally:
         boundary.node.destroy_node()
+        if operator_protocol is not None:
+            operator_protocol.close()
         protocol.close()
         rclpy.shutdown()
     return exit_code

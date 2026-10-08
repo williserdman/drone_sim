@@ -66,6 +66,14 @@ server-log, and quiescence evidence. Payload command authorization belongs to
 the electromagnet; the Gazebo-side coordinator only applies a correlated
 private command and reports confirmed joint state.
 
+In operator mode, Gazebo exposes its latest onboard native frame on the private
+HTTP service at port 8081. `/camera.mjpg` is a latest-frame-only MJPEG stream;
+`/status` reports freshness, native and wall timestamps, sequence, dimensions,
+and source. These frames remain private throughout preparation. After companion
+readiness, Gazebo pauses the live world, selects the next 50 ms native boundary,
+arms the output gate, and writes the immutable start admission before public
+zero can be released.
+
 The downward Gazebo ray has two consumers. The ROS adapter publishes it for
 companion clearance decisions. The common ArduPilot plugin subscription writes
 the same sample to JSON `rng_1`; only the competition SITL overlay enables that
@@ -94,6 +102,10 @@ The runtime publishes it through the
   other missions retain `mission-command-delivered`. A timed-out world-control
   reply is accepted only when world statistics prove the requested effect;
   otherwise the runtime retries once and faults closed.
+- Operator mode selects that native epoch only after a request-scoped healthy,
+  disarmed readiness decision. Unattended mode retains the fixed configured
+  epoch. Every operator lifecycle consumer validates the admission digest on
+  `RUNNING` before producing public evidence.
 - Camera and aligned physical-truth samples advance at the configured 20 Hz.
   Invalid, duplicate, regressing, misaligned, or excess samples latch the first
   adapter fault; later input cannot repair it.

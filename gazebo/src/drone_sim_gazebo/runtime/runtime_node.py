@@ -12,6 +12,12 @@ from threading import Event, Thread
 import time
 
 from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.operator_protocol import (
+    OperatorProtocol,
+    OperatorProtocolError,
+    PreflightStatus,
+    validate_admission_binding,
+)
 from artifacts.runtime_status import (
     ArtifactsReadyStatus,
     MissionCommandDeliveredStatus,
@@ -41,6 +47,7 @@ from .model import (
     ServerStopFailed,
 )
 from .paths import bridge_config_for_world
+from .preview import LatestFramePreview, PreviewServer
 
 
 _RUN_STATE_NAMES = (
@@ -54,6 +61,58 @@ _RUN_STATE_NAMES = (
     "ABORTED",
 )
 _EPOCH_CLOCK_LOOKAHEAD_NS = 50_000_000
+
+
+class GazeboPreflightReporter:
+    """Publish fresh native progress without exposing public mission samples."""
+
+    def __init__(
+        self,
+        *,
+        protocol,
+        run_id: str,
+        config_sha256: str,
+        wall_time_ns=time.time_ns,
+    ) -> None:
+        previous = protocol.read_preflight("gazebo")
+        self._protocol = protocol
+        self._run_id = run_id
+        self._config_sha256 = config_sha256
+        self._wall_time_ns = wall_time_ns
+        self._sequence = 0 if previous is None else previous.sequence + 1
+        self._previous: tuple[int, int] | None = None
+
+    def observe(
+        self,
+        native_timestamp_ns: int | None,
+        camera_native_timestamp_ns: int | None,
+    ) -> PreflightStatus | None:
+        if native_timestamp_ns is None or camera_native_timestamp_ns is None:
+            return None
+        current = (native_timestamp_ns, camera_native_timestamp_ns)
+        if current == self._previous:
+            return None
+        advancing = (
+            self._previous is not None
+            and native_timestamp_ns > self._previous[0]
+            and camera_native_timestamp_ns > self._previous[1]
+        )
+        status = PreflightStatus(
+            self._run_id,
+            self._config_sha256,
+            "gazebo",
+            self._sequence,
+            self._wall_time_ns(),
+            native_timestamp_ns=native_timestamp_ns,
+            physics_advancing=advancing,
+            camera_native_timestamp_ns=camera_native_timestamp_ns,
+            ready=advancing,
+            detail=("live" if advancing else "awaiting advancing native physics and camera"),
+        )
+        self._protocol.write_preflight(status)
+        self._sequence += 1
+        self._previous = current
+        return status
 
 
 def _event(run_id: str, name: str, *, fields=None, sim_timestamp_ns=None) -> None:
@@ -80,7 +139,13 @@ def _record_adapter_fault(run_id: str, inbox, reason: str) -> None:
     inbox.append(ChildExited(run_id, "adapter", 1))
 
 
-def _lifecycle_node(run_id: str, inbox: deque):
+def _lifecycle_node(
+    run_id: str,
+    inbox: deque,
+    *,
+    launch_mode: str,
+    operator_protocol: OperatorProtocol | None,
+):
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from simulation_interfaces.msg import RunState
@@ -102,6 +167,22 @@ def _lifecycle_node(run_id: str, inbox: deque):
             if not 0 <= state < len(_RUN_STATE_NAMES):
                 inbox.append(ChildExited(run_id, "adapter", 2))
                 return
+            if message.state == RunState.RUNNING:
+                try:
+                    if launch_mode == "operator":
+                        assert operator_protocol is not None
+                        validate_admission_binding(
+                            operator_protocol,
+                            launch_mode,
+                            message.admission_sha256,
+                        )
+                    elif message.admission_sha256 != "":
+                        raise OperatorProtocolError(
+                            "unattended RunState must not carry an admission digest"
+                        )
+                except (OperatorProtocolError, AssertionError):
+                    inbox.append(ChildExited(run_id, "adapter", 3))
+                    return
             inbox.append(RunStateEvent(run_id, _RUN_STATE_NAMES[state]))
 
     return LifecycleNode()
@@ -292,6 +373,146 @@ class PublicEpochRendezvous:
         return True
 
 
+class OperatorEpochRendezvous:
+    """Run live private preparation, then admit one request-scoped epoch."""
+
+    def __init__(
+        self,
+        *,
+        transport: GazeboTransport,
+        protocol: RuntimeProtocol,
+        operator_protocol,
+        configure_output,
+        activate_output,
+        prepare_output,
+        start_private_preview,
+        latest_native_clock,
+        epoch_reached,
+        release_status_type: type[RuntimeStatus] = MissionCommandDeliveredStatus,
+    ) -> None:
+        self._transport = transport
+        self._protocol = protocol
+        self._operator_protocol = operator_protocol
+        self._configure_output = configure_output
+        self._activate_output = activate_output
+        self._prepare_output = prepare_output
+        self._start_private_preview = start_private_preview
+        self._latest_native_clock = latest_native_clock
+        self._epoch_reached = epoch_reached
+        self._release_status_type = release_status_type
+        self._preparation_started = False
+        self._admission = None
+        self._begun = False
+        self._released = False
+        self._unpause_done = Event()
+        self._unpause_error: Exception | None = None
+        self._unpause_thread: Thread | None = None
+
+    def start_preparation(self) -> None:
+        if self._preparation_started:
+            return
+        self._start_private_preview()
+        self._transport.set_paused(False)
+        self._preparation_started = True
+
+    def _run_to_epoch(self, target_ns: int) -> None:
+        lookahead = target_ns + _EPOCH_CLOCK_LOOKAHEAD_NS
+        last_error: TransportError | None = None
+        for _attempt in range(2):
+            try:
+                self._transport.run_to_sim_time(lookahead)
+                return
+            except TransportError as error:
+                last_error = error
+            paused_at = self._transport.paused_sim_time_ns()
+            if paused_at is None or paused_at >= lookahead:
+                return
+        assert last_error is not None
+        raise last_error
+
+    def poll_admission(self):
+        if self._admission is not None:
+            return self._admission
+        existing = self._operator_protocol.read_start_admission()
+        if existing is not None:
+            self._transport.set_paused(True)
+            self._configure_output(existing.native_epoch_ns)
+            self._prepare_output()
+            self._run_to_epoch(existing.native_epoch_ns)
+            self._admission = existing
+            return existing
+        request = self._operator_protocol.read_start_request()
+        if request is None:
+            return None
+        readiness = self._operator_protocol.read_start_readiness()
+        if readiness is None or not readiness.ready:
+            return None
+        # Freeze the live preparation world before selecting the next camera
+        # boundary.  Otherwise Gazebo can cross an epoch selected from a stale
+        # ROS clock observation while the output gate is being configured.
+        self._transport.set_paused(True)
+        native = self._latest_native_clock()
+        if type(native) is not int or native < 0:
+            return None
+        paused_native = self._transport.paused_sim_time_ns()
+        if type(paused_native) is int and paused_native >= 0:
+            native = max(native, paused_native)
+        target = ((native // _EPOCH_CLOCK_LOOKAHEAD_NS) + 1) * _EPOCH_CLOCK_LOOKAHEAD_NS
+        self._configure_output(target)
+        self._prepare_output()
+        self._run_to_epoch(target)
+        self._admission = self._operator_protocol.write_start_admission(
+            request,
+            native_epoch_ns=target,
+        )
+        return self._admission
+
+    def begin(self) -> None:
+        if self._begun:
+            return
+        if self._admission is None:
+            raise RuntimeError("operator public output cannot begin before admission")
+        self._activate_output()
+        self._begun = True
+
+    def _unpause(self) -> None:
+        try:
+            last_error: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    self._transport.set_paused(False)
+                    return
+                except Exception as error:
+                    last_error = error
+                if self._transport.paused_sim_time_ns() is None:
+                    return
+            self._unpause_error = last_error
+        except Exception as error:
+            self._unpause_error = error
+        finally:
+            self._unpause_done.set()
+
+    def release_if_delivered(self) -> bool:
+        if not self._begun or self._released or not self._epoch_reached():
+            return False
+        if self._protocol.read_status(self._release_status_type) is None:
+            return False
+        if self._unpause_thread is None:
+            self._unpause_thread = Thread(
+                target=self._unpause,
+                name="gazebo-operator-epoch-unpause",
+                daemon=True,
+            )
+            self._unpause_thread.start()
+            return False
+        if not self._unpause_done.is_set():
+            return False
+        if self._unpause_error is not None:
+            raise self._unpause_error
+        self._released = True
+        return True
+
+
 def _release_status_type_for_mission(mission: str) -> type[RuntimeStatus]:
     if mission == "configured":
         return MissionExecutionReadyStatus
@@ -342,11 +563,23 @@ def main() -> int:
     protocol = RuntimeProtocol(run_directory, run_id)
     deadline_latch = FinalizationDeadlineLatch(config.finalization_wall_seconds)
     children = ChildSupervisor()
+    operator_mode = config.launch_mode == "operator"
+    operator_protocol = (
+        OperatorProtocol(run_directory, run_id, config.config_sha256)
+        if operator_mode
+        else None
+    )
+    private_preview = LatestFramePreview() if operator_mode else None
+    preview_server = PreviewServer(private_preview) if private_preview is not None else None
+    if preview_server is not None:
+        preview_server.start()
     rclpy.init()
     adapter = GazeboAdapterNode(
         run_id=run_id,
         expected_frames=config.expected_camera_frames,
-        public_epoch_native_ns=config.simulation.public_epoch_native_ns,
+        public_epoch_native_ns=(
+            None if operator_mode else config.simulation.public_epoch_native_ns
+        ),
         world_name=resolved.world_name,
         width_px=config.recording.width_px,
         height_px=config.recording.height_px,
@@ -356,8 +589,14 @@ def main() -> int:
         },
         on_completed=lambda summary: inbox.append(AdapterCompleted(run_id, summary)),
         on_fault=lambda reason: _record_adapter_fault(run_id, inbox, reason),
+        private_preview=private_preview,
     )
-    lifecycle = _lifecycle_node(run_id, inbox)
+    lifecycle = _lifecycle_node(
+        run_id,
+        inbox,
+        launch_mode=config.launch_mode,
+        operator_protocol=operator_protocol,
+    )
     ros_executor = SingleThreadedExecutor()
     ros_executor.add_node(adapter)
     ros_executor.add_node(lifecycle)
@@ -370,15 +609,36 @@ def main() -> int:
             world_name=resolved.world_name,
         )
     )
-    epoch_rendezvous = PublicEpochRendezvous(
-        transport=transport,
-        protocol=protocol,
-        public_epoch_native_ns=config.simulation.public_epoch_native_ns,
-        activate_output=adapter.activate_output,
-        prepare_output=adapter.prepare_output_epoch,
-        epoch_reached=adapter.public_epoch_reached,
-        release_status_type=_release_status_type_for_mission(config.mission),
-    )
+    if operator_mode:
+        assert operator_protocol is not None
+        epoch_rendezvous = OperatorEpochRendezvous(
+            transport=transport,
+            protocol=protocol,
+            operator_protocol=operator_protocol,
+            configure_output=adapter.configure_output_epoch,
+            activate_output=adapter.activate_output,
+            prepare_output=adapter.prepare_output_epoch,
+            start_private_preview=adapter.start_private_preview,
+            latest_native_clock=lambda: adapter.native_observation()[0],
+            epoch_reached=adapter.public_epoch_reached,
+            release_status_type=_release_status_type_for_mission(config.mission),
+        )
+        preflight_reporter = GazeboPreflightReporter(
+            protocol=operator_protocol,
+            run_id=run_id,
+            config_sha256=config.config_sha256,
+        )
+    else:
+        epoch_rendezvous = PublicEpochRendezvous(
+            transport=transport,
+            protocol=protocol,
+            public_epoch_native_ns=config.simulation.public_epoch_native_ns,
+            activate_output=adapter.activate_output,
+            prepare_output=adapter.prepare_output_epoch,
+            epoch_reached=adapter.public_epoch_reached,
+            release_status_type=_release_status_type_for_mission(config.mission),
+        )
+        preflight_reporter = None
     action_executor = ActionExecutor(
         run_id=run_id,
         protocol=protocol,
@@ -401,6 +661,10 @@ def main() -> int:
         _event(run_id, "runtime_started", fields={"partition": spec.environment["GZ_PARTITION"]})
         while not quiescent:
             ros_executor.spin_once(timeout_sec=0.05)
+            if preflight_reporter is not None:
+                preflight_reporter.observe(*adapter.native_observation())
+                assert isinstance(epoch_rendezvous, OperatorEpochRendezvous)
+                epoch_rendezvous.poll_admission()
             if epoch_rendezvous.release_if_delivered():
                 _event(run_id, "public_epoch_released", sim_timestamp_ns=0)
             if not gazebo_ready_seen and adapter.transport_ready():
@@ -471,6 +735,10 @@ def main() -> int:
         lifecycle.destroy_node()
         adapter.destroy_node()
         rclpy.shutdown()
+        if preview_server is not None:
+            preview_server.close()
+        if operator_protocol is not None:
+            operator_protocol.close()
         protocol.close()
 
 

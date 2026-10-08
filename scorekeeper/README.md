@@ -104,6 +104,9 @@ retain their existing semantics.
 - Rejected same-run ROS evidence latches incomplete scoring before shutdown.
   Emergency finalization writes runtime failure and quiescence, never
   `score-finished`.
+- In operator mode, the first `RUNNING` state must carry the digest of the
+  immutable start admission for this run and config. A missing or different
+  admission fails scoring before it accepts public evidence.
 
 ## Focused checks
 

@@ -24,6 +24,7 @@ from artifacts.validation import ValidationStatus, validate_tree
 RECORDER_UUID = UUID("01234567-89ab-cdef-0123-456789abcdef")
 RUN_ID = "run-7"
 CONFIG_SHA256 = "a" * 64
+ADMISSION_SHA256 = "b" * 64
 
 
 class FakeProcess:
@@ -618,12 +619,13 @@ def _landing_pad_state(timestamp_ns, *, marker_id=7, in_contact=True):
     return message
 
 
-def _run_state(timestamp_ns, state, *, reason=""):
+def _run_state(timestamp_ns, state, *, reason="", admission_sha256=""):
     return _custom_message(
         timestamp_ns,
         state=state,
         reason=reason,
         config_sha256=CONFIG_SHA256,
+        admission_sha256=admission_sha256,
     )
 
 
@@ -1474,6 +1476,7 @@ def test_physical_bag_returns_immutable_digest_bound_decoded_evidence(tmp_path):
 
     assert result.physical_evidence.bag_sha256 == result.sha256
     assert result.physical_evidence.config_sha256 == CONFIG_SHA256
+    assert result.physical_evidence.admission_sha256 == ""
     assert result.physical_evidence.lifecycle_states == (
         "STARTING",
         "READY",
@@ -1486,6 +1489,59 @@ def test_physical_bag_returns_immutable_digest_bound_decoded_evidence(tmp_path):
     )
     with pytest.raises(FrozenInstanceError):
         result.physical_evidence.bag_sha256 = "0" * 64
+
+
+def test_operator_physical_bag_requires_running_lifecycle_bound_to_admission(tmp_path):
+    _bag_directory(tmp_path)
+    messages = _valid_physical_messages()
+    messages = [
+        replace(
+            item,
+            message=_run_state(
+                item.message.sim_timestamp.sec * 1_000_000_000
+                + item.message.sim_timestamp.nanosec,
+                item.message.state,
+                reason=item.message.reason,
+                admission_sha256=ADMISSION_SHA256,
+            ),
+        )
+        if item.topic == "/simulation/run_state" and item.message.state >= 3
+        else item
+        for item in messages
+    ]
+
+    result = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        admission_sha256=ADMISSION_SHA256,
+    ).validate(tmp_path, "rosbag")
+
+    assert result.status is ValidationStatus.VALID
+    assert result.physical_evidence.admission_sha256 == ADMISSION_SHA256
+
+    running_index = next(
+        index
+        for index, item in enumerate(messages)
+        if item.topic == "/simulation/run_state" and item.message.state == 3
+    )
+    messages[running_index] = replace(
+        messages[running_index],
+        message=_run_state(0, 3, admission_sha256="c" * 64),
+    )
+    rejected = RosbagValidator(
+        RUN_ID,
+        backend=FakeBagBackend(messages=messages, metadata=_metadata_for(messages)),
+        expected_camera_frames=1,
+        physical_run=True,
+        config_sha256=CONFIG_SHA256,
+        admission_sha256=ADMISSION_SHA256,
+    ).validate(tmp_path, "rosbag")
+
+    assert rejected.status is ValidationStatus.INVALID
+    assert "config-bound" in rejected.detail
 
 
 def test_physical_bag_requires_exact_current_config_lifecycle(tmp_path):

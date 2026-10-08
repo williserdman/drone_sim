@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "run_id",
+    "config_sha256",
+    "request_id",
+    "request_sha256",
+    "native_epoch_ns",
+    "public_epoch_ns",
+    "schema_version"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "native_epoch_ns": {
+      "type": "integer",
+      "minimum": 50000000,
+      "multipleOf": 50000000
+    },
+    "public_epoch_ns": {"const": 0},
+    "schema_version": {"const": 1}
+  },
+  "additionalProperties": false
+}

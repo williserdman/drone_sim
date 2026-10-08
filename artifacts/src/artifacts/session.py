@@ -244,6 +244,21 @@ class ArtifactSession:
 
     def finalize_with_result(self, request: FinalizationInput) -> FinalizationResult:
         """Commit the manifest and return its immutable authoritative facts."""
+        for configuration in request.configuration_records:
+            if configuration.relative_path != "configuration/start-admission.json":
+                continue
+            result = validate_regular_file(
+                self.run_directory,
+                configuration.relative_path,
+                deadline_check=self._deadline_check,
+            )
+            if (
+                result.status is not ValidationStatus.VALID
+                or result.sha256 != configuration.sha256
+            ):
+                raise ValueError(
+                    "start admission configuration record does not match its file"
+                )
         required_records = self._required_records()
         incomplete_paths = tuple(
             record.relative_path

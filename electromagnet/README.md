@@ -72,6 +72,9 @@ resolved run copies of [course.yaml](../config/course.yaml) and
   marker, after which the module must remain silent.
 - Runtime failures use the shared first-wins policy. This module does not replace
   an earlier durable failure from another producer.
+- In operator mode, both inactive and competition runtimes validate the
+  `RUNNING` admission digest against the immutable start-admission record before
+  accepting public lifecycle authority.
 
 ## Focused checks
 

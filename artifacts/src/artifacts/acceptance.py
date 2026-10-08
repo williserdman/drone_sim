@@ -29,6 +29,7 @@ from .manifest import (
     WallTiming,
     validate_manifest,
 )
+from .operator_protocol import OperatorProtocol, OperatorProtocolError
 from .runtime_configuration import resolve_recording_runtime_config
 from .score_validation import ScoreValidationError, validate_score_outputs
 from .validation import (
@@ -88,7 +89,7 @@ class BundleAcceptanceReport:
 
 
 ComposeResources = Callable[[str], Sequence[str]]
-SemanticCheck = Callable[[Path, str, int, str], PhysicalBagEvidence]
+SemanticCheck = Callable[[Path, str, int, str, str], PhysicalBagEvidence]
 
 
 def _expected_sources(
@@ -295,6 +296,43 @@ def _validate_config(run_directory: Path, run_id: str) -> tuple[dict[str, Any], 
     if not contract.physical_run:
         raise BundleAcceptanceError("configuration does not select physical validation")
     return document, contract.expected_camera_frames
+
+
+def _validate_start_admission(
+    run_directory: Path, configuration: Mapping[str, Any]
+) -> tuple[dict[str, str], str]:
+    launch_mode = configuration.get("launch_mode", "unattended")
+    relative_path = "configuration/start-admission.json"
+    if launch_mode == "unattended":
+        result = validate_regular_file(run_directory, relative_path)
+        if result.status is not ValidationStatus.MISSING:
+            raise BundleAcceptanceError(
+                "unattended run contains operator start admission"
+            )
+        return ({}, "")
+    if launch_mode != "operator":
+        raise BundleAcceptanceError("configuration launch_mode is invalid")
+    try:
+        with OperatorProtocol(
+            run_directory,
+            str(configuration.get("run_id")),
+            str(configuration.get("config_sha256")),
+        ) as protocol:
+            admission = protocol.read_start_admission()
+    except OperatorProtocolError as error:
+        raise BundleAcceptanceError(f"start admission is invalid: {error}") from error
+    if admission is None:
+        raise BundleAcceptanceError("operator run has no start admission")
+    result = validate_regular_file(run_directory, relative_path)
+    if (
+        result.status is not ValidationStatus.VALID
+        or result.sha256 != admission.sha256
+    ):
+        raise BundleAcceptanceError("start admission checksum is invalid")
+    return (
+        {"relative_path": relative_path, "sha256": admission.sha256},
+        admission.sha256,
+    )
 
 
 def _validate_phase3_provenance(
@@ -726,6 +764,7 @@ def _production_semantic_check(
     run_id: str,
     expected_camera_frames: int,
     config_sha256: str,
+    admission_sha256: str,
 ) -> PhysicalBagEvidence:
     deadline = time.monotonic() + 120.0
     configuration, _digest = _read_json(run_directory, "configuration/run.json")
@@ -755,6 +794,7 @@ def _production_semantic_check(
         expected_camera_frames=expected_camera_frames,
         physical_run=True,
         config_sha256=config_sha256,
+        admission_sha256=admission_sha256,
         ruleset_id=contract.ruleset_id,
         width_px=contract.width_px,
         height_px=contract.height_px,
@@ -995,6 +1035,9 @@ def inspect_phase3_semantics(
     )
 
     configuration, expected_frames = _validate_config(directory, run_id)
+    admission_record, admission_sha256 = _validate_start_admission(
+        directory, configuration
+    )
     _validate_simulation_timing(manifest, expected_frames)
     configurations = manifest.get("configurations")
     expected_configurations = [
@@ -1003,6 +1046,8 @@ def inspect_phase3_semantics(
             "sha256": configuration["config_sha256"],
         }
     ]
+    if admission_record:
+        expected_configurations.append(admission_record)
     calibration = configuration.get("calibration_json")
     if calibration is not None:
         expected_configurations.extend([
@@ -1034,9 +1079,14 @@ def inspect_phase3_semantics(
         run_id,
         expected_frames,
         configuration["config_sha256"],
+        admission_sha256,
     )
     if not isinstance(physical_evidence, PhysicalBagEvidence):
         raise BundleAcceptanceError("semantic inspection returned no physical evidence")
+    if physical_evidence.admission_sha256 != admission_sha256:
+        raise BundleAcceptanceError(
+            "physical evidence admission does not match start admission"
+        )
     if ruleset_id == "calibration_v1":
         from .calibration import validate_calibration_artifact
 

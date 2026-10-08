@@ -216,6 +216,7 @@ class PhysicalBagEvidence:
     mission_events: tuple[MissionEventEvidence, ...] = ()
     downward_ranges: tuple[DownwardRangeEvidence, ...] = ()
     landing_pad_states: tuple[LandingPadStateEvidence, ...] = ()
+    admission_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -845,6 +846,7 @@ class RosbagValidator:
         expected_camera_frames: int | None = None,
         physical_run: bool = False,
         config_sha256: str | None = None,
+        admission_sha256: str = "",
         ruleset_id: str = "descent_v1",
         width_px: int = 320,
         height_px: int = 240,
@@ -865,6 +867,20 @@ class RosbagValidator:
             or any(character not in "0123456789abcdef" for character in config_sha256)
         ):
             raise ValueError("physical_run requires a lowercase config SHA-256")
+        if (
+            not isinstance(admission_sha256, str)
+            or (
+                admission_sha256
+                and (
+                    len(admission_sha256) != 64
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in admission_sha256
+                    )
+                )
+            )
+        ):
+            raise ValueError("admission_sha256 must be empty or a lowercase SHA-256")
         if ruleset_id not in {"descent_v1", "competition_v1", "moving_pad_v1", "calibration_v1"}:
             raise ValueError("ruleset_id is unsupported")
         if (
@@ -878,6 +894,7 @@ class RosbagValidator:
         self.expected_camera_frames = expected_camera_frames
         self.physical_run = physical_run
         self.config_sha256 = config_sha256
+        self.admission_sha256 = admission_sha256
         self.ruleset_id = ruleset_id
         self.width_px = width_px
         self.height_px = height_px
@@ -1185,6 +1202,8 @@ class RosbagValidator:
             if len(run_states) != len(expected_states) or any(
                 message.state != state
                 or message.config_sha256 != self.config_sha256
+                or message.admission_sha256
+                != (self.admission_sha256 if state >= 3 else "")
                 or (state != 4 and message.reason != "")
                 or (state == 4 and not message.reason)
                 for message, state in zip(run_states, expected_states, strict=True)
@@ -1462,6 +1481,7 @@ class RosbagValidator:
                 tuple(mission_events),
                 tuple(downward_ranges),
                 tuple(landing_pad_states),
+                self.admission_sha256,
             )
         return self._result(
             filesystem,

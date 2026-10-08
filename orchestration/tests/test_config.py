@@ -99,6 +99,8 @@ def _resolved_document() -> dict:
     document = {
         "run_id": str(FIXED_RUN_ID),
         **template,
+        "launch_mode": "unattended",
+        "preparation_wall_seconds": 1800,
         "output_root": str((ROOT / "../runs").resolve()),
         "competition": {
             "course": "course.yaml",
@@ -168,7 +170,11 @@ def test_moving_pad_configuration_round_trips_calibrated_scene(tmp_path, world):
     assert resolved.simulation.public_epoch_native_ns == 90_000_000_000
     path = write_resolved_config(tmp_path / "run", resolved)
     _load_validator("run.schema.json").validate(json.loads(path.read_text()))
-    assert load_run_config(path) == resolved
+    loaded = load_run_config(path)
+    assert loaded.launch_mode == resolved.launch_mode
+    assert loaded.preparation_wall_seconds == resolved.preparation_wall_seconds
+    assert loaded.output_root == resolved.output_root
+    assert loaded.config_sha256 == resolved.config_sha256
 
 
 @pytest.mark.parametrize("mutate", [
@@ -269,6 +275,8 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
     assert resolved.startup_wall_seconds == 1800
     assert resolved.max_wall_seconds == 14400
     assert resolved.finalization_wall_seconds == 900
+    assert resolved.launch_mode == "unattended"
+    assert resolved.preparation_wall_seconds == 1800
     assert resolved.output_root == (ROOT / "../runs").resolve()
     assert resolved.competition is not None
     assert resolved.competition.course_source == CONFIG / "course.yaml"
@@ -292,6 +300,55 @@ def test_default_template_resolves_complete_competition_attempt(tmp_path):
     assert (written.parent / "scenario.yaml").read_bytes() == (
         CONFIG / "scenario.yaml"
     ).read_bytes()
+
+
+def test_operator_launch_overrides_are_frozen_serialized_and_hashed(tmp_path):
+    output_root = tmp_path / "operator-runs"
+    resolved = resolve_run_config(
+        DEFAULT_TEMPLATE,
+        run_id_factory=lambda: FIXED_RUN_ID,
+        launch_mode="operator",
+        preparation_wall_seconds=2400,
+        output_root=output_root,
+    )
+
+    assert resolved.launch_mode == "operator"
+    assert resolved.preparation_wall_seconds == 2400
+    assert resolved.output_root == output_root.resolve()
+
+    path = write_resolved_config(tmp_path / "run", resolved)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["launch_mode"] == "operator"
+    assert document["preparation_wall_seconds"] == 2400
+    assert document["output_root"] == str(output_root.resolve())
+    without_checksum = {
+        key: value for key, value in document.items() if key != "config_sha256"
+    }
+    assert document["config_sha256"] == hashlib.sha256(
+        json.dumps(without_checksum, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    loaded = load_run_config(path)
+    assert loaded.launch_mode == resolved.launch_mode
+    assert loaded.preparation_wall_seconds == resolved.preparation_wall_seconds
+    assert loaded.output_root == resolved.output_root
+    assert loaded.config_sha256 == resolved.config_sha256
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"launch_mode": "interactive"}, "launch_mode"),
+        ({"preparation_wall_seconds": 0}, "preparation_wall_seconds"),
+        ({"preparation_wall_seconds": True}, "preparation_wall_seconds"),
+    ],
+)
+def test_operator_launch_overrides_reject_invalid_values(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        resolve_run_config(
+            DEFAULT_TEMPLATE,
+            run_id_factory=lambda: FIXED_RUN_ID,
+            **overrides,
+        )
 
 
 def test_realtime_template_resolves_competition_attempt_at_one_x():
@@ -729,6 +786,8 @@ def test_config_schemas_accept_omitted_phase_2_profile(schema_name):
         document = {
             "run_id": str(FIXED_RUN_ID),
             **document,
+            "launch_mode": "unattended",
+            "preparation_wall_seconds": 1800,
             "output_root": str((ROOT / "../runs").resolve()),
             "config_sha256": "a" * 64,
         }

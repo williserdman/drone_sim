@@ -12,3 +12,4 @@ builtin_interfaces/Time sim_timestamp
 uint8 state
 string reason
 string config_sha256
+string admission_sha256

@@ -15,6 +15,7 @@ EXPECTED = {
         "uint8 state",
         "string reason",
         "string config_sha256",
+        "string admission_sha256",
     ],
     "FrameMetadata.msg": [
         "string run_id",

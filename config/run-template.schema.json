@@ -22,6 +22,8 @@
     "max_wall_seconds": {"type": "integer", "minimum": 1},
     "startup_wall_seconds": {"type": "integer", "minimum": 1},
     "finalization_wall_seconds": {"type": "integer", "minimum": 1},
+    "launch_mode": {"enum": ["unattended", "operator"], "default": "unattended"},
+    "preparation_wall_seconds": {"type": "integer", "minimum": 1, "default": 1800},
     "recording": {"$ref": "#/$defs/recording"},
     "runtime_profile": {"enum": ["phase2", "phase3"]},
     "simulation": {"$ref": "#/$defs/simulation"},

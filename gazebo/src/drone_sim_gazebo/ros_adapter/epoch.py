@@ -42,15 +42,17 @@ class OutputEpochGate:
         self,
         *,
         expected_frames: int,
-        public_epoch_native_ns: int,
+        public_epoch_native_ns: int | None,
     ) -> None:
         if type(expected_frames) is not int or expected_frames <= 0:
             raise AdapterFault("expected_frames must be a positive integer")
-        target = _native_timestamp(public_epoch_native_ns)
-        if target == 0 or target % FRAME_INTERVAL_NS != 0:
-            raise AdapterFault(
-                "public native epoch must be positive and lie on the 50 ms camera grid"
-            )
+        target = None
+        if public_epoch_native_ns is not None:
+            target = _native_timestamp(public_epoch_native_ns)
+            if target == 0 or target % FRAME_INTERVAL_NS != 0:
+                raise AdapterFault(
+                    "public native epoch must be positive and lie on the 50 ms camera grid"
+                )
         self._maximum_public_timestamp_ns = expected_frames * FRAME_INTERVAL_NS
         self._target_native_epoch_ns = target
         self._latest_native_clock_ns: int | None = None
@@ -65,7 +67,22 @@ class OutputEpochGate:
     def activation_pending(self) -> bool:
         return self._activation_requested and self._epoch is None
 
+    def configure_epoch(self, native_epoch_ns: int) -> None:
+        """Bind one operator-selected epoch before public activation."""
+        if self._target_native_epoch_ns is not None:
+            raise AdapterFault("public native epoch is already configured")
+        target = _native_timestamp(native_epoch_ns)
+        if target == 0 or target % FRAME_INTERVAL_NS != 0:
+            raise AdapterFault(
+                "public native epoch must be positive and lie on the 50 ms camera grid"
+            )
+        if self._latest_native_clock_ns is not None and target <= self._latest_native_clock_ns:
+            raise AdapterFault("dynamic public epoch must follow the latest native clock")
+        self._target_native_epoch_ns = target
+
     def request_activation(self) -> None:
+        if self._target_native_epoch_ns is None:
+            raise AdapterFault("public native epoch is not configured")
         if (
             self._latest_native_clock_ns is not None
             and self._latest_native_clock_ns >= self._target_native_epoch_ns
@@ -92,6 +109,7 @@ class OutputEpochGate:
             self._latest_native_clock_ns = native
         if not self._activation_requested:
             return None
+        assert self._target_native_epoch_ns is not None
         if native > self._target_native_epoch_ns + EPOCH_LATCH_TOLERANCE_NS:
             raise AdapterFault("reliable native clock skipped configured native epoch")
         if native >= self._target_native_epoch_ns:
@@ -105,6 +123,7 @@ class OutputEpochGate:
         native = _native_timestamp(native_timestamp_ns)
         if not self._activation_requested:
             return None
+        assert self._target_native_epoch_ns is not None
         public = PublicEpoch(self._target_native_epoch_ns).rebase(native)
         if public is not None and public > self._maximum_public_timestamp_ns:
             return None
@@ -113,6 +132,7 @@ class OutputEpochGate:
     def rebase_sample(self, native_timestamp_ns: object) -> int | None:
         if not self._activation_requested:
             return None
+        assert self._target_native_epoch_ns is not None
         public = PublicEpoch(self._target_native_epoch_ns).rebase(native_timestamp_ns)
         if public is not None and public > self._maximum_public_timestamp_ns:
             return None

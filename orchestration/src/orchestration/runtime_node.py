@@ -65,6 +65,10 @@ class _Protocol(Protocol):
     def read_quiescence(self, module: str) -> dict[str, Any] | None: ...
 
 
+class _OperatorProtocol(Protocol):
+    def read_start_admission(self) -> object | None: ...
+
+
 @dataclass(frozen=True)
 class RuntimeStateEvent:
     run_id: str
@@ -72,6 +76,7 @@ class RuntimeStateEvent:
     sim_timestamp_ns: int
     reason: str
     config_sha256: str
+    admission_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -171,6 +176,8 @@ class OrchestrationRuntime:
         diagnostic: Callable[[str], None] = lambda _message: None,
         required_durable_readiness: tuple[type[RuntimeStatus], ...] = (),
         require_gazebo_ready: bool = False,
+        launch_mode: str = "unattended",
+        operator_protocol: _OperatorProtocol | None = None,
     ) -> None:
         self.run_id = canonical_run_id(run_id)
         if (
@@ -195,8 +202,14 @@ class OrchestrationRuntime:
             raise ValueError("durable readiness names are invalid")
         if type(require_gazebo_ready) is not bool:
             raise TypeError("require_gazebo_ready must be boolean")
+        if launch_mode not in {"unattended", "operator"}:
+            raise ValueError("launch_mode must be unattended or operator")
+        if launch_mode == "operator" and operator_protocol is None:
+            raise ValueError("operator launch requires an operator protocol")
         self._required_durable_readiness = required_durable_readiness
         self._require_gazebo_ready = require_gazebo_ready
+        self._launch_mode = launch_mode
+        self._operator_protocol = operator_protocol
         self._artifacts_ready = False
         self.state = "CREATED"
         self.last_sim_timestamp_ns = 0
@@ -204,6 +217,7 @@ class OrchestrationRuntime:
         self._terminal = False
         self._quiescence_written = False
         self._freeze_written = False
+        self._admission_sha256 = ""
 
     def _emit(self, state: str, reason: str = "") -> None:
         self.state = state
@@ -214,6 +228,7 @@ class OrchestrationRuntime:
                 self.last_sim_timestamp_ns,
                 reason,
                 self.config_sha256,
+                self._admission_sha256,
             )
         )
 
@@ -255,16 +270,33 @@ class OrchestrationRuntime:
             self._start_running()
 
     def _start_running(self) -> None:
+        if self._launch_mode == "operator":
+            assert self._operator_protocol is not None
+            admission = self._operator_protocol.read_start_admission()
+            if admission is None:
+                raise RuntimeError("operator RUNNING requires a start admission")
+            digest = getattr(admission, "sha256", None)
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(value not in "0123456789abcdef" for value in digest)
+            ):
+                raise RuntimeError("operator start admission digest is invalid")
+            self._admission_sha256 = digest
         self._emit("RUNNING")
         self._protocol.write_status(
             RuntimeRunningStatus(self.run_id, self.last_sim_timestamp_ns)
         )
 
     def _flight_peers_ready(self) -> bool:
-        return all(
+        durable_ready = all(
             self._protocol.read_status(status_type) is not None
             for status_type in self._required_durable_readiness
         )
+        if not durable_ready or self._launch_mode != "operator":
+            return durable_ready
+        assert self._operator_protocol is not None
+        return self._operator_protocol.read_start_admission() is not None
 
     def poll(self) -> bool:
         """Observe durable controls once; return true after terminal acknowledgement."""
@@ -323,6 +355,11 @@ def main() -> None:
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config_sha256 = config["config_sha256"]
     protocol = RuntimeProtocol(run_directory, run_id)
+    operator_protocol = None
+    if config.get("launch_mode", "unattended") == "operator":
+        from artifacts.operator_protocol import OperatorProtocol
+
+        operator_protocol = OperatorProtocol(run_directory, run_id, config_sha256)
 
     rclpy.init()
     node = Node("orchestration_runtime")
@@ -360,6 +397,7 @@ def main() -> None:
         message.state = getattr(RunState, event.state)
         message.reason = event.reason
         message.config_sha256 = event.config_sha256
+        message.admission_sha256 = event.admission_sha256
         publisher.publish(message)
         if event.state == "FINALIZING":
             emit_log("finalizing", event.sim_timestamp_ns, reason=event.reason)
@@ -381,6 +419,8 @@ def main() -> None:
             else ()
         ),
         require_gazebo_ready=config.get("runtime_profile") == "phase3",
+        launch_mode=config.get("launch_mode", "unattended"),
+        operator_protocol=operator_protocol,
     )
 
     def artifact_callback(message: Any) -> None:
@@ -440,6 +480,8 @@ def main() -> None:
             rclpy.spin_once(node, timeout_sec=0.05)
     finally:
         node.destroy_node()
+        if operator_protocol is not None:
+            operator_protocol.close()
         protocol.close()
         rclpy.shutdown()
 

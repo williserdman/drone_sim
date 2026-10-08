@@ -91,13 +91,14 @@ class GazeboAdapterNode(_node_base()):
         *,
         run_id: str,
         expected_frames: int,
-        public_epoch_native_ns: int,
+        public_epoch_native_ns: int | None,
         world_name: str = "phase3_foundation",
         width_px: int = 320,
         height_px: int = 240,
         require_competition_recorders: bool | None = None,
         on_completed: Callable[[AdapterSummary], None] | None = None,
         on_fault: Callable[[str], None] | None = None,
+        private_preview: object | None = None,
     ) -> None:
         from nav_msgs.msg import Odometry
         from ros_gz_interfaces.msg import Contacts
@@ -139,6 +140,9 @@ class GazeboAdapterNode(_node_base()):
         )
         self._pre_zero_outputs: deque[object] = deque()
         self._last_public_clock_ns: int | None = None
+        self._latest_native_clock_ns: int | None = None
+        self._latest_private_camera_ns: int | None = None
+        self._private_preview = private_preview
         self._camera_subscriptions_armed = False
         self._clock_type = Clock
         self._image_type = Image
@@ -329,6 +333,21 @@ class GazeboAdapterNode(_node_base()):
         except AdapterFault as error:
             self._fail(error)
 
+    def configure_output_epoch(self, native_epoch_ns: int) -> None:
+        """Bind the immutable operator epoch before arming public output."""
+        try:
+            self._output_epoch.configure_epoch(native_epoch_ns)
+        except AdapterFault as error:
+            self._fail(error)
+            raise
+
+    def start_private_preview(self) -> None:
+        """Observe native camera frames without admitting public samples."""
+        self._arm_camera_subscriptions()
+
+    def native_observation(self) -> tuple[int | None, int | None]:
+        return self._latest_native_clock_ns, self._latest_private_camera_ns
+
     def _arm_camera_subscriptions(self) -> None:
         if self._camera_subscriptions_armed:
             return
@@ -394,6 +413,11 @@ class GazeboAdapterNode(_node_base()):
             return
         try:
             timestamp_ns = _nanoseconds(message.clock)
+            if (
+                self._latest_native_clock_ns is None
+                or timestamp_ns > self._latest_native_clock_ns
+            ):
+                self._latest_native_clock_ns = timestamp_ns
             public_timestamp_ns = self._output_epoch.accept_clock(timestamp_ns)
             if public_timestamp_ns is not None:
                 if (
@@ -410,10 +434,20 @@ class GazeboAdapterNode(_node_base()):
     def _accept_image(self, stream: str, message) -> None:
         if self._faulted or self._completion_reported:
             return
-        if not self._output_active and not self._output_epoch.activation_pending:
-            return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
+            if stream == "onboard" and self._private_preview is not None:
+                self._private_preview.update(
+                    native_timestamp_ns=timestamp_ns,
+                    width=message.width,
+                    height=message.height,
+                    encoding=message.encoding,
+                    data=bytes(message.data),
+                    source="onboard",
+                )
+                self._latest_private_camera_ns = timestamp_ns
+            if not self._output_active and not self._output_epoch.activation_pending:
+                return
             public_timestamp_ns = self._output_epoch.accept_camera(
                 stream, timestamp_ns
             )

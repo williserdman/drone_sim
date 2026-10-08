@@ -15,6 +15,7 @@ from uuid import UUID
 
 import yaml
 
+from artifacts.operator_protocol import OperatorProtocol, validate_admission_binding
 from artifacts.runtime_protocol import RuntimeProtocol, canonical_run_id
 
 from .controller import PayloadGateway, ScenarioController, parse_physical_result
@@ -35,6 +36,8 @@ class RuntimeConfig:
     payload_zones: Mapping[int, str | None]
     payload_capacity: int
     max_center_error_m: float
+    launch_mode: str = "unattended"
+    config_sha256: str = ""
 
     @classmethod
     def competition_defaults(cls, run_id: str) -> "RuntimeConfig":
@@ -73,6 +76,14 @@ class RuntimeConfig:
             raise ValueError("resolved run configuration must be readable JSON") from error
         if not isinstance(document, dict) or document.get("run_id") != run_id:
             raise ValueError("resolved run configuration must match SIM_RUN_ID")
+        launch_mode = document.get("launch_mode", "unattended")
+        if launch_mode not in {"unattended", "operator"}:
+            raise ValueError("launch_mode must be unattended or operator")
+        config_sha256 = document.get("config_sha256", "")
+        if launch_mode == "operator" and (
+            not isinstance(config_sha256, str) or len(config_sha256) != 64
+        ):
+            raise ValueError("operator configuration requires config_sha256")
         scenario = document.get("scenario")
         if scenario in {"descent_v1", "moving_pad_v1", "calibration_v1"}:
             return cls(
@@ -84,6 +95,8 @@ class RuntimeConfig:
                 MappingProxyType({}),
                 0,
                 0.0,
+                launch_mode,
+                config_sha256,
             )
         if scenario != "competition_v1":
             raise ValueError(
@@ -166,6 +179,8 @@ class RuntimeConfig:
             MappingProxyType(payload_zones),
             capacity,
             tolerance_value,
+            launch_mode,
+            config_sha256,
         )
 
     def authority(self) -> PayloadAuthority:
@@ -199,6 +214,11 @@ def _descent_main(config: RuntimeConfig) -> int:
     run_id = config.run_id
     run_directory = config.run_directory
     protocol = RuntimeProtocol(run_directory, run_id)
+    operator_protocol = (
+        OperatorProtocol(run_directory, run_id, config.config_sha256)
+        if config.launch_mode == "operator"
+        else None
+    )
     rclpy.init()
     node = Node("drone_sim_electromagnet")
     publisher = node.create_publisher(
@@ -247,8 +267,19 @@ def _descent_main(config: RuntimeConfig) -> int:
             failure = str(error)
 
     def state_callback(message: Any) -> None:
-        nonlocal finalizing
-        if message.run_id == run_id and message.state == RunState.FINALIZING:
+        nonlocal finalizing, failure
+        if message.run_id != run_id:
+            return
+        if message.state == RunState.RUNNING:
+            try:
+                validate_admission_binding(
+                    operator_protocol,
+                    config.launch_mode,
+                    message.admission_sha256,
+                )
+            except Exception as error:
+                failure = f"start_admission_invalid:{error}"
+        elif message.state == RunState.FINALIZING:
             finalizing = True
 
     node.create_subscription(
@@ -283,6 +314,8 @@ def _descent_main(config: RuntimeConfig) -> int:
     finally:
         controller.finalize(last_timestamp_ns)
         node.destroy_node()
+        if operator_protocol is not None:
+            operator_protocol.close()
         protocol.close()
         rclpy.shutdown()
     return exit_code
@@ -305,6 +338,11 @@ def _competition_main(config: RuntimeConfig) -> int:
     from std_msgs.msg import String
 
     protocol = RuntimeProtocol(config.run_directory, config.run_id)
+    operator_protocol = (
+        OperatorProtocol(config.run_directory, config.run_id, config.config_sha256)
+        if config.launch_mode == "operator"
+        else None
+    )
     rclpy.init()
     node = Node("drone_sim_electromagnet")
     callback_group = ReentrantCallbackGroup()
@@ -366,6 +404,7 @@ def _competition_main(config: RuntimeConfig) -> int:
     finalizing = False
     requested_stop = False
     last_timestamp_ns: int | None = None
+    admission_failure: str | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
@@ -404,8 +443,19 @@ def _competition_main(config: RuntimeConfig) -> int:
             return
 
     def state_callback(message: Any) -> None:
-        nonlocal finalizing
-        if message.run_id == config.run_id and message.state == RunState.FINALIZING:
+        nonlocal finalizing, admission_failure
+        if message.run_id != config.run_id:
+            return
+        if message.state == RunState.RUNNING:
+            try:
+                validate_admission_binding(
+                    operator_protocol,
+                    config.launch_mode,
+                    message.admission_sha256,
+                )
+            except Exception as error:
+                admission_failure = f"start_admission_invalid:{error}"
+        elif message.state == RunState.FINALIZING:
             finalizing = True
 
     def service_callback(request: Any, response: Any) -> Any:
@@ -470,9 +520,14 @@ def _competition_main(config: RuntimeConfig) -> int:
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     ready = False
+    exit_code = 0
     try:
         while rclpy.ok() and not finalizing and not requested_stop:
             executor.spin_once(timeout_sec=0.05)
+            if admission_failure is not None:
+                controller.fail(last_timestamp_ns, admission_failure)
+                exit_code = 1
+                break
             if not ready:
                 result_publishers = frozenset(
                     marker
@@ -494,9 +549,11 @@ def _competition_main(config: RuntimeConfig) -> int:
         executor.shutdown(timeout_sec=6.0)
         controller.finalize(last_timestamp_ns)
         node.destroy_node()
+        if operator_protocol is not None:
+            operator_protocol.close()
         protocol.close()
         rclpy.shutdown()
-    return 0
+    return exit_code
 
 
 def main() -> int:
