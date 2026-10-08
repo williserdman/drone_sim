@@ -13,6 +13,8 @@ from typing import Any, Callable, Mapping, Protocol
 
 from ._adapters.rosbag import RosbagRecorder, RosbagValidator
 from ._adapters.video import VideoStreamRecorder, VideoValidator
+from .media_spool import MediaSpool
+from .operator_protocol import OperatorProtocol, validate_admission_binding
 from .recorder_node import VideoRecorderNode
 from .runtime_configuration import resolve_recording_runtime_config
 from .runtime_protocol import RuntimeProtocol, canonical_run_id
@@ -33,6 +35,45 @@ from .validation import ValidationStatus
 
 _FAULTS = frozenset({"", "clock_stall_after_5", "observer_encoder_after_5"})
 _STARTUP_MISSING = ["onboard", "observer", "rosbag"]
+
+
+def recording_media_directory(
+    run_directory: Path | str,
+    run_id: str,
+    *,
+    environment: Mapping[str, str] = os.environ,
+) -> tuple[Path, MediaSpool | None]:
+    """Select native media storage only when the local runtime requests it."""
+    authoritative = Path(run_directory)
+    configured = environment.get("SIM_MEDIA_SPOOL_DIRECTORY")
+    if configured is None:
+        return authoritative, None
+    spool_root = Path(configured)
+    if not spool_root.is_absolute():
+        raise ValueError("SIM_MEDIA_SPOOL_DIRECTORY must be absolute")
+    spool = MediaSpool.create(spool_root, authoritative, run_id)
+    return spool.recording_directory, spool
+
+
+def validate_artifacts_running_admission(
+    protocol: Any,
+    *,
+    launch_mode: str,
+    admission_sha256: str,
+    bag_validator: Any,
+    report_failure: Callable[[str, list[str]], None],
+) -> bool:
+    """Reject RUNNING unless its admission matches this resolved run."""
+    try:
+        validate_admission_binding(protocol, launch_mode, admission_sha256)
+    except Exception as error:
+        report_failure(
+            f"RUNNING admission rejected: {type(error).__name__}: {error}",
+            ["configuration/start-admission.json"],
+        )
+        return False
+    bag_validator.admission_sha256 = admission_sha256
+    return True
 
 
 class _FinalizationProtocol(Protocol):
@@ -229,6 +270,7 @@ class AggregateArtifactsRuntime:
         lifecycle_ready: Callable[[], bool] = lambda: True,
         initial_status_delivered: Callable[[], bool] = lambda: True,
         expected_camera_frames: int = 40,
+        media_spool: Any | None = None,
     ) -> None:
         self.run_directory = Path(run_directory)
         self.run_id = canonical_run_id(run_id)
@@ -254,6 +296,8 @@ class AggregateArtifactsRuntime:
         self.lifecycle_ready = lifecycle_ready
         self.initial_status_delivered = initial_status_delivered
         self.expected_camera_frames = expected_camera_frames
+        self.media_spool = media_spool
+        self._spool_video_failures: dict[str, str] = {}
         self.started = False
         self.ready = False
         self._initial_status_published = False
@@ -442,6 +486,11 @@ class AggregateArtifactsRuntime:
         return results[0]
 
     def _video_result(self, stream: str, outcome: str, deadline: float) -> Any:
+        spool_failure = self._spool_video_failures.get(stream)
+        if spool_failure is not None:
+            return self._invalid_result(
+                f"{stream} media spool publication failed: {spool_failure}"
+            )
         try:
             result = self.video_validators[stream].validate(
                 self.run_directory,
@@ -506,6 +555,37 @@ class AggregateArtifactsRuntime:
                     f"{stream} recorder finalization failed: {type(error).__name__}: {error}",
                     [f"logs/docker/ffmpeg-{stream}.log.partial"],
                 )
+        if self.media_spool is not None:
+            try:
+                publication = self.media_spool.publish(
+                    deadline=deadline,
+                    monotonic=self.monotonic,
+                )
+            except Exception as error:
+                detail = f"{type(error).__name__}: {error}"
+                for stream in ("onboard", "observer"):
+                    self._spool_video_failures[stream] = detail
+                self.report_failure(
+                    f"media spool publication failed: {detail}",
+                    [
+                        "video/onboard.mp4",
+                        "video/observer.mp4",
+                        "logs/docker/ffmpeg-onboard.log.partial",
+                        "logs/docker/ffmpeg-observer.log.partial",
+                    ],
+                )
+            else:
+                for failure in publication.failures:
+                    parts = failure.relative_path.split("/")
+                    if len(parts) == 2 and parts[0] == "video":
+                        stream = parts[1].split(".", 1)[0]
+                        if stream in {"onboard", "observer"}:
+                            self._spool_video_failures[stream] = failure.detail
+                    self.report_failure(
+                        "media spool publication failed for "
+                        f"{failure.relative_path}: {failure.detail}",
+                        [failure.relative_path],
+                    )
         if self._premature_bag_exit:
             self.finalization_blocked = True
             return None
@@ -624,9 +704,16 @@ def main() -> None:
     run_directory = Path(os.environ["SIM_RUN_DIRECTORY"])
     config = json.loads(Path(os.environ["SIM_CONFIG_PATH"]).read_text(encoding="utf-8"))
     recording_contract = resolve_recording_runtime_config(config)
+    media_directory, media_spool = recording_media_directory(run_directory, run_id)
+    launch_mode = config.get("launch_mode", "unattended")
     fault = os.environ.get("SIM_PHASE2_FAULT", "")
     finalization_seconds = float(config["finalization_wall_seconds"])
     protocol = RuntimeProtocol(run_directory, run_id)
+    operator_protocol = (
+        OperatorProtocol(run_directory, run_id, config["config_sha256"])
+        if launch_mode == "operator"
+        else None
+    )
     rclpy.init()
     node = Node("artifacts_runtime")
     qos = QoSProfile(
@@ -736,7 +823,7 @@ def main() -> None:
         )
 
     video_node = VideoRecorderNode(
-        run_directory,
+        media_directory,
         run_id,
         expected_frame_count=recording_contract.expected_camera_frames,
         node_backend=node,
@@ -783,12 +870,21 @@ def main() -> None:
             Duration(nanoseconds=0),
         ),
         expected_camera_frames=recording_contract.expected_camera_frames,
+        media_spool=media_spool,
     )
     runtime_ref.append(runtime)
 
     def state_callback(message: Any) -> None:
         nonlocal last_sim_timestamp_ns, saw_current_run_starting
         if message.run_id != run_id:
+            return
+        if message.state == RunState.RUNNING and not validate_artifacts_running_admission(
+            operator_protocol,
+            launch_mode=launch_mode,
+            admission_sha256=getattr(message, "admission_sha256", ""),
+            bag_validator=runtime_ref[0].bag_validator,
+            report_failure=report_failure,
+        ):
             return
         if message.state == RunState.STARTING:
             saw_current_run_starting = True
@@ -818,6 +914,8 @@ def main() -> None:
             if runtime.poll_terminal():
                 break
     finally:
+        if operator_protocol is not None:
+            operator_protocol.close()
         protocol.close()
         node.destroy_node()
         rclpy.shutdown()
@@ -833,4 +931,6 @@ __all__ = [
     "FinalizationRequestLatch",
     "main",
     "publish_artifact_status",
+    "recording_media_directory",
+    "validate_artifacts_running_admission",
 ]

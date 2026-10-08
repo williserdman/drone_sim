@@ -78,6 +78,20 @@ Manifest paths use portable POSIX-relative syntax. The executable contract is
 [`is_manifest_relative_path`](src/artifacts/manifest.py), with its JSON form in
 the [`manifest.json` schema](schemas/manifest.schema.json).
 
+Local Colima runs set
+`SIM_MEDIA_SPOOL_DIRECTORY=/var/lib/drone-sim/media`. That directory must be a
+Docker named volume backed by the Linux VM filesystem; the container writable
+overlay and macOS bind mounts do not provide the anonymous-file behavior the
+recorder requires. Each run exclusively creates `<spool>/<run_id>` and keeps the
+existing anonymous `O_TMPFILE`, read-only sealing, and FFmpeg validation path
+there. After both FFmpeg processes close, artifacts copies each final or partial
+MP4 and its FFmpeg log into the authoritative run directory with bounded,
+descriptor-based, no-clobber publication. It verifies source and destination
+hashes before validating the authoritative named MP4 or writing
+`artifacts-final`. Copy time consumes the existing finalization deadline. When
+the environment variable is absent, recording and publication use the existing
+run directory directly.
+
 ## AutoTune calibration parameters
 
 [`calibration.py`](src/artifacts/calibration.py) owns the versioned axes-7

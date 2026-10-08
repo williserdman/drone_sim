@@ -7,6 +7,7 @@ import pytest
 
 import artifacts.runtime_node as runtime_node
 from artifacts._adapters.rosbag import BASE_TOPICS
+from artifacts.media_spool import MediaSpoolFailure, MediaSpoolPublication
 from artifacts.runtime_node import AggregateArtifactsRuntime, FaultAwareRecorder
 from artifacts.runtime_status import (
     ArtifactsFinalStatus,
@@ -29,6 +30,92 @@ def test_initial_status_delivery_accepts_two_reliable_discovered_consumers():
     )
 
     assert runtime_node.initial_status_delivery_ready(publisher, object()) is True
+
+
+def test_media_spool_environment_selects_native_recording_directory(
+    monkeypatch, tmp_path
+):
+    native = tmp_path / "native"
+    recording = native / RUN_ID
+    created = SimpleNamespace(recording_directory=recording)
+    calls = []
+    monkeypatch.setattr(
+        runtime_node.MediaSpool,
+        "create",
+        lambda root, authoritative, run_id: calls.append(
+            (Path(root), Path(authoritative), run_id)
+        )
+        or created,
+    )
+
+    selected, spool = runtime_node.recording_media_directory(
+        tmp_path,
+        RUN_ID,
+        environment={"SIM_MEDIA_SPOOL_DIRECTORY": str(native)},
+    )
+
+    assert selected == recording
+    assert spool is created
+    assert calls == [(native, tmp_path, RUN_ID)]
+
+
+def test_cloud_recording_path_is_unchanged_without_spool_environment(tmp_path):
+    selected, spool = runtime_node.recording_media_directory(
+        tmp_path,
+        RUN_ID,
+        environment={},
+    )
+
+    assert selected == tmp_path
+    assert spool is None
+
+
+def test_running_admission_failure_is_reported_and_rejected(monkeypatch):
+    failures = []
+    monkeypatch.setattr(
+        runtime_node,
+        "validate_admission_binding",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("digest mismatch")),
+    )
+
+    accepted = runtime_node.validate_artifacts_running_admission(
+        object(),
+        launch_mode="operator",
+        admission_sha256="a" * 64,
+        bag_validator=SimpleNamespace(admission_sha256=""),
+        report_failure=lambda reason, paths: failures.append((reason, paths)),
+    )
+
+    assert accepted is False
+    assert failures == [
+        (
+            "RUNNING admission rejected: RuntimeError: digest mismatch",
+            ["configuration/start-admission.json"],
+        )
+    ]
+
+
+def test_running_admission_accepts_matching_binding(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        runtime_node,
+        "validate_admission_binding",
+        lambda protocol, launch_mode, digest: calls.append(
+            (protocol, launch_mode, digest)
+        ),
+    )
+    protocol = object()
+    bag_validator = SimpleNamespace(admission_sha256="")
+
+    assert runtime_node.validate_artifacts_running_admission(
+        protocol,
+        launch_mode="operator",
+        admission_sha256="a" * 64,
+        bag_validator=bag_validator,
+        report_failure=lambda *_args: None,
+    ) is True
+    assert calls == [(protocol, "operator", "a" * 64)]
+    assert bag_validator.admission_sha256 == "a" * 64
 
 
 @pytest.mark.parametrize(
@@ -97,11 +184,13 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
     stream_recorder_arguments = []
 
     class StreamRecorder:
-        def __init__(self, _run_directory, *, stream, **_kwargs):
+        def __init__(self, recorder_directory, *, stream, **_kwargs):
             self.stream = stream
             self.frame_count = 0
             self.is_ready = False
-            stream_recorder_arguments.append((stream, _kwargs))
+            stream_recorder_arguments.append(
+                (Path(recorder_directory), stream, _kwargs)
+            )
 
         def start(self, *, deadline):
             del deadline
@@ -177,6 +266,19 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
     )
     monkeypatch.setattr(runtime_node, "write_event", lambda *_args, **_kwargs: None)
 
+    expected_recording_directory = tmp_path
+    if physical_run:
+        spool_root = tmp_path / "native-spool"
+        expected_recording_directory = spool_root / RUN_ID
+        monkeypatch.setenv("SIM_MEDIA_SPOOL_DIRECTORY", str(spool_root))
+        monkeypatch.setattr(
+            runtime_node.MediaSpool,
+            "create",
+            lambda root, authoritative, run_id: SimpleNamespace(
+                recording_directory=Path(root) / run_id
+            ),
+        )
+
     config_path = tmp_path / "run.json"
     config_path.write_text(
         json.dumps(
@@ -219,13 +321,16 @@ def test_production_runtime_requests_profile_specific_reliable_volatile_camera_q
         "fps": 20,
         "encoding": "rgb8",
     }
-    assert [stream for stream, _arguments in stream_recorder_arguments] == [
+    assert [stream for _directory, stream, _arguments in stream_recorder_arguments] == [
         "onboard",
         "observer",
     ]
+    assert {
+        directory for directory, _stream, _arguments in stream_recorder_arguments
+    } == {expected_recording_directory}
     assert all(
         arguments | expected_geometry == arguments
-        for _stream, arguments in stream_recorder_arguments
+        for _directory, _stream, arguments in stream_recorder_arguments
     )
     video_validator_arguments = [kwargs for args, kwargs in validator_arguments if not args]
     assert video_validator_arguments == [
@@ -417,6 +522,95 @@ def _runtime(tmp_path, **changes):
     )
     values.update(changes)
     return AggregateArtifactsRuntime(**values), protocol, bag, video, published
+
+
+def test_finalize_publishes_media_spool_after_recorders_close_before_validation(
+    tmp_path,
+):
+    trace = []
+
+    class Stream(FakeStream):
+        def finalize(self, deadline, *, outcome):
+            trace.append(f"closed:{self.stream}")
+            return super().finalize(deadline, outcome=outcome)
+
+    class Spool:
+        def publish(self, *, deadline, monotonic):
+            assert deadline == 99.0
+            assert monotonic() == 0.0
+            assert trace == ["closed:onboard", "closed:observer"]
+            trace.append("published")
+            return MediaSpoolPublication(
+                ("video/onboard.mp4", "video/observer.mp4"),
+                (),
+            )
+
+    class Validator(FakeVideoValidator):
+        def validate(self, run_directory, relative_path, **kwargs):
+            assert "published" in trace
+            trace.append(f"validated:{self.stream}")
+            return super().validate(run_directory, relative_path, **kwargs)
+
+    video = FakeVideoNode(Stream("onboard"), Stream("observer"))
+    runtime, protocol, _bag, _video, _published = _runtime(
+        tmp_path,
+        video=video,
+        media_spool=Spool(),
+        video_validators={
+            "onboard": Validator("onboard"),
+            "observer": Validator("observer"),
+        },
+    )
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
+
+    report = runtime.finalize("COMPLETED", deadline=99.0)
+
+    assert report is not None
+    assert trace == [
+        "closed:onboard",
+        "closed:observer",
+        "published",
+        "validated:onboard",
+        "validated:observer",
+    ]
+
+
+def test_finalize_never_reports_valid_video_after_spool_copy_failure(tmp_path):
+    onboard = FakeVideoValidator("onboard")
+    observer = FakeVideoValidator("observer")
+
+    class Spool:
+        def publish(self, **_kwargs):
+            return MediaSpoolPublication(
+                ("video/observer.mp4",),
+                (
+                    MediaSpoolFailure(
+                        "video/onboard.mp4",
+                        "TimeoutError: media spool publication exceeded deadline",
+                    ),
+                ),
+            )
+
+    runtime, protocol, _bag, _video, _published = _runtime(
+        tmp_path,
+        media_spool=Spool(),
+        video_validators={"onboard": onboard, "observer": observer},
+    )
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
+
+    report = runtime.finalize("COMPLETED", deadline=99.0)
+
+    assert report is not None
+    records = {item["relative_path"]: item for item in report["records"]}
+    assert records["video/onboard.mp4"]["status"] == "invalid"
+    assert "spool" in records["video/onboard.mp4"]["detail"]
+    assert onboard.calls == []
+    assert len(observer.calls) == 1
+    failures = [
+        status for status in protocol.statuses if isinstance(status, RuntimeFailureStatus)
+    ]
+    assert len(failures) == 1
+    assert failures[0].diagnostic_paths == ("video/onboard.mp4",)
 
 
 def test_physical_runtime_validates_configured_camera_count(tmp_path):
