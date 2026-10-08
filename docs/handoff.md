@@ -9,7 +9,35 @@ world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. Imported
 `companion/comp2026` history and provenance remain preserved.
 
-The fresh common-build suite `be09da8c-d096-4b34-82ac-de5b05d25d30`, from clean
+Project paused at the user's request on 2026-10-08 at 18:53 UTC. The latest
+suite `a0a575bb-4b75-444c-9880-72482387718d`, from clean `fb92033`, exited 130
+with state `INTERRUPTED`. Evidence remains under
+`/home/willis/projects/drone_sim/runs/local-ci/20261008-fb92033`; its report is
+`suites/a0a575bb-4b75-444c-9880-72482387718d/report.json`.
+
+- All-axis calibration `51b4f10f-9e32-4663-a345-4f978ee0b679` and fresh reload
+  `f0ea3376-8306-471e-8f32-3d75b45160db` both established `LANDED`, scored
+  100/100, and passed the suite's independent artifact acceptance. Their full
+  recording windows were 900 and 120 simulated seconds. Calibration took
+  8,397 wall seconds, within the new three-hour allowance.
+- Reload's 15 imported gains matched fresh firmware readbacks before arming.
+  Both finalized manifests retain the same source and seven image identities.
+- Configured descent `e9d9a510-fb85-4d81-96b0-e0f33e0381ee` was aborted during
+  private warmup. Its failed report row records `ABORTED: operator_abort`,
+  not a completed regression test. The other eight cases were unrun.
+- Suite, launcher and observation processes exited; all current-suite Compose
+  containers were removed. No simulation containers were running at 18:53 UTC.
+  Existing evidence remains intact; all seven images have `:fb92033-suite`
+  preservation tags.
+
+The full 11-case demonstration remains incomplete. Additional native-log and
+physical diagnostics were deferred, not run after the pause. Resume from this
+checkpoint with a fresh full-suite run when workstation use is authorized again.
+The manual workflow is still absent from `main` and its registered runner is
+offline; provider verification remains unrun. No runtime behavior changed in
+this pause checkpoint, so module READMEs, architecture and runbook are unchanged.
+
+The earlier common-build suite `be09da8c-d096-4b34-82ac-de5b05d25d30`, from clean
 `d1335a3`, attempted all 11 cases and finished **FAILED**, six passed and five
 failed, on 2026-10-07 at 21:50 UTC. It ran for 6 h 4 min. All 11 manifests
 match the suite's frozen source and seven image identities. No simulation
@@ -283,8 +311,8 @@ Reducing health polling did not establish a full recording within two hours.
 The calibration template now allows 10,800 wall seconds, sized for this
 workstation's measured throughput. Its 900 public seconds, 90-second warmup,
 simulated flight deadlines, native guards, physics, scoring and recording
-requirements are unchanged. A fresh accepted calibration, reload and full
-11-case run remain required. The 24-hour Actions job still covers the catalog's
+requirements are unchanged. The later paused run above accepted calibration
+and reload; a full 11-case run remains required. The 24-hour Actions job covers the catalog's
 70,200 seconds of run budgets plus 3,600 seconds of finalization.
 Improving the `clock_source_stall` diagnostic name for an overall wall timeout
 is deferred; the measured clock was advancing when the deadline expired.
@@ -292,7 +320,7 @@ For this template change, 138 focused checks, 2,404 host tests and 1,130 importe
 Comp2026 tests passed; 27 environment-dependent checks were skipped. The focused
 review found no issues. These checks do not establish a fresh flight pass.
 
-Provider readiness checked again at 13:27 UTC on 2026-10-08 is unchanged: zero
+Provider readiness checked again at 18:46 UTC on 2026-10-08 is unchanged: zero
 workflows exist and the registered runner is offline and idle. Actions dispatch
 remains unverified.
 
