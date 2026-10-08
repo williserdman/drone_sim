@@ -927,6 +927,27 @@ def test_compose_health_accepts_selected_topology_ndjson_ps_output(profile, serv
     ) is None
 
 
+@pytest.mark.parametrize("viewer_state", [None, "exited", "unhealthy"])
+def test_viewer_failure_does_not_stop_healthy_flight_services(viewer_state):
+    rows = [{"Service": service, "State": "running"} for service in PHASE3_SERVICES]
+    if viewer_state is not None:
+        rows.append({"Service": "gazebo-viewer", "State": "running" if viewer_state == "unhealthy" else viewer_state,
+                     "Health": viewer_state})
+    required = frozenset((*PHASE3_SERVICES, "gazebo-viewer"))
+    assert RunController._ps_cause(ComposeCommandResult(0, json.dumps(rows).encode()),
+                                   _topology("phase3"), required) is None
+    rows[0]["State"] = "exited"
+    assert RunController._ps_cause(ComposeCommandResult(0, json.dumps(rows).encode()),
+                                   _topology("phase3"), required).reason == "compose_child_exited"
+
+
+def test_manual_operator_actor_remains_required_for_its_preset():
+    rows = [{"Service": service, "State": "running"} for service in PHASE3_SERVICES]
+    rows.append({"Service": "operator-wait-runtime", "State": "exited"})
+    assert RunController._ps_cause(ComposeCommandResult(0, json.dumps(rows).encode()),
+        _topology("phase3"), frozenset((*PHASE3_SERVICES, "operator-wait-runtime"))).reason == "compose_child_exited"
+
+
 def test_compose_log_runner_validates_frozen_command_and_augments_project_directory(tmp_path):
     calls = []
 
@@ -1125,7 +1146,8 @@ def test_phase3_controller_uses_phase3_ownership_for_health_logs_and_images(tmp_
     assert holder["log_ownership"] == _topology("phase3").ownership
 
 
-def test_operator_preparation_can_outlast_mission_budget_and_admission_is_manifest_bound(tmp_path):
+@pytest.mark.parametrize("viewer_exits", [False, True])
+def test_operator_preparation_can_outlast_mission_budget_and_admission_is_manifest_bound(tmp_path, monkeypatch, viewer_exits):
     import time
     from artifacts.operator_protocol import OperatorProtocol, PreflightStatus
 
@@ -1134,6 +1156,19 @@ def test_operator_preparation_can_outlast_mission_budget_and_admission_is_manife
     request_id = "11111111-1111-4111-8111-111111111111"
     directory = tmp_path / "runs" / RUN_ID
     prepared_states = []
+    viewer_exit_observed = []
+    original_ps = FakeCompose.ps
+
+    def observed_processes(compose, timeout):
+        result = original_ps(compose, timeout)
+        if viewer_exits and StatusStore(directory.parent).read_operator_status(RUN_ID).state == "RUNNING":
+            rows = json.loads(result.output)
+            next(row for row in rows if row["Service"] == "gazebo-viewer")["State"] = "exited"
+            viewer_exit_observed.append(True)
+            return ComposeCommandResult(0, json.dumps(rows).encode())
+        return result
+
+    monkeypatch.setattr(FakeCompose, "ps", observed_processes)
 
     def advance(seconds):
         nonlocal sequence
@@ -1159,9 +1194,11 @@ def test_operator_preparation_can_outlast_mission_budget_and_admission_is_manife
                   ScoreFinishedStatus, RuntimeFrozenStatus, TerminalNotifiedStatus))
     result = controller.start(_template(tmp_path, max_wall_seconds=10, runtime_profile="phase3",
         simulation={"seed": 9, "duration_sim_seconds": 2.0, "public_epoch_native_sim_seconds": 90.0,
-                    "target_real_time_factor": 0.1}), launch_mode="operator", preparation_wall_seconds=60)
+                    "target_real_time_factor": 0.1}), launch_mode="operator", preparation_wall_seconds=60,
+                    auxiliary_services=("gazebo-viewer",))
     assert prepared_states == ["PREPARED"]
     assert result.state == "COMPLETED"
+    assert bool(viewer_exit_observed) is viewer_exits
     manifest = json.loads((directory / "manifest.json").read_text())
     admission = (directory / "configuration/start-admission.json").read_bytes()
     assert any(row == {"relative_path": "configuration/start-admission.json", "sha256": hashlib.sha256(admission).hexdigest()}

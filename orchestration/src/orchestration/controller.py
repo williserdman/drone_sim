@@ -421,20 +421,23 @@ class RunController:
             for row in rows
         ):
             return TerminalCause("child_process", "compose_ps_invalid")
-        if any(
-            row["State"].lower() not in {"running", "restarting"}
-            or str(row.get("Health", "")).lower() == "unhealthy"
-            for row in rows
-        ):
-            return TerminalCause("child_process", "compose_child_exited")
         services = [row["Service"] for row in rows]
         expected = (
             frozenset(required_services)
             if required_services is not None
             else frozenset(service for service, _module in topology.ownership)
         )
-        if len(services) != len(set(services)) or set(services) != expected:
+        critical = expected - {"gazebo-viewer"}
+        if len(services) != len(set(services)) or not critical <= set(services) <= expected:
             return TerminalCause("child_process", "compose_child_set_invalid")
+        # Viewer readiness gates admission in the operator boundary. Losing the
+        # desktop must not terminate an otherwise healthy airborne mission.
+        if any(
+            row["State"].lower() not in {"running", "restarting"}
+            or str(row.get("Health", "")).lower() == "unhealthy"
+            for row in rows if row["Service"] in critical
+        ):
+            return TerminalCause("child_process", "compose_child_exited")
         return None
 
     def _observed_cause(
