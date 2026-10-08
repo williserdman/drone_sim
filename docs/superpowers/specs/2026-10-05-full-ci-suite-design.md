@@ -74,6 +74,10 @@ Preserve each template's mission plan, seed, recording contract, timing, and
 scenario. Resolve temporary copies under the suite directory to substitute the
 output root and calibration source. Do not edit tracked templates or defaults
 during execution. Resolve template-relative inputs before relocating a copy.
+Host wall budgets are checked-in template settings sized for measured workstation
+throughput. Adjusting one requires a committed template and a fresh run; the
+suite never extends it during execution or relaxes simulated deadlines and
+recording acceptance.
 
 ## Execution and provenance
 

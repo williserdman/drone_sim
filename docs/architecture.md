@@ -50,6 +50,9 @@ to exercise lifecycle and recording infrastructure.
 Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
+Template wall budgets must accommodate measured workstation throughput. Raising
+a host budget does not extend simulated mission deadlines or accept a recording
+shorter than the configured public window.
 Host orchestration owns polling of durable statuses and Compose child health;
 the [orchestration guide](../orchestration/README.md) defines its cadence and
 deadline behavior. Host polling changes do not alter simulation, flight,
@@ -322,8 +325,8 @@ fails immediately. Overrides remain cleared during the GUIDED return and native
 LAND. Tuning may drift far from launch, so the bounded GPS waypoint return remains
 mandatory. See [the measured drift and return](handoff.md) for diagnostic evidence.
 Native LAND, disarm, and gain saving still follow the stable-arrival guards.
-The 15-gain artifact, native gain guards, D and aggression settings, deadlines,
-900-second recording window, and calibration scoring remain unchanged.
+The 15-gain artifact, native gain guards, D and aggression settings, simulated
+deadlines, 900-second recording window, and calibration scoring remain unchanged.
 
 This order matters in the
 [pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):

@@ -263,6 +263,35 @@ tests in 15.21 seconds. The full host suite passed 2,404 tests with 27 skips in
 static typechecker is configured. A fresh production 11-case suite remains
 pending.
 
+Production suite `de526bc9-a906-4d89-af0b-25ad2d3468ff`, source `6947a86`,
+attempted calibration `826666a0-1240-4799-825c-43531e3f6676` on 2026-10-08.
+The finalized native log confirms all three axes completed, a 30.498-second
+GUIDED return, native LAND, disarm and gain saving. All 15 activation,
+post-disarm and native saved gains match. The recorded touchdown was stable,
+with 0.500375 m/s downward precontact speed and 8.980 mm XY error; all 11
+samples in the contact window pass the unchanged physical predicates.
+
+The suite nevertheless failed at the original 7,200-second wall deadline. Its
+contiguous recording ends at public 858.55 seconds, with 17,171 of 18,000 samples.
+The missing 41.45 seconds mean official score 0/100, incomplete artifacts and
+ten blocked dependent cases. Native and physical diagnostic success does not
+accept those gains. All owned processes and containers exited; all seven images
+are preserved under `:6947a86-suite`. Final evidence and separate diagnostic
+reports are under `.superpowers/full-suite-poll-1s/`.
+
+Reducing health polling did not establish a full recording within two hours.
+The calibration template now allows 10,800 wall seconds, sized for this
+workstation's measured throughput. Its 900 public seconds, 90-second warmup,
+simulated flight deadlines, native guards, physics, scoring and recording
+requirements are unchanged. A fresh accepted calibration, reload and full
+11-case run remain required. The 24-hour Actions job still covers the catalog's
+70,200 seconds of run budgets plus 3,600 seconds of finalization.
+Improving the `clock_source_stall` diagnostic name for an overall wall timeout
+is deferred; the measured clock was advancing when the deadline expired.
+For this template change, 138 focused checks, 2,404 host tests and 1,130 imported
+Comp2026 tests passed; 27 environment-dependent checks were skipped. The focused
+review found no issues. These checks do not establish a fresh flight pass.
+
 Provider readiness checked again at 13:27 UTC on 2026-10-08 is unchanged: zero
 workflows exist and the registered runner is offline and idle. Actions dispatch
 remains unverified.

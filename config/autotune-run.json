@@ -4,7 +4,7 @@
   "mission": "autotune",
   "scenario": "calibration_v1",
   "output_root": "runs",
-  "max_wall_seconds": 7200,
+  "max_wall_seconds": 10800,
   "startup_wall_seconds": 900,
   "finalization_wall_seconds": 300,
   "recording": {

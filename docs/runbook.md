@@ -153,8 +153,10 @@ and those image tags fixed through both flights and acceptance.
    The public/warmup windows total 990
    simulated seconds at target RTF 0.25, about 66 wall minutes plus startup.
    The final 60 public seconds remain reserved for LAND or failure recovery;
-   calibration stops tuning at public 840 seconds. The wall limit remains
-   7,200 seconds.
+   calibration stops tuning at public 840 seconds. The overall host limit is
+   10,800 seconds (three hours), allowing for the measured workstation slowdown.
+   This allowance leaves the simulated windows and complete-recording requirement
+   unchanged; finalization still has its separate 300-second budget.
    A failed tune or landing cannot release accepted parameters.
 
 2. Save its UUID and prepare a temporary validation template:
