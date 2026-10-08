@@ -43,6 +43,8 @@ RUN bash -lc 'source /opt/ros/jazzy/setup.bash \
     && chmod 0755 /usr/local/bin/drone-sim-gazebo-viewer \
     && rm -rf /tmp/drone-sim-local-viewer
 
+COPY gazebo/local-viewer/operator.html /usr/share/novnc/operator.html
+
 ENV DISPLAY=:99 \
     GZ_GUI_CONFIG_PATH=/etc/drone_sim/gazebo-viewer.config \
     GZ_GUI_PLUGIN_PATH=/opt/drone_sim/gazebo/viewer/plugins

@@ -124,6 +124,10 @@ def test_viewer_desktop_is_reconnectable_and_uses_matching_gazebo_runtime() -> N
         "FROM drone-sim-gazebo-runtime:phase3 AS viewer\n"
     )
     assert "viewer-packages.arm64.lock" in dockerfile
+    assert (
+        "COPY gazebo/local-viewer/operator.html /usr/share/novnc/operator.html"
+        in dockerfile
+    )
     assert "-forever" in entrypoint
     assert "-shared" in entrypoint
     assert "--web=/usr/share/novnc" in entrypoint
