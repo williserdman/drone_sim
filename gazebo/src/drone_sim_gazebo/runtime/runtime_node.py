@@ -72,13 +72,23 @@ class GazeboPreflightReporter:
         protocol,
         run_id: str,
         config_sha256: str,
+        minimum_native_epoch_ns: int,
         wall_time_ns=time.time_ns,
     ) -> None:
+        if (
+            type(minimum_native_epoch_ns) is not int
+            or minimum_native_epoch_ns <= 0
+            or minimum_native_epoch_ns % _EPOCH_CLOCK_LOOKAHEAD_NS != 0
+        ):
+            raise ValueError(
+                "minimum native epoch must be positive and lie on the 50 ms grid"
+            )
         previous = protocol.read_preflight("gazebo")
         self._protocol = protocol
         self._run_id = run_id
         self._config_sha256 = config_sha256
         self._wall_time_ns = wall_time_ns
+        self._minimum_native_epoch_ns = minimum_native_epoch_ns
         self._sequence = 0 if previous is None else previous.sequence + 1
         self._previous: tuple[int, int] | None = None
 
@@ -97,6 +107,10 @@ class GazeboPreflightReporter:
             and native_timestamp_ns > self._previous[0]
             and camera_native_timestamp_ns > self._previous[1]
         )
+        warm = (
+            native_timestamp_ns >= self._minimum_native_epoch_ns
+            and camera_native_timestamp_ns >= self._minimum_native_epoch_ns
+        )
         status = PreflightStatus(
             self._run_id,
             self._config_sha256,
@@ -106,8 +120,14 @@ class GazeboPreflightReporter:
             native_timestamp_ns=native_timestamp_ns,
             physics_advancing=advancing,
             camera_native_timestamp_ns=camera_native_timestamp_ns,
-            ready=advancing,
-            detail=("live" if advancing else "awaiting advancing native physics and camera"),
+            ready=advancing and warm,
+            detail=(
+                "live"
+                if advancing and warm
+                else "awaiting configured native warmup floor"
+                if advancing
+                else "awaiting advancing native physics and camera"
+            ),
         )
         self._protocol.write_preflight(status)
         self._sequence += 1
@@ -388,8 +408,18 @@ class OperatorEpochRendezvous:
         start_private_preview,
         latest_native_clock,
         epoch_reached,
+        minimum_native_epoch_ns: int,
+        wall_time_ns=time.time_ns,
         release_status_type: type[RuntimeStatus] = MissionCommandDeliveredStatus,
     ) -> None:
+        if (
+            type(minimum_native_epoch_ns) is not int
+            or minimum_native_epoch_ns <= 0
+            or minimum_native_epoch_ns % _EPOCH_CLOCK_LOOKAHEAD_NS != 0
+        ):
+            raise ValueError(
+                "minimum native epoch must be positive and lie on the 50 ms grid"
+            )
         self._transport = transport
         self._protocol = protocol
         self._operator_protocol = operator_protocol
@@ -399,6 +429,8 @@ class OperatorEpochRendezvous:
         self._start_private_preview = start_private_preview
         self._latest_native_clock = latest_native_clock
         self._epoch_reached = epoch_reached
+        self._minimum_native_epoch_ns = minimum_native_epoch_ns
+        self._wall_time_ns = wall_time_ns
         self._release_status_type = release_status_type
         self._preparation_started = False
         self._admission = None
@@ -407,6 +439,49 @@ class OperatorEpochRendezvous:
         self._unpause_done = Event()
         self._unpause_error: Exception | None = None
         self._unpause_thread: Thread | None = None
+        self._pending_request = None
+        self._pending_target_ns: int | None = None
+
+    def _require_fresh_readiness(self, request):
+        readiness = self._operator_protocol.read_start_readiness()
+        if readiness is None or not readiness.ready:
+            return None
+        now = self._wall_time_ns()
+        age = now - readiness.observed_wall_time_ns
+        if not -2_000_000_000 <= age <= 5_000_000_000:
+            raise RuntimeError("mission start readiness is stale")
+        companion = self._operator_protocol.read_preflight("companion")
+        if companion is None or not companion.ready:
+            raise RuntimeError("companion preflight is not ready at admission")
+        companion_age = now - companion.observed_wall_time_ns
+        if not -2_000_000_000 <= companion_age <= 5_000_000_000:
+            raise RuntimeError("companion preflight is stale at admission")
+        if readiness.request_id != request.request_id:
+            raise RuntimeError("mission start readiness changed request identity")
+        return readiness
+
+    def _complete_pending_admission(self):
+        if self._pending_request is None or self._pending_target_ns is None:
+            return None
+        if not self._epoch_reached():
+            return None
+        paused_at = self._transport.paused_sim_time_ns()
+        expected_pause = self._pending_target_ns + _EPOCH_CLOCK_LOOKAHEAD_NS
+        if paused_at is None:
+            return None
+        if paused_at != expected_pause:
+            raise TransportError(
+                "Gazebo did not pause at the confirmed operator epoch lookahead"
+            )
+        if self._require_fresh_readiness(self._pending_request) is None:
+            raise RuntimeError("mission start readiness disappeared before admission")
+        self._admission = self._operator_protocol.write_start_admission(
+            self._pending_request,
+            native_epoch_ns=self._pending_target_ns,
+        )
+        self._pending_request = None
+        self._pending_target_ns = None
+        return self._admission
 
     def start_preparation(self) -> None:
         if self._preparation_started:
@@ -433,8 +508,14 @@ class OperatorEpochRendezvous:
     def poll_admission(self):
         if self._admission is not None:
             return self._admission
+        if self._pending_request is not None:
+            return self._complete_pending_admission()
         existing = self._operator_protocol.read_start_admission()
         if existing is not None:
+            if existing.native_epoch_ns < self._minimum_native_epoch_ns:
+                raise RuntimeError(
+                    "start admission precedes configured native warmup floor"
+                )
             self._transport.set_paused(True)
             self._configure_output(existing.native_epoch_ns)
             self._prepare_output()
@@ -444,8 +525,7 @@ class OperatorEpochRendezvous:
         request = self._operator_protocol.read_start_request()
         if request is None:
             return None
-        readiness = self._operator_protocol.read_start_readiness()
-        if readiness is None or not readiness.ready:
+        if self._require_fresh_readiness(request) is None:
             return None
         # Freeze the live preparation world before selecting the next camera
         # boundary.  Otherwise Gazebo can cross an epoch selected from a stale
@@ -457,15 +537,17 @@ class OperatorEpochRendezvous:
         paused_native = self._transport.paused_sim_time_ns()
         if type(paused_native) is int and paused_native >= 0:
             native = max(native, paused_native)
-        target = ((native // _EPOCH_CLOCK_LOOKAHEAD_NS) + 1) * _EPOCH_CLOCK_LOOKAHEAD_NS
+        target = max(
+            self._minimum_native_epoch_ns,
+            ((native // _EPOCH_CLOCK_LOOKAHEAD_NS) + 1)
+            * _EPOCH_CLOCK_LOOKAHEAD_NS,
+        )
         self._configure_output(target)
         self._prepare_output()
         self._run_to_epoch(target)
-        self._admission = self._operator_protocol.write_start_admission(
-            request,
-            native_epoch_ns=target,
-        )
-        return self._admission
+        self._pending_request = request
+        self._pending_target_ns = target
+        return None
 
     def begin(self) -> None:
         if self._begun:
@@ -621,12 +703,14 @@ def main() -> int:
             start_private_preview=adapter.start_private_preview,
             latest_native_clock=lambda: adapter.native_observation()[0],
             epoch_reached=adapter.public_epoch_reached,
+            minimum_native_epoch_ns=config.simulation.public_epoch_native_ns,
             release_status_type=_release_status_type_for_mission(config.mission),
         )
         preflight_reporter = GazeboPreflightReporter(
             protocol=operator_protocol,
             run_id=run_id,
             config_sha256=config.config_sha256,
+            minimum_native_epoch_ns=config.simulation.public_epoch_native_ns,
         )
     else:
         epoch_rendezvous = PublicEpochRendezvous(

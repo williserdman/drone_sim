@@ -11,7 +11,11 @@ from artifacts.runtime_status import (
     MissionCommandDeliveredStatus,
     MissionExecutionReadyStatus,
 )
-from artifacts.operator_protocol import MissionStartReadiness, MissionStartRequest
+from artifacts.operator_protocol import (
+    MissionStartReadiness,
+    MissionStartRequest,
+    PreflightStatus,
+)
 from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
 from drone_sim_gazebo.runtime.runtime_node import (
@@ -42,27 +46,32 @@ def test_gazebo_preflight_requires_advancing_native_physics_and_camera():
             writes.append(status)
             return status
 
-    wall = iter((100, 200))
+    wall = iter((100, 200, 300))
     reporter = GazeboPreflightReporter(
         protocol=Protocol(),
         run_id=RUN_ID,
         config_sha256=CONFIG_SHA256,
+        minimum_native_epoch_ns=180_050_000_000,
         wall_time_ns=lambda: next(wall),
     )
 
-    first = reporter.observe(180_000_000_000, 180_000_000_000)
+    first = reporter.observe(179_950_000_000, 179_950_000_000)
     assert first is not None
     assert first.sequence == 0
     assert first.ready is False
     assert first.physics_advancing is False
-    assert reporter.observe(180_000_000_000, 180_000_000_000) is None
+    assert reporter.observe(179_950_000_000, 179_950_000_000) is None
 
-    second = reporter.observe(180_050_000_000, 180_050_000_000)
+    second = reporter.observe(180_000_000_000, 180_000_000_000)
     assert second is not None
     assert second.sequence == 1
-    assert second.ready is True
+    assert second.ready is False
     assert second.physics_advancing is True
-    assert [status.sequence for status in writes] == [0, 1]
+    third = reporter.observe(180_050_000_000, 180_050_000_000)
+    assert third is not None
+    assert third.sequence == 2
+    assert third.ready is True
+    assert [status.sequence for status in writes] == [0, 1, 2]
 
 
 def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
@@ -104,6 +113,21 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
         def read_start_readiness(self):
             return readiness
 
+        def read_preflight(self, component):
+            assert component == "companion"
+            return PreflightStatus(
+                RUN_ID,
+                CONFIG_SHA256,
+                "companion",
+                1,
+                100,
+                heartbeat_live=True,
+                prearm_checks_healthy=True,
+                armed=False,
+                ready=True,
+                detail="ready",
+            )
+
         def read_start_admission(self):
             return self.admission
 
@@ -114,16 +138,21 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
             return self.admission
 
     class Transport:
+        paused_times = [180_035_000_000, None]
+
         def set_paused(self, paused):
             calls.append(("paused", paused))
 
         def paused_sim_time_ns(self):
-            return 180_035_000_000
+            if self.paused_times:
+                return self.paused_times.pop(0)
+            return 180_100_000_000
 
         def run_to_sim_time(self, target_ns):
             calls.append(("run_to", target_ns))
 
     operator = OperatorProtocol()
+    epoch_reached = [False]
     rendezvous = OperatorEpochRendezvous(
         transport=Transport(),
         protocol=RuntimeProtocol(),
@@ -133,10 +162,17 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
         prepare_output=lambda: calls.append(("prepare",)),
         start_private_preview=lambda: calls.append(("preview",)),
         latest_native_clock=lambda: 180_025_000_000,
-        epoch_reached=lambda: True,
+        epoch_reached=lambda: epoch_reached[0],
+        minimum_native_epoch_ns=90_000_000_000,
+        wall_time_ns=lambda: 200,
     )
 
     rendezvous.start_preparation()
+    assert rendezvous.poll_admission() is None
+    assert not any(call[0] == "admit" for call in calls)
+    epoch_reached[0] = True
+    assert rendezvous.poll_admission() is None
+    assert not any(call[0] == "admit" for call in calls)
     admission = rendezvous.poll_admission()
 
     assert admission is operator.admission
@@ -149,6 +185,219 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
         ("run_to", 180_100_000_000),
         ("admit", 180_050_000_000),
     ]
+
+
+def test_operator_epoch_preserves_configured_minimum_warmup_floor():
+    request = MissionStartRequest(
+        RUN_ID,
+        CONFIG_SHA256,
+        "33333333-3333-4333-8333-333333333333",
+    )
+    readiness = MissionStartReadiness(
+        RUN_ID,
+        CONFIG_SHA256,
+        request.request_id,
+        request.sha256,
+        100,
+        True,
+        True,
+        False,
+        True,
+        "ready",
+    )
+    calls = []
+
+    class OperatorProtocol:
+        def read_start_admission(self):
+            return None
+
+        def read_start_request(self):
+            return request
+
+        def read_start_readiness(self):
+            return readiness
+
+        def read_preflight(self, component):
+            assert component == "companion"
+            return PreflightStatus(
+                RUN_ID,
+                CONFIG_SHA256,
+                "companion",
+                1,
+                100,
+                heartbeat_live=True,
+                prearm_checks_healthy=True,
+                armed=False,
+                ready=True,
+                detail="ready",
+            )
+
+        def write_start_admission(self, persisted_request, *, native_epoch_ns):
+            calls.append(("admit", native_epoch_ns))
+            return object()
+
+    class Transport:
+        def set_paused(self, paused):
+            calls.append(("paused", paused))
+
+        def paused_sim_time_ns(self):
+            return 10_025_000_000
+
+        def run_to_sim_time(self, target_ns):
+            calls.append(("run_to", target_ns))
+
+    rendezvous = OperatorEpochRendezvous(
+        transport=Transport(),
+        protocol=object(),
+        operator_protocol=OperatorProtocol(),
+        configure_output=lambda target: calls.append(("configure", target)),
+        activate_output=lambda: None,
+        prepare_output=lambda: calls.append(("prepare",)),
+        start_private_preview=lambda: None,
+        latest_native_clock=lambda: 10_025_000_000,
+        epoch_reached=lambda: False,
+        minimum_native_epoch_ns=90_000_000_000,
+        wall_time_ns=lambda: 200,
+    )
+
+    assert rendezvous.poll_admission() is None
+    assert ("configure", 90_000_000_000) in calls
+    assert ("run_to", 90_050_000_000) in calls
+    assert not any(call[0] == "admit" for call in calls)
+
+
+def test_operator_epoch_rejects_stale_request_scoped_readiness():
+    request = MissionStartRequest(
+        RUN_ID,
+        CONFIG_SHA256,
+        "33333333-3333-4333-8333-333333333333",
+    )
+    readiness = MissionStartReadiness(
+        RUN_ID,
+        CONFIG_SHA256,
+        request.request_id,
+        request.sha256,
+        100,
+        True,
+        True,
+        False,
+        True,
+        "ready",
+    )
+
+    class OperatorProtocol:
+        def read_start_admission(self):
+            return None
+
+        def read_start_request(self):
+            return request
+
+        def read_start_readiness(self):
+            return readiness
+
+    class Transport:
+        def set_paused(self, _paused):
+            raise AssertionError("stale readiness must not pause Gazebo")
+
+    rendezvous = OperatorEpochRendezvous(
+        transport=Transport(),
+        protocol=object(),
+        operator_protocol=OperatorProtocol(),
+        configure_output=lambda _target: None,
+        activate_output=lambda: None,
+        prepare_output=lambda: None,
+        start_private_preview=lambda: None,
+        latest_native_clock=lambda: 90_000_000_000,
+        epoch_reached=lambda: False,
+        minimum_native_epoch_ns=90_000_000_000,
+        wall_time_ns=lambda: 5_000_000_101,
+    )
+
+    with pytest.raises(RuntimeError, match="readiness is stale"):
+        rendezvous.poll_admission()
+
+
+def test_operator_epoch_rechecks_readiness_after_run_to_before_admission():
+    request = MissionStartRequest(
+        RUN_ID,
+        CONFIG_SHA256,
+        "33333333-3333-4333-8333-333333333333",
+    )
+    readiness = MissionStartReadiness(
+        RUN_ID,
+        CONFIG_SHA256,
+        request.request_id,
+        request.sha256,
+        100,
+        True,
+        True,
+        False,
+        True,
+        "ready",
+    )
+    writes = []
+
+    class OperatorProtocol:
+        def read_start_admission(self):
+            return None
+
+        def read_start_request(self):
+            return request
+
+        def read_start_readiness(self):
+            return readiness
+
+        def read_preflight(self, _component):
+            return PreflightStatus(
+                RUN_ID,
+                CONFIG_SHA256,
+                "companion",
+                1,
+                100,
+                heartbeat_live=True,
+                prearm_checks_healthy=True,
+                armed=False,
+                ready=True,
+                detail="ready",
+            )
+
+        def write_start_admission(self, *_args, **_kwargs):
+            writes.append(True)
+            return object()
+
+    class Transport:
+        observations = [90_000_000_000, 90_100_000_000]
+
+        def set_paused(self, _paused):
+            return None
+
+        def paused_sim_time_ns(self):
+            return self.observations.pop(0)
+
+        def run_to_sim_time(self, _target_ns):
+            return None
+
+    wall_times = iter((200, 5_000_000_101))
+    epoch_reached = [False]
+    rendezvous = OperatorEpochRendezvous(
+        transport=Transport(),
+        protocol=object(),
+        operator_protocol=OperatorProtocol(),
+        configure_output=lambda _target: None,
+        activate_output=lambda: None,
+        prepare_output=lambda: None,
+        start_private_preview=lambda: None,
+        latest_native_clock=lambda: 90_000_000_000,
+        epoch_reached=lambda: epoch_reached[0],
+        minimum_native_epoch_ns=90_000_000_000,
+        wall_time_ns=lambda: next(wall_times),
+    )
+
+    assert rendezvous.poll_admission() is None
+    epoch_reached[0] = True
+    with pytest.raises(RuntimeError, match="readiness is stale"):
+        rendezvous.poll_admission()
+    assert writes == []
 
 
 def test_operator_epoch_restores_existing_admission_before_public_activation():
@@ -183,6 +432,7 @@ def test_operator_epoch_restores_existing_admission_before_public_activation():
         start_private_preview=lambda: None,
         latest_native_clock=lambda: 180_000_000_000,
         epoch_reached=lambda: True,
+        minimum_native_epoch_ns=90_000_000_000,
     )
 
     assert rendezvous.poll_admission() is admission
