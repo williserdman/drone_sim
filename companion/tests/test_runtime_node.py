@@ -272,7 +272,12 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
         if spins == 2:
             public_running = True
             subscriptions["/simulation/run_state"](
-                SimpleNamespace(run_id=RUN_ID, state=1)
+                SimpleNamespace(
+                    run_id=RUN_ID,
+                    state=1,
+                    config_sha256=config.config_sha256,
+                    admission_sha256="",
+                )
             )
             subscriptions["/clock"](
                 SimpleNamespace(clock=SimpleNamespace(sec=0, nanosec=0))
@@ -736,6 +741,7 @@ def install_comp2026_runtime_fakes(
     vehicle.close = lambda: None  # type: ignore[attr-defined]
     vehicle.guarded_bootstrap = []  # type: ignore[attr-defined]
     mission_ready_written = threading.Event()
+    runtime_config_sha256 = [""]
     if ground_ready is None:
         ground_ready = threading.Event()
         ground_ready.set()
@@ -747,8 +753,8 @@ def install_comp2026_runtime_fakes(
         )
 
     class Protocol:
-        def __init__(self, _config: RuntimeConfig) -> None:
-            pass
+        def __init__(self, config: RuntimeConfig) -> None:
+            runtime_config_sha256[0] = config.config_sha256
 
         def write_status(self, status: object) -> None:
             statuses.append(status)
@@ -805,7 +811,12 @@ def install_comp2026_runtime_fakes(
                 if executor_stopped.is_set():
                     return
             subscriptions["/simulation/run_state"](
-                SimpleNamespace(run_id=RUN_ID, state=RunState.RUNNING)
+                SimpleNamespace(
+                    run_id=RUN_ID,
+                    state=RunState.RUNNING,
+                    config_sha256=runtime_config_sha256[0],
+                    admission_sha256="",
+                )
             )
             if running_delivered is not None:
                 running_delivered.set()

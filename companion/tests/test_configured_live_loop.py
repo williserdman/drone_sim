@@ -302,8 +302,8 @@ def test_operator_gate_blocks_configured_flight_commands_until_admission(monkeyp
         def observe_vehicle(self, **_facts):
             self.observations += 1
 
-        def poll_start(self, *, run_state_running):
-            admitted = run_state_running and self.observations >= 3
+        def poll_start(self, *, run_state):
+            admitted = run_state is not None and self.observations >= 3
             if not admitted:
                 flight_commands = {
                     mavutil.mavlink.MAV_CMD_DO_SET_MODE,

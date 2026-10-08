@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hmac
 import math
 import time
 from typing import Callable, Literal, Protocol
@@ -46,6 +47,48 @@ class StartDecision:
     command_allowed: bool
     admitted_now: bool = False
     admission_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class RunningStateBinding:
+    """Identity carried by one observed RUNNING state transition."""
+
+    run_id: str
+    config_sha256: str
+    admission_sha256: str
+
+    def matches(
+        self,
+        *,
+        run_id: str,
+        config_sha256: str,
+        admission_sha256: str,
+    ) -> bool:
+        return (
+            hmac.compare_digest(self.run_id, run_id)
+            and hmac.compare_digest(self.config_sha256, config_sha256)
+            and hmac.compare_digest(self.admission_sha256, admission_sha256)
+        )
+
+
+def running_state_binding(
+    message: object,
+    *,
+    running_state: int,
+) -> RunningStateBinding | None:
+    """Retain the identity fields needed to authorize a RUNNING transition."""
+    if getattr(message, "state", None) != running_state:
+        return None
+
+    def text(field: str) -> str:
+        value = getattr(message, field, "")
+        return value if isinstance(value, str) else ""
+
+    return RunningStateBinding(
+        run_id=text("run_id"),
+        config_sha256=text("config_sha256"),
+        admission_sha256=text("admission_sha256"),
+    )
 
 
 class CompanionOperatorControl:
@@ -196,9 +239,18 @@ class CompanionOperatorControl:
         self._last_preflight_write_ns = now
         self._last_preflight_values = values
 
-    def poll_start(self, *, run_state_running: bool) -> StartDecision:
+    def poll_start(self, *, run_state: RunningStateBinding | None) -> StartDecision:
         if not self.operator_mode:
-            return StartDecision(command_allowed=run_state_running)
+            return StartDecision(
+                command_allowed=(
+                    run_state is not None
+                    and run_state.matches(
+                        run_id=self._run_id,
+                        config_sha256=self._config_sha256,
+                        admission_sha256="",
+                    )
+                )
+            )
 
         now = self._wall_time_ns()
         request = self._protocol.read_start_request()
@@ -228,18 +280,27 @@ class CompanionOperatorControl:
             self._readiness_requests.add(request_sha256)
 
         admission = self._protocol.read_start_admission()
-        if admission is None or not run_state_running:
+        if (
+            admission is None
+            or run_state is None
+        ):
             return StartDecision(False)
+        admission_sha256 = str(admission.sha256)
         if (
             admission.run_id != self._run_id
             or admission.config_sha256 != self._config_sha256
             or admission.request_id != request.request_id
             or admission.request_sha256 != request_sha256
+            or not run_state.matches(
+                run_id=self._run_id,
+                config_sha256=self._config_sha256,
+                admission_sha256=admission_sha256,
+            )
         ):
             return StartDecision(False)
         admitted_now = self._admission_sha256 is None
         if admitted_now:
-            self._admission_sha256 = str(admission.sha256)
+            self._admission_sha256 = admission_sha256
             self._admitted_request_sha256 = request_sha256
             self.wall_deadline_ns = self._monotonic_ns() + self._mission_wall_ns
         return StartDecision(
@@ -431,6 +492,8 @@ class CompanionOperatorControl:
 
 __all__ = [
     "CompanionOperatorControl",
+    "RunningStateBinding",
     "StartDecision",
     "dronekit_heartbeat_is_fresh",
+    "running_state_binding",
 ]

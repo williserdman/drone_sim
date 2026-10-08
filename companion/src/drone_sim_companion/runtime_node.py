@@ -49,7 +49,7 @@ from .lifecycle import CompanionLifecycle, INITIAL_COMMAND_WINDOW_NS
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
 from .mission_plan import MissionPlan, parse_mission_plan
-from .operator_control import dronekit_heartbeat_is_fresh
+from .operator_control import dronekit_heartbeat_is_fresh, running_state_binding
 from .comp2026_host import (
     AttemptFailureCoordinator,
     Comp2026StartGate,
@@ -608,9 +608,17 @@ def _operator_control(config: RuntimeConfig, protocol: _ProductionProtocol) -> A
             def observe_vehicle(self, **_facts: Any) -> None:
                 pass
 
-            def poll_start(self, *, run_state_running: bool) -> Any:
+            def poll_start(self, *, run_state: Any) -> Any:
+                expected_config = getattr(config, "config_sha256", "")
                 return type("StartDecision", (), {
-                    "command_allowed": run_state_running,
+                    "command_allowed": (
+                        run_state is not None
+                        and run_state.matches(
+                            run_id=config.run_id,
+                            config_sha256=expected_config,
+                            admission_sha256="",
+                        )
+                    ),
                     "admitted_now": False,
                 })()
 
@@ -774,7 +782,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     rclpy.init()
     node = Node("drone_sim_companion", parameter_overrides=[])
     latest_clock_ns: int | None = None
-    mission_running = False
+    mission_running = None
     finalizing = False
     requested_stop = False
     failure: str | None = None
@@ -801,7 +809,9 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
         if message.run_id != config.run_id:
             return
         if message.state == RunState.RUNNING:
-            mission_running = True
+            mission_running = running_state_binding(
+                message, running_state=RunState.RUNNING
+            )
         elif message.state == RunState.FINALIZING:
             finalizing = True
 
@@ -842,7 +852,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     try:
         while rclpy.ok() and not requested_stop and not finalizing:
             rclpy.spin_once(node, timeout_sec=0.02)
-            start = operator_control.poll_start(run_state_running=mission_running)
+            start = operator_control.poll_start(run_state=mission_running)
             operator_control.poll_abort(
                 finalizing=False,
                 begin_recovery=begin_operator_recovery,
@@ -1026,7 +1036,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     rclpy.init()
     node = Node("drone_sim_companion")
     latest_clock_ns: int | None = None
-    mission_running = False
+    mission_running = None
     finalizing = False
     requested_stop = False
     command_delivered = False
@@ -1059,7 +1069,9 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
         if message.run_id != config.run_id:
             return
         if message.state == RunState.RUNNING:
-            mission_running = True
+            mission_running = running_state_binding(
+                message, running_state=RunState.RUNNING
+            )
         elif message.state == RunState.FINALIZING:
             finalizing = True
 
@@ -1261,7 +1273,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 landed=landed,
                 mode=mode,
             )
-            start = operator_control.poll_start(run_state_running=mission_running)
+            start = operator_control.poll_start(run_state=mission_running)
             operator_control.poll_abort(
                 finalizing=False,
                 begin_recovery=begin_operator_recovery,
@@ -1585,7 +1597,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
     rclpy.init()
     node = Node("drone_sim_companion")
     latest_clock_ns: int | None = None
-    mission_running = False
+    mission_running = None
     finalizing = False
     stopped = False
     failure: str | None = None
@@ -1603,7 +1615,10 @@ def _run_autotune(config: RuntimeConfig) -> int:
     def state_callback(message: Any) -> None:
         nonlocal mission_running, finalizing
         if message.run_id != config.run_id: return
-        if message.state == RunState.RUNNING: mission_running = True
+        if message.state == RunState.RUNNING:
+            mission_running = running_state_binding(
+                message, running_state=RunState.RUNNING
+            )
         elif message.state == RunState.FINALIZING: finalizing = True
 
     node.create_subscription(Clock, "/clock", clock_callback, QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE))
@@ -1748,7 +1763,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 landed=landed,
                 mode=mode,
             )
-            start = operator_control.poll_start(run_state_running=mission_running)
+            start = operator_control.poll_start(run_state=mission_running)
             operator_control.poll_abort(
                 finalizing=False,
                 begin_recovery=begin_operator_recovery,
@@ -1998,7 +2013,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     )
     payload_client = _RosPayloadClient(ros_payload_client, PayloadCommand)
     shutdown_admission = _Comp2026ShutdownAdmission()
-    mission_running = False
+    mission_running = None
     initial_command_delivered = False
     runtime_failure_written = False
     runtime_failure_lock = threading.Lock()
@@ -2020,7 +2035,9 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         if message.run_id != config.run_id:
             return
         if message.state == RunState.RUNNING:
-            mission_running = True
+            mission_running = running_state_binding(
+                message, running_state=RunState.RUNNING
+            )
         elif message.state == RunState.FINALIZING:
             shutdown_admission.begin_finalizing()
 
@@ -2310,7 +2327,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     landed=landed,
                     mode=mode,
                 )
-                start = operator_control.poll_start(run_state_running=mission_running)
+                start = operator_control.poll_start(run_state=mission_running)
                 if start.admitted_now:
                     competition_start_deadline = (
                         time.monotonic() + config.startup_timeout_seconds

@@ -18,6 +18,7 @@ from .mavlink_adapter import MavlinkAdapter
 from .mission import MissionPhase, MissionState
 from .moving_precision import MovingPrecisionLanding
 from .operations import DroneOperations
+from .operator_control import running_state_binding
 from .comp2026_host import MissionEventRecord
 from .calibration_gate import calibration_parameters as _effective_calibration_parameters
 
@@ -303,7 +304,7 @@ def run_configured(config) -> int:
     host = None
     initialized = False
     latest_clock_ns = None
-    mission_running = False
+    mission_running = None
     finalizing = False
     requested_stop = False
     callback_error = None
@@ -333,7 +334,9 @@ def run_configured(config) -> int:
         if message.run_id != config.run_id:
             return
         if message.state == RunState.RUNNING:
-            mission_running = True
+            mission_running = running_state_binding(
+                message, running_state=RunState.RUNNING
+            )
         elif message.state == RunState.FINALIZING:
             finalizing = True
 
@@ -500,7 +503,7 @@ def run_configured(config) -> int:
                 host.fail(callback_error or "configured mission wall deadline expired", attempt_recovery=False)
                 break
             stopping = requested_stop or finalizing or protocol.read_finalize_request() is not None
-            start = operator_control.poll_start(run_state_running=mission_running)
+            start = operator_control.poll_start(run_state=mission_running)
             operator_control.poll_abort(
                 finalizing=stopping,
                 begin_recovery=host.abort_flight,

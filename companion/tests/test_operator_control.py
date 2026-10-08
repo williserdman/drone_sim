@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from artifacts.operator_protocol import OperatorProtocol
 from drone_sim_companion.operator_control import (
     CompanionOperatorControl,
+    RunningStateBinding,
     dronekit_heartbeat_is_fresh,
+    running_state_binding,
 )
 
 
@@ -95,11 +98,43 @@ def _control(protocol: Protocol, wall_ns: list[int]) -> CompanionOperatorControl
     )
 
 
+def _running_state(
+    *,
+    run_id: str = RUN_ID,
+    config_sha256: str = CONFIG_SHA256,
+    admission_sha256: str = ADMISSION_SHA256,
+) -> RunningStateBinding:
+    return RunningStateBinding(run_id, config_sha256, admission_sha256)
+
+
 def test_dronekit_preflight_requires_heartbeat_within_snapshot_freshness() -> None:
     assert dronekit_heartbeat_is_fresh(0.0) is True
     assert dronekit_heartbeat_is_fresh(2.0) is True
     assert dronekit_heartbeat_is_fresh(2.000_001) is False
     assert dronekit_heartbeat_is_fresh(True) is False
+
+
+def test_running_state_binding_captures_the_wire_admission_digest() -> None:
+    binding = running_state_binding(
+        SimpleNamespace(
+            state=3,
+            run_id=RUN_ID,
+            config_sha256=CONFIG_SHA256,
+            admission_sha256=ADMISSION_SHA256,
+        ),
+        running_state=3,
+    )
+    missing = running_state_binding(
+        SimpleNamespace(
+            state=3,
+            run_id=RUN_ID,
+            config_sha256=CONFIG_SHA256,
+        ),
+        running_state=3,
+    )
+
+    assert binding == _running_state()
+    assert missing == _running_state(admission_sha256="")
 
 
 def test_operator_start_requires_fresh_disarmed_snapshot_and_matching_admission() -> None:
@@ -117,12 +152,12 @@ def test_operator_start_requires_fresh_disarmed_snapshot_and_matching_admission(
     )
     protocol.start_request = StartRequest()
 
-    decision = control.poll_start(run_state_running=True)
+    decision = control.poll_start(run_state=_running_state())
 
     assert decision.command_allowed is False
     assert protocol.readiness[-1].ready is True
     protocol.admission = Admission()
-    decision = control.poll_start(run_state_running=True)
+    decision = control.poll_start(run_state=_running_state())
     assert decision.command_allowed is True
     assert decision.admitted_now is True
     assert decision.admission_sha256 == ADMISSION_SHA256
@@ -143,7 +178,7 @@ def test_operator_readiness_rejects_armed_and_stale_vehicle() -> None:
         mode="GUIDED",
     )
 
-    control.poll_start(run_state_running=False)
+    control.poll_start(run_state=None)
     assert protocol.readiness[-1].ready is False
     assert "armed" in protocol.readiness[-1].detail
 
@@ -153,7 +188,7 @@ def test_operator_readiness_rejects_armed_and_stale_vehicle() -> None:
         sha256="e" * 64,
     )
     wall_ns[0] += 2_000_000_001
-    control.poll_start(run_state_running=False)
+    control.poll_start(run_state=None)
     assert protocol.readiness[-1].ready is False
     assert "stale" in protocol.readiness[-1].detail
 
@@ -173,9 +208,42 @@ def test_unattended_mode_preserves_running_gate_without_operator_files() -> None
         monotonic_ns=lambda: wall_ns[0],
     )
 
-    assert control.poll_start(run_state_running=False).command_allowed is False
-    assert control.poll_start(run_state_running=True).command_allowed is True
+    assert control.poll_start(run_state=None).command_allowed is False
+    assert control.poll_start(
+        run_state=_running_state(
+            run_id="00000000-0000-4000-8000-000000000099",
+            admission_sha256="",
+        )
+    ).command_allowed is False
+    assert control.poll_start(
+        run_state=_running_state(admission_sha256=ADMISSION_SHA256)
+    ).command_allowed is False
+    assert control.poll_start(
+        run_state=_running_state(admission_sha256="")
+    ).command_allowed is True
     assert protocol.readiness == []
+
+
+def test_running_state_binding_rejects_foreign_or_unbound_operator_running() -> None:
+    protocol = Protocol()
+    wall_ns = [1_000_000_000]
+    control = _control(protocol, wall_ns)
+    protocol.start_request = StartRequest()
+    protocol.admission = Admission()
+    initial_deadline = control.wall_deadline_ns
+
+    rejected = (
+        _running_state(run_id="00000000-0000-4000-8000-000000000099"),
+        _running_state(config_sha256="f" * 64),
+        _running_state(admission_sha256=""),
+        _running_state(admission_sha256="e" * 64),
+    )
+    for run_state in rejected:
+        assert control.poll_start(run_state=run_state).command_allowed is False
+        assert control.admission_sha256 is None
+        assert control.wall_deadline_ns == initial_deadline
+
+    assert control.poll_start(run_state=_running_state()).command_allowed is True
 
 
 def test_equivalent_abort_retries_start_one_recovery_and_confirm_observed_landing() -> None:
@@ -192,7 +260,7 @@ def test_equivalent_abort_retries_start_one_recovery_and_confirm_observed_landin
         landed=True,
         mode="STABILIZE",
     )
-    control.poll_start(run_state_running=True)
+    control.poll_start(run_state=_running_state())
     control.observe_vehicle(
         native_timestamp_ns=12_000_000_000,
         heartbeat_live=True,
@@ -243,7 +311,7 @@ def test_abort_reports_rejection_missing_telemetry_timeout_and_finalization() ->
         landed=True,
         mode="STABILIZE",
     )
-    control.poll_start(run_state_running=True)
+    control.poll_start(run_state=_running_state())
     control.observe_vehicle(
         native_timestamp_ns=12_000_000_000,
         heartbeat_live=True,
@@ -269,7 +337,7 @@ def test_abort_reports_rejection_missing_telemetry_timeout_and_finalization() ->
         landed=True,
         mode="STABILIZE",
     )
-    control.poll_start(run_state_running=True)
+    control.poll_start(run_state=_running_state())
     control.observe_vehicle(
         native_timestamp_ns=12_000_000_000,
         heartbeat_live=True,
@@ -299,7 +367,7 @@ def test_abort_reports_rejection_missing_telemetry_timeout_and_finalization() ->
         landed=True,
         mode="STABILIZE",
     )
-    control.poll_start(run_state_running=True)
+    control.poll_start(run_state=_running_state())
     control.observe_vehicle(
         native_timestamp_ns=12_000_000_000,
         heartbeat_live=True,
@@ -328,7 +396,7 @@ def test_recovery_reports_qgc_authority_change_without_retrying_land() -> None:
         landed=True,
         mode="STABILIZE",
     )
-    control.poll_start(run_state_running=True)
+    control.poll_start(run_state=_running_state())
     control.observe_vehicle(
         native_timestamp_ns=12_000_000_000,
         heartbeat_live=True,
@@ -386,14 +454,16 @@ def test_companion_control_crosses_durable_operator_protocol(tmp_path: Path) -> 
             landed=True,
             mode="STABILIZE",
         )
-        assert control.poll_start(run_state_running=False).command_allowed is False
+        assert control.poll_start(run_state=None).command_allowed is False
         readiness = protocol.read_start_readiness()
         assert readiness is not None and readiness.ready is True
         admission = protocol.write_start_admission(
             request,
             native_epoch_ns=10_000_000_000,
         )
-        assert control.poll_start(run_state_running=True).admission_sha256 == admission.sha256
+        assert control.poll_start(
+            run_state=_running_state(admission_sha256=admission.sha256)
+        ).admission_sha256 == admission.sha256
         protocol.write_flight_abort_request(
             ABORT_REQUEST_ID,
             admission.sha256,
