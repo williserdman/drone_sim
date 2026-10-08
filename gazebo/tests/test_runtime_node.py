@@ -16,8 +16,8 @@ from artifacts.operator_protocol import (
     MissionStartRequest,
     PreflightStatus,
 )
-from drone_sim_gazebo.runtime.entrypoint import TransportError
-from drone_sim_gazebo.runtime.model import ChildExited
+from drone_sim_gazebo.runtime.entrypoint import ActionExecutor, TransportError
+from drone_sim_gazebo.runtime.model import ChildExited, SetPaused
 from drone_sim_gazebo.runtime.runtime_node import (
     GazeboPreflightReporter,
     OperatorEpochRendezvous,
@@ -32,6 +32,35 @@ from drone_sim_gazebo.runtime.runtime_node import (
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 CONFIG_SHA256 = "a" * 64
+
+
+def _ready_preflight(component, *, observed_wall_time_ns=100):
+    if component == "companion":
+        return PreflightStatus(
+            RUN_ID,
+            CONFIG_SHA256,
+            component,
+            1,
+            observed_wall_time_ns,
+            heartbeat_live=True,
+            prearm_checks_healthy=True,
+            armed=False,
+            ready=True,
+            detail="ready",
+        )
+    assert component == "gazebo"
+    return PreflightStatus(
+        RUN_ID,
+        CONFIG_SHA256,
+        component,
+        1,
+        observed_wall_time_ns,
+        native_timestamp_ns=90_050_000_000,
+        physics_advancing=True,
+        camera_native_timestamp_ns=90_050_000_000,
+        ready=True,
+        detail="ready",
+    )
 
 
 def test_gazebo_preflight_requires_advancing_native_physics_and_camera():
@@ -74,6 +103,29 @@ def test_gazebo_preflight_requires_advancing_native_physics_and_camera():
     assert [status.sequence for status in writes] == [0, 1, 2]
 
 
+def test_preflight_stays_ready_between_slower_camera_frames():
+    writes = []
+
+    class Protocol:
+        def read_preflight(self, _component):
+            return None
+
+        def write_preflight(self, status):
+            writes.append(status)
+
+    reporter = GazeboPreflightReporter(
+        protocol=Protocol(), run_id=RUN_ID, config_sha256=CONFIG_SHA256,
+        minimum_native_epoch_ns=90_000_000_000,
+    )
+    reporter.observe(90_000_000_000, 90_000_000_000)
+    assert reporter.observe(90_050_000_000, 90_050_000_000).ready
+    # Physics updates are faster than the 20 Hz native camera. A clock-only
+    # observation must not replace the fresh, paired preflight evidence.
+    assert reporter.observe(90_055_000_000, 90_050_000_000) is None
+    assert writes[-1].ready
+    assert reporter.observe(90_100_000_000, 90_100_000_000).ready
+
+
 def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
     request = MissionStartRequest(
         RUN_ID,
@@ -114,19 +166,7 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
             return readiness
 
         def read_preflight(self, component):
-            assert component == "companion"
-            return PreflightStatus(
-                RUN_ID,
-                CONFIG_SHA256,
-                "companion",
-                1,
-                100,
-                heartbeat_live=True,
-                prearm_checks_healthy=True,
-                armed=False,
-                ready=True,
-                detail="ready",
-            )
+            return _ready_preflight(component)
 
         def read_start_admission(self):
             return self.admission
@@ -153,8 +193,9 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
 
     operator = OperatorProtocol()
     epoch_reached = [False]
+    transport = Transport()
     rendezvous = OperatorEpochRendezvous(
-        transport=Transport(),
+        transport=transport,
         protocol=RuntimeProtocol(),
         operator_protocol=operator,
         configure_output=lambda target: calls.append(("configure", target)),
@@ -167,7 +208,16 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
         wall_time_ns=lambda: 200,
     )
 
-    rendezvous.start_preparation()
+    executor = ActionExecutor(
+        run_id=RUN_ID,
+        protocol=object(),
+        transport=transport,
+        children=object(),
+        server=object(),
+        activate_output=rendezvous.begin,
+        start_warmup=rendezvous.start_warmup,
+    )
+    executor.apply((SetPaused(False),))
     assert rendezvous.poll_admission() is None
     assert not any(call[0] == "admit" for call in calls)
     epoch_reached[0] = True
@@ -218,19 +268,7 @@ def test_operator_epoch_preserves_configured_minimum_warmup_floor():
             return readiness
 
         def read_preflight(self, component):
-            assert component == "companion"
-            return PreflightStatus(
-                RUN_ID,
-                CONFIG_SHA256,
-                "companion",
-                1,
-                100,
-                heartbeat_live=True,
-                prearm_checks_healthy=True,
-                armed=False,
-                ready=True,
-                detail="ready",
-            )
+            return _ready_preflight(component)
 
         def write_start_admission(self, persisted_request, *, native_epoch_ns):
             calls.append(("admit", native_epoch_ns))
@@ -317,7 +355,13 @@ def test_operator_epoch_rejects_stale_request_scoped_readiness():
         rendezvous.poll_admission()
 
 
-def test_operator_epoch_rechecks_readiness_after_run_to_before_admission():
+@pytest.mark.parametrize(
+    ("stale_source", "message"),
+    (("request", "readiness is stale"), ("gazebo", "gazebo preflight is stale")),
+)
+def test_operator_epoch_rechecks_live_evidence_before_admission(
+    stale_source, message
+):
     request = MissionStartRequest(
         RUN_ID,
         CONFIG_SHA256,
@@ -328,7 +372,7 @@ def test_operator_epoch_rechecks_readiness_after_run_to_before_admission():
         CONFIG_SHA256,
         request.request_id,
         request.sha256,
-        100,
+        10_000_000_000,
         True,
         True,
         False,
@@ -338,6 +382,8 @@ def test_operator_epoch_rechecks_readiness_after_run_to_before_admission():
     writes = []
 
     class OperatorProtocol:
+        gazebo_reads = 0
+
         def read_start_admission(self):
             return None
 
@@ -347,18 +393,18 @@ def test_operator_epoch_rechecks_readiness_after_run_to_before_admission():
         def read_start_readiness(self):
             return readiness
 
-        def read_preflight(self, _component):
-            return PreflightStatus(
-                RUN_ID,
-                CONFIG_SHA256,
-                "companion",
-                1,
-                100,
-                heartbeat_live=True,
-                prearm_checks_healthy=True,
-                armed=False,
-                ready=True,
-                detail="ready",
+        def read_preflight(self, component):
+            if component == "gazebo":
+                self.gazebo_reads += 1
+            observed = (
+                1_000_000_000
+                if stale_source == "gazebo"
+                and component == "gazebo"
+                and self.gazebo_reads == 2
+                else 10_000_000_000
+            )
+            return _ready_preflight(
+                component, observed_wall_time_ns=observed
             )
 
         def write_start_admission(self, *_args, **_kwargs):
@@ -377,7 +423,12 @@ def test_operator_epoch_rechecks_readiness_after_run_to_before_admission():
         def run_to_sim_time(self, _target_ns):
             return None
 
-    wall_times = iter((200, 5_000_000_101))
+    wall_times = iter(
+        (
+            10_000_000_100,
+            15_000_000_001 if stale_source == "request" else 11_000_000_000,
+        )
+    )
     epoch_reached = [False]
     rendezvous = OperatorEpochRendezvous(
         transport=Transport(),
@@ -395,7 +446,7 @@ def test_operator_epoch_rechecks_readiness_after_run_to_before_admission():
 
     assert rendezvous.poll_admission() is None
     epoch_reached[0] = True
-    with pytest.raises(RuntimeError, match="readiness is stale"):
+    with pytest.raises(RuntimeError, match=message):
         rendezvous.poll_admission()
     assert writes == []
 

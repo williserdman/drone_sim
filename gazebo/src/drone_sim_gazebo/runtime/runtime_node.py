@@ -102,6 +102,17 @@ class GazeboPreflightReporter:
         current = (native_timestamp_ns, camera_native_timestamp_ns)
         if current == self._previous:
             return None
+        if (
+            self._previous is not None
+            and native_timestamp_ns >= self._previous[0]
+            and camera_native_timestamp_ns >= self._previous[1]
+            and (native_timestamp_ns == self._previous[0]
+                 or camera_native_timestamp_ns == self._previous[1])
+        ):
+            # Publish paired progress at camera cadence. Clock-only updates
+            # must not replace fresh live evidence with a false loss of readiness.
+            # If either source stalls, the last paired observation ages out.
+            return None
         advancing = (
             self._previous is not None
             and native_timestamp_ns > self._previous[0]
@@ -450,12 +461,15 @@ class OperatorEpochRendezvous:
         age = now - readiness.observed_wall_time_ns
         if not -2_000_000_000 <= age <= 5_000_000_000:
             raise RuntimeError("mission start readiness is stale")
-        companion = self._operator_protocol.read_preflight("companion")
-        if companion is None or not companion.ready:
-            raise RuntimeError("companion preflight is not ready at admission")
-        companion_age = now - companion.observed_wall_time_ns
-        if not -2_000_000_000 <= companion_age <= 5_000_000_000:
-            raise RuntimeError("companion preflight is stale at admission")
+        for component in ("companion", "gazebo"):
+            preflight = self._operator_protocol.read_preflight(component)
+            if preflight is None or not preflight.ready:
+                raise RuntimeError(
+                    f"{component} preflight is not ready at admission"
+                )
+            preflight_age = now - preflight.observed_wall_time_ns
+            if not -2_000_000_000 <= preflight_age <= 5_000_000_000:
+                raise RuntimeError(f"{component} preflight is stale at admission")
         if readiness.request_id != request.request_id:
             raise RuntimeError("mission start readiness changed request identity")
         return readiness
@@ -483,7 +497,8 @@ class OperatorEpochRendezvous:
         self._pending_target_ns = None
         return self._admission
 
-    def start_preparation(self) -> None:
+    def start_warmup(self) -> None:
+        """Start live private preparation through the shared rendezvous callback."""
         if self._preparation_started:
             return
         self._start_private_preview()
