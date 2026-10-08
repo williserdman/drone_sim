@@ -13,6 +13,8 @@ from typing import Any
 from uuid import UUID
 
 from artifacts import DockerLogCommandResult, ImageDigest, SourceRevision
+from artifacts.runtime_protocol import ProtocolError, RuntimeProtocol
+from artifacts.runtime_status import MediaSpoolPublishedStatus
 from orchestration.config import RuntimeTopology
 
 
@@ -130,6 +132,7 @@ class ComposeRuntime:
             raise ValueError("SIM_COMPOSE_OVERLAY must be empty, 'gpu', or 'local'")
         if auxiliaries == _LOCAL_SERVICES and overlay != "local":
             raise ValueError("gazebo-viewer requires the local Compose overlay")
+        self._overlay = overlay
         self.environment = {
             **environment,
             "COMPOSE_DISABLE_ENV_FILE": "1",
@@ -259,7 +262,21 @@ class ComposeRuntime:
         return self._compose(["stop", *names], timeout)
 
     def down(self, timeout: float) -> ComposeCommandResult:
-        return self._compose(["down", "--remove-orphans"], timeout)
+        arguments = ["down", "--remove-orphans"]
+        if self._local_media_can_be_removed():
+            arguments.append("--volumes")
+        return self._compose(arguments, timeout)
+
+    def _local_media_can_be_removed(self) -> bool:
+        if self._overlay != "local":
+            return False
+        try:
+            with RuntimeProtocol(self.run_directory, self.run_id) as protocol:
+                return (
+                    protocol.read_status(MediaSpoolPublishedStatus) is not None
+                )
+        except (OSError, ProtocolError):
+            return False
 
     def ps(self, timeout: float) -> ComposeCommandResult:
         return self._compose(["ps", "--all", "--format", "json"], timeout)

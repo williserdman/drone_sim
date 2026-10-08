@@ -12,6 +12,7 @@ from artifacts.runtime_node import AggregateArtifactsRuntime, FaultAwareRecorder
 from artifacts.runtime_status import (
     ArtifactsFinalStatus,
     ArtifactsReadyStatus,
+    MediaSpoolPublishedStatus,
     RuntimeFailureStatus,
     RuntimeFrozenStatus,
     TerminalNotifiedStatus,
@@ -573,6 +574,7 @@ def test_finalize_publishes_media_spool_after_recorders_close_before_validation(
         "validated:onboard",
         "validated:observer",
     ]
+    assert MediaSpoolPublishedStatus(RUN_ID) in protocol.statuses
 
 
 def test_finalize_never_reports_valid_video_after_spool_copy_failure(tmp_path):
@@ -611,6 +613,10 @@ def test_finalize_never_reports_valid_video_after_spool_copy_failure(tmp_path):
     ]
     assert len(failures) == 1
     assert failures[0].diagnostic_paths == ("video/onboard.mp4",)
+    assert not any(
+        isinstance(status, MediaSpoolPublishedStatus)
+        for status in protocol.statuses
+    )
 
 
 def test_physical_runtime_validates_configured_camera_count(tmp_path):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artifacts.media_spool import MediaSpool
+from artifacts.media_spool import MediaSpool, MediaSpoolFailure, MediaSpoolPublication
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -42,6 +42,38 @@ def test_publish_copies_closed_video_and_ffmpeg_log_atomically(tmp_path: Path) -
     ).read_bytes() == b"ffmpeg diagnostics"
     assert (authoritative / "video/onboard.mp4").stat().st_mode & 0o777 == 0o444
     assert not tuple(authoritative.rglob(".media-spool-*.tmp"))
+    assert publication.closed_media_verified is False
+
+
+def test_publication_verifies_both_closed_video_streams() -> None:
+    publication = MediaSpoolPublication(
+        (
+            "logs/docker/ffmpeg-onboard.log.partial",
+            "video/observer.mp4.partial",
+            "video/onboard.mp4",
+        ),
+        (),
+    )
+
+    assert publication.closed_media_verified is True
+
+
+def test_publication_does_not_verify_failed_or_ambiguous_media() -> None:
+    failed = MediaSpoolPublication(
+        ("video/onboard.mp4", "video/observer.mp4"),
+        (MediaSpoolFailure("video/onboard.mp4", "copy failed"),),
+    )
+    ambiguous = MediaSpoolPublication(
+        (
+            "video/onboard.mp4",
+            "video/onboard.mp4.partial",
+            "video/observer.mp4",
+        ),
+        (),
+    )
+
+    assert failed.closed_media_verified is False
+    assert ambiguous.closed_media_verified is False
 
 
 def test_publish_preserves_partial_video_when_final_output_is_absent(

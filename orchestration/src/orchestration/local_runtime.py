@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
 from typing import Any
 
 from .workstation import workstation_lock
+
+
+_RUN_CONTAINER = re.compile(r"drone-sim-[0-9a-f]{32}-.+")
+_RUN_MEDIA_VOLUME = re.compile(r"drone-sim-[0-9a-f]{32}_artifacts-media")
 
 
 class LocalRuntime:
@@ -22,12 +27,38 @@ class LocalRuntime:
                               timeout=timeout, check=False)
 
     def remaining_resources(self) -> list[dict[str, str]]:
-        result = self._run(["docker", "ps", "--all", "--format", "{{json .}}",
-                            "--filter", "label=com.docker.compose.project"])
-        if result.returncode:
-            raise RuntimeError(result.stderr.strip() or "could not inspect local containers")
-        return [row for line in result.stdout.splitlines() if line
-                if "drone-sim-" in (row := json.loads(line)).get("Names", "")]
+        containers = self._run([
+            "docker", "ps", "--all", "--format", "{{json .}}",
+            "--filter", "label=com.docker.compose.project",
+        ])
+        if containers.returncode:
+            raise RuntimeError(
+                containers.stderr.strip() or "could not inspect local containers"
+            )
+        volumes = self._run([
+            "docker", "volume", "ls", "--format", "{{json .}}",
+            "--filter", "label=com.docker.compose.project",
+            "--filter", "label=com.docker.compose.volume=artifacts-media",
+        ])
+        if volumes.returncode:
+            raise RuntimeError(
+                volumes.stderr.strip() or "could not inspect local media volumes"
+            )
+        resources = [
+            row
+            for line in containers.stdout.splitlines()
+            if line
+            if _RUN_CONTAINER.fullmatch((row := json.loads(line)).get("Names", ""))
+        ]
+        resources.extend(
+            {"Names": name, "ResourceType": "volume"}
+            for line in volumes.stdout.splitlines()
+            if line
+            if _RUN_MEDIA_VOLUME.fullmatch(
+                name := json.loads(line).get("Name", "")
+            )
+        )
+        return resources
 
     def checks(self, *, active: bool = False) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []

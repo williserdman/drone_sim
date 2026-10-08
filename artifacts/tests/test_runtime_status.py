@@ -18,6 +18,7 @@ from artifacts.runtime_status import (
     MissionExecutionReadyStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
+    MediaSpoolPublishedStatus,
     RuntimeFailureStatus,
     RuntimeFrozenStatus,
     RuntimeRunningStatus,
@@ -222,6 +223,11 @@ CASES = (
         },
     ),
     (
+        MediaSpoolPublishedStatus(RUN_ID),
+        "media-spool-published",
+        {"run_id": RUN_ID, "closed_media_verified": True},
+    ),
+    (
         TerminalNotifiedStatus(RUN_ID),
         "terminal-notified",
         {"run_id": RUN_ID, "notified": True},
@@ -249,7 +255,7 @@ def test_registered_status_inventory_is_consistent():
     names = {name for _status, name, _document in CASES}
     policies = [status_write_policy(type(status)) for status, _name, _document in CASES]
 
-    assert len(CASES) == len(status_types) == len(names) == 15
+    assert len(CASES) == len(status_types) == len(names) == 16
     assert policies.count(WritePolicy.FIRST_WINS) == 1
 
 

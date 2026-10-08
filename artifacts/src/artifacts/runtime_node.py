@@ -22,6 +22,7 @@ from .runtime_status import (
     ArtifactFinalRecord,
     ArtifactsFinalStatus,
     ArtifactsReadyStatus,
+    MediaSpoolPublishedStatus,
     RuntimeFailureStatus,
     RuntimeFrozenStatus,
     RuntimeStatus,
@@ -586,6 +587,8 @@ class AggregateArtifactsRuntime:
                         f"{failure.relative_path}: {failure.detail}",
                         [failure.relative_path],
                     )
+                if publication.closed_media_verified:
+                    self.protocol.write_status(MediaSpoolPublishedStatus(self.run_id))
         if self._premature_bag_exit:
             self.finalization_blocked = True
             return None

@@ -43,6 +43,31 @@ class MediaSpoolPublication:
     published: tuple[str, ...]
     failures: tuple[MediaSpoolFailure, ...]
 
+    @property
+    def closed_media_verified(self) -> bool:
+        """Whether every closed video output reached authoritative storage."""
+        if self.failures or len(self.published) != len(set(self.published)):
+            return False
+        paths = set(self.published)
+        allowed = {
+            *(f"video/{stream}.mp4" for stream in _STREAMS),
+            *(f"video/{stream}.mp4.partial" for stream in _STREAMS),
+            *(f"logs/docker/ffmpeg-{stream}.log.partial" for stream in _STREAMS),
+        }
+        if not paths <= allowed:
+            return False
+        return all(
+            len(
+                paths
+                & {
+                    f"video/{stream}.mp4",
+                    f"video/{stream}.mp4.partial",
+                }
+            )
+            == 1
+            for stream in _STREAMS
+        )
+
 
 def _canonical_run_id(value: str) -> str:
     try:

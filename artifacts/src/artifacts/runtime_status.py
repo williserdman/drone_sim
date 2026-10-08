@@ -24,6 +24,7 @@ __all__ = [
     "GazeboReadyStatus",
     "MissionCommandDeliveredStatus",
     "MissionExecutionReadyStatus",
+    "MediaSpoolPublishedStatus",
     "OperatorWaitStartedStatus",
     "MissionFinishedStatus",
     "MissionReadyStatus",
@@ -308,6 +309,13 @@ class RuntimeFrozenStatus(RuntimeStatus):
 
 
 @dataclass(frozen=True)
+class MediaSpoolPublishedStatus(RuntimeStatus):
+    """Proof that both closed media streams were verified in the run bundle."""
+
+    pass
+
+
+@dataclass(frozen=True)
 class ArtifactFinalRecord:
     relative_path: str
     status: ValidationStatus
@@ -528,6 +536,10 @@ _STATUS_REGISTRY: Mapping[type[RuntimeStatus], _StatusDefinition] = MappingProxy
         ),
         RuntimeFrozenStatus: _StatusDefinition(
             "runtime-frozen", fixed_fields=(("frozen", True),)
+        ),
+        MediaSpoolPublishedStatus: _StatusDefinition(
+            "media-spool-published",
+            fixed_fields=(("closed_media_verified", True),),
         ),
         ArtifactsFinalStatus: _StatusDefinition(
             "artifacts-final",
