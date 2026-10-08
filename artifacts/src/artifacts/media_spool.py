@@ -42,13 +42,21 @@ class MediaSpoolFailure:
 class MediaSpoolPublication:
     published: tuple[str, ...]
     failures: tuple[MediaSpoolFailure, ...]
+    streams_without_recording: tuple[str, ...] = ()
 
     @property
     def closed_media_verified(self) -> bool:
         """Whether every closed video output reached authoritative storage."""
-        if self.failures or len(self.published) != len(set(self.published)):
+        if (
+            self.failures
+            or len(self.published) != len(set(self.published))
+            or len(self.streams_without_recording)
+            != len(set(self.streams_without_recording))
+            or not set(self.streams_without_recording) <= set(_STREAMS)
+        ):
             return False
         paths = set(self.published)
+        absent = set(self.streams_without_recording)
         allowed = {
             *(f"video/{stream}.mp4" for stream in _STREAMS),
             *(f"video/{stream}.mp4.partial" for stream in _STREAMS),
@@ -56,17 +64,17 @@ class MediaSpoolPublication:
         }
         if not paths <= allowed:
             return False
-        return all(
-            len(
+        for stream in _STREAMS:
+            count = len(
                 paths
                 & {
                     f"video/{stream}.mp4",
                     f"video/{stream}.mp4.partial",
                 }
             )
-            == 1
-            for stream in _STREAMS
-        )
+            if count != 1 and not (count == 0 and stream in absent):
+                return False
+        return True
 
 
 def _canonical_run_id(value: str) -> str:
@@ -193,6 +201,7 @@ class MediaSpool:
         *,
         deadline: float,
         monotonic: Callable[[], float] = time.monotonic,
+        streams_without_recording: tuple[str, ...] = (),
     ) -> MediaSpoolPublication:
         if (
             isinstance(deadline, bool)
@@ -200,6 +209,12 @@ class MediaSpool:
             or not math.isfinite(deadline)
         ):
             raise ValueError("media spool deadline must be finite")
+        if (
+            type(streams_without_recording) is not tuple
+            or len(streams_without_recording) != len(set(streams_without_recording))
+            or not set(streams_without_recording) <= set(_STREAMS)
+        ):
+            raise ValueError("streams_without_recording must contain known unique streams")
         candidates: list[str] = []
         failures: list[MediaSpoolFailure] = []
         for stream in _STREAMS:
@@ -235,7 +250,11 @@ class MediaSpool:
                 )
             else:
                 published.append(relative)
-        return MediaSpoolPublication(tuple(published), tuple(failures))
+        return MediaSpoolPublication(
+            tuple(published),
+            tuple(failures),
+            streams_without_recording,
+        )
 
     def _source_entry_exists(self, relative: str) -> bool:
         try:

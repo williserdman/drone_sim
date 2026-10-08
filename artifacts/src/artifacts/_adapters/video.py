@@ -649,6 +649,11 @@ class VideoStreamRecorder:
     def is_ready(self) -> bool:
         return self._process is not None and self._process.poll() is None and not self._failed
 
+    @property
+    def recording_started(self) -> bool:
+        """Whether this recorder established a process that could hold media."""
+        return self._process is not None
+
     def command(self, output_descriptor: int | None = None) -> tuple[str, ...]:
         descriptor = self._output_fd if output_descriptor is None else output_descriptor
         if descriptor is None:

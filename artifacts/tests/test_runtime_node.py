@@ -536,9 +536,10 @@ def test_finalize_publishes_media_spool_after_recorders_close_before_validation(
             return super().finalize(deadline, outcome=outcome)
 
     class Spool:
-        def publish(self, *, deadline, monotonic):
+        def publish(self, *, deadline, monotonic, streams_without_recording):
             assert deadline == 99.0
             assert monotonic() == 0.0
+            assert streams_without_recording == ()
             assert trace == ["closed:onboard", "closed:observer"]
             trace.append("published")
             return MediaSpoolPublication(
@@ -574,6 +575,40 @@ def test_finalize_publishes_media_spool_after_recorders_close_before_validation(
         "validated:onboard",
         "validated:observer",
     ]
+    assert MediaSpoolPublishedStatus(RUN_ID) in protocol.statuses
+
+
+def test_finalize_allows_cleanup_when_one_recorder_never_started(tmp_path):
+    class StartedStream(FakeStream):
+        recording_started = True
+
+    class NeverStartedStream(FakeStream):
+        recording_started = False
+
+        def finalize(self, _deadline, *, outcome):
+            assert outcome == "FAILED"
+            raise RuntimeError("video recorder has not been started")
+
+    class Spool:
+        def publish(self, *, deadline, monotonic, streams_without_recording):
+            assert deadline == 99.0
+            assert monotonic() == 0.0
+            assert streams_without_recording == ("observer",)
+            return MediaSpoolPublication(
+                ("video/onboard.mp4.partial",),
+                (),
+                streams_without_recording,
+            )
+
+    video = FakeVideoNode(StartedStream("onboard"), NeverStartedStream("observer"))
+    runtime, protocol, _bag, _video, _published = _runtime(
+        tmp_path,
+        video=video,
+        media_spool=Spool(),
+    )
+    protocol.frozen = RuntimeFrozenStatus(RUN_ID)
+
+    assert runtime.finalize("FAILED", deadline=99.0) is not None
     assert MediaSpoolPublishedStatus(RUN_ID) in protocol.statuses
 
 

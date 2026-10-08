@@ -317,6 +317,7 @@ def test_start_keeps_encoded_inode_anonymous_until_finalization(tmp_path):
     factory = FakeProcessFactory()
     recorder = _recorder(tmp_path, process_factory=factory)
 
+    assert recorder.recording_started is True
     retained = os.fstat(recorder._output_fd)
     assert retained.st_nlink == 0
     assert not recorder.partial_path.exists()
@@ -360,6 +361,7 @@ def test_unsupported_otmpfile_fails_without_named_fallback(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="O_TMPFILE"):
         recorder.start(deadline=time.monotonic() + 1)
 
+    assert recorder.recording_started is False
     assert not recorder.partial_path.exists()
     assert not recorder.final_path.exists()
 

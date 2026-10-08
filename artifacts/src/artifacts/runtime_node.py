@@ -548,6 +548,16 @@ class AggregateArtifactsRuntime:
             freeze = getattr(recorder, "freeze", None)
             if freeze is not None:
                 freeze()
+        streams_without_recording = tuple(
+            stream
+            for stream in ("onboard", "observer")
+            if getattr(
+                self.video_node.recorders[stream],
+                "recording_started",
+                True,
+            )
+            is False
+        )
         for stream in ("onboard", "observer"):
             try:
                 self.video_node.recorders[stream].finalize(deadline, outcome=outcome)
@@ -561,6 +571,7 @@ class AggregateArtifactsRuntime:
                 publication = self.media_spool.publish(
                     deadline=deadline,
                     monotonic=self.monotonic,
+                    streams_without_recording=streams_without_recording,
                 )
             except Exception as error:
                 detail = f"{type(error).__name__}: {error}"

@@ -58,6 +58,27 @@ def test_publication_verifies_both_closed_video_streams() -> None:
     assert publication.closed_media_verified is True
 
 
+def test_publication_verifies_absent_media_for_a_recorder_that_never_started() -> None:
+    one_started = MediaSpoolPublication(
+        ("video/onboard.mp4.partial",),
+        (),
+        ("observer",),
+    )
+    neither_started = MediaSpoolPublication((), (), ("onboard", "observer"))
+
+    assert one_started.closed_media_verified is True
+    assert neither_started.closed_media_verified is True
+
+
+def test_publication_requires_media_for_every_started_recorder() -> None:
+    publication = MediaSpoolPublication(
+        ("video/onboard.mp4.partial",),
+        (),
+    )
+
+    assert publication.closed_media_verified is False
+
+
 def test_publication_does_not_verify_failed_or_ambiguous_media() -> None:
     failed = MediaSpoolPublication(
         ("video/onboard.mp4", "video/observer.mp4"),
