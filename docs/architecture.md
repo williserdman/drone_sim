@@ -50,6 +50,12 @@ to exercise lifecycle and recording infrastructure.
 Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
+Flight physics and raw IMU publication share a 1 ms native grid. Except for the
+single paused `0.000001`-second peer bootstrap, Gazebo's ArduPilot JSON producer
+must use the IMU sample whose integer timestamp equals the current physics step.
+It may wait up to one wall second for the parallel sensor worker. Missing,
+future, or regressing samples stop the native server and fail the runtime; they
+must not be replaced by the latest cached sample.
 
 For `competition_v1`, Gazebo's private JSON exchange also carries seven native
 RC PWM inputs. ArduPilot owns their receiver health and mode-switch effect: RC7

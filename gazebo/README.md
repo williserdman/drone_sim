@@ -102,6 +102,13 @@ The runtime publishes it through the
   is a fault rather than an airborne sample.
 - Flight readiness requires a paused ArduPilot/Gazebo round trip with servo,
   motor-update, and JSON-send progress and no frame gaps or send errors.
+- Flight worlds run physics and the IMU at 1 ms. After the one-time paused
+  `0.000001`-second bootstrap state, each JSON state waits up to one wall second
+  for the IMU sample with the exact same integer native timestamp. A missing,
+  future, or regressing sample increments the JSON error count and stops Gazebo;
+  the plugin never sends a stale sample or advances its last-controller time.
+  Runtime supervision treats any resulting server exit, including exit zero,
+  as a failed source.
 - The passive `phase3_foundation` world has no ArduPilot exchange, so the typed
   readiness contract no longer supports it. The runtime rejects that world
   before starting the Gazebo server. Restoring operator support requires a

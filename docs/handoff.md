@@ -87,9 +87,23 @@ assumed a fixed SITL UDP port. Those empty files are invalid diagnostic evidence
 they do not establish a missing acceleration pulse. The corrected observer
 discovers the actual servo peer and filters only its UDP traffic in the kernel.
 A live post-landing probe captured 1,930 FDM packets and 1,900 raw IMU messages
-at 1 ms native intervals, with zero socket drops or timestamp gaps. Another
-stationary capture will accompany the startup-repair flight checks. The flight
-controller, landing deadline and scoring remain unchanged.
+at 1 ms native intervals, with zero socket drops or timestamp gaps. Stationary
+run `96e73251-c39d-4ab4-8384-b4a98275f5e5` then completed with continuous
+physical deck contact from public 27.40 seconds through the remaining 62.6
+seconds, `LANDED`, 100/100 and independent acceptance. Its manifest SHA-256 is
+`45ca6997155f5577e5154e1736d5e128b61bf05694442c5943bb1eb8df316845`.
+
+That run's lossless 1 ms capture proves a current JSON boundary defect. Raw IMU
+contained opposing collision samples at native 117.367 and 117.368 seconds, but
+JSON reused the ordinary 117.366 sample at 117.367 and carried only the second
+collision sample at 117.368. Raw vertical residual impulse was -0.501017 m/s;
+JSON retained -0.252066 m/s (50.3%), while raw lateral impulses nearly cancelled
+and JSON retained -0.222 m/s. This proves partial impulse loss in the current
+interface, not that it caused historical failure `a53915aa`. The plugin repair
+now waits for the exact current-step IMU timestamp and fails closed after one
+wall second; focused host unit and compile checks pass. A rebuilt Gazebo image,
+fresh sensor capture, EKF response and native mission suite remain unverified.
+The flight controller, landing deadline, physics and scoring remain unchanged.
 
 The five failed cases reported 0 points and no independently accepted physical
 outcome. Their bundles remain unchanged. This is evidence of honest per-case

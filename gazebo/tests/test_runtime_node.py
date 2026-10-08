@@ -1,8 +1,10 @@
-import pytest
-import yaml
+from collections import deque
 from pathlib import Path
 from threading import Event, Thread
 import time
+
+import pytest
+import yaml
 
 from artifacts.runtime_status import (
     FlightExchange,
@@ -13,6 +15,7 @@ from drone_sim_gazebo.runtime.entrypoint import TransportError
 from drone_sim_gazebo.runtime.model import ChildExited
 from drone_sim_gazebo.runtime.runtime_node import (
     PublicEpochRendezvous,
+    _poll_process_exits,
     _release_status_type_for_mission,
     _probe_flight_exchange,
     _record_adapter_fault,
@@ -21,6 +24,27 @@ from drone_sim_gazebo.runtime.runtime_node import (
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
+
+
+def test_zero_exit_from_gazebo_server_is_reported_once_as_unexpected():
+    class ExitedServer:
+        def poll(self):
+            return 0
+
+    class HealthyChildren:
+        def poll_failure(self):
+            return None
+
+    inbox = deque()
+    seen = _poll_process_exits(
+        RUN_ID, ExitedServer(), HealthyChildren(), inbox, server_exit_seen=False
+    )
+    seen = _poll_process_exits(
+        RUN_ID, ExitedServer(), HealthyChildren(), inbox, server_exit_seen=seen
+    )
+
+    assert seen is True
+    assert tuple(inbox) == (ChildExited(RUN_ID, "server", 0),)
 
 
 @pytest.mark.parametrize(

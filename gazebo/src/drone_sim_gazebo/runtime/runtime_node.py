@@ -158,6 +158,26 @@ def _start_server_ready(
         raise
 
 
+def _poll_process_exits(
+    run_id: str,
+    server,
+    children,
+    inbox: deque,
+    *,
+    server_exit_seen: bool,
+) -> bool:
+    """Queue each unexpected process exit once before finalization starts."""
+    if not server_exit_seen:
+        returncode = server.poll()
+        if returncode is not None:
+            inbox.append(ChildExited(run_id, "server", returncode))
+            server_exit_seen = True
+    child_failure = children.poll_failure()
+    if child_failure is not None:
+        inbox.append(ChildExited(run_id, child_failure[0], child_failure[1]))
+    return server_exit_seen
+
+
 class PublicEpochRendezvous:
     """Hold physics at public zero until the first command is delivered."""
 
@@ -374,6 +394,8 @@ def main() -> int:
     gazebo_ready_seen = False
     artifacts_ready_seen = False
     finalize_seen = False
+    finalization_started = False
+    server_exit_seen = False
     quiescent = False
     try:
         _event(run_id, "runtime_started", fields={"partition": spec.environment["GZ_PARTITION"]})
@@ -395,9 +417,14 @@ def main() -> int:
                 if adapter.recorders_ready():
                     artifacts_ready_seen = True
                     inbox.append(ArtifactsReady(run_id))
-            child_failure = children.poll_failure()
-            if child_failure is not None:
-                inbox.append(ChildExited(run_id, child_failure[0], child_failure[1]))
+            if not finalization_started:
+                server_exit_seen = _poll_process_exits(
+                    run_id,
+                    server,
+                    children,
+                    inbox,
+                    server_exit_seen=server_exit_seen,
+                )
             if not finalize_seen:
                 finalization = protocol.read_finalize_request()
                 if finalization is not None:
@@ -414,6 +441,7 @@ def main() -> int:
             while inbox:
                 actions = model.accept(inbox.popleft())
                 if any(type(action).__name__ == "BeginFinalization" for action in actions):
+                    finalization_started = True
                     adapter.freeze_output()
                 followups = action_executor.apply(actions)
                 for followup in followups:
