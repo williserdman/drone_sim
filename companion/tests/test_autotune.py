@@ -871,7 +871,7 @@ def test_all_axis_seed_readback_blocks_arming_until_fresh_and_matching(
     assert expired.actions == ()
 
 
-def test_all_axis_return_waypoint_uses_global_relative_altitude_frame() -> None:
+def test_all_axis_return_waypoint_pins_vehicle_target_and_relative_altitude_frame() -> None:
     calibration = importlib.import_module("drone_sim_companion.calibration_autotune")
     commands = []
     vehicle = SimpleNamespace(_master=SimpleNamespace(
@@ -882,7 +882,7 @@ def test_all_axis_return_waypoint_uses_global_relative_altitude_frame() -> None:
         vehicle, (calibration.Action.waypoint(37.4, -122.08, 5.0),),
         mode_factory=lambda name: name, export=lambda: None,
     )
-    assert commands == [(0, 7, 1, 6, 3576, 374000000, -1220800000, 5.0,
+    assert commands == [(0, 1, 1, 6, 3576, 374000000, -1220800000, 5.0,
                          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)]
 
 
