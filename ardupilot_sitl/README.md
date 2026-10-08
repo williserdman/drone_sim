@@ -64,9 +64,17 @@ that SITL exited, and it always attempts to close the protocol.
 
 - The image freezes ArduPilot `Copter-4.7.0` at commit
   `1511f27194f1dcc3728270883047bdf022b3fd53` and builds only `waf copter`.
+  Before compilation, the image applies upstream commit
+  `8fa852b498bf6a2862c78ba688eb72b907d69e65` as a checked-in downstream
+  patch. It corrects the pinned JSON backend's `rng_1`–`rng_6` bitmask mapping
+  without changing Git HEAD or the eight-byte firmware revision
+  `1511f271`. The build executes
+  [check_sim_json_rangefinders.py](tests/check_sim_json_rangefinders.py)
+  against the patched source before `waf`.
   Supply-chain details live in
   [ardupilot.json](provenance/ardupilot.json) and
-  [LICENSE.ArduPilot.txt](provenance/LICENSE.ArduPilot.txt).
+  [LICENSE.ArduPilot.txt](provenance/LICENSE.ArduPilot.txt); the runtime image
+  also retains the exact patch under `/opt/ardupilot/patches`.
 - The pinned JSON backend accepts numeric IPv4 addresses, so startup resolves
   the Compose service name once. Name resolution does not advance simulation.
 - Keep `no_time_sync=true`, `no_lockstep=false`, and `--speedup 1`; wall
@@ -127,3 +135,10 @@ The suite exercises configuration, lifecycle, process supervision, output
 recognition, and the bounded JSON test peer. It does not build ArduPilot or
 prove a live Gazebo flight; follow the [runbook](../docs/runbook.md) for those
 checks.
+
+The image build additionally compiles and runs the exact-source JSON
+rangefinder check. To run it against an existing checkout of the pinned source:
+
+```bash
+python3 ardupilot_sitl/tests/check_sim_json_rangefinders.py --source-root /path/to/ardupilot
+```

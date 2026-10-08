@@ -73,6 +73,11 @@ proof. The companion's operational clearance path remains the public ROS LiDAR
 sample with its own timestamp and freshness checks. This common plugin wiring
 is part of the calibration airframe fingerprint; the scenario-only ArduPilot
 backend settings are part of the imported effective baseline and live readback.
+The pinned upstream JSON backend mapped these range keys with the wrong bit
+positions. The ArduPilot image applies upstream fix `8fa852b` as an audited
+downstream patch while retaining source and firmware revision `1511f271`; its
+build executes the extracted production update block against all six keys
+before compiling Copter.
 
 ## Where to read or change code
 

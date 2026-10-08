@@ -393,3 +393,35 @@ def test_gazebo_service_name_is_resolved_for_upstream_numeric_only_socket() -> N
 def test_gazebo_resolution_rejects_non_ipv4_result() -> None:
     with pytest.raises(ValueError, match="IPv4"):
         resolve_gazebo_address("gazebo-runtime", resolver=lambda _name: "not-an-address")
+
+
+def test_ardupilot_build_applies_audited_rangefinder_backport() -> None:
+    module_root = Path(__file__).parents[1]
+    project_root = module_root.parent
+    patch_path = module_root / "patches/0001-sitl-json-rangefinder-bitmasks.patch"
+    patch_digest = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+    provenance = json.loads(
+        (module_root / "provenance/ardupilot.json").read_text(encoding="utf-8")
+    )
+
+    assert provenance["revision"] == "1511f27194f1dcc3728270883047bdf022b3fd53"
+    assert provenance["downstream_patches"] == [
+        {
+            "path": str(patch_path.relative_to(project_root)),
+            "sha256": "6b60ae6105e8c736c298243f6124204b97f4ae2daeccf2ebd627ac8aabd91218",
+            "upstream_commit": "8fa852b498bf6a2862c78ba688eb72b907d69e65",
+            "upstream_pull_request": "https://github.com/ArduPilot/ardupilot/pull/33342",
+            "license": "GPL-3.0-or-later",
+        }
+    ]
+    assert patch_digest == provenance["downstream_patches"][0]["sha256"]
+
+    dockerfile = (module_root / "Dockerfile").read_text(encoding="utf-8")
+    build_start = dockerfile.index("./waf configure")
+    assert dockerfile.index(
+        "git apply /tmp/0001-sitl-json-rangefinder-bitmasks.patch"
+    ) < build_start
+    assert dockerfile.index(
+        "python3 /tmp/check_sim_json_rangefinders.py --source-root /opt/ardupilot-src"
+    ) < build_start
+    assert "/opt/ardupilot/patches/0001-sitl-json-rangefinder-bitmasks.patch" in dockerfile

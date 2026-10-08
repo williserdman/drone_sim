@@ -113,9 +113,15 @@ but the common ArduPilot plugin had no range subscription, so no native
 flight-controller `DISTANCE_SENSOR` producer existed. The source repair now
 wires the common ray to JSON `rng_1`, enables competition-only SITL rangefinder
 instance 1 at the sensor's 0.05–40 m limits, and includes all three settings in
-calibration identity and preflight readback. Focused source tests pass. No image
-was rebuilt and no native flight has verified the repaired eight-family cadence;
-public-clock quantization may still expose a separate cadence failure.
+calibration identity and preflight readback. Review then found that pinned
+ArduPilot `1511f271` tests bits 7–12 while `rng_1`–`rng_6` occupy bits 10–15,
+so the wiring alone could not produce the correct first rangefinder. The image
+recipe now applies upstream fix `8fa852b` as a digest-bound downstream patch
+without changing the advertised source revision, and executes the exact source
+update block for all six keys before compilation. The unpatched check failed on
+`rng_1`; the patched check and focused host contracts pass. No image was rebuilt
+and no native flight has verified message 132 or the repaired eight-family
+cadence; public-clock quantization may still expose a separate cadence failure.
 
 The five failed cases reported 0 points and no independently accepted physical
 outcome. Their bundles remain unchanged. This is evidence of honest per-case
