@@ -232,8 +232,40 @@ Comp2026 tests; 27 environment-dependent host checks were skipped. No static
 typechecker is configured. This production revision still requires a fresh
 accepted calibration, reload and full suite.
 
-Provider readiness checked again on 2026-10-08 is unchanged: zero workflows exist
-and the registered runner is offline and idle. Actions dispatch remains unverified.
+Production suite `7ff02439-db98-418a-bf15-8c26d9ca2f83`, source `ec1ba21`,
+attempted calibration run `6acce90c-2aea-419a-bcf4-eeeeb8b3ce27`. Native
+AutoTune completed Roll, Pitch and Yaw, then returned in GUIDED for 54 simulated
+seconds before native LAND, disarm and gain saving. All 15 activation,
+post-disarm and native saved values agree. The finalized partial recording also
+shows physical contact at 0.500079 m/s downward precontact speed and 3.987 mm XY
+error; all 11 samples in the unchanged stability window pass its physical
+predicates.
+
+The production run and suite remain `FAILED` with `clock_source_stall` after the
+unchanged 7,200-second wall limit. Its contiguous MCAP has 17,085 of 18,000
+required ground-truth samples through public 854.25 seconds, leaving 45.75
+seconds absent. The official result is incomplete 0/100, the rosbag is invalid,
+and all ten dependent cases were blocked. Teardown finished, the owned
+containers are absent, and the frozen seven image identities still match.
+Read-only evidence is under `.superpowers/full-suite-ec1ba21/final-native/`,
+`.superpowers/full-suite-ec1ba21/final-physical/`, and
+`.superpowers/full-suite-ec1ba21/terminal-verification.json`. These native and
+physical observations do not accept the calibration or establish a suite pass.
+
+A seven-second `/proc` sample during the run attributed about 0.50 CPU core to
+the driver's reaped health-query children. This establishes material
+`docker compose ps` overhead, not that polling alone caused the low simulation
+rate. The controller's default inter-probe delay is now 1.0 wall seconds without
+changing APIs, caches, deadlines, native code, physics,
+or scoring. The corrected controller, suite, and suite-runtime checks passed 106
+tests in 15.21 seconds. The full host suite passed 2,404 tests with 27 skips in
+67.94 seconds; all 1,130 imported Comp2026 tests passed in 19.37 seconds. No
+static typechecker is configured. A fresh production 11-case suite remains
+pending.
+
+Provider readiness checked again at 13:27 UTC on 2026-10-08 is unchanged: zero
+workflows exist and the registered runner is offline and idle. Actions dispatch
+remains unverified.
 
 Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
 `8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance

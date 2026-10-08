@@ -124,6 +124,16 @@ failure facts, recorder completeness, source/image provenance, simulation timing
 and scoring provenance. `collect-results` reads the committed result; it does not
 copy or rebuild the bundle.
 
+While waiting for a durable runtime status, the controller checks finalization
+requests, runtime failures, and Compose child health before reading the target
+status. The default delay between completed probes is one wall second. Each
+probe also pays its command and status-read cost: `docker compose ps` retains its
+`min(remaining deadline, 5 seconds)` attempt timeout, and the following sleep is
+clamped to the remaining deadline. Detection latency therefore includes probe
+work plus the inter-probe delay; this is not a one-second abort-latency guarantee.
+The cadence changes host supervision overhead without changing APIs or lifecycle,
+finalization, and teardown deadlines.
+
 ## Constraints worth preserving
 
 - `source-finished` only says the public simulation source ended. A completed

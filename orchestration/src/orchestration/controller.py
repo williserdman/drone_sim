@@ -322,7 +322,7 @@ class RunController:
         sleep: Callable[[float], None] = time.sleep,
         utcnow: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         event_stream: TextIO | None = None,
-        poll_interval: float = 0.1,
+        poll_interval: float = 1.0,
         source_runner: Callable[..., Any] = subprocess.run,
         calibration_importer: Callable[[Path, str, str], CalibrationImport] | None = None,
     ) -> None:

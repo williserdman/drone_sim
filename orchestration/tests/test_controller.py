@@ -2254,6 +2254,75 @@ def test_post_manifest_operator_status_failure_returns_committed_result_and_comm
     assert manifest_path.read_bytes() == immutable
 
 
+@pytest.mark.parametrize(
+    ("event", "expected_cause"),
+    [
+        ("ready", None),
+        ("abort", TerminalCause("operator_abort", "operator_abort")),
+        ("runtime_failure", TerminalCause("runtime_failure", "recorder_failed", "artifacts")),
+        ("child_exit", TerminalCause("child_process", "compose_child_exited")),
+        ("deadline", TerminalCause("clock_stall", "clock_source_stall")),
+    ],
+)
+def test_default_wait_limits_health_queries_without_losing_terminal_events(
+    tmp_path, event, expected_cause
+):
+    clock = FakeClock()
+    store = StatusStore(tmp_path / "runs")
+    run_directory = store.allocate(RUN_ID)
+    query_times = []
+    deadline = 102.25 if event == "deadline" else 104.0
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        if clock.monotonic() < 102.5 or event == "deadline":
+            return
+        _write_json(
+            run_directory / ".status/artifacts-ready.json",
+            status_document(ArtifactsReadyStatus(RUN_ID)),
+        )
+        if event == "abort":
+            store.request_finalization(RUN_ID, "ABORTED", "operator_abort")
+        elif event == "runtime_failure":
+            _write_json(
+                run_directory / ".status/runtime-failure.json",
+                status_document(RuntimeFailureStatus(RUN_ID, "artifacts", "recorder_failed", ())),
+            )
+
+    class ObservedCompose(FakeCompose):
+        def ps(self, timeout):
+            query_times.append(clock.monotonic())
+            assert 0 < timeout <= deadline - clock.monotonic()
+            if event == "child_exit" and clock.monotonic() >= 102.5:
+                return ComposeCommandResult(
+                    0, b'[{"Service":"synthetic-gazebo","State":"exited"}]'
+                )
+            return super().ps(timeout)
+
+    controller = RunController(
+        monotonic=clock.monotonic, sleep=sleep, event_stream=io.StringIO()
+    )
+    document, cause = controller._wait_for(
+        store,
+        RUN_ID,
+        ObservedCompose(run_directory, []),
+        _topology("phase2"),
+        ArtifactsReadyStatus,
+        deadline,
+        TerminalCause("clock_stall", "clock_source_stall"),
+    )
+
+    assert cause == expected_cause
+    assert document == (ArtifactsReadyStatus(RUN_ID) if event == "ready" else None)
+    if event == "deadline":
+        assert clock.monotonic() == deadline
+    else:
+        # External reads are instantaneous here; detection adds at most one second.
+        assert 102.5 <= clock.monotonic() <= 103.5
+    # An idle wait must not launch tens of Docker processes within three seconds.
+    assert 1 <= len(query_times) <= 4
+
+
 def test_wait_rejects_runtime_status_that_crosses_deadline_and_passes_checker():
     clock = FakeClock()
     received = []

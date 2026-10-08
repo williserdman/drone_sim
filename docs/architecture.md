@@ -50,6 +50,10 @@ to exercise lifecycle and recording infrastructure.
 Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
+Host orchestration owns polling of durable statuses and Compose child health;
+the [orchestration guide](../orchestration/README.md) defines its cadence and
+deadline behavior. Host polling changes do not alter simulation, flight,
+scoring, or lifecycle deadlines.
 Flight physics and raw IMU publication share a 1 ms native grid. Except for the
 single paused `0.000001`-second peer bootstrap, Gazebo's ArduPilot JSON producer
 must use the IMU sample whose integer timestamp equals the current physics step.
