@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import socket
 import subprocess
 from typing import Any
+
+from .workstation import workstation_lock
 
 
 class LocalRuntime:
@@ -86,9 +89,10 @@ class LocalRuntime:
     def build(self) -> dict[str, Any]:
         directory = self.project_directory / ".local-runtime"
         directory.mkdir(exist_ok=True)
-        with (directory / "build.log").open("w") as log:
+        with workstation_lock(allow_nested=True), (directory / "build.log").open("w") as log:
             result = subprocess.run([str(self.project_directory / "scripts/local-build.sh"), "--build"],
                                     cwd=self.project_directory, stdout=log, stderr=subprocess.STDOUT,
+                                    env={**os.environ, "DRONE_SIM_WORKSTATION_LOCK_HELD": "1"},
                                     timeout=7200, check=False)
         if result.returncode:
             raise RuntimeError("Runtime build failed; open the build log for details")

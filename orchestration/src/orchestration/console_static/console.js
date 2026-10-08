@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 let token = "", presets = [], current = {}, shownRun = null, busy = false;
 let startRequest = null, abortRequest = null, prepareRequest = null, cameraFailed = false;
+let gazeboConnected = false;
 const terminal = new Set(["COMPLETED", "FAILED", "ABORTED", "INTERRUPTED"]);
 const text = (id, value) => { $(id).textContent = value ?? "—"; };
 const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
@@ -79,10 +80,15 @@ function render(snapshot) {
   renderChecks(snapshot.checks);
   if (snapshot.run_id && snapshot.run_id !== shownRun) {
     shownRun = snapshot.run_id; startRequest = null; abortRequest = null;
-    $("gazebo").src = "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote";
-    show("gazebo", true); show("gazebo-empty", false); connectCamera();
+    gazeboConnected = false;
+    show("gazebo", false); show("gazebo-empty", true); connectCamera();
   }
   const views = snapshot.views || {}, vehicle = views.qgc || {};
+  if (views.gazebo?.connected && !gazeboConnected) {
+    $("gazebo").src = "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote";
+    show("gazebo", true); show("gazebo-empty", false);
+  }
+  gazeboConnected = Boolean(views.gazebo?.connected);
   viewStatus("gazebo-status", Boolean(views.gazebo?.connected));
   const cameraLive = Boolean(views.camera?.fresh) && !cameraFailed;
   viewStatus("camera-status", cameraLive, cameraLive ? "Live sensor" : snapshot.run_id ? "Stale / disconnected" : "Disconnected");
@@ -143,7 +149,7 @@ $("camera").addEventListener("load", () => { cameraFailed = false; show("camera-
     await poll();
     if (current.preset_id) { const preset = presets.find((row) => row.id === current.preset_id); if (preset) { $("world").value = preset.world; updateWorld(preset.id); } }
     api("checks").then(renderChecks).catch((failure) => error(failure.message));
-    setInterval(async () => { try { await poll(); } catch (failure) { text("session-state", "Console disconnected"); $("connection-dot").className = "dot error"; error(failure.message); $("start").disabled = true; } }, 2000);
+    setInterval(async () => { try { await poll(); } catch (failure) { render({...current, can_start: false, views: {}}); text("session-state", "Console disconnected"); $("connection-dot").className = "dot error"; error(failure.message); } }, 2000);
     setInterval(async () => { try { await results(); if (document.querySelector(".logs").open) text("logs", pretty(await api("logs"))); } catch (_) {} if (cameraFailed && current.views?.camera?.fresh) connectCamera(); }, 4000);
   } catch (failure) { error(failure.message); }
 })();
