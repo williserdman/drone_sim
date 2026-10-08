@@ -112,6 +112,32 @@ def test_failed_takeoff_attempts_one_land_and_keeps_failure_after_recovery():
     assert len(vehicle.commands) == 2
 
 
+def test_operator_abort_cancels_configured_intent_and_starts_one_guarded_land():
+    host, vehicle, _protocol = host_for([
+        {"tool": "takeoff", "args": {"altitude_m": 2}},
+        {"tool": "hold", "args": {"duration_sim_s": 2}},
+    ])
+    host.observe(Telemetry(
+        0,
+        heartbeat=True,
+        mode="GUIDED",
+        armed=True,
+        landed=False,
+        prearm_checks_healthy=True,
+    ))
+    host.tick(0, mission_running=True)
+
+    assert host.abort_flight("operator requested recovery") is True
+    assert host.abort_flight("operator requested recovery") is True
+    host.tick(100_000_000, mission_running=True)
+
+    assert vehicle.commands == [
+        (CommandKind.TAKEOFF, 2),
+        (CommandKind.LAND, None),
+    ]
+    assert host.error == "operator requested recovery"
+
+
 def test_operator_mode_change_never_forces_land_over_operator_control():
     host, vehicle, protocol = host_for([
         {"tool": "takeoff", "args": {"altitude_m": 2}},

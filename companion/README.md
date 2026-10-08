@@ -10,6 +10,36 @@ requests, mission events, and durable mission lifecycle evidence.
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
+## Local operator supervision
+
+Resolved runs select `launch_mode: unattended` (the existing default) or
+`launch_mode: operator`. In operator mode every companion host connects and
+observes the live vehicle during preparation, but its initial mission command
+remains blocked until the runtime is RUNNING and the immutable start admission
+matches the current run, configuration digest, and start request. Preparation
+publishes current heartbeat, prearm, and armed observations through the shared
+operator protocol. A start request receives request-bound readiness only from a
+fresh (at most two wall seconds old), healthy, disarmed vehicle snapshot.
+
+The admission resets the companion's overall mission wall deadline; time spent
+inspecting the prepared simulation does not consume that budget. Public
+simulation-time mission deadlines continue to start from the admitted public
+epoch. Automatic command ownership stays with the configured, Comp2026,
+AutoTune, hover, or controlled-descent host selected by the frozen run.
+
+`Abort Flight` is separate from runtime finalization. A matching durable abort
+request cancels further mission intent once, then invokes that host's guarded
+recovery path: configured missions use `recover_land`, Comp2026 uses its mission
+supervisor, tuning and hover clear overrides and select LAND, and controlled
+descent sends LAND only from fresh armed GUIDED/LAND state. The companion keeps
+the runtime available while recovery is observed and records append-only
+`accepted`, `recovering`, `landed_disarmed`, `rejected`, `failed`, or
+`interrupted` progress. A terminal recovery result does not finalize the
+companion; Stop Simulation remains the distinct finalization action. Landing
+success requires fresh landed and disarmed telemetry. A rejected command,
+missing telemetry, timeout, QGC authority change, or Stop Simulation remains a
+visible non-success result rather than fabricated landing evidence.
+
 ## Configured diagnostic missions
 
 `mission: configured` runs an ordered list of drone operations and stops on the

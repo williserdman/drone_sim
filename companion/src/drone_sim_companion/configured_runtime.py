@@ -101,6 +101,13 @@ class ConfiguredHost:
     def recovery_pending(self) -> bool:
         return self._recovery_id is not None and self.operations.operation_status(self._recovery_id).state == "running"
 
+    @property
+    def recovery_failure(self) -> str | None:
+        if self._recovery_id is None:
+            return None
+        status = self.operations.operation_status(self._recovery_id)
+        return status.error if status.state == "failed" else None
+
     def observe(self, telemetry) -> None:
         if (
             telemetry.parameter_name in self._required_parameters
@@ -227,6 +234,14 @@ class ConfiguredHost:
         if self.recovery_pending:
             self.operations.abort("recovery cancelled by global finalization")
 
+    def abort_flight(self, reason: str) -> bool:
+        """Cancel configured intent and claim its existing guarded LAND recovery."""
+        if self.error is None:
+            self.error = reason
+            self.mission.abort(reason)
+            self._recovery_id = self.operations.recover_land()
+        return self._recovery_id is not None
+
     def finalize(self) -> None:
         if self.recovery_pending:
             self.operations.abort("recovery confirmation unavailable at shutdown")
@@ -273,9 +288,16 @@ def run_configured(config) -> int:
         from .moving_vision import MovingVision
 
     protocol = _ProductionProtocol(config)
+    from .runtime_node import _operator_control
+
+    operator_control = _operator_control(config, protocol)
     lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
     started = time.monotonic()
     overall_deadline = started + config.max_wall_seconds
+    if not operator_control.operator_mode:
+        # Preserve the legacy unattended deadline and its injectable monotonic
+        # clock. Operator mode replaces it only when admission is observed.
+        operator_control.wall_deadline_ns = int(overall_deadline * 1_000_000_000)
     connection = None
     node = None
     host = None
@@ -447,6 +469,14 @@ def run_configured(config) -> int:
                             telemetry.attitude_timestamp_ns,
                         )
                 host.observe(telemetry)
+                operator_control.observe_vehicle(
+                    native_timestamp_ns=telemetry.timestamp_ns,
+                    heartbeat_live=True if telemetry.heartbeat else None,
+                    prearm_checks_healthy=telemetry.prearm_checks_healthy,
+                    armed=telemetry.armed,
+                    landed=telemetry.landed,
+                    mode=telemetry.mode,
+                )
                 if telemetry.status_text is not None:
                     lifecycle.emit("mavlink_status_text", latest_clock_ns, {"text": telemetry.status_text})
                 if telemetry.heartbeat and not telemetry_requested:
@@ -460,10 +490,23 @@ def run_configured(config) -> int:
                     vehicle.request_parameters(host.required_parameter_names)
                     parameters_requested = True
             now = time.monotonic()
-            if callback_error is not None or now >= overall_deadline:
+            if (
+                callback_error is not None
+                or (
+                    not operator_control.abort_observed
+                    and now >= operator_control.wall_deadline_ns / 1_000_000_000
+                )
+            ):
                 host.fail(callback_error or "configured mission wall deadline expired", attempt_recovery=False)
                 break
             stopping = requested_stop or finalizing or protocol.read_finalize_request() is not None
+            start = operator_control.poll_start(run_state_running=mission_running)
+            operator_control.poll_abort(
+                finalizing=stopping,
+                begin_recovery=host.abort_flight,
+            )
+            if host.recovery_failure is not None:
+                operator_control.fail_recovery(host.recovery_failure)
             if stopping:
                 if host.mission.state != "succeeded" or host.error is not None:
                     host.stop_for_finalization(
@@ -471,12 +514,17 @@ def run_configured(config) -> int:
                     )
                 break
             if host.error is None and not stopping:
-                host.tick(latest_clock_ns, mission_running=mission_running)
+                host.tick(latest_clock_ns, mission_running=start.command_allowed)
             elif latest_clock_ns is not None:
                 host.tick(latest_clock_ns, mission_running=False)
             if host.error is not None:
+                if operator_control.abort_observed:
+                    continue
                 if recovery_deadline is None:
-                    recovery_deadline = min(overall_deadline, now + config.finalization_wall_seconds)
+                    recovery_deadline = min(
+                        operator_control.wall_deadline_ns / 1_000_000_000,
+                        now + config.finalization_wall_seconds,
+                    )
                 if not host.recovery_pending or now >= recovery_deadline:
                     break
         if host.mission.state != "succeeded" and host.error is None:

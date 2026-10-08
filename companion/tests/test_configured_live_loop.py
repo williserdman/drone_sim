@@ -281,6 +281,76 @@ def test_live_loop_executes_configured_plan_and_releases_resources(monkeypatch):
     assert {item: signal.getsignal(item) for item in previous_handlers} == previous_handlers
 
 
+def test_operator_gate_blocks_configured_flight_commands_until_admission(monkeypatch):
+    protocol = Protocol()
+    connection = FakeConnection()
+    fake_ros = FakeRos(None)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+
+    class Gate:
+        operator_mode = True
+        abort_observed = False
+        recovery_active = False
+        wall_deadline_ns = 10**30
+
+        def __init__(self):
+            self.observations = 0
+            self.admissions = 0
+
+        def observe_vehicle(self, **_facts):
+            self.observations += 1
+
+        def poll_start(self, *, run_state_running):
+            admitted = run_state_running and self.observations >= 3
+            if not admitted:
+                flight_commands = {
+                    mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+                    mavutil.mavlink.MAV_CMD_NAV_LAND,
+                }
+                assert not flight_commands.intersection(connection.mav.command_ids)
+            admitted_now = admitted and self.admissions == 0
+            if admitted_now:
+                self.admissions += 1
+            return SimpleNamespace(
+                command_allowed=admitted,
+                admitted_now=admitted_now,
+            )
+
+        def poll_abort(self, **_arguments):
+            return None
+
+        def fail_recovery(self, _detail):
+            return None
+
+    gate = Gate()
+    monkeypatch.setattr(runtime_node, "_operator_control", lambda *_args: gate)
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        mission_plan=parse_mission_plan({
+            "schema_version": 1,
+            "steps": [
+                {"tool": "set_mode", "args": {"mode": "GUIDED"}},
+                {"tool": "arm", "args": {}},
+                {"tool": "takeoff", "args": {"altitude_m": 2}},
+                {"tool": "land", "args": {}},
+            ],
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+        launch_mode="operator",
+    )
+
+    assert run_configured(config) == 0
+    assert gate.admissions == 1
+    assert mavutil.mavlink.MAV_CMD_DO_SET_MODE in connection.mav.command_ids
+
+
 def test_live_loop_requests_frozen_calibration_and_baseline_before_first_command(monkeypatch):
     protocol = Protocol()
     connection = FakeConnection()
