@@ -161,13 +161,28 @@ This causal control does not justify restoring the legacy sampler, promoting its
 gains, or weakening the native guard, score, or deadline. A production fix and
 full-suite pass remain pending.
 
-Corrected-IMU P/I-only diagnostic `cbdb5af6-ec44-43a0-aee1-66abc5157eab`
-started at 06:46:30 UTC under
-`runs/diagnostics/20261008-da338196-pi-seed-calibration`. It changes Roll P/I
-from `0.0503722` to `0.0675`; the other 40 parameters, including D, are unchanged.
+Corrected-IMU P/I-only diagnostic `cbdb5af6-ec44-43a0-aee1-66abc5157eab`, under
+`runs/diagnostics/20261008-da338196-pi-seed-calibration`, changed Roll P/I from
+`0.0503722` to `0.0675`; the other 40 parameters, including D, were unchanged.
 Named firmware, simulator and mission code, and Python interpreter bytes match
-the failed baseline. Its recorded result remains
-pending, so this is only a future-baseline hypothesis, not a fix or pass.
+the failed baseline. Roll completed at public 49.05 seconds, but native AutoTune
+failed to level during Pitch Angle P Up at 185.2. Recovery switched to LAND at
+185.2 and the companion published `mission_failed` at 198.05. The run lifecycle
+was `FAILED`; the driver finished with exit code 1 at 07:14:20 UTC. Native
+AutoTune's six-second leveling guard fired; the specific attitude or rate
+condition preventing its 250 ms stable interval remains under investigation.
+
+Native logs show LAND recovery, then disarm at public 197.58 seconds; independent safe
+physical contact is not established. The raw score is 0/100, independent
+acceptance was not performed because the lifecycle failed, and the manifest has
+`incomplete_paths=["rosbag"]` for a ground-truth sample-count mismatch. The
+original 15,941,632-byte native BIN is valid, with SHA-256
+`6488b6ea1f6113e73608ba274fa04dbeb6a04e2f881aee05ff2141bcbb20b061`;
+manifest SHA-256 is
+`4c30b689deeb94aadfb74d60f10f364dbe8c3ee1c0200bb01c304528ad875d01`.
+The driver and wrapper are gone, no owned containers remain, and all seven
+`:pi-seed-da338196` images are preserved. This diagnostic is not a production
+promotion or suite pass.
 Provider readiness checked again on 2026-10-08 is unchanged: zero workflows exist
 and the registered runner is offline and idle. Actions dispatch remains unverified.
 
