@@ -131,10 +131,45 @@ contact: the suite report leaves `physical_outcome` null and the manifest marks
 the MCAP invalid for count mismatch. Calibration therefore has an incomplete
 0/100 score and rejected artifact acceptance; both videos are valid. The failed
 calibration gate blocked all ten later cases. The driver, wrappers and watchers
-exited, and no suite-owned containers remained. Root-cause investigation is
-open; this is not a suite pass or evidence of a fix. Provider readiness checked
-at 03:17 UTC is also unchanged: the workflow on `main` returns 404 and the
-registered runner is offline.
+exited, and no suite-owned containers remained. Repeat suite
+`cc127100-895d-444f-afa0-233531d602e0` under
+`runs/local-ci/20261008-0d5945c-repeat` finished `FAILED` at 04:39 UTC.
+Calibration `a0d189fa-a37d-47ef-89b2-e3456731b3c8` failed at public 41.75
+seconds on the same native D-floor guard; its physical outcome is unknown, its
+score is 0/100, and its MCAP is invalid. One case failed, ten were blocked, and
+teardown completed with no suite-owned containers left.
+
+The 2026-10-08 diagnosis found no sample-index or phase error in corrected IMU
+selection. Both corrected-IMU failures left Roll above the D floor in
+Rate-D-Down, then crossed it in Rate-P, where native ArduPilot treats the floor
+as fatal. Bounded legacy control `5eb7e15e-4b28-4b7d-b7c8-0222518fccf9`
+reached the same floor during Rate-D-Down, where native ArduPilot accepts it.
+Only `libArduPilotPlugin.so` changed among the named plugins; the named firmware,
+parameters, companion mission/config, and Gazebo models/worlds matched. This is
+not proof of whole-image, operating-system, or host identity.
+
+That diagnostic control completed its 900-second window: all-axis success was
+reported at public 438.8 seconds, gain activation at 438.95, return start at
+444.95, LAND at 456.2, saved gains after disarm at 468.5, and `LANDED` at 469.25.
+Physical landing completed, scoring was 100/100, independent artifact acceptance
+passed with `incomplete_paths=[]`, and the manifest SHA-256 is
+`0fae23cdad58693382b6a5f612cdec70a1a44477e1b3c65457a172bc1e5e97f4`.
+The driver finished with exit code 0 at 06:38:23 UTC, with no owned containers
+left after teardown. Its source was `dc4f51f`; the bundle is under
+`runs/diagnostics/20261008-dc4f51f-legacy-imu-calibration`.
+This causal control does not justify restoring the legacy sampler, promoting its
+gains, or weakening the native guard, score, or deadline. A production fix and
+full-suite pass remain pending.
+
+Corrected-IMU P/I-only diagnostic `cbdb5af6-ec44-43a0-aee1-66abc5157eab`
+started at 06:46:30 UTC under
+`runs/diagnostics/20261008-da338196-pi-seed-calibration`. It changes Roll P/I
+from `0.0503722` to `0.0675`; the other 40 parameters, including D, are unchanged.
+Named firmware, simulator and mission code, and Python interpreter bytes match
+the failed baseline. Its recorded result remains
+pending, so this is only a future-baseline hypothesis, not a fix or pass.
+Provider readiness checked again on 2026-10-08 is unchanged: zero workflows exist
+and the registered runner is offline and idle. Actions dispatch remains unverified.
 
 Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
 `8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance
