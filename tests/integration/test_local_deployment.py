@@ -83,8 +83,12 @@ def test_viewer_gui_has_inspection_without_ungoverned_world_mutations() -> None:
     config = (VIEWER_ROOT / "gui.config").read_text(encoding="utf-8")
     plugins = set(re.findall(r'<plugin filename="([^"]+)"', config))
 
+    first_plugin = re.search(r'<plugin filename="', config)
+    assert first_plugin is not None
+    assert config.index("</window>") < first_plugin.start()
     assert plugins == {
         "MinimalScene",
+        "GzSceneManager",
         "InteractiveViewControl",
         "CameraTracking",
         "SelectEntities",
