@@ -8,10 +8,33 @@ Audited 2026-10-08. Configured VFS templates now request 12 m/s transit,
 2 m, retaining 0.5 m/s touchdown speed. The new `configure_flight` operation
 requires landed/disarmed state and matching live parameter readback before
 continuing. All 138 focused companion operation, adapter, plan, and runtime
-checks passed. Physical speed improvement is pending the
-[one-payload diagnostic](../config/configured-vfs-2027-speed-probe.json);
-this change has no new full-mission acceptance result yet. Full timing tuning,
-simulation-rate changes, and automatic early diagnostic completion are deferred.
+checks passed. The [one-payload diagnostic](../config/configured-vfs-2027-speed-probe.json)
+ran as `08fcdf54-bfac-4021-8324-c2d5395a8528` at clean runtime revision
+`ef97f174552a700f1630c6ec288eb713dcb5e2c0`. All 42 operations succeeded:
+one C drop, camera-guided retrieval, grounded L release, and final H contact/disarm.
+The recorded judge approved FM2 at 84.30 s and FM3 at 194.40 s. Independent
+[physical checks](../runs/verification/08fcdf54-bfac-4021-8324-c2d5395a8528/physical-check.json)
+confirmed both approvals and the final payload/vehicle states.
+Five [matched timing windows](../runs/verification/08fcdf54-bfac-4021-8324-c2d5395a8528/timing-comparison.json)
+fell from 63.60 to 55.05 simulated seconds, a 13.44% reduction. Loaded transit
+fell from 28.45 to 26.50 s; three landings fell from 35.15 to 28.55 s. These
+measurements cover matched segments, not the full three-payload mission.
+
+The probe intentionally stopped after successful landing and finalized `ABORTED`
+with `operator_abort`. Its standalone diagnostic score is 135/380 because FM1
+and two payloads were omitted; the manifest score is null. Both
+[observer](../runs/08fcdf54-bfac-4021-8324-c2d5395a8528/video/observer.mp4) and
+[onboard](../runs/08fcdf54-bfac-4021-8324-c2d5395a8528/video/onboard.mp4) videos
+decode as 3,892 frames at 20 Hz over 194.60 seconds. Seven image pins and both
+video hashes match the manifest. Full bag validation failed at the stop boundary:
+all payload IDs have one extra epoch at 194.65 s, beyond final ground truth at
+194.60 s. The prior 3,892 truth epochs are continuous and have complete payload
+sets; both judge approvals precede that boundary. Evidence remains unmodified.
+[Artifact verification](../runs/verification/08fcdf54-bfac-4021-8324-c2d5395a8528/artifact-check.json)
+records manifest SHA-256
+`044274e83157289d80501760ff34f78cfd88cae4108aac7944a2aa0e496f972c`.
+This change has no new full-mission acceptance result. Full timing tuning,
+simulation-rate changes, and coordinated early diagnostic completion are deferred.
 
 VFS 2027 implementation adds configurable A/B/C targets
 (default C), version-2 eligibility groups, camera/payload tools, and automatic

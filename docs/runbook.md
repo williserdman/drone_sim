@@ -118,6 +118,10 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
    foreground `start` process alive through finalization. The resulting bundle is
    intentionally `ABORTED`; it does not replace the full 780-second acceptance
    run, though finalization preserves its bag, videos, and logs.
+   Check the manifest separately: an early stop can leave a payload epoch beyond
+   the final truth epoch, failing the complete bag-grid contract even when the
+   videos decode and the requested flight finished. The verified probe and its
+   exact evidence limits are recorded in [handoff](handoff.md).
 
 3. Copy the UUID from the `run_starting` JSON line and follow [monitoring](#run-and-monitor).
    The final `run_result` reports the terminal state. Results and recordings live
