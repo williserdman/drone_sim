@@ -15,9 +15,31 @@ validated run bundle establish what actually happened.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
-**Current caveat:** the latest regression sweep is not fully accepted. Both
-competition templates fail before takeoff because the image excludes required
-Comp2026 modules. See the [current results and limits](docs/handoff.md#scenario-regression-sweep).
+**Verification scope:** the cloud branch has accepted calibration and reload
+runs; its complete eleven-case sweep remains unfinished. The local console has
+its own verification record in [current status](docs/handoff.md). A working UI
+or a successful build is not evidence of an accepted physical mission.
+
+## Local Mac flight console
+
+From this checkout, with native macOS QGroundControl installed:
+
+```bash
+colima start --arch aarch64 --cpu 6 --memory 12 --disk 80
+uv sync --python 3.12 --locked
+uv run --locked drone-sim console
+```
+
+The console opens at `http://127.0.0.1:8765`. Build matching images when prompted,
+choose a world and mission preset, then click **Prepare simulation**. Inspect
+native QGC, the interactive Gazebo desktop, and the onboard camera before the
+separate **Start mission** action. Preparation keeps the aircraft disarmed and
+does not consume the mission budget.
+
+**Abort flight** requests onboard recovery. **Stop simulation** finalizes and
+stops the runtime; it does not promise a landing. **Run again** prepares a fresh
+run. See the [console workflow](docs/runbook.md#local-mac-console) for prerequisites,
+manual-operator presets, CLI controls, and evidence paths.
 
 ## First local check
 

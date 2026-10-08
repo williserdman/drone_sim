@@ -11,6 +11,8 @@ import subprocess
 import time
 from uuid import uuid4
 
+from orchestration.workstation import workstation_lock
+
 from artifacts import ImageDigest, SourceRevision
 from artifacts.acceptance import inspect_phase3_via_container
 from orchestration.config import PHASE3_TOPOLOGY
@@ -37,16 +39,8 @@ class SuiteRuntime:
 
     @contextmanager
     def lock(self):
-        path = Path(f"/tmp/drone-sim-suite-{os.getuid()}.lock")
-        with path.open("a") as handle:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise RuntimeError("a drone-sim suite is already running on this workstation") from error
-            try:
-                yield
-            finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
+        with workstation_lock():
+            yield
 
     def _sources(self):
         records = self.controller.source_revisions(time.monotonic() + 30)

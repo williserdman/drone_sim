@@ -7,11 +7,13 @@ from contextlib import redirect_stderr, redirect_stdout
 import json
 from pathlib import Path
 import sys
-from typing import Callable, Sequence, TextIO
+from typing import Any, Callable, Sequence, TextIO
+from uuid import uuid4
 
-from .controller import ControllerError, RunController
+from .controller import ControllerError, RunController, RunResult
 from .status_store import ProtocolFileError
-from .suite import SuiteRunner
+from .suite import SuiteRunner, SuiteResult
+from .console_client import request_console
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -28,6 +30,21 @@ def _parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("run_id")
         command.add_argument("--output-root")
+    console = commands.add_parser("console", help="open the local simulation console")
+    console.add_argument("--port", type=int, default=8765)
+    console.add_argument("--no-browser", action="store_true")
+    prepare = commands.add_parser("prepare", help="prepare one approved preset without starting flight")
+    prepare.add_argument("--preset", default="configured-descent")
+    prepare.add_argument("--request-id")
+    prepare.add_argument("--calibration-source")
+    prepare.add_argument("--preparation-wall-seconds", type=int, default=1800)
+    prepare.add_argument("--port", type=int, default=8765)
+    for name in ("start-mission", "abort-flight", "stop"):
+        command = commands.add_parser(name)
+        command.add_argument("run_id", nargs="?" if name == "stop" else None)
+        command.add_argument("--port", type=int, default=8765)
+        if name != "stop":
+            command.add_argument("--request-id")
     return parser
 
 
@@ -45,6 +62,7 @@ def main(
     *,
     controller_factory: Callable[..., RunController] = RunController,
     suite_runner_factory: Callable[..., SuiteRunner] = SuiteRunner,
+    console_client: Callable[..., dict[str, Any]] = request_console,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -56,12 +74,32 @@ def main(
         with redirect_stdout(output), redirect_stderr(errors):
             arguments = parser.parse_args(list(argv) if argv is not None else None)
     except SystemExit as exc:
-        return int(exc.code)
+        return exc.code if isinstance(exc.code, int) else 1
 
     try:
+        if arguments.command == "console":
+            from .console import serve_console
+            serve_console(Path.cwd().resolve(), port=arguments.port, open_browser=not arguments.no_browser)
+            return 0
+        if arguments.command in {"prepare", "start-mission", "abort-flight", "stop"}:
+            body: dict[str, Any]
+            if arguments.command == "prepare":
+                body = {"preset_id": arguments.preset, "request_id": arguments.request_id or str(uuid4()),
+                        "preparation_wall_seconds": arguments.preparation_wall_seconds}
+                if arguments.calibration_source:
+                    body["calibration_source"] = arguments.calibration_source
+            else:
+                body = {"run_id": arguments.run_id}
+                if arguments.command != "stop":
+                    body["request_id"] = arguments.request_id or str(uuid4())
+            document = console_client(arguments.command, body, port=arguments.port)
+            output.write(json.dumps(document, allow_nan=False, sort_keys=True) + "\n")
+            output.flush()
+            return 0
         controller = controller_factory(
             project_directory=Path.cwd().resolve(), event_stream=output
         )
+        result: RunResult | SuiteResult
         if arguments.command == "suite":
             catalog = Path(arguments.config).resolve() if arguments.config else Path.cwd() / "config/ci-suite.json"
             result = suite_runner_factory(project_directory=Path.cwd().resolve(),
@@ -84,7 +122,7 @@ def main(
             }[arguments.command]
             result = operation(arguments.run_id, root)
             exit_code = 0
-    except (ControllerError, ProtocolFileError, OSError, ValueError) as exc:
+    except (ControllerError, ProtocolFileError, OSError, ValueError, RuntimeError) as exc:
         errors.write(f"{exc}\n")
         errors.flush()
         return 2
@@ -104,3 +142,7 @@ def main(
 
 
 __all__ = ["main"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

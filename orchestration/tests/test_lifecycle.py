@@ -48,3 +48,17 @@ def test_terminal_states_reject_every_event():
     lifecycle = RunLifecycle("run", LifecycleState.COMPLETED)
     with pytest.raises(InvalidTransition):
         lifecycle.apply(LifecycleEvent.START)
+
+
+def test_prepared_session_requires_explicit_start_and_still_finalizes_on_cancel():
+    lifecycle = RunLifecycle("run", LifecycleState.READY)
+    prepared = lifecycle.apply(LifecycleEvent.PREFLIGHT_READY)
+    assert prepared.state is LifecycleState.PREPARED
+    with pytest.raises(InvalidTransition):
+        prepared.apply(LifecycleEvent.CLOCK_STARTED)
+    starting = prepared.apply(LifecycleEvent.START_MISSION)
+    assert starting.state is LifecycleState.STARTING_MISSION
+    assert starting.apply(LifecycleEvent.CLOCK_STARTED).state is LifecycleState.RUNNING
+    cancelled = prepared.apply(LifecycleEvent.ABORT, "prepared_cancelled")
+    assert cancelled.state is LifecycleState.FINALIZING
+    assert cancelled.pending_terminal is LifecycleState.ABORTED

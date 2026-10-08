@@ -21,6 +21,7 @@ _DIGEST_PATTERN = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
 _COMPANION_IMAGE = "drone-sim-companion-runtime:phase3"
 _COMP2026_REVISION_LABEL = "org.opencontainers.image.comp2026.revision"
 _OPERATOR_WAIT_SERVICES = ("operator-wait-runtime",)
+_LOCAL_SERVICES = ("gazebo-viewer",)
 _AMBIENT_COMPOSE_SELECTORS = frozenset(
     {
         "COMPOSE_FILE",
@@ -108,9 +109,9 @@ class ComposeRuntime:
         self.project_name = f"drone-sim-{run_id.replace('-', '')}"
         self.topology = topology
         auxiliaries = tuple(auxiliary_services)
-        if auxiliaries not in {(), _OPERATOR_WAIT_SERVICES}:
+        if auxiliaries not in {(), _OPERATOR_WAIT_SERVICES, _LOCAL_SERVICES}:
             raise ValueError(
-                "auxiliary_services must be empty or ('operator-wait-runtime',)"
+                "unsupported auxiliary_services"
             )
         if auxiliaries and topology.profile != "phase3":
             raise ValueError("operator-wait auxiliary requires the phase3 profile")
@@ -125,13 +126,16 @@ class ComposeRuntime:
         for selector in _AMBIENT_COMPOSE_SELECTORS:
             environment.pop(selector, None)
         overlay = environment.pop("SIM_COMPOSE_OVERLAY", "")
-        if overlay not in {"", "gpu"}:
-            raise ValueError("SIM_COMPOSE_OVERLAY must be empty or 'gpu'")
+        if overlay not in {"", "gpu", "local"}:
+            raise ValueError("SIM_COMPOSE_OVERLAY must be empty, 'gpu', or 'local'")
+        if auxiliaries == _LOCAL_SERVICES and overlay != "local":
+            raise ValueError("gazebo-viewer requires the local Compose overlay")
         self.environment = {
             **environment,
             "COMPOSE_DISABLE_ENV_FILE": "1",
             "COMPOSE_PROFILES": ",".join(
-                (topology.profile, "operator-wait") if auxiliaries else (topology.profile,)
+                (topology.profile, "operator-wait") if auxiliaries == _OPERATOR_WAIT_SERVICES
+                else (topology.profile, "local") if overlay == "local" else (topology.profile,)
             ),
             "SIM_RUN_ID": run_id,
             "SIM_RUN_DIRECTORY": str(self.run_directory),
@@ -145,8 +149,8 @@ class ComposeRuntime:
             "--file",
             str(self.project_directory / "compose.yaml"),
             *(
-                ["--file", str(self.project_directory / "compose.gpu.yaml")]
-                if overlay == "gpu"
+                ["--file", str(self.project_directory / f"compose.{overlay}.yaml")]
+                if overlay
                 else []
             ),
             "--project-directory",

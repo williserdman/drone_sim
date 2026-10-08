@@ -1,0 +1,115 @@
+# Local simulation console with Prepare / Start Mission and live views
+
+## Problem Statement
+
+The simulation project has accumulated substantial mission and CI work in its cloud development branch, but running and inspecting one mission on this Mac still requires coordinating commands, containers, viewers, and artifacts. The current local checkout is an older simulator scaffold. It does not contain the newer mission runner or provide a single place to choose a world and mission.
+
+The operator wants a short, repeatable local iteration loop with QGroundControl, an interactive Gazebo view, and live onboard camera video available together. The workflow should resemble operating a real aircraft: prepare the vehicle and its environment, inspect live telemetry and sensors while disarmed, and explicitly start the mission when ready. Preparing a simulation must not silently begin flight.
+
+## Solution
+
+Provide a local browser console backed by the existing single-run orchestration and mission runtime. The operator selects a supported world and compatible mission, presses **Prepare Simulation**, inspects the live system, and presses **Start Mission** separately.
+
+Run the Linux simulation stack locally through Colima. Open QGroundControl as a native macOS application. Show the actual Linux Gazebo GUI through an interactive browser desktop using noVNC, and show the onboard camera as a separate live stream. The user prefers native Gazebo but accepts this interactive streamed GUI. Verify its usability on the target Mac as part of acceptance.
+
+The first version supports one selected mission per run and one active session on the workstation. It reuses existing world definitions, mission implementations, flight control, sensor paths, scoring, and evidence validation. It adds the operator-facing session lifecycle and local viewing connections needed to make that runtime practical to use.
+
+## User Stories
+
+1. As a simulation operator, I want one local console, so that I can prepare, observe, and repeat a mission without coordinating several terminals.
+2. As a simulation operator, I want to select an existing world, so that I can test the mission in the intended environment.
+3. As a simulation operator, I want the mission selector to show compatible choices, so that I cannot accidentally launch an unsupported world, vehicle, and mission combination.
+4. As a simulation operator, I want to see the selected mission's configuration before preparation, so that I know what the aircraft will attempt.
+5. As a developer, I want available presets to reference complete approved simulator configurations, so that the UI stays aligned with the mission runner.
+6. As a simulation operator, I want prerequisite checks to identify missing dependencies, images, or resources, so that failed preparation has an actionable explanation.
+7. As a developer, I want the console to identify the source revision and runtime images, so that I know whether my latest code is actually being exercised.
+8. As a simulation operator, I want Prepare Simulation to start the runtime without arming or starting the mission, so that I can perform a realistic preflight inspection.
+9. As a simulation operator, I want physics, telemetry, and camera updates to continue while prepared, so that the preflight display represents a live vehicle.
+10. As a simulation operator, I want readiness to reflect observed vehicle and sensor state, so that a running process is not mistaken for a flight-ready system.
+11. As a simulation operator, I want preparation time to be separate from mission time, so that inspecting the system does not consume the mission's flight budget.
+12. As a simulation operator, I want a separate Start Mission action, so that flight begins only after my explicit instruction.
+13. As a simulation operator, I want repeated clicks or a retried request to start the mission at most once, so that UI or network retries cannot create duplicate execution.
+14. As a simulation operator, I want the selected onboard mission to retain responsibility for its flight commands, so that the launcher does not replace the real mission logic.
+15. As a simulation operator, I want native QGroundControl opened and connected to the simulated flight controller, so that I can inspect the same telemetry and controls used in flight operations.
+16. As a simulation operator, I want an interactive Gazebo window with mouse and keyboard input, so that I can navigate the scene, select models, and inspect their properties.
+17. As a simulation operator, I want the onboard camera visible independently of the Gazebo scene view, so that I can observe what the aircraft's perception system receives.
+18. As a simulation operator, I want stale or disconnected views clearly identified, so that an old image cannot be mistaken for a live feed.
+19. As a simulation operator, I want to see mission phase, vehicle state, elapsed mission time, and relevant logs, so that I can understand the current behavior.
+20. As a simulation operator, I want failed preparation to identify the failed component and preserve diagnostic logs, so that I can correct the problem before another attempt.
+21. As a simulation operator, I want to cancel a prepared session cleanly, so that I can change the selected scenario without leaving simulator processes behind.
+22. As a simulation operator, I want a flight-abort action that uses the onboard recovery path, so that I can stop the mission while still observing the aircraft's physical response.
+23. As a simulation operator, I want stopping the simulator to be distinct from aborting flight, so that closing the runtime is never described as a successful landing.
+24. As a simulation operator, I want manual flight intervention and admitted simulation-control actions recorded, so that the result reflects how the run was actually conducted.
+25. As a developer, I want viewer reconnection or browser refresh to reconnect to the current session, so that inspecting the UI does not restart or duplicate a flight.
+26. As a developer, I want completed runs to retain their configuration, source and image identity, logs, recordings, and results, so that a behavior can be reproduced and investigated.
+27. As a simulation operator, I want physical mission outcome, score, artifact validity, and cleanup status shown separately, so that one successful indicator does not conceal a failure elsewhere.
+28. As a developer, I want Run Again to create a fresh attempt using the selected configuration, so that repeated experiments do not inherit hidden vehicle state.
+29. As a developer, I want unchanged runtime images reused and changed source identified as needing a matching build, so that iteration is efficient without running stale code unknowingly.
+30. As a simulation operator, I want all simulation computation to happen on this workstation, so that this iteration loop does not depend on an active cloud runner.
+
+## Implementation Decisions
+
+1. **Use the cloud development branch as the implementation baseline.** The inspected upstream is the branch behind PR #3 at revision `646892f83b1f0bda758807ae2484d6c79e96443a`. Reconcile its current head and prerequisites before implementation. Preserve existing local work and run evidence. The older local scaffold is evidence about this Mac's setup, not the source for recreating the newer mission runtime.
+
+2. **Keep one operator-facing run-control boundary.** Extend the existing orchestration interface with preparation and an explicit mission-start command. The browser backend delegates to this interface for prepare, start mission, observe status, request flight abort, stop/finalize, and collect results. Do not create a second lifecycle controller inside the frontend. The existing CLI must remain usable for the same operations and automated checks.
+
+3. **Represent preparation as an explicit state.** The operator-visible flow is idle, preparing, prepared, starting mission, running, finalizing, then a terminal result. A flight-abort request exposes recovery progress before finalization. A prepared session has an allocated identity and frozen configuration, healthy runtime components, fresh preflight observations, a disarmed vehicle, and usable views. Starting a process or opening a window does not establish readiness.
+
+4. **Use a durable, run-scoped mission-start gate.** Accept Start Mission only for the matching prepared session after rechecking readiness. Record acceptance atomically and release the selected companion host exactly once into its existing initial-command path. Repeated equivalent requests return the existing outcome; requests for another, unready, or terminal session are rejected. The UI does not implement a universal GUIDED/ARM sequence. The existing external-operator wait actor is specific to its manual preset and is not a generic mission launcher.
+
+5. **Require live preparation.** The prepared vehicle remains disarmed while native physics, telemetry, and camera observations advance. A cached warmup frame or paused physics does not satisfy this requirement. Keep preparation cancellable and supervised, with a visible, independently configured preparation wall-time limit. Human waiting must not consume mission step, flight-duration, or mission-recording budgets.
+
+6. **Make the time boundary explicit.** The current runner automatically starts and freezes a private-warmup/public epoch in its resolved configuration; live preparation requires a deliberate extension of that contract. Keep the prepared configuration immutable and bind it to a separate immutable start-admission record. Gazebo establishes the actual native epoch at an agreed 50 ms grid boundary; the admission record includes the public-zero mapping, run and request identity, and content digest. All mission producers, recorders, validators, and the final manifest bind to that same record. Establish mission deadlines at admitted start while retaining real sensor timestamps and the existing physics and recording grids. Preflight preview uses a separate private/native stream and does not enter public mission camera topics, scorer inputs, mission bags, or mission recordings. Do not restamp stale samples, mutate frozen configuration, count preparation as mission time, relax validators, or freeze the aircraft to simulate live readiness. Preserve existing unattended-run behavior through an explicit launch mode.
+
+7. **Preserve the physical and mission responsibilities.** The companion owns mission intent and perception, ArduPilot owns flight execution, Gazebo owns physics and sensor production, and the scorer remains an independent observer. Readiness and command completion use fresh observed state and existing acknowledgements. A UI action must not teleport a vehicle, inject a successful pickup, substitute simulator truth for perception, force arming, disable prearm checks, or alter scoring to make a run pass. Simulator acceptance is not approval to deploy on a physical aircraft.
+
+8. **Select complete approved presets.** Maintain one authoritative catalog of supported preset tuples referencing complete existing run templates. World and mission selectors filter that catalog; they do not construct arbitrary cross-products. A preset binds world, vehicle, mission, scenario, calibration requirements, image dimensions, timing, and any auxiliary behavior. Schema validation alone does not prove a combination is runnable. Classify the manual operator preset explicitly: it still requires external GUIDED and arming before the companion continues, whereas automatic presets retain onboard ownership of those commands. Preserve configuration, calibration, firmware, airframe, and image provenance checks. Do not offer the passive foundation world as a runnable flight preset under the current typed readiness contract. Configuration changes after preparation require a new session.
+
+9. **Keep the Linux runtime local.** Reuse the containerized Gazebo, SITL, companion, sensor transport, artifacts, and scorer stack through Colima. Local native-architecture images and matching companion revision identity are prerequisites; cloud verification does not establish that those images are already available or performant on this Mac. Reuse matching builds. Clearly identify source/image mismatches and rebuild only affected runtime components when requested.
+
+10. **Add an interactive Gazebo viewer.** Run a matching Gazebo GUI client on a Linux desktop attached to the same simulation network, partition, assets, and server. Expose the desktop locally through noVNC with mouse and keyboard input. It must show the active simulation and allow scene navigation, selection, and inspection. Orchestration retains ownership of pause/unpause, epoch release, reset, cadence, and shutdown. Route runtime-changing operations through the run-control boundary with durable admission and explicit evidence semantics; disable GUI actions without such a path. Direct world insertion/deletion and other ungoverned mutations are outside the first version. Normal camera navigation must not alter physical state or validity.
+
+11. **Keep QGroundControl native.** Launch or focus the installed macOS application and provide a dedicated connection to the same simulated vehicle. The existing external-operator SITL channel is the integration point; it must not compete with the companion's mission-control connection. The default observation workflow leaves automatic mission commands to the companion. Native QGC retains its operator controls; do not claim it is technically read-only. Flight-state changes from manual control must be observed, must respect the mission's existing authority and recovery guards, and must be recorded as intervention.
+
+12. **Provide a separate live onboard camera stream.** Bridge actual sensor images to a browser-compatible local stream. Support real preparation frames as well as mission frames across the start boundary. Display freshness and connection state. Bound queues and drop obsolete preview frames when necessary so that a slow viewer cannot block perception, simulation, or authoritative recording. Retain the original sensor source, capture time, and recording contracts.
+
+13. **Separate flight abort from simulator shutdown.** Abort Flight requests the companion supervisor's appropriate bounded recovery behavior and reports observed progress, including landed and disarmed confirmation when achieved. It does not immediately destroy the runtime. Stop Simulation uses the existing finalization and teardown protocol and may terminate a flight without landing; describe that outcome accurately. Cancel before mission start is a prepared-session cancellation. Missing telemetry or rejected recovery commands must remain visible failures, not invented recovery success.
+
+14. **Retain authoritative finalization.** The run controller stays alive through recorder closure, evidence validation, terminal manifest publication, and owned-resource cleanup. Browser closure and viewer failure do not silently kill the flight controller. The frontend reads the committed result as terminal truth and presents lifecycle outcome, physical outcome, score, artifact validity, intervention, and teardown separately.
+
+15. **Own local resources explicitly.** Allow one active session per workstation and prevent conflicting launchers, CLI runs, or suites from acquiring the same resources. Bind control and viewing endpoints to the local machine. Associate new containers and viewer processes with the session; reuse an already-open QGC application without closing it during cleanup. Refreshing the page reconnects to the durable session instead of allocating another one. If cleanup is incomplete, block a conflicting new run and show the remaining owned resources.
+
+16. **Keep iteration reproducible.** Run Again finalizes the previous session, allocates a new identity, and returns to preparation with the last selected configuration. It never starts flight automatically. Use fresh run-scoped vehicle storage and explicit configuration/calibration inputs. Retain earlier evidence and record the exact code, image identity, configuration, and operator actions used for each attempt.
+
+17. **Update the existing documentation in the implementation change.** Describe the new operator workflow, timing/admission contract, command ownership, view connections, and stop semantics in the affected module guides and shared architecture/runbook. Dated verification should distinguish host tests, real simulator tests, skipped checks, and unverified behavior.
+
+## Testing Decisions
+
+- **Primary seam: the public operator run-control interface.** Test observable preparation, readiness, explicit start, status, recovery, finalization, and results through the same boundary used by the browser and CLI. Prefer the existing run controller and configuration resolver; add one coherent operator-session contract rather than separate test-only hooks in every module. Use controllable runtime adapters for fast lifecycle and failure tests while asserting external effects, durable state, and returned outcomes rather than internal call order.
+- **Prior art:** extend the existing CLI/configuration, run-controller, lifecycle, runtime-status, and finalization contract coverage. Reuse the external-operator acceptance tests' distinction between accepted commands and observed vehicle state. Reuse artifact validation and mission/scorer integration checks for real outcomes. Update affected clock and admission contract tests because live preparation changes a shared boundary.
+- **Preparation admission:** verify that a real session can remain prepared beyond the old operator-wait step timeout while physics, telemetry, and camera timestamps continue advancing; the vehicle remains disarmed; no mission flight commands are issued; and the mission budget remains unconsumed. Verify explicit preparation timeout and cancellation without reporting a completed mission.
+- **Start admission:** cover stale readiness, loss of prearm health after preparation, wrong run identity, double-clicks, concurrent/retried requests, and browser refresh. Verify one accepted start releases the selected existing mission exactly once and preserves command acknowledgement and observed-state guards.
+- **Clock and evidence:** verify monotonic native observations, the immutable start-admission identity and epoch mapping shared by all consumers, required image/physics grids, complete mission recording windows, and separation of preparation evidence. Reject conflicting, missing, stale, or cross-run admission records. Verify that a long preparation does not shorten a mission, cause an immediate timeout, or produce a falsely valid recording. Retain regression coverage for unattended CLI and suite launches.
+- **Real local acceptance:** on the target Mac, prepare a supported short takeoff/land mission, confirm native QGC is connected to that vehicle, manipulate the real Gazebo GUI through the browser, and observe advancing onboard video. Start the mission separately, observe flight and landing, validate its result and recordings, then prepare a fresh repeat. Also exercise a supported competition or moving-pad preset to verify the common gate is not specific to the manual operator example.
+- **Viewer behavior:** check live-frame freshness, stream disconnection/reconnection, browser refresh, mouse/keyboard navigation, and usable rendering responsiveness during a real flight. Record observed preview rate and simulation throughput. A static screenshot or mocked camera response does not satisfy live-view acceptance. Verify that a slow or disconnected viewer does not backpressure mission perception or recording.
+- **Control and shutdown:** distinguish Abort Flight from Stop Simulation in tests. Verify that a recovery command alone is not reported as landed, finalization waits for recorder closure, partial startup and lost runtime components preserve diagnostics, and cleanup affects only session-owned resources. Verify manual intervention is visible and never silently reported as an untouched autonomous run.
+- **Frontend and catalog coverage:** exercise the real browser-to-backend workflow for preset filtering, button availability, status transitions, visible errors, and reconnect behavior. Verify every displayed preset can prepare under its declared dependencies, unsupported cross-products cannot be selected, and the manual operator preset clearly exposes its remaining GUIDED/arm requirements. Verify ungoverned Gazebo mutations cannot bypass run control. Avoid snapshot-only checks or tests that simply reproduce frontend implementation details.
+
+## Out of Scope
+
+- Running or scheduling the complete CI suite from the first UI.
+- Parallel simulations, remote/cloud execution controls, multi-user accounts, and hosted deployment of the console.
+- A packaged desktop application or a requirement for a native macOS Gazebo client in the first version.
+- A general world editor, arbitrary unsupported world/mission combinations, or a new mission-authoring language.
+- New flight behaviors, revised competition rules, modified scoring criteria, or altered physical models unrelated to the launcher.
+- Bypassing required calibration, parameter readback, prearm checks, native timing guarantees, or artifact acceptance to make local runs appear successful.
+- Replacing the companion mission controller, ArduPilot, Gazebo, QGroundControl, or the existing authoritative recording pipeline.
+- Qualification for physical-aircraft operation or a claim that all cloud missions already pass on this Mac.
+
+## Further Notes
+
+The user explicitly chose one mission per run, accepted an interactive streamed Linux Gazebo window, requested a separate mission-start click, and emphasized realistic operation. The local browser console and the detailed lifecycle described here are the proposed synthesis of those decisions.
+
+This is a specification, not evidence that the local integration already works. The cloud branch was inspected at `646892f83b1f0bda758807ae2484d6c79e96443a`. It already has single-run orchestration, command/status/finalization interfaces, actual sensor topics, and independent results. It does not yet provide a general prepared-session gate, live waiting under that gate, a browser camera stream, or the local Gazebo/QGC viewing topology. The timing change is substantive and must be implemented and verified explicitly.
+
+Source context: [upstream PR #3](https://github.com/williserdman/drone_sim/pull/3), [shared architecture](https://github.com/williserdman/drone_sim/blob/646892f83b1f0bda758807ae2484d6c79e96443a/docs/architecture.md), [orchestration contract](https://github.com/williserdman/drone_sim/blob/646892f83b1f0bda758807ae2484d6c79e96443a/orchestration/README.md), [existing external-operator actor](https://github.com/williserdman/drone_sim/blob/646892f83b1f0bda758807ae2484d6c79e96443a/companion/src/drone_sim_companion/operator_wait.py), and [noVNC input support](https://github.com/novnc/noVNC/blob/master/docs/API.md).

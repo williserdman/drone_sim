@@ -47,13 +47,13 @@ _FILE_FLAGS = (
 )
 _OUTPUT_FLAGS = (
     os.O_RDWR
-    | os.O_TMPFILE
+    | getattr(os, "O_TMPFILE", 0)
     | getattr(os, "O_CLOEXEC", 0)
 )
 _LOG_OUTPUT_FLAGS = (
     os.O_RDWR
     | os.O_APPEND
-    | os.O_TMPFILE
+    | getattr(os, "O_TMPFILE", 0)
     | getattr(os, "O_CLOEXEC", 0)
 )
 
@@ -717,6 +717,8 @@ class VideoStreamRecorder:
             raise RuntimeError("FFmpeg/ffprobe preflight failed")
 
     def _prepare_output(self) -> None:
+        if not hasattr(os, "O_TMPFILE"):
+            raise RuntimeError("video recording requires the Linux runtime with O_TMPFILE")
         root_fd: int | None = None
         video_fd: int | None = None
         logs_fd: int | None = None

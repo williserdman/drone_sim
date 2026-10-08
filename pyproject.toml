@@ -15,6 +15,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=1.18,<2",
     "numpy==2.1.3",
     "opencv-contrib-python-headless==4.10.0.84",
     "pytest>=8.3,<9",
@@ -33,6 +34,23 @@ pythonpath = [
 
 [tool.uv.workspace]
 members = ["ardupilot_sitl", "artifacts", "companion", "electromagnet", "gazebo", "orchestration", "scorekeeper"]
+
+[tool.mypy]
+python_version = "3.12"
+follow_imports = "silent"
+ignore_missing_imports = true
+mypy_path = ["artifacts/src", "orchestration/src", "companion/src", "gazebo/src", "scorekeeper/src", "electromagnet/src"]
+files = [
+    "orchestration/src/orchestration/catalog.py",
+    "orchestration/src/orchestration/workstation.py",
+    "orchestration/src/orchestration/gcs_bridge.py",
+    "orchestration/src/orchestration/local_runtime.py",
+    "orchestration/src/orchestration/operator_readiness.py",
+    "orchestration/src/orchestration/operator_session.py",
+    "orchestration/src/orchestration/console.py",
+    "orchestration/src/orchestration/console_client.py",
+    "orchestration/src/orchestration/cli.py",
+]
 
 [tool.uv.sources]
 drone-sim-ardupilot = { workspace = true }

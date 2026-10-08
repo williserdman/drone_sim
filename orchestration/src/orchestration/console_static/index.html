@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local flight console</title>
+  <link rel="stylesheet" href="/console.css">
+  <script src="/console.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div><span class="eyebrow">DRONE SIM / LOCAL</span><h1>Flight console</h1></div>
+    <div class="session-badge"><span id="connection-dot" class="dot"></span><span id="session-state">Connecting</span></div>
+  </header>
+  <main>
+    <aside class="setup panel">
+      <span class="eyebrow">01 / CONFIGURE</span><h2>Choose a flight</h2>
+      <label for="world">World</label><select id="world"></select>
+      <label for="preset">Mission preset</label><select id="preset"></select>
+      <div id="preset-description" class="muted"></div>
+      <div id="manual-note" class="notice hidden">This mission waits for you to select GUIDED and arm in QGroundControl after Start Mission.</div>
+      <div id="calibration-field" class="hidden"><label for="calibration">Accepted calibration run</label><input id="calibration" placeholder="/absolute/path/to/runs/run-id"></div>
+      <label for="preparation-limit">Preflight time limit</label>
+      <select id="preparation-limit"><option value="1800">30 minutes</option><option value="3600">1 hour</option><option value="7200">2 hours</option></select>
+      <details><summary>Mission configuration</summary><pre id="configuration"></pre></details>
+      <div class="setup-actions"><button id="prepare" class="primary">Prepare simulation</button><p class="hint">Starts the live world and opens QGC. The vehicle stays disarmed.</p></div>
+      <div class="divider"></div>
+      <div class="section-row"><h3>Local runtime</h3><button id="check" class="quiet">Check</button></div>
+      <div id="checks" class="checks muted">Checking this workstation…</div>
+      <button id="build" class="secondary">Build matching images</button>
+      <details><summary>Source &amp; image identity</summary><pre id="provenance">Not checked</pre></details>
+    </aside>
+    <section class="flight">
+      <div id="error" class="notice error hidden" role="alert"></div>
+      <div class="panel controls">
+        <div class="section-row"><div><span class="eyebrow">02 / PREFLIGHT → MISSION</span><h2 id="flight-title">Ready to prepare</h2></div><span id="run-id" class="mono muted">No active run</span></div>
+        <p id="flight-detail" class="muted">Select a preset, prepare the simulation, then inspect the live views before starting.</p>
+        <div class="control-actions"><button id="start" class="primary" disabled>Start mission</button><button id="abort-flight" class="recovery" disabled>Abort flight</button><button id="stop" class="danger" disabled>Stop simulation</button><button id="again" class="secondary hidden">Run again</button></div>
+        <div class="telemetry"><div><span>Vehicle mode</span><strong id="mode">—</strong></div><div><span>Arming state</span><strong id="armed">—</strong></div><div><span>Relative altitude</span><strong id="altitude">—</strong></div><div><span>Mission time</span><strong id="elapsed">—</strong></div></div>
+        <p id="recovery-status" class="notice hidden"></p>
+        <p class="hint">Abort Flight requests onboard recovery. Stop Simulation ends the runtime and may interrupt a flight before landing.</p>
+      </div>
+      <div class="views">
+        <section class="panel gazebo-view"><div class="view-header"><h3>Gazebo world</h3><div><span id="gazebo-status" class="view-status">Disconnected</span><a href="http://127.0.0.1:6080/vnc.html?autoconnect=true&amp;resize=remote" target="_blank" rel="noopener">Open window ↗</a></div></div><div class="view-body"><iframe id="gazebo" title="Interactive Gazebo desktop" class="hidden" allow="fullscreen"></iframe><div id="gazebo-empty" class="view-empty"><span class="crosshair">⌖</span>Prepare a simulation to explore the world.<small>Orbit, pan, select, and inspect in the Linux Gazebo window.</small></div></div></section>
+        <section class="panel camera-view"><div class="view-header"><h3>Onboard camera</h3><span id="camera-status" class="view-status">Disconnected</span></div><div class="camera-body"><img id="camera" alt="Live onboard camera from the simulated vehicle" class="hidden"><div id="camera-empty" class="view-empty">Waiting for sensor frames</div><span id="camera-stale" class="stale-label hidden">STALE / DISCONNECTED</span></div><div class="camera-footer"><span id="camera-stamp" class="mono muted">Native sensor time —</span><button id="camera-reconnect" class="quiet">Reconnect</button></div><div class="qgc-card"><div><h3>QGroundControl</h3><span id="qgc-status" class="muted">Native macOS window</span></div><button id="qgc" class="secondary">Open QGC ↗</button></div></section>
+      </div>
+      <section class="panel results"><div class="section-row"><h3>Run evidence</h3><span id="cleanup" class="muted">No run yet</span></div><div class="result-grid"><div><span>Lifecycle</span><strong id="result-lifecycle">—</strong></div><div><span>Physical outcome</span><strong id="result-physical">—</strong></div><div><span>Score</span><strong id="result-score">—</strong></div><div><span>Artifact validity</span><strong id="result-artifacts">—</strong></div></div><p id="evidence-path" class="mono muted"></p><details><summary>Result details</summary><pre id="result-details"></pre></details></section>
+      <details class="panel logs"><summary>Runtime logs &amp; build output</summary><pre id="logs">No output yet</pre></details>
+    </section>
+  </main>
+</body>
+</html>

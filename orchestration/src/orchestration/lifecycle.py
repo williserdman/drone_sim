@@ -8,6 +8,8 @@ class LifecycleState(str, Enum):
     CREATED = "CREATED"
     STARTING = "STARTING"
     READY = "READY"
+    PREPARED = "PREPARED"
+    STARTING_MISSION = "STARTING_MISSION"
     RUNNING = "RUNNING"
     FINALIZING = "FINALIZING"
     COMPLETED = "COMPLETED"
@@ -18,6 +20,8 @@ class LifecycleState(str, Enum):
 class LifecycleEvent(str, Enum):
     START = "START"
     MODULES_READY = "MODULES_READY"
+    PREFLIGHT_READY = "PREFLIGHT_READY"
+    START_MISSION = "START_MISSION"
     CLOCK_STARTED = "CLOCK_STARTED"
     COMPLETE = "COMPLETE"
     FAIL = "FAIL"
@@ -46,10 +50,14 @@ class RunLifecycle:
             (LifecycleState.CREATED, LifecycleEvent.START): LifecycleState.STARTING,
             (LifecycleState.STARTING, LifecycleEvent.MODULES_READY): LifecycleState.READY,
             (LifecycleState.READY, LifecycleEvent.CLOCK_STARTED): LifecycleState.RUNNING,
+            (LifecycleState.READY, LifecycleEvent.PREFLIGHT_READY): LifecycleState.PREPARED,
+            (LifecycleState.PREPARED, LifecycleEvent.START_MISSION): LifecycleState.STARTING_MISSION,
+            (LifecycleState.STARTING_MISSION, LifecycleEvent.CLOCK_STARTED): LifecycleState.RUNNING,
         }.get((self.state, event))
         if transition is not None:
             return RunLifecycle(self.run_id, transition, reason=reason)
-        if self.state in (LifecycleState.STARTING, LifecycleState.READY, LifecycleState.RUNNING):
+        if self.state in (LifecycleState.STARTING, LifecycleState.READY, LifecycleState.PREPARED,
+                          LifecycleState.STARTING_MISSION, LifecycleState.RUNNING):
             if event in (LifecycleEvent.FAIL, LifecycleEvent.ABORT):
                 terminal = LifecycleState.FAILED if event is LifecycleEvent.FAIL else LifecycleState.ABORTED
                 return RunLifecycle(self.run_id, LifecycleState.FINALIZING, terminal, reason)

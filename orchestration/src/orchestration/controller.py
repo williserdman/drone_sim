@@ -59,11 +59,14 @@ from .config import (
     CalibrationImport,
     RunConfig,
     RuntimeTopology,
+    load_run_config,
     resolve_run_config,
     write_resolved_config,
 )
 from .calibration import build_source_calibration_profile, freeze_calibration_import
 from .lifecycle import LifecycleEvent, LifecycleState, RunLifecycle
+from .operator_readiness import preflight_snapshot
+from .workstation import exclusive_run
 from .status_store import (
     OperatorStatus,
     ProtocolFileError,
@@ -366,6 +369,8 @@ class RunController:
             config_path=run_directory / "configuration/run.json",
             topology=config.topology,
             auxiliary_services=auxiliary_services,
+            base_environment={**os.environ, "SIM_COMPOSE_OVERLAY": "local"}
+            if getattr(config, "launch_mode", "unattended") == "operator" else None,
             monotonic=self.monotonic,
         )
 
@@ -717,17 +722,63 @@ class RunController:
                 os.close(descriptor)
             os.close(logs_fd)
 
+    def _wait_operator_admission(
+        self, config: RunConfig, run_directory: Path, store: StatusStore,
+        compose: Any, lifecycle: RunLifecycle, deadline: float,
+    ) -> tuple[RunLifecycle, TerminalCause | None]:
+        from artifacts.operator_protocol import OperatorProtocol, OperatorProtocolError
+
+        first_sequences: dict[str, int] = {}
+        checker = self._deadline_check(deadline)
+        try:
+            with OperatorProtocol(run_directory, config.run_id, config.config_sha256) as protocol:
+                while True:
+                    checker()
+                    cause = self._observed_cause(store, config.run_id, compose, config.topology, deadline, checker)
+                    if cause is not None:
+                        return lifecycle, cause
+                    snapshot = preflight_snapshot(protocol)
+                    advancing = True
+                    for name, facts in snapshot["components"].items():
+                        first = first_sequences.setdefault(name, facts["sequence"])
+                        advancing = advancing and facts["sequence"] > first
+                    if lifecycle.state is LifecycleState.READY and snapshot["ready"] and advancing:
+                        lifecycle = lifecycle.apply(LifecycleEvent.PREFLIGHT_READY)
+                        store.write_operator_status(self._status(lifecycle))
+                    request = protocol.read_start_request()
+                    if request is not None:
+                        if lifecycle.state is LifecycleState.PREPARED:
+                            lifecycle = lifecycle.apply(LifecycleEvent.START_MISSION)
+                            store.write_operator_status(self._status(lifecycle))
+                        readiness = protocol.read_start_readiness()
+                        if readiness is not None and not readiness.ready:
+                            return lifecycle, TerminalCause("preflight", readiness.detail or "mission_start_rejected")
+                        admission = protocol.read_start_admission()
+                        if admission is not None:
+                            if lifecycle.state is not LifecycleState.STARTING_MISSION:
+                                raise ProtocolFileError("mission admission before prepared lifecycle")
+                            return lifecycle, None
+                    self.sleep(min(self.poll_interval, self._remaining(deadline, self.monotonic)))
+        except TimeoutError:
+            return lifecycle, TerminalCause("preparation_deadline", "preparation_wall_deadline")
+        except OperatorProtocolError as error:
+            raise ProtocolFileError(str(error)) from error
+
+    @exclusive_run
     def start(
         self,
         config_path: Path | str,
         *,
         auxiliary_services: Sequence[str] = (),
         on_allocated: Callable[[str, Path], None] | None = None,
+        launch_mode: str | None = None,
+        preparation_wall_seconds: int | None = None,
+        output_root: Path | None = None,
     ) -> RunResult:
         auxiliaries = tuple(auxiliary_services)
-        if auxiliaries not in {(), ("operator-wait-runtime",)}:
+        if auxiliaries not in {(), ("operator-wait-runtime",), ("gazebo-viewer",)}:
             raise ValueError(
-                "auxiliary_services must be empty or ('operator-wait-runtime',)"
+                "unsupported auxiliary_services"
             )
         try:
             config = resolve_run_config(
@@ -737,10 +788,14 @@ class RunController:
                 calibration_profile_factory=lambda: build_source_calibration_profile(
                     self.project_directory
                 ),
+                launch_mode=launch_mode,
+                preparation_wall_seconds=preparation_wall_seconds,
+                output_root=output_root,
             )
         except (OSError, ValueError) as exc:
             raise ControllerError(str(exc)) from exc
         topology = config.topology
+        operator_mode = getattr(config, "launch_mode", "unattended") == "operator"
         store = self.status_store_factory(config.output_root)
         run_directory = store.allocate(config.run_id)
         if on_allocated is not None:
@@ -802,10 +857,9 @@ class RunController:
                     f"compose_factory_exception:{type(exc).__name__}",
                 )
                 compose = _UnavailableCompose(config.run_id, str(exc))
-            startup_deadline = min(
-                mono_started + config.startup_wall_seconds,
-                mono_started + config.max_wall_seconds,
-            )
+            startup_deadline = mono_started + config.startup_wall_seconds
+            if not operator_mode:
+                startup_deadline = min(startup_deadline, mono_started + config.max_wall_seconds)
             if primary is None:
                 try:
                     source_revisions = self._source_revisions(startup_deadline)
@@ -899,9 +953,15 @@ class RunController:
                             compose,
                             topology,
                             MissionReadyStatus,
-                            overall_deadline,
+                            startup_deadline if operator_mode else overall_deadline,
                             TerminalCause("mission_stall", "mission_readiness_stall"),
                         )
+                    if primary is None and operator_mode:
+                        lifecycle, primary = self._wait_operator_admission(
+                            config, run_directory, store, compose, lifecycle,
+                            self.monotonic() + config.preparation_wall_seconds,
+                        )
+                        overall_deadline = self.monotonic() + config.max_wall_seconds
                     if primary is None:
                         running, primary = self._wait_for(
                             store,
@@ -928,6 +988,12 @@ class RunController:
                         )
                         if finished is not None:
                             sim_end_ns = finished.sim_timestamp_ns
+                    if primary is None and config.runtime_profile == "phase3":
+                        if operator_mode:
+                            from artifacts.operator_protocol import OperatorProtocol
+                            with OperatorProtocol(run_directory, config.run_id, config.config_sha256) as operator:
+                                if operator.read_flight_abort_request() is not None:
+                                    primary = TerminalCause("operator_abort", "flight_abort_window_finished")
                     if primary is None and config.runtime_profile == "phase3":
                         mission_finished, primary = self._wait_for(
                             store,
@@ -1236,6 +1302,20 @@ class RunController:
                 if (sim_start_ns is None) != (sim_end_ns is None):
                     sim_start_ns = None
                     sim_end_ns = None
+                admission_records: tuple[ConfigurationRecord, ...] = ()
+                if operator_mode:
+                    from artifacts.operator_protocol import OperatorProtocol, OperatorProtocolError
+                    try:
+                        with OperatorProtocol(run_directory, config.run_id, config.config_sha256) as operator:
+                            admission_record = operator.start_admission_configuration_record()
+                        if admission_record is not None:
+                            admission_records = (ConfigurationRecord(*admission_record),)
+                        elif requested == "COMPLETED":
+                            raise OperatorProtocolError("completed operator run has no start admission")
+                    except OperatorProtocolError as error:
+                        requested = "FAILED"
+                        reason = f"start_admission_invalid:{error}"
+                        primary = primary or TerminalCause("provenance", reason)
                 request = FinalizationInput(
                     run_id=config.run_id,
                     requested_terminal=requested,
@@ -1248,6 +1328,7 @@ class RunController:
                     image_digests=image_digests,
                     configuration_records=(
                         ConfigurationRecord("configuration/run.json", config.config_sha256),
+                        *admission_records,
                         *(
                             (
                                 ConfigurationRecord(
@@ -1475,6 +1556,48 @@ class RunController:
         if not path.is_absolute():
             raise ControllerError("output root must be absolute")
         return path
+
+    def start_mission(self, run_id: str, output_root: Path | str, *, request_id: str) -> RunResult:
+        from artifacts.operator_protocol import OperatorProtocol
+
+        root = self._absolute_output_root(output_root)
+        store = self.status_store_factory(root)
+        status = store.read_operator_status(run_id)
+        directory = root / run_id
+        config = load_run_config(directory / "configuration/run.json")
+        if config.launch_mode != "operator":
+            raise ControllerError("explicit start requires an operator session")
+        with OperatorProtocol(directory, run_id, config.config_sha256) as protocol:
+            existing = protocol.read_start_request()
+            if existing is not None:
+                protocol.write_start_request(request_id)
+                return self.status(run_id, root)
+            if status.state != "PREPARED":
+                raise ControllerError("mission start requires a prepared session")
+            snapshot = preflight_snapshot(protocol)
+            if not snapshot["ready"]:
+                raise ControllerError("; ".join(snapshot["reasons"]))
+            if store.read_finalize_request(run_id) is not None:
+                raise ControllerError("session is finalizing")
+            protocol.write_start_request(request_id)
+        return RunResult(run_id, "STARTING_MISSION", "mission_start_requested", None)
+
+    def abort_flight(self, run_id: str, output_root: Path | str, *, request_id: str) -> RunResult:
+        from artifacts.operator_protocol import OperatorProtocol
+
+        root = self._absolute_output_root(output_root)
+        store = self.status_store_factory(root)
+        status = store.read_operator_status(run_id)
+        if status.state != "RUNNING" or store.read_finalize_request(run_id) is not None:
+            raise ControllerError("flight abort requires a running session")
+        directory = root / run_id
+        config = load_run_config(directory / "configuration/run.json")
+        with OperatorProtocol(directory, run_id, config.config_sha256) as protocol:
+            admission = protocol.read_start_admission()
+            if admission is None:
+                raise ControllerError("flight abort requires mission start admission")
+            protocol.write_flight_abort_request(request_id, admission.sha256)
+        return RunResult(run_id, "RUNNING", "flight_abort_requested", None)
 
     def status(self, run_id: str, output_root: Path | str) -> RunResult:
         store = self.status_store_factory(self._absolute_output_root(output_root))

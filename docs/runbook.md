@@ -47,6 +47,119 @@ runtime import closure; adding a new mission module may require updating it.
 
 ## Build runtime images
 
+### Local Mac console
+
+Use the PR #3 based checkout with native arm64 Colima and QGroundControl at
+`/Applications/QGroundControl.app`. The Linux simulator and desktop run on this
+workstation; no active cloud runner is needed. Keep at least 8 GiB free for
+flight evidence after the image build. Initial native builds require much more
+disk and time; the console reports the actual resources and image identity.
+
+```bash
+colima start --arch aarch64 --cpu 6 --memory 12 --disk 80
+uv sync --python 3.12 --locked
+uv run --locked drone-sim console
+```
+
+The console uses port 8765. The local overlay publishes Gazebo desktop on 6080,
+onboard camera on 8081, and the dedicated SITL GCS channel on TCP 5762, all on
+loopback. A host bridge connects that channel to native QGC's UDP 14550 discovery
+listener, independently of the companion's connection. Keep QGC's normal UDP
+auto-connect enabled. Opening an already-running QGC focuses it; cleanup does
+not close the application.
+
+1. Click **Build matching images** if the source/image check requires it. This
+   is explicit and uses Docker's build cache. Build output appears in the log
+   panel and `.local-runtime/build.log`. The equivalent terminal commands are:
+
+   ```bash
+   ./scripts/local-build.sh --build
+   ./scripts/local-build.sh --check
+   ```
+
+   The build record binds the current revision, runtime input content, native
+   platform, Docker context, and all eight image IDs. Source or image changes
+   require a matching build before another preparation. Preserve image tags
+   during a run and finalization.
+
+2. Choose the world and a compatible preset. These are complete tuples from
+   `config/ci-suite.json`; the UI does not synthesize arbitrary combinations.
+   Reload validation requires the absolute directory of an independently
+   accepted calibration run. The console still validates that run's calibration
+   identity against the current firmware, airframe, and images.
+
+3. Click **Prepare simulation**. QGC opens; Gazebo and the camera connect in the
+   browser. Native physics and camera frames advance while the vehicle stays
+   disarmed. The separate preflight limit defaults to 30 wall minutes. Warmup
+   and rendering may take substantial wall time at a preset's configured pace.
+   Inspect the live views; Start remains unavailable until current observations
+   and all operator connections are ready.
+
+4. Click **Start mission**. One immutable request admits one mission epoch;
+   refreshing the browser or retrying the request does not create another
+   flight. Automatic presets retain onboard command ownership. The
+   **Operator Wait** preset specifically requires you to select GUIDED and arm
+   in QGC after mission start, then its companion sequence continues.
+
+5. **Abort flight** invokes guarded onboard recovery and reports observed
+   progress. A rejected command, stale telemetry, timeout, or manual takeover
+   remains visible. **Stop simulation** requests finalization and teardown,
+   including before mission start; it may interrupt an airborne vehicle.
+   Wait for cleanup before **Run again**, which allocates a new run identity and
+   returns to preparation.
+
+The streamed Gazebo GUI supports navigation, selection, and read-only inspection.
+World mutation controls are excluded. QGC retains its native operator controls;
+manual commands are recorded in `logs/docker/qgc-interventions.jsonl` and flight
+supervisors observe changes in authority. A stale camera image is visibly marked
+and cannot establish readiness. Closing a browser tab leaves the session owner
+running; reload the console to reconnect. Interrupting the console process asks
+the active controller to finalize before exit.
+
+The local artifacts service uses a run-scoped **Docker named volume** for its
+recording spool because both the macOS shared directory and this Colima writable
+container layer reject `O_TMPFILE`. Closed media is published to the host evidence
+directory before recorder finalization is reported. Do not replace the spool
+with a macOS bind mount or remove it while recording/finalizing.
+
+CLI actions use the same persistent console, running in another terminal:
+
+```bash
+uv run --locked drone-sim prepare --preset configured-descent
+uv run --locked drone-sim start-mission RUN_ID --request-id REQUEST_UUID
+uv run --locked drone-sim abort-flight RUN_ID --request-id ABORT_UUID
+uv run --locked drone-sim stop RUN_ID
+uv run --locked drone-sim status RUN_ID
+uv run --locked drone-sim collect-results RUN_ID
+```
+
+Use a stable request UUID when retrying Start or Abort Flight. `stop` without a
+run ID cancels the current preparation as well. Add `--port` to console actions
+when using a nondefault console port. The original `start` and `suite` commands
+remain unattended workflows; original `abort` means simulator finalization.
+
+Evidence remains under `runs/RUN_ID/`. The console displays physical completion,
+score, artifact validity, and cleanup separately. `configuration/run.json` stays
+frozen; `configuration/start-admission.json` records the actual native/public
+clock mapping. Read the committed manifest as terminal authority. If the owner
+crashes, the next console identifies the orphaned session and blocks another
+preparation until cleanup. Its interrupted evidence does not acquire a fabricated
+landing or artifact-validity claim.
+
+Focused host checks, including the new typed operator boundary:
+
+```bash
+uv run --locked mypy
+uv run --locked pytest orchestration/tests/test_operator_controller.py \
+  orchestration/tests/test_operator_session.py orchestration/tests/test_console_http.py -q
+```
+
+Some existing fault-injection and recorder tests require Linux `/proc` and
+`O_TMPFILE`; run those on Linux storage rather than treating macOS collection
+compatibility as a recorder verification.
+
+### Existing unattended image build
+
 The build **changes local image tags**, not source files. Avoid rebuilding tags
 while another run is collecting provenance. Preserve old digests if you intend
 to inspect an old run later.

@@ -103,6 +103,38 @@ interfaces, implementation entry points, tests, and important constraints.
 
 ## Shared communication guarantees
 
+### Operator preparation and admitted mission time
+
+The local console and its CLI share one persistent host session owner. The
+approved preset determines the entire world/vehicle/mission configuration.
+Browser reconnection observes that session; it does not allocate a replacement.
+The workstation lease spans direct launches, suites, preparation, and teardown.
+
+`launch_mode: operator` keeps native Gazebo physics and private camera observations
+live while holding initial mission commands. Host `PREPARED` requires advancing
+fresh preflight facts and an observed disarmed healthy vehicle. Its independent
+wall-time limit does not consume the mission budget. The browser additionally
+checks the streamed desktop, real camera freshness, and native QGC connection.
+
+The shared [operator protocol](../artifacts/src/artifacts/operator_protocol.py)
+binds start requests to run/configuration identity. The companion rechecks
+request-scoped readiness; Gazebo selects and latches a native 50 ms grid epoch.
+`configuration/start-admission.json` immutably binds that epoch to public zero,
+the request digest, and the unchanged configuration digest. Runtime producers
+validate the same admission; recorded run-state evidence and the final manifest
+retain its digest. Private preparation frames never become public mission frames.
+Existing unattended launch mode retains its original fixed-epoch behavior.
+
+Flight abort has a distinct durable request and observed recovery history. It
+stops mission intent through the selected onboard host's guarded recovery path
+while keeping runtime observation available. Stop Simulation uses finalization
+and teardown and can end a flight without a landing. QGC remains an active
+operator application; its manual commands and observed authority changes are
+evidence, not a promise of read-only operation. The Gazebo desktop excludes
+ungoverned world mutation controls.
+
+### Existing runtime contracts
+
 Configured missions validate their fixed sequence before opening live resources.
 The plan is frozen under the run configuration checksum. Each operation waits
 for observed success before the next starts; failure ends the sequence. Final

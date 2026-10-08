@@ -17,7 +17,9 @@ validates; it does not infer physical success from a command or log message.
 
 - The installed `drone-sim` command maps to [`cli.main`](src/orchestration/cli.py)
   through [`pyproject.toml`](pyproject.toml). Its operator commands are `start`,
-  `status`, `abort`, `collect-results`, and `suite`.
+  `status`, `abort`, `collect-results`, and `suite`. `console` hosts the local
+  browser interface; `prepare`, `start-mission`, `abort-flight`, and `stop` call
+  that same persistent operator boundary.
 - [`RunController`](src/orchestration/controller.py) owns run allocation, Compose
   supervision, deadlines, terminal-cause selection, log capture, and manifest
   commit.
@@ -53,6 +55,38 @@ recordings follow the [full-suite workflow](../docs/runbook.md#run-the-full-miss
 
 ## Consumer and producer seams
 
+For local operator sessions, [`operator_session.py`](src/orchestration/operator_session.py)
+keeps the controller alive independently of browser connections. The approved
+[`catalog.py`](src/orchestration/catalog.py) reads complete CI preset tuples;
+[`console.py`](src/orchestration/console.py) exposes loopback-only JSON actions,
+static UI, and bounded camera proxy connections. Mutations require a local host,
+local origin, and per-server token. The CLI uses
+[`console_client.py`](src/orchestration/console_client.py), not a second controller.
+
+Host lifecycle adds `PREPARED` and `STARTING_MISSION`. Preparation requires fresh,
+advancing Gazebo observations and fresh disarmed companion preflight. The
+controller waits for an immutable admitted native epoch before starting the
+mission wall budget. Start retries with the same identity return the existing
+request; competing identities fail. Run configuration stays immutable and the
+admission checksum becomes a separate manifest configuration record.
+
+[`workstation.py`](src/orchestration/workstation.py) shares the workstation lease
+across direct launches, suites, and console workers; controller calls nested
+inside a suite reuse its lease. Prerequisites and image provenance are checked by
+[`local_runtime.py`](src/orchestration/local_runtime.py). Failed cleanup or an
+orphaned owner blocks another preparation. An interrupted owner can be cleaned
+up while preserving evidence, without inventing a completed manifest.
+
+[`gcs_bridge.py`](src/orchestration/gcs_bridge.py) forwards the dedicated SITL GCS
+MAVLink connection to native QGC, preserves wire frames, and inventories manual
+control commands under `logs/docker/`. It originates no mission commands and
+stops forwarding commands once finalization is requested. The companion still
+owns automatic flight and guarded recovery. Recovery facts do not imply runtime
+shutdown; the separate stop action invokes existing finalization.
+
+The [local console workflow](../docs/runbook.md#local-mac-console) defines the
+operator commands, port and spool requirements, and view semantics.
+
 The CLI consumes templates such as [`config/default-run.json`](../config/default-run.json).
 The resolved configuration selects one immutable service ownership topology; the
 actual service definitions and container commands live in [`compose.yaml`](../compose.yaml).
@@ -67,6 +101,15 @@ persists it in `configuration/run.json`. Exact tool names and arguments are
 validated by the companion. Examples are
 [automatic descent](../config/configured-descent-run.json) and
 [operator waiting](../config/configured-operator-run.json).
+
+Every resolved run also freezes `launch_mode` and
+`preparation_wall_seconds`; the defaults are `unattended` and 1800 wall
+seconds. Operator mode keeps simulation live and disarmed during preparation,
+then waits for an immutable start request, companion readiness, and Gazebo's
+request-scoped admission. The admission digest is published in `RunState` from
+`RUNNING` onward so each runtime producer can reject a different or missing
+decision. Unattended mode retains the fixed-epoch startup path and publishes an
+empty admission digest.
 
 An `autotune` run receives a host-generated `calibration_profile` in its resolved
 configuration before Compose starts. The version-2 profile binds the shared physics of `iris_flight`,

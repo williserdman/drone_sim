@@ -195,7 +195,35 @@ def test_help_lists_operator_and_suite_commands():
     assert stderr == ""
     for command in ("start", "suite", "status", "abort", "collect-results"):
         assert command in stdout
-    assert "{start,suite,status,abort,collect-results}" in stdout
+    for command in ("console", "prepare", "start-mission", "abort-flight", "stop"):
+        assert command in stdout
+
+
+@pytest.mark.parametrize("command", ["start-mission", "abort-flight"])
+def test_operator_commands_delegate_to_persistent_console(command):
+    calls = []
+    output, errors = io.StringIO(), io.StringIO()
+    def client(action, body, *, port):
+        calls.append((action, body, port))
+        return {"run_id": RUN_ID, "state": "RUNNING"}
+    code = main([command, RUN_ID, "--request-id", RUN_ID, "--port", "9876"],
+                console_client=client, stdout=output, stderr=errors)
+    assert code == 0 and errors.getvalue() == ""
+    assert calls == [(command, {"run_id": RUN_ID, "request_id": RUN_ID}, 9876)]
+    assert json.loads(output.getvalue())["run_id"] == RUN_ID
+
+
+def test_prepare_selects_catalog_preset_without_starting_mission():
+    calls = []
+    output, errors = io.StringIO(), io.StringIO()
+    def client(action, body, *, port):
+        calls.append((action, body))
+        return {"state": "PREPARING"}
+    code = main(["prepare", "--preset", "moving-pad", "--request-id", RUN_ID],
+                console_client=client, stdout=output, stderr=errors)
+    assert code == 0 and errors.getvalue() == ""
+    assert calls == [("prepare", {"preset_id": "moving-pad", "request_id": RUN_ID,
+                                  "preparation_wall_seconds": 1800})]
 
 
 @pytest.mark.parametrize('state,exit_code',[('PASSED',0),('FAILED',1),('SETUP_FAILED',2),('INTERRUPTED',130)])

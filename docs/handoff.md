@@ -3,6 +3,30 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
+## Local console work — 2026-10-08
+
+Implementation is on `feature/local-simulation-console` in the user-approved
+sibling worktree, based on PR #3 head `646892f`. The original local checkout and
+cloud evidence are preserved. The shared `upstream` remote points to
+`williserdman/drone_sim`.
+
+Current local verification: host console HTTP/CLI, preset filtering, idempotent
+start/recovery controls, independent preparation budget, admission manifest
+binding, and real TCP/UDP QGC bridge tests have passed. Chrome smoke verification
+covered filtering, the manual-preset notice, disabled premature start, and no
+JavaScript errors. Companion focused checks: 352 passed. Static checks cover the
+new host boundary. These checks do not establish a local flight outcome.
+
+Colima is running native arm64 with 6 CPUs and 12 GiB RAM. The pinned ROS base
+supports arm64. Native image builds and actual simulator/view acceptance are
+still in progress. Actual probes found that macOS shared folders and this
+container writable layer reject `O_TMPFILE`; a named Docker volume supports it.
+The local artifact spool and publication path addresses that deployment boundary
+without weakening Linux recorder validation. Follow [the ledger](LEDGER.md) for
+current build failures/fixes and the final acceptance evidence.
+
+## Cloud branch checkpoint
+
 Audited 2026-10-08. Branch `feat/manual-ci-suite` extends
 `design/moving-pad-landing`, which adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
