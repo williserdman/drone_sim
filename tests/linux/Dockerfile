@@ -8,6 +8,7 @@ RUN apt-get update \
         docker-compose \
         ffmpeg \
         git \
+        make \
         zstd \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir "uv==0.9.28" \

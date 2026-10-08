@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 let token = "", presets = [], current = {}, shownRun = null, busy = false;
 let startRequest = null, abortRequest = null, prepareRequest = null, cameraFailed = false;
-let gazeboConnected = false;
+let gazeboAvailable = false;
 const terminal = new Set(["COMPLETED", "FAILED", "ABORTED", "INTERRUPTED"]);
 const text = (id, value) => { $(id).textContent = value ?? "—"; };
 const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
@@ -80,15 +80,15 @@ function render(snapshot) {
   renderChecks(snapshot.checks);
   if (snapshot.run_id && snapshot.run_id !== shownRun) {
     shownRun = snapshot.run_id; startRequest = null; abortRequest = null;
-    gazeboConnected = false;
+    gazeboAvailable = false;
     show("gazebo", false); show("gazebo-empty", true); connectCamera();
   }
   const views = snapshot.views || {}, vehicle = views.qgc || {};
-  if (views.gazebo?.connected && !gazeboConnected) {
-    $("gazebo").src = "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote";
+  if (views.gazebo?.available && !gazeboAvailable) {
+    $("gazebo").src = `http://127.0.0.1:6080/operator.html?run=${encodeURIComponent(snapshot.run_id)}`;
     show("gazebo", true); show("gazebo-empty", false);
   }
-  gazeboConnected = Boolean(views.gazebo?.connected);
+  gazeboAvailable = Boolean(views.gazebo?.available);
   viewStatus("gazebo-status", Boolean(views.gazebo?.connected));
   const cameraLive = Boolean(views.camera?.fresh) && !cameraFailed;
   viewStatus("camera-status", cameraLive, cameraLive ? "Live sensor" : snapshot.run_id ? "Stale / disconnected" : "Disconnected");
@@ -110,6 +110,7 @@ async function results() {
   text("result-lifecycle", manifest?.terminal_status || (current.run_id ? "Awaiting terminal manifest" : "—"));
   text("result-physical", result.physical_outcome ? "Mission completion observed" : current.recovery?.state === "landed_disarmed" ? "Recovered: landed & disarmed" : "Not established");
   text("result-score", result.score?.achieved_score != null ? `${result.score.achieved_score} / ${result.score.maximum_available_score}` : "Not available");
+  text("result-intervention", !current.run_id ? "—" : result.interventions ? "Manual commands recorded" : "None recorded");
   text("result-artifacts", manifest ? (manifest.incomplete_paths?.length ? "Incomplete / invalid" : manifest.artifacts?.every((item) => item.validation === "valid") ? "Valid" : "See manifest validation") : "Not finalized");
   text("result-details", pretty(result));
 }
@@ -139,6 +140,12 @@ $("build").addEventListener("click", () => action(() => api("build", {})));
 $("camera-reconnect").addEventListener("click", connectCamera);
 $("camera").addEventListener("error", () => { cameraFailed = true; show("camera-stale", true); });
 $("camera").addEventListener("load", () => { cameraFailed = false; show("camera-empty", false); });
+window.addEventListener("message", (event) => {
+  if (event.origin !== "http://127.0.0.1:6080" || event.source !== $("gazebo").contentWindow
+      || event.data?.type !== "drone-sim-desktop" || event.data.run_id !== current.run_id
+      || typeof event.data.connected !== "boolean") return;
+  api("viewer-status", {run_id: current.run_id, connected: event.data.connected}).catch(() => {});
+});
 
 (async () => {
   try {

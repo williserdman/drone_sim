@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gazebo desktop</title>
+  <style>
+    html, body, #desktop { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #172128; }
+    #status { position: absolute; top: 12px; left: 12px; color: white; background: #172128; padding: 8px; font: 14px sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="desktop"></div><div id="status">Connecting to Gazebo…</div>
+  <script type="module">
+    import RFB from './core/rfb.js';
+    const runId = new URLSearchParams(location.search).get('run');
+    let connected = false, client;
+    function report() {
+      parent.postMessage({type: 'drone-sim-desktop', run_id: runId, connected}, '*');
+    }
+    function connect() {
+      client = new RFB(document.getElementById('desktop'), `ws://${location.host}/websockify`);
+      client.scaleViewport = true;
+      client.resizeSession = true;
+      client.addEventListener('connect', () => {
+        connected = true;
+        document.getElementById('status').hidden = true;
+        report();
+      });
+      client.addEventListener('disconnect', () => {
+        connected = false;
+        document.getElementById('status').hidden = false;
+        document.getElementById('status').textContent = 'Disconnected. Reconnecting…';
+        report();
+        setTimeout(connect, 2000);
+      });
+    }
+    connect();
+    setInterval(report, 1500);
+    window.addEventListener('pagehide', () => { connected = false; report(); client.disconnect(); });
+  </script>
+</body>
+</html>

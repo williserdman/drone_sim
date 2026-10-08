@@ -55,6 +55,7 @@ class OperatorSession:
         self._worker: threading.Thread | None = None
         self._cancel = threading.Event()
         self._bridge: GcsBridge | None = None
+        self._desktop_observation: tuple[str, bool, float] | None = None
         self._record: dict[str, Any] = {"state": "IDLE", "run_id": None, "preset_id": None,
                                          "prepare_request_id": None, "error": "", "cleanup": "not started"}
         self._checks: dict[str, Any] | None = None
@@ -202,7 +203,10 @@ class OperatorSession:
             self._cancel.set()
             if self._record.get("run_id") is not None:
                 directory = Path(self._record["run_directory"])
-                self.controller.abort(self._record["run_id"], directory.parent)
+                status = self.controller.status(self._record["run_id"], directory.parent)
+                reason = ("prepared_cancelled" if status.state in {"CREATED", "STARTING", "READY", "PREPARED"}
+                          else "simulation_stop")
+                self.controller.abort(self._record["run_id"], directory.parent, reason=reason)
                 if self._record["state"] == "ORPHANED":
                     self._worker = threading.Thread(target=self._cleanup_orphan, name="orphan-cleanup")
                     self._record["state"] = "FINALIZING"
@@ -237,17 +241,29 @@ class OperatorSession:
 
     def _views(self) -> dict[str, Any]:
         views: dict[str, Any] = {"qgc": self._bridge.status() if self._bridge else {"fresh": False},
-                                 "gazebo": {"connected": False}, "camera": {"fresh": False}}
+                                 "gazebo": {"available": False, "connected": False}, "camera": {"fresh": False}}
         for name, url in (("gazebo", "http://127.0.0.1:6080/vnc.html"), ("camera", "http://127.0.0.1:8081/status")):
             try:
                 with urlopen(url, timeout=0.5) as response:
                     if name == "camera":
                         views[name] = json.loads(response.read(65536))
                     else:
-                        views[name] = {"connected": response.status == 200}
+                        observation = self._desktop_observation
+                        connected = (observation is not None and observation[0] == self._record.get("run_id")
+                            and observation[1] and time.monotonic() - observation[2] < 5)
+                        views[name] = {"available": response.status == 200,
+                                       "connected": response.status == 200 and connected}
             except (OSError, ValueError):
                 pass
         return views
+
+    def viewer_status(self, *, run_id: str, connected: bool) -> dict[str, bool]:
+        if type(connected) is not bool:
+            raise ValueError("desktop connection state must be boolean")
+        with self._lock:
+            self._current(run_id)
+            self._desktop_observation = (run_id, connected, time.monotonic())
+        return {"observed": True}
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

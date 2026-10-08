@@ -5,9 +5,16 @@ import time
 import pytest
 
 from orchestration.operator_session import OperatorSession
+from orchestration.workstation import workstation_lock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def isolated_workstation_lease(tmp_path, monkeypatch):
+    monkeypatch.setattr("orchestration.operator_session.workstation_lock",
+                        lambda: workstation_lock(tmp_path / "workstation.lock"))
 
 
 class Runtime:

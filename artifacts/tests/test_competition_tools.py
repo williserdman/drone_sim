@@ -238,6 +238,12 @@ def test_verification_writer_refuses_forged_manifest_and_result_only_bundle(
 
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
 
+    # Supply external image identity while retaining the real bundle inspector.
+    # Missing Docker images must not mask the malformed-evidence rejection.
+    import importlib
+    inspector = importlib.import_module("inspect_competition_run")
+    monkeypatch.setattr(inspector, "_image_digest", lambda _runner, _image: "a" * 64)
+
     with pytest.raises(
         ValueError, match="canonical competition inspection failed"
     ) as raised:

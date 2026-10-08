@@ -1620,7 +1620,9 @@ class RunController:
             )
         return RunResult(status.run_id, status.state, status.reason, status.manifest_path)
 
-    def abort(self, run_id: str, output_root: Path | str) -> RunResult:
+    def abort(self, run_id: str, output_root: Path | str, *, reason: str = "operator_abort") -> RunResult:
+        if reason not in {"operator_abort", "simulation_stop", "prepared_cancelled"}:
+            raise ValueError("unknown simulator shutdown reason")
         store = self.status_store_factory(self._absolute_output_root(output_root))
         committed = store.validated_manifest_result(run_id)
         if committed is not None:
@@ -1630,7 +1632,7 @@ class RunController:
                 committed.reason,
                 "manifest.json",
             )
-        store.request_finalization(run_id, "ABORTED", "operator_abort")
+        store.request_finalization(run_id, "ABORTED", reason)
         committed = store.validated_manifest_result(run_id)
         if committed is not None:
             return RunResult(

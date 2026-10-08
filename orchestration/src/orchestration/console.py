@@ -137,6 +137,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if not isinstance(document, dict):
                 raise ValueError("body must be an object")
             actions = {"/api/prepare": "prepare", "/api/start-mission": "start_mission",
+                       "/api/viewer-status": "viewer_status",
                        "/api/abort-flight": "abort_flight", "/api/stop": "stop",
                        "/api/open-qgc": "open_qgc", "/api/build": "build"}
             action = actions.get(self.path)

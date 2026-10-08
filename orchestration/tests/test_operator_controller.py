@@ -69,3 +69,10 @@ def test_flight_abort_requires_admission_and_does_not_request_teardown(tmp_path)
     controller.abort_flight(config.run_id, tmp_path, request_id=request_id)
     assert (directory / ".control/flight-abort-request.json").exists()
     assert not (directory / ".control/finalize-request.json").exists()
+
+
+def test_simulation_stop_records_shutdown_distinct_from_recovery(tmp_path):
+    config, store, directory = prepared(tmp_path)
+    RunController(project_directory=ROOT).abort(config.run_id, tmp_path, reason="simulation_stop")
+    assert store.read_finalize_request(config.run_id)["reason"] == "simulation_stop"
+    assert not (directory / ".control/flight-abort-request.json").exists()
