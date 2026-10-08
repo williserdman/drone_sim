@@ -1,5 +1,7 @@
 FROM ros:jazzy-ros-base@sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4 AS runtime
 
+ARG TARGETARCH
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         python3-venv=3.12.3-0ubuntu2.1 \
@@ -12,7 +14,14 @@ RUN apt-get update \
         ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.095159 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY artifacts/ffmpeg-packages.lock /etc/drone_sim/ffmpeg-packages.lock
+COPY artifacts/ffmpeg-packages.lock /etc/drone_sim/ffmpeg-packages.amd64.lock
+COPY artifacts/ffmpeg-packages.arm64.lock /etc/drone_sim/ffmpeg-packages.arm64.lock
+RUN case "${TARGETARCH}" in \
+        amd64|arm64) ;; \
+        *) printf 'unsupported target architecture: %s\n' "${TARGETARCH}" >&2; exit 2 ;; \
+    esac \
+    && cp "/etc/drone_sim/ffmpeg-packages.${TARGETARCH}.lock" \
+        /etc/drone_sim/ffmpeg-packages.lock
 RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
         | sed -E 's/:(amd64|arm64)=/=/g' \
         | sort > /tmp/packages-before-ffmpeg \

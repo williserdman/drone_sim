@@ -194,6 +194,22 @@ def test_gazebo_runtime_chooses_a_complete_lock_for_the_target_architecture() ->
     assert any(item.startswith("python3-wheel=") for item in locked)
 
 
+def test_artifacts_runtime_chooses_an_exact_ffmpeg_lock_for_target_architecture() -> None:
+    dockerfile = (ROOT / "artifacts/Dockerfile").read_text(encoding="utf-8")
+    arm_lock = ROOT / "artifacts/ffmpeg-packages.arm64.lock"
+
+    assert "ARG TARGETARCH" in dockerfile
+    assert arm_lock.is_file()
+    assert "ffmpeg-packages.${TARGETARCH}.lock" in dockerfile
+    assert "sed -E 's/:(amd64|arm64)=/=/g'" in dockerfile
+    locked = arm_lock.read_text(encoding="utf-8").splitlines()
+    assert locked == sorted(set(locked))
+    assert locked
+    assert all(re.fullmatch(r"[a-z0-9][a-z0-9+.-]*=[^\s=]+", item) for item in locked)
+    for package in ("ffmpeg", "libavcodec60", "libx264-164"):
+        assert any(item.startswith(f"{package}=") for item in locked)
+
+
 def test_ardupilot_uses_a_native_locked_arm64_base_without_changing_amd64() -> None:
     dockerfile = (ROOT / "ardupilot_sitl/Dockerfile").read_text(encoding="utf-8")
     arm_lock = ROOT / "ardupilot_sitl/build-packages.arm64.lock"
