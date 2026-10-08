@@ -44,15 +44,16 @@ and bundle paths are in `suites/be09da8c-d096-4b34-82ac-de5b05d25d30/report.json
 At `8896714`, the full host/module checks passed 2,350 tests with 27 environment
 skips; all 1,129 imported mission tests passed. Lockfile, compilation and diff
 checks passed. The companion image rebuilt successfully and its real import
-smoke passed before the focused native cases above. Their source and all seven
+smoke passed before the focused native cases below. Their source and all seven
 image identities remain frozen in
 `runs/diagnostics/20261008-8896714-startup-paths/`.
 
-The startup repair now waits for actual fresh ground observations,
-live heartbeat, healthy prearm state and matching parameters before declaring
+The later startup repair waits for actual fresh ground observations, live
+heartbeat, healthy prearm state and matching parameters before declaring
 competition readiness. It preserves the existing startup deadline and command
-admission guard. Focused checks passed 81 parent and 236 imported tests. Its
-native verification is still pending.
+admission guard. The simulation adapter also suppresses DroneKit's automatic
+indexed parameter retries while preserving real cache contents, completion
+state, explicit requests and the unchanged readback gate.
 
 Passive MAVLink capture of roll AutoTune run
 `bfb4face-517a-41ac-876d-9526afbc9812` established a separate parameter retry
@@ -61,18 +62,36 @@ flood: at the 90.029-second private boundary, 48,450 indexed requests had produc
 The controller then stopped responding while the sender continued retrying;
 normal diagnostic abort finalized the run as `ABORTED`, 0/100, not accepted.
 DroneKit starts these wall-clock retries on early unsolicited values, before
-the complete-list request. The simulation adapter now suppresses automatic
-indexed retries while preserving real cache contents, completion state, explicit
-requests and the unchanged readback gate. Native verification remains pending;
-this repair does not establish a flight or suite pass.
+the complete-list request.
 
-The combined startup repairs passed 2,358 host/module tests with 27 skips and
-all 1,130 imported mission tests. One host test initially failed because the
-live native diagnostic held the real workstation suite lock. After its
-teardown, `test_suite_lock_spans_different_output_roots` passed separately,
-bringing the host/module checks to 2,359 passing tests. The runtime lock remains
-unchanged. Lockfile, compilation and diff checks passed. No image containing
-these startup repairs has flown yet.
+The combined startup repairs were rebuilt from clean `d878ac3`; the frozen
+source and seven image identities are recorded under
+`runs/diagnostics/20261008-d878ac3-startup-paths/`. Native reruns then established
+separate outcomes:
+
+- Hover-roll `473cbcab-a1eb-4adc-a156-f584cbcd6396` finished `LANDED`, scored
+  100/100, produced three complete valid final artifacts, and passed independent
+  acceptance.
+- Stationary-pad `96e73251-c39d-4ab4-8384-b4a98275f5e5` finished `LANDED`,
+  scored 100/100, produced three complete valid final artifacts, and passed
+  independent acceptance. Its detailed physical evidence and later IMU finding
+  are recorded below.
+- Competition `42bf9922-5670-414e-9e3c-700ebc9ddd9a` reached GUIDED but failed
+  the unchanged startup telemetry proof before an accepted flight. It finished
+  `FAILED`, scored 0/150, and had incomplete artifacts with an invalid rosbag;
+  independent acceptance was not run because the lifecycle did not complete.
+- Roll AutoTune `f79e3e21-2148-411d-bd53-d08f502d7982` remains live in
+  `progress.json`; it has no finalized physical, score, artifact, or acceptance
+  result.
+
+At current source `303cf1c`, the final host checks passed 2,379 tests with 27
+environment skips; the one workstation-lock test remains deliberately unrun
+while the live AutoTune driver owns that lock. All 1,130 imported mission tests
+passed. This is not a common-build or provider-suite pass. The subsequent
+exact-step IMU repair and competition range-producer/ArduPilot backport are
+source changes outside the frozen `d878ac3` images; neither has an actual Docker
+integration build, native telemetry/flight proof, fresh calibration, or full
+11-case provider result.
 
 Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
 `8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance
@@ -91,7 +110,8 @@ at 1 ms native intervals, with zero socket drops or timestamp gaps. Stationary
 run `96e73251-c39d-4ab4-8384-b4a98275f5e5` then completed with continuous
 physical deck contact from public 27.40 seconds through the remaining 62.6
 seconds, `LANDED`, 100/100 and independent acceptance. Its manifest SHA-256 is
-`45ca6997155f5577e5154e1736d5e128b61bf05694442c5943bb1eb8df316845`.
+`45ca6997155f5577e5154e1736d5e128b61bf05694442c5943bb1eb8df316845`;
+both videos and the final MCAP record are complete and valid.
 
 That run's lossless 1 ms capture proves a current JSON boundary defect. Raw IMU
 contained opposing collision samples at native 117.367 and 117.368 seconds, but
@@ -1020,8 +1040,9 @@ Earlier images remain under preservation tags; never retag them as new evidence.
 Rebuild after runtime edits and capture new expectations before the next flight.
 
 Latest stationary and moving landings: achieved, each 100/100 and independently
-accepted. Both competition attempts failed at startup; earlier accepted
-competition flights remain historical evidence.
+accepted. The latest competition rerun failed its startup telemetry proof at
+0/150 with invalid artifacts; earlier accepted competition flights remain
+historical evidence.
 
 ## Active priorities
 
