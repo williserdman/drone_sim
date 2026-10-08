@@ -1,4 +1,29 @@
-FROM ardupilot/ardupilot-dev-base@sha256:576cd622957308469d6e72528befe5de5862457b264e61d60aaa4b8f29de85b6 AS source
+ARG TARGETARCH
+FROM ardupilot/ardupilot-dev-base@sha256:576cd622957308469d6e72528befe5de5862457b264e61d60aaa4b8f29de85b6 AS upstream-amd64
+FROM ros:jazzy-ros-base@sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4 AS upstream-arm64
+
+COPY ardupilot_sitl/build-packages.arm64.lock /etc/drone_sim/build-packages.arm64.lock
+RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
+        | sed -E 's/:(amd64|arm64)=/=/g' \
+        | sort > /tmp/packages-before-ardupilot \
+    && apt-get update \
+    && xargs --arg-file=/etc/drone_sim/build-packages.arm64.lock \
+        apt-get install --yes --no-install-recommends \
+    && dpkg-query -W -f='${binary:Package}=${Version}\n' \
+        | sed -E 's/:(amd64|arm64)=/=/g' \
+        | sort > /tmp/packages-after-ardupilot \
+    && comm -13 /tmp/packages-before-ardupilot /tmp/packages-after-ardupilot \
+        | sort > /tmp/ardupilot-installed-delta \
+    && diff --unified \
+        /etc/drone_sim/build-packages.arm64.lock \
+        /tmp/ardupilot-installed-delta \
+    && rm -f \
+        /tmp/packages-before-ardupilot \
+        /tmp/packages-after-ardupilot \
+        /tmp/ardupilot-installed-delta \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM upstream-${TARGETARCH} AS source
 
 ARG ARDUPILOT_COMMIT=1511f27194f1dcc3728270883047bdf022b3fd53
 COPY ardupilot_sitl/patches/0001-sitl-json-rangefinder-bitmasks.patch /tmp/0001-sitl-json-rangefinder-bitmasks.patch
@@ -22,7 +47,7 @@ RUN ./waf configure --board sitl \
     && ./waf copter -j8 \
     && test -x build/sitl/bin/arducopter
 
-FROM ardupilot/ardupilot-dev-base@sha256:576cd622957308469d6e72528befe5de5862457b264e61d60aaa4b8f29de85b6 AS runtime
+FROM upstream-${TARGETARCH} AS runtime
 COPY --from=build /opt/ardupilot-src/build/sitl/bin/arducopter /opt/ardupilot/bin/arducopter
 COPY --from=source /opt/ardupilot-src/COPYING.txt /opt/ardupilot/COPYING.txt
 COPY --from=source /opt/ardupilot-revision.txt /opt/ardupilot/revision.txt

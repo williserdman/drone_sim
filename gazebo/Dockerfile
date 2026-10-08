@@ -1,5 +1,6 @@
 FROM ros:jazzy-ros-base@sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4 AS runtime
 
+ARG TARGETARCH
 ARG ROS_GZ_PACKAGE=ros-jazzy-ros-gz=1.0.22-1noble.20260616.074726
 ARG ROS_GZ_BRIDGE_PACKAGE=ros-jazzy-ros-gz-bridge=1.0.22-1noble.20260615.142443
 ARG ROS_GZ_IMAGE_PACKAGE=ros-jazzy-ros-gz-image=1.0.22-1noble.20260615.145009
@@ -8,30 +9,41 @@ ARG ROS_GZ_SIM_PACKAGE=ros-jazzy-ros-gz-sim=1.0.22-1noble.20260615.173223
 ARG GZ_SIM_VENDOR_PACKAGE=ros-jazzy-gz-sim-vendor=0.0.10-1noble.20260604.111001
 ARG SDFORMAT_VENDOR_PACKAGE=ros-jazzy-sdformat-vendor=0.0.11-1noble.20260604.104102
 ARG ZSTD_PACKAGE=zstd=1.5.5+dfsg2-2build1.1
+ARG ROS_GZ_PACKAGE_ARM64=ros-jazzy-ros-gz=1.0.24-1noble.20261006.044318
+ARG ROS_GZ_BRIDGE_PACKAGE_ARM64=ros-jazzy-ros-gz-bridge=1.0.24-1noble.20260921.043401
+ARG ROS_GZ_IMAGE_PACKAGE_ARM64=ros-jazzy-ros-gz-image=1.0.24-1noble.20260921.053411
+ARG ROS_GZ_INTERFACES_PACKAGE_ARM64=ros-jazzy-ros-gz-interfaces=1.0.24-1noble.20260911.124223
+ARG ROS_GZ_SIM_PACKAGE_ARM64=ros-jazzy-ros-gz-sim=1.0.24-1noble.20261006.040359
+ARG GZ_SIM_VENDOR_PACKAGE_ARM64=ros-jazzy-gz-sim-vendor=0.0.13-1noble.20260904.022149
+ARG SDFORMAT_VENDOR_PACKAGE_ARM64=ros-jazzy-sdformat-vendor=0.0.14-1noble.20260904.005216
 ARG ARDUPILOT_GAZEBO_COMMIT=082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5
 ARG GZ_RENDERING_COMMIT=f1249da6e07f0d6b7adaba28109fa7af727fd322
 
-COPY gazebo/harmonic-packages.lock /etc/drone_sim/harmonic-packages.lock
-RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
-        | sed 's/:amd64=/=/' \
+COPY gazebo/harmonic-packages.lock /etc/drone_sim/harmonic-packages.amd64.lock
+COPY gazebo/harmonic-packages.arm64.lock /etc/drone_sim/harmonic-packages.arm64.lock
+RUN case "${TARGETARCH}" in \
+        amd64) \
+            direct_packages="$ROS_GZ_PACKAGE $ROS_GZ_BRIDGE_PACKAGE $ROS_GZ_IMAGE_PACKAGE $ROS_GZ_INTERFACES_PACKAGE $ROS_GZ_SIM_PACKAGE $GZ_SIM_VENDOR_PACKAGE $SDFORMAT_VENDOR_PACKAGE $ZSTD_PACKAGE" \
+            ;; \
+        arm64) \
+            direct_packages="$ROS_GZ_PACKAGE_ARM64 $ROS_GZ_BRIDGE_PACKAGE_ARM64 $ROS_GZ_IMAGE_PACKAGE_ARM64 $ROS_GZ_INTERFACES_PACKAGE_ARM64 $ROS_GZ_SIM_PACKAGE_ARM64 $GZ_SIM_VENDOR_PACKAGE_ARM64 $SDFORMAT_VENDOR_PACKAGE_ARM64 $ZSTD_PACKAGE" \
+            ;; \
+        *) printf 'unsupported target architecture: %s\n' "${TARGETARCH}" >&2; exit 2 ;; \
+    esac \
+    && cp "/etc/drone_sim/harmonic-packages.${TARGETARCH}.lock" \
+        /etc/drone_sim/harmonic-packages.lock \
+    && dpkg-query -W -f='${binary:Package}=${Version}\n' \
+        | sed -E 's/:(amd64|arm64)=/=/g' \
         | sort > /tmp/packages-before-harmonic \
     && apt-get update \
     && xargs --arg-file=/etc/drone_sim/harmonic-packages.lock \
         apt-get install --yes --no-install-recommends \
-    && for direct_package in \
-        "$ROS_GZ_PACKAGE" \
-        "$ROS_GZ_BRIDGE_PACKAGE" \
-        "$ROS_GZ_IMAGE_PACKAGE" \
-        "$ROS_GZ_INTERFACES_PACKAGE" \
-        "$ROS_GZ_SIM_PACKAGE" \
-        "$GZ_SIM_VENDOR_PACKAGE" \
-        "$SDFORMAT_VENDOR_PACKAGE" \
-        "$ZSTD_PACKAGE"; do \
+    && for direct_package in ${direct_packages}; do \
         grep --fixed-strings --line-regexp "$direct_package" \
             /etc/drone_sim/harmonic-packages.lock; \
     done \
     && dpkg-query -W -f='${binary:Package}=${Version}\n' \
-        | sed 's/:amd64=/=/' \
+        | sed -E 's/:(amd64|arm64)=/=/g' \
         | sort > /tmp/packages-after-harmonic \
     && comm -13 /tmp/packages-before-harmonic /tmp/packages-after-harmonic \
         | sort > /tmp/harmonic-installed-delta \

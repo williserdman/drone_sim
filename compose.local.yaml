@@ -1,0 +1,41 @@
+services:
+  artifacts-runtime:
+    environment:
+      SIM_MEDIA_SPOOL_DIRECTORY: /var/lib/drone-sim/media
+    volumes:
+      - artifacts-media:/var/lib/drone-sim/media
+
+  ardupilot-sitl:
+    ports:
+      - "127.0.0.1:5762:5762/tcp"
+
+  gazebo-runtime:
+    ports:
+      - "127.0.0.1:8081:8081/tcp"
+
+  gazebo-viewer:
+    profiles: [local]
+    init: true
+    restart: "no"
+    image: drone-sim-gazebo-viewer:local
+    build:
+      context: .
+      dockerfile: gazebo/local-viewer/Dockerfile
+    depends_on:
+      gazebo-runtime:
+        condition: service_started
+        required: true
+    environment:
+      SIM_RUN_ID: ${SIM_RUN_ID:-00000000-0000-4000-8000-000000000001}
+      GZ_SIM_RESOURCE_PATH: /opt/drone_sim/gazebo/resources
+      DISPLAY: ":99"
+      GZ_GUI_CONFIG_PATH: /etc/drone_sim/gazebo-viewer.config
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_X11_NO_MITSHM: "1"
+    ports:
+      - "127.0.0.1:6080:6080/tcp"
+    shm_size: "1gb"
+
+volumes:
+  artifacts-media:
+
