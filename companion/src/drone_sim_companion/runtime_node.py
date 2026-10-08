@@ -33,9 +33,11 @@ from artifacts.runtime_status import (
     RuntimeStatus,
 )
 
+from .autotune import Action as AutoTuneAction
 from .autotune import ActionKind as AutoTuneActionKind
 from .autotune import Observation as AutoTuneObservation
 from .autotune import Phase as AutoTunePhase
+from .autotune import ROLL_GAIN_PARAMETERS
 from .autotune import RollAutoTuneDriver
 from . import calibration_autotune
 from .calibration_gate import CalibrationGate, calibration_parameters
@@ -881,6 +883,12 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     failure: str | None = None
     last_override_refresh = 0.0
     parameters_requested = False
+    roll_parameter_values: dict[str, float] = {}
+    roll_parameter_generations: dict[str, int] = {}
+    roll_parameter_generation_counter = 0
+    roll_aux_ack = False
+    roll_position_sample: tuple[int, float, float, float, float, float] | None = None
+    roll_attitude_sample: tuple[int, float, float] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
@@ -942,12 +950,6 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     lifecycle.mark_transport_ready()
     calibration = _CalibrationReadiness(calibration_parameters(config))
     hover_only = config.mission == "hover_roll"
-    driver = (RollHoverDriver if hover_only else RollAutoTuneDriver)(
-        vehicle,
-        run_directory=config.run_directory,
-        run_id=config.run_id,
-        mode_factory=VehicleMode,
-    )
     status_texts: collections.deque[str] = collections.deque()
     status_lock = threading.Lock()
 
@@ -960,10 +962,103 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
             with status_lock:
                 status_texts.append(normalized)
 
-    vehicle.add_message_listener("STATUSTEXT", status_callback)
+    def parameter_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_parameter_generation_counter
+        raw_name = getattr(message, "param_id", "")
+        if isinstance(raw_name, bytes):
+            raw_name = raw_name.decode("ascii", errors="ignore")
+        name = str(raw_name).rstrip("\x00")
+        value = getattr(message, "param_value", None)
+        if (
+            name
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        ):
+            with status_lock:
+                roll_parameter_generation_counter += 1
+                roll_parameter_values[name] = float(value)
+                roll_parameter_generations[name] = roll_parameter_generation_counter
+
+    def ack_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_aux_ack
+        if (
+            getattr(message, "command", None)
+            == calibration_autotune.mavutil.mavlink.MAV_CMD_DO_AUX_FUNCTION
+            and getattr(message, "result", None)
+            == calibration_autotune.mavutil.mavlink.MAV_RESULT_ACCEPTED
+        ):
+            with status_lock:
+                roll_aux_ack = True
+
+    def position_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_position_sample
+        stamp = latest_clock_ns
+        if stamp is None:
+            return
+        decoded = _decode_global_position(message, stamp)
+        if decoded is not None:
+            with status_lock:
+                roll_position_sample = decoded
+
+    def attitude_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_attitude_sample
+        stamp = latest_clock_ns
+        if stamp is None:
+            return
+        roll = getattr(message, "roll", None)
+        pitch = getattr(message, "pitch", None)
+        if (
+            isinstance(roll, (int, float))
+            and not isinstance(roll, bool)
+            and math.isfinite(roll)
+            and isinstance(pitch, (int, float))
+            and not isinstance(pitch, bool)
+            and math.isfinite(pitch)
+        ):
+            with status_lock:
+                roll_attitude_sample = (stamp, float(roll), float(pitch))
+
+    def request_roll_parameter_session() -> None:
+        with status_lock:
+            roll_parameter_values.clear()
+            roll_parameter_generations.clear()
+            vehicle._master.mav.param_request_list_send(
+                vehicle._master.target_system,
+                vehicle._master.target_component,
+            )
+
+    if hover_only:
+        driver = RollHoverDriver(
+            vehicle,
+            run_directory=config.run_directory,
+            run_id=config.run_id,
+            mode_factory=VehicleMode,
+        )
+        listeners = (("STATUSTEXT", status_callback),)
+    else:
+        driver = RollAutoTuneDriver(
+            vehicle,
+            run_directory=config.run_directory,
+            run_id=config.run_id,
+            mode_factory=VehicleMode,
+            public_deadline_ns=config.public_duration_ns or 120_000_000_000,
+            request_parameters=request_roll_parameter_session,
+        )
+        listeners = (
+            ("STATUSTEXT", status_callback),
+            ("PARAM_VALUE", parameter_callback),
+            ("COMMAND_ACK", ack_callback),
+            ("GLOBAL_POSITION_INT", position_callback),
+            ("ATTITUDE", attitude_callback),
+        )
+    for name, callback in listeners:
+        vehicle.add_message_listener(name, callback)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     exit_code = 0
+    recovery_started_ns: int | None = None
+    aux_ack_event_emitted = False
     try:
         while rclpy.ok() and not requested_stop and not finalizing:
             rclpy.spin_once(node, timeout_sec=0.02)
@@ -974,6 +1069,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 and 0.0 <= vehicle.last_heartbeat <= 60.0
             )
             armable = getattr(vehicle, "is_armable", False) is True
+            armed = getattr(vehicle, "armed", None)
             lifecycle.observe_mission_readiness(
                 heartbeat_observed=heartbeat,
                 prearm_checks_healthy=armable,
@@ -1014,17 +1110,16 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                     "alt",
                     None,
                 )
-                landed = (
-                    armed is False
-                    and isinstance(altitude, (int, float))
-                    and math.isfinite(altitude)
-                    and altitude <= 0.3
-                )
                 try:
                     previous_phase = driver.state.phase
-                    observation_type = HoverObservation if hover_only else AutoTuneObservation
-                    transition = driver.observe(
-                        observation_type(
+                    if hover_only:
+                        landed = (
+                            armed is False
+                            and isinstance(altitude, (int, float))
+                            and math.isfinite(altitude)
+                            and altitude <= 0.3
+                        )
+                        observation = HoverObservation(
                             control_timestamp_ns,
                             heartbeat=heartbeat,
                             prearm_checks_healthy=armable,
@@ -1034,7 +1129,48 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                             relative_altitude_m=altitude,
                             status_text=status_text,
                         )
-                    )
+                    else:
+                        with status_lock:
+                            parameters = dict(roll_parameter_values)
+                            generation = calibration_autotune.parameter_readback_generation(
+                                parameters,
+                                roll_parameter_generations,
+                                tuple(ROLL_GAIN_PARAMETERS),
+                            )
+                            ack = roll_aux_ack
+                            position = roll_position_sample
+                            attitude = roll_attitude_sample
+                        telemetry_stamp = (
+                            min(position[0], attitude[0])
+                            if position is not None and attitude is not None
+                            else None
+                        )
+                        observation = AutoTuneObservation(
+                            control_timestamp_ns,
+                            heartbeat=heartbeat,
+                            prearm_checks_healthy=armable,
+                            mode=mode,
+                            armed=armed,
+                            landed=(
+                                armed is False
+                                and position is not None
+                                and position[3] <= 0.3
+                            ),
+                            relative_altitude_m=(position[3] if position else None),
+                            status_text=status_text,
+                            aux_ack=ack,
+                            parameters=parameters,
+                            parameter_generation=generation,
+                            telemetry_timestamp_ns=telemetry_stamp,
+                            horizontal_speed_m_s=(position[1] if position else None),
+                            vertical_speed_m_s=(position[2] if position else None),
+                            roll_rad=(attitude[1] if attitude else None),
+                            pitch_rad=(attitude[2] if attitude else None),
+                            latitude_deg=(position[4] if position else None),
+                            longitude_deg=(position[5] if position else None),
+                            position_timestamp_ns=(position[0] if position else None),
+                        )
+                    transition = driver.observe(observation)
                     if not hover_only:
                         written_parameters = {
                             action.name: action.value
@@ -1056,6 +1192,44 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                             control_timestamp_ns,
                             {"phase": transition.state.phase.value},
                         )
+                    if not hover_only:
+                        if (
+                            previous_phase is AutoTunePhase.WAIT_RETURN_GUIDED
+                            and transition.state.phase is AutoTunePhase.RETURNING
+                        ):
+                            lifecycle.emit(
+                                "autotune_return_target",
+                                control_timestamp_ns,
+                                {
+                                    "latitude_deg": transition.state.home_latitude_deg,
+                                    "longitude_deg": transition.state.home_longitude_deg,
+                                    "relative_altitude_m": 5.0,
+                                },
+                            )
+                        elif (
+                            previous_phase is AutoTunePhase.RETURNING
+                            and transition.state.phase is AutoTunePhase.WAIT_LAND
+                        ):
+                            lifecycle.emit(
+                                "autotune_return_arrived",
+                                control_timestamp_ns,
+                                {
+                                    "latitude_deg": observation.latitude_deg,
+                                    "longitude_deg": observation.longitude_deg,
+                                    "relative_altitude_m": observation.relative_altitude_m,
+                                },
+                            )
+                        if (
+                            ack
+                            and previous_phase is AutoTunePhase.WAIT_GAIN_ACTIVATION
+                            and not aux_ack_event_emitted
+                        ):
+                            lifecycle.emit(
+                                "autotune_aux_ack",
+                                control_timestamp_ns,
+                                {"function": 180, "position": 2},
+                            )
+                            aux_ack_event_emitted = True
                     if status_text is not None:
                         lifecycle.emit(
                             "ardupilot_status_text",
@@ -1090,6 +1264,30 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                     failure = driver.state.failure_reason
 
             if failure is not None:
+                recovery_stamp = latest_clock_ns or 0
+                if not hover_only and armed is True:
+                    if recovery_started_ns is None:
+                        try:
+                            driver._execute(
+                                (
+                                    AutoTuneAction.clear_overrides(),
+                                    AutoTuneAction.mode("LAND"),
+                                )
+                            )
+                            recovery_started_ns = recovery_stamp
+                            lifecycle.emit(
+                                "autotune_failure_recovery",
+                                recovery_stamp,
+                                {"mode": "LAND"},
+                            )
+                        except Exception:
+                            recovery_started_ns = recovery_stamp - 45_000_000_000
+                    if not autotune_failure_recovery_complete(
+                        recovery_started_ns=recovery_started_ns,
+                        timestamp_ns=recovery_stamp,
+                        armed=armed,
+                    ) and time.monotonic() < overall_wall_deadline:
+                        continue
                 lifecycle.observe_terminal(
                     MissionState(
                         MissionPhase.FAILED,
@@ -1135,7 +1333,8 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     finally:
         try:
             vehicle.channels.overrides = {}
-            vehicle.remove_message_listener("STATUSTEXT", status_callback)
+            for name, callback in listeners:
+                vehicle.remove_message_listener(name, callback)
             vehicle.close()
         finally:
             lifecycle.finalize(latest_clock_ns)

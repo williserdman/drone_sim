@@ -43,20 +43,31 @@ def test_roll_gain_artifact_records_only_the_saved_autotune_values(
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
-def test_roll_autotune_stays_active_through_landing_and_saved_disarm() -> None:
+def test_roll_autotune_activates_returns_and_uses_native_land_before_export() -> None:
     autotune = importlib.import_module("drone_sim_companion.autotune")
-    state = autotune.RollAutoTuneState.initial()
+    state = autotune.RollAutoTuneState.initial(public_deadline_ns=120_000_000_000)
 
-    transition = autotune.advance(
-        state,
-        autotune.Observation(0, heartbeat=True, prearm_checks_healthy=True),
-    )
+    def observe(stamp: int, **changes):
+        nonlocal state
+        transition = autotune.advance(
+            state, autotune.Observation(timestamp_ns=stamp, **changes)
+        )
+        state = transition.state
+        return transition
+
+    transition = observe(0, heartbeat=True, prearm_checks_healthy=True)
     assert [(action.kind.value, action.name, action.value) for action in transition.actions] == [
         ("SET_MODE", "GUIDED", None),
     ]
 
-    transition = autotune.advance(
-        transition.state, autotune.Observation(1, mode="GUIDED", armed=False)
+    transition = observe(
+        1,
+        mode="GUIDED",
+        armed=False,
+        relative_altitude_m=0.0,
+        latitude_deg=37.4,
+        longitude_deg=-122.08,
+        position_timestamp_ns=1,
     )
     assert [(action.kind.value, action.name, action.value) for action in transition.actions] == [
         ("SET_PARAMETER", "ATC_RAT_RLL_P", 0.0675),
@@ -66,56 +77,108 @@ def test_roll_autotune_stays_active_through_landing_and_saved_disarm() -> None:
         ("SET_PARAMETER", "AUTOTUNE_AGGR", 0.05),
         ("ARM", "", None),
     ]
-    transition = autotune.advance(
-        transition.state, autotune.Observation(2, mode="GUIDED", armed=True)
-    )
+    transition = observe(2, mode="GUIDED", armed=True)
     assert transition.actions == (autotune.Action.takeoff(5.0),)
-    transition = autotune.advance(
-        transition.state,
-        autotune.Observation(3, mode="GUIDED", armed=True, relative_altitude_m=4.5),
-    )
+    transition = observe(3, mode="GUIDED", armed=True, relative_altitude_m=4.5)
     assert transition.actions == (
         autotune.Action.override(1500),
         autotune.Action.mode("ALT_HOLD"),
     )
-    transition = autotune.advance(
-        transition.state, autotune.Observation(4, mode="ALT_HOLD", armed=True)
-    )
+    transition = observe(4, mode="ALT_HOLD", armed=True)
     assert transition.actions == (autotune.Action.mode("AUTOTUNE"),)
-    transition = autotune.advance(
-        transition.state, autotune.Observation(5, mode="AUTOTUNE", armed=True)
-    )
+    transition = observe(5, mode="AUTOTUNE", armed=True)
     assert transition.state.phase is autotune.Phase.TUNING
 
-    transition = autotune.advance(
-        transition.state,
-        autotune.Observation(
-            6,
-            mode="AUTOTUNE",
-            armed=True,
-            status_text="AutoTune: Success",
-        ),
+    transition = observe(
+        6,
+        mode="AUTOTUNE",
+        armed=True,
+        status_text="AutoTune: Success",
     )
-    assert transition.state.phase is autotune.Phase.LANDING_TO_SAVE
-    assert transition.actions == (autotune.Action.override(1300),)
+    assert transition.state.phase is autotune.Phase.WAIT_POST_TUNE_LOITER
+    assert transition.actions == (autotune.Action.mode("LOITER"),)
     assert all(action != autotune.Action.mode("LAND") for action in transition.actions)
 
-    transition = autotune.advance(
-        transition.state,
-        autotune.Observation(
-            7,
-            mode="AUTOTUNE",
-            armed=True,
-            status_text="AutoTune: Saved gains for Roll",
-        ),
+    transition = observe(7, mode="LOITER", armed=True)
+    assert transition.actions == (
+        autotune.Action.aux_function(180, 2),
+        autotune.Action.request_parameters(),
     )
-    assert transition.state.phase is autotune.Phase.LANDING_TO_SAVE
-    transition = autotune.advance(
-        transition.state,
-        autotune.Observation(8, mode="AUTOTUNE", armed=False, landed=True),
+    tuned = {
+        "ATC_ANG_RLL_P": 13.197,
+        "ATC_RAT_RLL_P": 0.0477,
+        "ATC_RAT_RLL_I": 0.0477,
+        "ATC_RAT_RLL_D": 0.000375,
+        "ATC_ACC_R_MAX": 2483.7,
+    }
+    transition = observe(8, mode="LOITER", armed=True, aux_ack=True)
+    assert transition.state.phase is autotune.Phase.WAIT_GAIN_ACTIVATION
+    transition = observe(
+        9,
+        mode="LOITER",
+        armed=True,
+        status_text="AutoTune: Pilot Testing gains for Roll",
+        parameters=tuned,
+        parameter_generation=1,
     )
+    assert transition.state.phase is autotune.Phase.SETTLING
+    stable = dict(
+        mode="LOITER",
+        armed=True,
+        horizontal_speed_m_s=0.1,
+        vertical_speed_m_s=0.1,
+        roll_rad=0.01,
+        pitch_rad=-0.01,
+    )
+    observe(9_000_000_000, telemetry_timestamp_ns=9_000_000_000, **stable)
+    transition = observe(
+        11_000_000_000,
+        telemetry_timestamp_ns=11_000_000_000,
+        **stable,
+    )
+    assert transition.actions == (
+        autotune.Action.clear_overrides(),
+        autotune.Action.mode("GUIDED"),
+    )
+    transition = observe(12_000_000_000, mode="GUIDED", armed=True)
+    assert transition.actions == (autotune.Action.waypoint(37.4, -122.08, 5.0),)
+    arrived = dict(
+        mode="GUIDED",
+        armed=True,
+        horizontal_speed_m_s=0.1,
+        vertical_speed_m_s=0.1,
+        roll_rad=0.01,
+        pitch_rad=-0.01,
+        latitude_deg=37.4,
+        longitude_deg=-122.08,
+        relative_altitude_m=5.0,
+    )
+    observe(
+        13_000_000_000,
+        telemetry_timestamp_ns=13_000_000_000,
+        position_timestamp_ns=13_000_000_000,
+        **arrived,
+    )
+    transition = observe(
+        15_000_000_000,
+        telemetry_timestamp_ns=15_000_000_000,
+        position_timestamp_ns=15_000_000_000,
+        **arrived,
+    )
+    assert transition.actions == (
+        autotune.Action.clear_overrides(),
+        autotune.Action.mode("LAND"),
+    )
+    observe(16_000_000_000, mode="LAND", armed=True)
+    observe(
+        17_000_000_000,
+        mode="LAND",
+        armed=True,
+        status_text="AutoTune: Saved gains for Roll",
+    )
+    transition = observe(18_000_000_000, mode="LAND", armed=False, landed=True)
     assert transition.state.phase is autotune.Phase.COMPLETE
-    assert transition.actions == (autotune.Action.snapshot(),)
+    assert transition.actions == (autotune.Action.snapshot(tuned),)
 
 
 def test_roll_autotune_fails_on_detailed_ardupilot_failure_text() -> None:
@@ -184,7 +247,7 @@ def test_action_executor_writes_the_post_disarm_parameters(tmp_path: Path) -> No
         autotune.Action.arm(),
         autotune.Action.takeoff(5.0),
         autotune.Action.override(1500),
-        autotune.Action.snapshot(),
+        autotune.Action.snapshot(vehicle.parameters),
     )
 
     autotune.execute_actions(
@@ -260,6 +323,74 @@ def test_saved_gains_come_from_one_coherent_dataflash_parameter_record(
         "ATC_RAT_RLL_D": 0.000375,
         "ATC_ACC_R_MAX": 2483.7,
     }
+
+
+def test_roll_action_executor_activates_clears_returns_and_requests_parameters(
+    tmp_path: Path,
+) -> None:
+    autotune = importlib.import_module("drone_sim_companion.autotune")
+    command_calls: list[tuple[object, ...]] = []
+    waypoint_calls: list[tuple[object, ...]] = []
+    requests: list[bool] = []
+    vehicle = SimpleNamespace(
+        channels=SimpleNamespace(overrides={"3": 1500}),
+        _master=SimpleNamespace(
+            target_system=7,
+            target_component=1,
+            mav=SimpleNamespace(
+                command_long_send=lambda *args: command_calls.append(args),
+                set_position_target_global_int_send=lambda *args: waypoint_calls.append(
+                    args
+                ),
+            ),
+        ),
+    )
+
+    autotune.execute_actions(
+        vehicle,
+        (
+            autotune.Action.clear_overrides(),
+            autotune.Action.aux_function(180, 2),
+            autotune.Action.request_parameters(),
+            autotune.Action.waypoint(37.4, -122.08, 5.0),
+        ),
+        run_directory=tmp_path,
+        run_id=RUN_ID,
+        mode_factory=lambda name: name,
+        request_parameters=lambda: requests.append(True),
+    )
+
+    assert vehicle.channels.overrides == {}
+    assert command_calls[0][0:2] == (7, 1)
+    assert command_calls[0][4:6] == (180.0, 2.0)
+    assert requests == [True]
+    assert waypoint_calls[0][5:8] == (374_000_000, -1_220_800_000, 5.0)
+
+
+def test_dataflash_snapshot_rejects_gains_that_do_not_match_activated_profile(
+    tmp_path: Path,
+) -> None:
+    autotune = importlib.import_module("drone_sim_companion.autotune")
+    activated = {
+        "ATC_ANG_RLL_P": 13.197,
+        "ATC_RAT_RLL_P": 0.0477,
+        "ATC_RAT_RLL_I": 0.0477,
+        "ATC_RAT_RLL_D": 0.000375,
+        "ATC_ACC_R_MAX": 2483.7,
+    }
+    saved = {**activated, "ATC_RAT_RLL_D": 0.0005}
+
+    with pytest.raises(ValueError, match="do not match activated gains"):
+        autotune.execute_actions(
+            SimpleNamespace(),
+            (autotune.Action.snapshot(activated),),
+            run_directory=tmp_path,
+            run_id=RUN_ID,
+            mode_factory=lambda name: name,
+            snapshot_reader=lambda _path: saved,
+        )
+
+    assert not (tmp_path / "ardupilot_sitl/autotune-roll.parm").exists()
 
 
 def test_dataflash_snapshot_rejects_parameters_from_different_save_epochs(
@@ -359,7 +490,7 @@ def test_roll_gain_artifact_rejects_unpromotable_values(
     assert not (tmp_path / "ardupilot_sitl/autotune-roll.parm").exists()
 
 
-def test_driver_refreshes_the_throttle_override_without_leaving_autotune(
+def test_driver_keeps_neutral_override_through_post_tune_activation(
     tmp_path: Path,
 ) -> None:
     autotune = importlib.import_module("drone_sim_companion.autotune")
@@ -389,13 +520,103 @@ def test_driver_refreshes_the_throttle_override_without_leaving_autotune(
     vehicle.channels.overrides = {}
     driver.refresh_override()
 
-    assert vehicle.mode == "AUTOTUNE"
+    assert vehicle.mode == "LOITER"
     assert vehicle.channels.overrides == {
         "1": 1500,
         "2": 1500,
-        "3": 1300,
+        "3": 1500,
         "4": 1500,
     }
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"aux_ack": False},
+        {"status_text": "AutoTune: Pilot Testing gains for Roll Pitch Yaw(E)"},
+        {"parameter_generation": 0},
+        {"parameters": {"ATC_RAT_RLL_P": 0.0477}},
+    ],
+)
+def test_roll_gain_activation_requires_ack_exact_status_and_fresh_complete_profile(
+    changes,
+) -> None:
+    autotune = importlib.import_module("drone_sim_companion.autotune")
+    tuned = {
+        "ATC_ANG_RLL_P": 13.197,
+        "ATC_RAT_RLL_P": 0.0477,
+        "ATC_RAT_RLL_I": 0.0477,
+        "ATC_RAT_RLL_D": 0.000375,
+        "ATC_ACC_R_MAX": 2483.7,
+    }
+    observation = {
+        "mode": "LOITER",
+        "armed": True,
+        "aux_ack": True,
+        "status_text": "AutoTune: Pilot Testing gains for Roll",
+        "parameters": tuned,
+        "parameter_generation": 1,
+    }
+    observation.update(changes)
+
+    transition = autotune.advance(
+        autotune.RollAutoTuneState(
+            autotune.Phase.WAIT_GAIN_ACTIVATION,
+            public_deadline_ns=120_000_000_000,
+        ),
+        autotune.Observation(1, **observation),
+    )
+
+    assert transition.state.phase is autotune.Phase.WAIT_GAIN_ACTIVATION
+    assert transition.actions == ()
+
+
+def test_roll_return_requires_fresh_stable_sample_at_launch_point() -> None:
+    autotune = importlib.import_module("drone_sim_companion.autotune")
+    state = autotune.RollAutoTuneState(
+        autotune.Phase.RETURNING,
+        public_deadline_ns=120_000_000_000,
+        home_latitude_deg=37.4,
+        home_longitude_deg=-122.08,
+    )
+    observation = autotune.Observation(
+        2_000_000_000,
+        mode="GUIDED",
+        armed=True,
+        relative_altitude_m=5.0,
+        latitude_deg=37.4,
+        longitude_deg=-122.08,
+        position_timestamp_ns=2_000_000_000,
+        telemetry_timestamp_ns=1_000_000_000,
+        horizontal_speed_m_s=0.1,
+        vertical_speed_m_s=0.1,
+        roll_rad=0.01,
+        pitch_rad=-0.01,
+    )
+
+    transition = autotune.advance(state, observation)
+
+    assert transition.state.phase is autotune.Phase.RETURNING
+    assert transition.state.settle_started_ns is None
+    assert transition.actions == ()
+
+
+def test_roll_autotune_deadline_is_the_original_120_seconds() -> None:
+    autotune = importlib.import_module("drone_sim_companion.autotune")
+    state = autotune.RollAutoTuneState(
+        autotune.Phase.RETURNING,
+        public_deadline_ns=120_000_000_000,
+        home_latitude_deg=37.4,
+        home_longitude_deg=-122.08,
+    )
+
+    transition = autotune.advance(
+        state,
+        autotune.Observation(120_000_000_000, mode="GUIDED", armed=True),
+    )
+
+    assert transition.state.phase is autotune.Phase.FAILED
+    assert transition.state.failure_reason == "roll AutoTune public deadline reached"
 
 
 def test_driver_retries_arm_while_waiting_for_transient_prearm_check(

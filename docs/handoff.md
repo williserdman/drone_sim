@@ -80,18 +80,33 @@ separate outcomes:
   the unchanged startup telemetry proof before an accepted flight. It finished
   `FAILED`, scored 0/150, and had incomplete artifacts with an invalid rosbag;
   independent acceptance was not run because the lifecycle did not complete.
-- Roll AutoTune `f79e3e21-2148-411d-bd53-d08f502d7982` remains live in
-  `progress.json`; it has no finalized physical, score, artifact, or acceptance
-  result.
+- Roll AutoTune `f79e3e21-2148-411d-bd53-d08f502d7982` finished `LANDED` and
+  saved the tuned roll gains. It scored 40/100 and independent acceptance was
+  rejected. Both videos and the MCAP are complete and valid.
 
-At current source `303cf1c`, the final host checks passed 2,379 tests with 27
-environment skips; the one workstation-lock test remains deliberately unrun
-while the live AutoTune driver owns that lock. All 1,130 imported mission tests
-passed. This is not a common-build or provider-suite pass. The subsequent
+The failed rules in that frozen run remain evidence for the original behavior.
+Touchdown was 20.4838 m from the target and preimpact downward speed was
+1.052171 m/s, above the unchanged 1.0 m/s limit; horizontal speed was only
+0.09014 m/s. The vehicle descended in AUTOTUNE under the companion's 1300 PWM
+throttle override. The current source replaces that post-success descent with
+LOITER gain activation, a stable GUIDED return to the fresh launch point, and
+native LAND. It still requires the exact roll success/save statuses and now
+checks the coherent DataFlash gains against the activated readback. This repair
+has focused source tests only; no rebuilt image or native flight has tested it.
+
+At source `303cf1c`, the final host checks passed 2,379 tests with 27
+environment skips; the separately held workstation-lock test passed after the
+live AutoTune driver released it. All 1,130 imported mission tests passed. This
+is not a common-build or provider-suite pass. The subsequent
 exact-step IMU repair and competition range-producer/ArduPilot backport are
-source changes outside the frozen `d878ac3` images; neither has an actual Docker
-integration build, native telemetry/flight proof, fresh calibration, or full
-11-case provider result.
+source changes outside the frozen `d878ac3` images. At `32d2455`, Docker
+integration passed 17 tests and the rebuilt ArduPilot/Gazebo path passed five
+C++ checks plus six real Gazebo UDP tests. The ArduPilot image digest is
+`abbc8bef92e09abf95ff0e8dc54977acad7adde82f89ce1ea9f62847559fe397`; the
+Gazebo image digest is
+`ea5921014605fe407d7659c5695a50aa426c9425f9e7609ad9060d7b0847491e`.
+No rebuilt-image flight, fresh calibration, or full 11-case provider result has
+tested those repairs.
 
 Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
 `8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance
@@ -121,8 +136,8 @@ JSON retained -0.252066 m/s (50.3%), while raw lateral impulses nearly cancelled
 and JSON retained -0.222 m/s. This proves partial impulse loss in the current
 interface, not that it caused historical failure `a53915aa`. The plugin repair
 now waits for the exact current-step IMU timestamp and fails closed after one
-wall second; focused host unit and compile checks pass. A rebuilt Gazebo image,
-fresh sensor capture, EKF response and native mission suite remain unverified.
+wall second; focused host, compiled C++ and real UDP checks pass. A fresh
+collision capture, EKF response and native mission suite remain unverified.
 The flight controller, landing deadline, physics and scoring remain unchanged.
 
 Competition startup run `42bf9922-5670-414e-9e3c-700ebc9ddd9a` later reached
@@ -139,9 +154,13 @@ so the wiring alone could not produce the correct first rangefinder. The image
 recipe now applies upstream fix `8fa852b` as a digest-bound downstream patch
 without changing the advertised source revision, and executes the exact source
 update block for all six keys before compilation. The unpatched check failed on
-`rng_1`; the patched check and focused host contracts pass. No image was rebuilt
-and no native flight has verified message 132 or the repaired eight-family
-cadence; public-clock quantization may still expose a separate cadence failure.
+`rng_1`; the patched check and focused host contracts pass. A no-arm native
+ArduPilot JSON-peer probe produced `DISTANCE_SENSOR` at boot times 2035 and 2135
+ms with current 1200 cm and 5--4000 cm limits for its 12 m fixture. Its evidence
+is under `runs/diagnostics/20261008-32d2455-native-range-smoke/`. This proves the
+ArduPilot producer, not the real Gazebo range path, repaired eight-family cadence,
+or a full mission; public-clock quantization may still expose a separate cadence
+failure.
 
 The five failed cases reported 0 points and no independently accepted physical
 outcome. Their bundles remain unchanged. This is evidence of honest per-case

@@ -309,9 +309,13 @@ This order matters in the
 leaving AUTOTUNE restores original gains; activating tuned gains after that exit
 allows native LAND followed by gain saving at disarm. This sequence has source
 evidence and an independently accepted calibration flight; see
-[current verification](handoff.md). The existing
-[roll mission](../companion/src/drone_sim_companion/autotune.py) uses a different,
-throttle-only descent and must not be presented as this implementation.
+[current verification](handoff.md). The
+[roll mission](../companion/src/drone_sim_companion/autotune.py) now applies the
+same ordering to its five roll gains. It requires the roll-specific testing and
+saved statuses, returns to the captured launch point, uses native LAND, and
+checks that its coherent DataFlash save epoch matches the activated values. Its
+original 120-second public deadline remains the outer bound; it does not inherit
+the all-axis mission's 60-second landing reserve.
 
 ### Acceptance and parameter artifact
 

@@ -171,6 +171,9 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
 ) -> None:
     statuses: list[object] = []
     subscriptions: dict[str, object] = {}
+    message_listeners: dict[str, object] = {}
+    added_listeners: list[str] = []
+    removed_listeners: list[str] = []
     parameter_writes: list[tuple[str, float]] = []
     parameter_requests: list[tuple[int, int]] = []
     public_running = False
@@ -237,6 +240,15 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
         ) -> None:
             parameter_writes.append((name.decode("ascii"), value))
 
+    def add_message_listener(name: str, callback: object) -> None:
+        added_listeners.append(name)
+        message_listeners[name] = callback
+
+    def remove_message_listener(name: str, callback: object) -> None:
+        assert message_listeners[name] is callback
+        removed_listeners.append(name)
+        del message_listeners[name]
+
     vehicle = SimpleNamespace(
         last_heartbeat=0.0,
         is_armable=True,
@@ -246,8 +258,8 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
         parameters=parameters,
         channels=SimpleNamespace(overrides={}),
         _master=SimpleNamespace(target_system=1, target_component=1, mav=Mav()),
-        add_message_listener=lambda *_args: None,
-        remove_message_listener=lambda *_args: None,
+        add_message_listener=add_message_listener,
+        remove_message_listener=remove_message_listener,
         close=lambda: None,
         simple_takeoff=lambda _altitude: None,
     )
@@ -264,6 +276,43 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
             )
             subscriptions["/clock"](
                 SimpleNamespace(clock=SimpleNamespace(sec=0, nanosec=0))
+            )
+            message_listeners["GLOBAL_POSITION_INT"](
+                vehicle,
+                "GLOBAL_POSITION_INT",
+                SimpleNamespace(
+                    vx=0,
+                    vy=0,
+                    vz=0,
+                    relative_alt=0,
+                    lat=374_000_000,
+                    lon=-1_220_800_000,
+                ),
+            )
+            message_listeners["ATTITUDE"](
+                vehicle, "ATTITUDE", SimpleNamespace(roll=0.01, pitch=-0.01)
+            )
+            for index, name in enumerate(
+                (
+                    "ATC_ANG_RLL_P",
+                    "ATC_RAT_RLL_P",
+                    "ATC_RAT_RLL_I",
+                    "ATC_RAT_RLL_D",
+                    "ATC_ACC_R_MAX",
+                )
+            ):
+                message_listeners["PARAM_VALUE"](
+                    vehicle,
+                    "PARAM_VALUE",
+                    SimpleNamespace(param_id=name, param_value=float(index + 1)),
+                )
+            message_listeners["COMMAND_ACK"](
+                vehicle,
+                "COMMAND_ACK",
+                SimpleNamespace(
+                    command=runtime_node.calibration_autotune.mavutil.mavlink.MAV_CMD_DO_AUX_FUNCTION,
+                    result=runtime_node.calibration_autotune.mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                ),
             )
 
     def module(name: str, **members: object) -> None:
@@ -319,6 +368,15 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
     assert statuses.index(MissionExecutionReadyStatus(RUN_ID, 0)) < statuses.index(
         MissionCommandDeliveredStatus(RUN_ID, 0)
     )
+    assert added_listeners == [
+        "STATUSTEXT",
+        "PARAM_VALUE",
+        "COMMAND_ACK",
+        "GLOBAL_POSITION_INT",
+        "ATTITUDE",
+    ]
+    assert removed_listeners == added_listeners
+    assert message_listeners == {}
 
 
 def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() -> None:

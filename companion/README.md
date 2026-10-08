@@ -176,15 +176,24 @@ immediately; native LAND and gain saving remain under ArduPilot control.
 
 Completion requires the all-axis saved-gains status, observed disarm, and a
 post-disarm readback matching the tested values. Flight decisions use only the
-public clock and MAVLink telemetry. The historical `autotune_roll` and
-`hover_roll` diagnostic missions keep their existing behavior. Start the new
-mission with [autotune-run.json](../config/autotune-run.json); its 900-second
+public clock and MAVLink telemetry. Start the all-axis mission with
+[autotune-run.json](../config/autotune-run.json); its 900-second
 public window reserves the final 60 seconds for landing or failure recovery.
 The reserve begins at public 840 seconds, allowing more time for native tuning.
 An airborne failure clears overrides and requests native LAND for at most 45
 simulated seconds; landing recovery does not change the failed mission result.
 Native rate-D, rate-P, and angle-P gain-determination failures trigger this
 recovery immediately, even while the vehicle mode still reports AUTOTUNE.
+
+The `autotune_roll` diagnostic retains its roll-only seed, `AUTOTUNE_AXES=1`,
+aggression, and 120-second public window. After exact roll success, it uses the
+same LOITER, gain activation, stable GUIDED return, and native LAND sequence.
+Activation requires the accepted auxiliary-command ACK, the exact roll
+pilot-testing status, and a fresh five-gain readback. Completion requires the
+roll saved-gains status, disarm, touchdown, and one coherent DataFlash save
+epoch matching the activated gains. The 120-second deadline remains the outer
+bound; this shorter diagnostic does not use the all-axis 60-second landing
+reserve. `hover_roll` keeps its existing behavior.
 
 The runtime consumes the public clock and run state, onboard images, competition
 downward range, and ArduPilot MAVLink telemetry. Production MAVLink is fixed to
