@@ -24,6 +24,7 @@ __all__ = [
     "GazeboReadyStatus",
     "MissionCommandDeliveredStatus",
     "MissionExecutionReadyStatus",
+    "OperatorWaitStartedStatus",
     "MissionFinishedStatus",
     "MissionReadyStatus",
     "RuntimeFailureStatus",
@@ -231,6 +232,18 @@ class MissionExecutionReadyStatus(RuntimeStatus):
     def __post_init__(self) -> None:
         super().__post_init__()
         _require_timestamp(self.sim_timestamp_ns)
+
+
+@dataclass(frozen=True)
+class OperatorWaitStartedStatus(RuntimeStatus):
+    operation_id: str
+    sim_timestamp_ns: int
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _require_timestamp(self.sim_timestamp_ns)
+        if type(self.operation_id) is not str or not self.operation_id:
+            raise RuntimeStatusError("operation_id must be a nonempty string")
 
 
 @dataclass(frozen=True)
@@ -477,6 +490,11 @@ _STATUS_REGISTRY: Mapping[type[RuntimeStatus], _StatusDefinition] = MappingProxy
             "mission-execution-ready",
             fixed_fields=(("ready", True),),
             constructor_fields=(_TIMESTAMP_FIELD,),
+        ),
+        OperatorWaitStartedStatus: _StatusDefinition(
+            "operator-wait-started",
+            fixed_fields=(("tool", "wait_for_state"), ("state", "running")),
+            constructor_fields=(_VALUE_FIELD("operation_id"), _TIMESTAMP_FIELD),
         ),
         RuntimeRunningStatus: _StatusDefinition(
             "runtime-running", fixed_fields=(("state", "RUNNING"),),

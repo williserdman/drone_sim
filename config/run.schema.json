@@ -32,6 +32,7 @@
     "mission_plan": {"$ref": "#/$defs/mission_plan"},
     "calibration_json": {"$ref": "#/$defs/calibration_json"},
     "calibration_profile": {"type": "object"},
+    "calibration_validation": {"type": "boolean", "default": false},
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [
@@ -63,12 +64,15 @@
         "required": ["runtime_profile", "mission_plan"],
         "properties": {"runtime_profile": {"const": "phase3"}}
       },
-      "else": {
-        "allOf": [
-          {"not": {"required": ["mission_plan"]}},
-          {"not": {"required": ["calibration_json"]}}
-        ]
-      }
+      "else": {"not": {"required": ["mission_plan"]}}
+    },
+    {
+      "if": {"required": ["calibration_json"]},
+      "then": {"properties": {"mission": {"enum": ["configured", "controlled_descent", "hover_roll", "autotune_roll", "comp2026_auto"]}}}
+    },
+    {
+      "if": {"required": ["calibration_validation"], "properties": {"calibration_validation": {"const": true}}},
+      "then": {"required": ["calibration_json"], "properties": {"mission": {"const": "configured"}}}
     },
     {
       "if": {"properties": {"mission": {"const": "autotune"}}},

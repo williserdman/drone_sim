@@ -137,3 +137,103 @@ def test_calibration_profile_rejects_actual_model_different_from_frozen_input(tm
     with pytest.raises(acceptance.BundleAcceptanceError, match="aircraft"):
         acceptance._validate_calibration_profile(tmp_path, profile,
             {"image_digests": [{"name": "gazebo", "digest": "c" * 64}]})
+
+
+@pytest.mark.parametrize('role,version,expected', [(False,2,False),(True,2,True),(False,1,True)])
+def test_reload_hover_role_does_not_apply_to_every_calibrated_mission(role, version, expected):
+    config = {'mission':'configured', 'calibration_json': {'profile': {'schema_version':version}},
+              'calibration_validation':role}
+    assert acceptance._requires_reload_validation(config) is expected
+
+
+def test_version_two_profile_checks_actual_consumer_model(tmp_path):
+    profile = {'schema_version':2,'physical_model_sha256':'a'*64,
+               'consumer_vehicle':'iris_moving_pad','consumer_model_resource':'gazebo/resources/models/iris_moving_pad/model.sdf',
+               'consumer_model_sha256':'b'*64,'image_digests':{'gazebo':'c'*64}}
+    profile['profile_sha256'] = hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(',',':')).encode()).hexdigest()
+    (tmp_path / 'gazebo').mkdir()
+    (tmp_path / 'gazebo/server.log').write_text(json.dumps({'resource_sha256s':[
+        ['models/iris_flight/model.sdf','a'*64], ['models/iris_moving_pad/model.sdf','b'*64]]})+'\n')
+    acceptance._validate_calibration_profile(tmp_path,profile,{'image_digests':[{'name':'gazebo','digest':'c'*64}]})
+
+
+def test_version_two_profile_rejects_wrong_consumer_even_if_source_model_matches(tmp_path):
+    profile = {'schema_version':2,'physical_model_sha256':'a'*64,
+               'consumer_vehicle':'iris_moving_pad','consumer_model_resource':'gazebo/resources/models/iris_moving_pad/model.sdf',
+               'consumer_model_sha256':'b'*64,'image_digests':{'gazebo':'c'*64}}
+    profile['profile_sha256'] = hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(',',':')).encode()).hexdigest()
+    (tmp_path / 'gazebo').mkdir()
+    (tmp_path / 'gazebo/server.log').write_text(json.dumps({'resource_sha256s':[
+        ['models/iris_flight/model.sdf','a'*64], ['models/iris_moving_pad/model.sdf','f'*64]]})+'\n')
+    with pytest.raises(acceptance.BundleAcceptanceError, match='aircraft'):
+        acceptance._validate_calibration_profile(tmp_path,profile,{'image_digests':[{'name':'gazebo','digest':'c'*64}]})
+
+
+def test_hover_uses_its_actual_phase_grammar():
+    documents = logs()
+    documents['companion'] = [{'event':'hover_phase','fields':{'phase':phase},'sim_timestamp':stamp}
+        for phase,stamp in [('HOVERING',10),('WAIT_LAND',20),('COMPLETE',30)]]
+    documents['companion'].append({'event':'mission_finished','fields':{'outcome':'LANDED'},'sim_timestamp':30})
+    acceptance._validate_production_log_evidence(documents, ruleset_id='descent_v1',mission='hover_roll')
+
+
+@pytest.mark.parametrize('first_event,fields', [
+    ('operation_started', {'tool':'arm'}),
+    ('command_issued', {'command':'SET_GUIDED'}),
+    ('hover_phase', {'phase':'WAIT_GUIDED'}),
+    ('autotune_phase', {'phase':'WAIT_GUIDED'}),
+    ('mission_event', {'state':'STARTED'}),
+])
+def test_post_command_readback_cannot_satisfy_pre_arm_gate(tmp_path, first_event, fields):
+    from artifacts.calibration import CALIBRATION_PARAMETERS, write_calibration_parameters
+    run_id = '00000000-0000-4000-8000-000000000707'
+    gains = {name: 0.1 for name in CALIBRATION_PARAMETERS}
+    gains['ATC_RAT_YAW_I'] = 0.01
+    artifact = write_calibration_parameters(tmp_path, run_id, gains)
+    configuration = tmp_path / 'configuration'
+    configuration.mkdir()
+    (configuration / 'calibration.parm').write_bytes(artifact.read_bytes())
+    manifest = json.dumps({'run_id':run_id}).encode()
+    (configuration / 'calibration-manifest.json').write_bytes(manifest)
+    calibration = {'source_run_id':run_id,'gains':gains,
+        'source_artifact_sha256':hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        'source_manifest_sha256':hashlib.sha256(manifest).hexdigest(),
+        'profile':{'schema_version':2,'effective_baseline_parameters':{'PLND_LAG':0.04}}}
+    verified = {'event':'calibration_parameters_verified','fields':{
+        'stage':'pre_arm','parameters':{**gains,'PLND_LAG':0.04}}}
+    acceptance._validate_calibration_inputs(tmp_path, calibration, [verified, {'event':first_event,'fields':fields}])
+    with pytest.raises(acceptance.BundleAcceptanceError,match='pre-arm'):
+        acceptance._validate_calibration_inputs(tmp_path, calibration, [{'event':first_event,'fields':fields},verified])
+
+
+def operator_fixture(tmp_path):
+    run_id = '00000000-0000-4000-8000-000000000707'
+    plan={'schema_version':1,'steps':[{'tool':'wait_for_state','args':{'armed':True,'mode':'GUIDED'},'timeout_sim_s':60}]}
+    companion=[{'event':'operation_started','fields':{'operation_id':'1',**plan['steps'][0]},'sim_timestamp':0.1},
+               {'event':'operation_finished','fields':{'operation_id':'1','tool':'wait_for_state','state':'succeeded','error':''},'sim_timestamp':0.7}]
+    events=[('operator_command','SET_GUIDED'),('operator_acknowledgement','SET_GUIDED'),
+            ('operator_observed_guided',None),('operator_command','ARM'),
+            ('operator_acknowledgement','ARM'),('operator_observed_armed',None)]
+    rows=[{'run_id':run_id,'event':event,'sim_timestamp_ns':200_000_000+index*50_000_000,
+           **({'command':command} if command else {})} for index,(event,command) in enumerate(events)]
+    target=tmp_path/'logs/docker/operator.jsonl'
+    target.parent.mkdir(parents=True)
+    target.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    return {'run_id':run_id,'mission_plan':plan},companion,target,rows
+
+
+def test_operator_evidence_requires_ordered_ack_and_observed_states(tmp_path):
+    config,companion,target,rows=operator_fixture(tmp_path)
+    acceptance._validate_operator_evidence(tmp_path,config,companion)
+    rows[2],rows[3]=rows[3],rows[2]
+    target.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    with pytest.raises(acceptance.BundleAcceptanceError,match='operator'):
+        acceptance._validate_operator_evidence(tmp_path,config,companion)
+
+
+def test_operator_cannot_command_before_started_wait(tmp_path):
+    config,companion,target,rows=operator_fixture(tmp_path)
+    rows[0]['sim_timestamp_ns']=50_000_000
+    target.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    with pytest.raises(acceptance.BundleAcceptanceError,match='operator'):
+        acceptance._validate_operator_evidence(tmp_path,config,companion)

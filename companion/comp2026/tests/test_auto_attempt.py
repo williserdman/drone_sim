@@ -1,8 +1,10 @@
 import pytest
 
 from drone import timebase
-from drone.auto_attempt import run_auto_attempt
+from drone.auto_attempt import run_auto_attempt as _run_auto_attempt
 from drone.common_types import GPSCoord, MissionHome
+from drone.mock_mission import PrecisionMissionPolicy
+from drone.sensors.lidar.clearance import ClearanceCalibration
 
 
 class FakeClock:
@@ -17,6 +19,40 @@ class FakeClock:
         if self.calls is not None:
             self.calls.append(("sleep", seconds))
         self.now_value += seconds
+
+
+def precision_policy():
+    return PrecisionMissionPolicy(
+        clearance_calibration=ClearanceCalibration(
+            beam_direction_body_frd=(0.0, 0.0, 1.0),
+            measured_reference_offset_body_frd_m=(0.0, 0.0, 0.0),
+            lidar_mounting_offset_already_applied=True,
+            max_tilt_rad=0.5,
+            max_age_seconds=0.5,
+            max_skew_seconds=0.2,
+            locally_horizontal_planar_surface=True,
+        ),
+        clock=timebase.monotonic,
+        max_exposure_age_s=0.5,
+        max_image_attitude_skew_s=0.2,
+        max_image_location_skew_s=0.2,
+        max_attitude_transport_latency_s=0.05,
+        max_location_transport_latency_s=0.05,
+        acquisition_timeout_s=2.0,
+        frame_timeout_s=0.1,
+        observation_period_s=0.05,
+        target_hover_height_m=4.572,
+        hover_tolerance_m=1.0,
+        centered_tolerance_m=0.5,
+        correction_gain=0.3,
+        cruise_altitude_m=10.0,
+        desired_drop_height_m=10.0,
+    )
+
+
+def run_auto_attempt(**kwargs):
+    kwargs.setdefault("precision_policy", precision_policy())
+    return _run_auto_attempt(**kwargs)
 
 
 class FakeTracker:
@@ -70,6 +106,7 @@ class FakeMissionFunctions:
     def __init__(self, calls, clock=None):
         self.calls = calls
         self.clock = clock
+        self.fm3_policies = []
 
     def fm1(self, tracker, controller, cruise_alt, waypoint_l):
         self.calls.append(("mission", "FM1", cruise_alt, waypoint_l))
@@ -102,8 +139,11 @@ class FakeMissionFunctions:
         possible_ids,
         pickup_point,
         target_point,
+        *,
+        precision_policy,
     ):
         marker_id = next(iter(possible_ids))
+        self.fm3_policies.append(precision_policy)
         self.calls.append(
             (
                 "mission",
@@ -186,17 +226,7 @@ class UnconfirmedLDisarmController:
 
 
 class NoneFm3MissionFunctions(FakeMissionFunctions):
-    def fm3(
-        self,
-        tracker,
-        controller,
-        camera,
-        lidar,
-        payload,
-        possible_ids,
-        pickup_point,
-        target_point,
-    ):
+    def fm3(self, *args, **kwargs):
         self.calls.append(("mission", "FM3_NONE"))
         return None
 
@@ -215,8 +245,8 @@ class PhaseResultMissionFunctions(FakeMissionFunctions):
         result = super().fm2(*args, **kwargs)
         return self.result if self.phase == "FM2" else result
 
-    def fm3(self, *args):
-        result = super().fm3(*args)
+    def fm3(self, *args, **kwargs):
+        result = super().fm3(*args, **kwargs)
         marker_id = next(iter(args[5]))
         return self.result if self.phase == f"FM3_{marker_id}" else result
 
@@ -254,6 +284,7 @@ def run_basic_attempt(calls, controller=None, functions=None, waypoints=None):
         waypoints=waypoints or fake_waypoints(),
         emit=lambda phase, state: calls.append(("event", phase, state)),
         mission_functions=functions or FakeMissionFunctions(calls),
+        precision_policy=precision_policy(),
     )
 
 
@@ -273,6 +304,49 @@ def event_phases(calls):
         for call in calls
         if len(call) >= 3 and call[0] == "event" and call[2] == "STARTED"
     ]
+
+
+@pytest.mark.parametrize("value", [None, object()], ids=["missing", "wrong-type"])
+def test_auto_attempt_requires_validated_precision_policy_before_outputs(value):
+    calls = []
+
+    with timebase.configured(FakeClock()):
+        with pytest.raises(ValueError, match="precision policy"):
+            _run_auto_attempt(
+                tracker=FakeTracker(calls),
+                controller=FakeController(calls),
+                camera=object(),
+                lidar=object(),
+                payloads={marker: FakePayload(marker, calls) for marker in (2, 3, 4)},
+                waypoints=fake_waypoints(),
+                emit=lambda phase, state: calls.append(("event", phase, state)),
+                mission_functions=FakeMissionFunctions(calls),
+                precision_policy=value,
+            )
+
+    assert calls == []
+
+
+def test_auto_attempt_forwards_same_precision_policy_to_both_fm3_phases():
+    calls = []
+    selected_policy = precision_policy()
+    functions = FakeMissionFunctions(calls)
+
+    with timebase.configured(FakeClock()):
+        _run_auto_attempt(
+            tracker=FakeTracker(calls),
+            controller=FakeController(calls),
+            camera=object(),
+            lidar=object(),
+            payloads={marker: FakePayload(marker, calls) for marker in (2, 3, 4)},
+            waypoints=fake_waypoints(),
+            emit=lambda phase, state: calls.append(("event", phase, state)),
+            mission_functions=functions,
+            precision_policy=selected_policy,
+        )
+
+    assert len(functions.fm3_policies) == 2
+    assert all(policy is selected_policy for policy in functions.fm3_policies)
 
 
 def test_auto_attempt_invokes_original_phases_and_home_in_order():
@@ -777,8 +851,8 @@ def test_home_uses_once_captured_controller_pin_not_mutable_saved_h():
     )
 
     class MutatingFunctions(FakeMissionFunctions):
-        def fm3(self, *args):
-            result = super().fm3(*args)
+        def fm3(self, *args, **kwargs):
+            result = super().fm3(*args, **kwargs)
             waypoints["H"] = GPSCoord(1.0, 2.0, 3.0)
             return result
 

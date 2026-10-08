@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import threading
 
-from artifacts.runtime_status import MissionExecutionReadyStatus, RuntimeFailureStatus
+from artifacts.runtime_status import MissionExecutionReadyStatus, OperatorWaitStartedStatus, RuntimeFailureStatus
 
 from .configured_mission import ConfiguredMission
 from .lifecycle import CompanionLifecycle
@@ -19,6 +19,7 @@ from .mission import MissionPhase, MissionState
 from .moving_precision import MovingPrecisionLanding
 from .operations import DroneOperations
 from .comp2026_host import MissionEventRecord
+from .calibration_gate import calibration_parameters as _effective_calibration_parameters
 
 
 MOVING_PRECISION_PARAMETERS = {
@@ -94,6 +95,7 @@ class ConfiguredHost:
         self._publish_mission_event = publish_mission_event
         self._next_event_id = 0
         self._last_armed: bool | None = None
+        self._operator_wait_reported = False
 
     @property
     def recovery_pending(self) -> bool:
@@ -182,9 +184,6 @@ class ConfiguredHost:
                 or not self.precision_profile_ready
             ):
                 return
-            self.protocol.write_status(
-                MissionExecutionReadyStatus(self.run_id, timestamp_ns)
-            )
             if self._calibration_required and not self._calibration_verified_reported:
                 self.lifecycle.emit(
                     "calibration_parameters_verified",
@@ -192,8 +191,16 @@ class ConfiguredHost:
                     {"stage": "pre_arm", "parameters": dict(self._parameters)},
                 )
                 self._calibration_verified_reported = True
+            self.protocol.write_status(
+                MissionExecutionReadyStatus(self.run_id, timestamp_ns)
+            )
             self.started = True
         self.mission.tick(timestamp_ns)
+        if not self._operator_wait_reported and self.mission.operation_id is not None:
+            operation = self.operations.operation_status(self.mission.operation_id)
+            if self.mission.step_index == 0 and operation.tool == "wait_for_state" and operation.state == "running":
+                self.protocol.write_status(OperatorWaitStartedStatus(self.run_id, operation.operation_id, timestamp_ns))
+                self._operator_wait_reported = True
         if self.mission.state in {"failed", "cancelled"}:
             self.fail(self.mission.error)
         elif self.mission.state == "succeeded" and not self._success_reported:
@@ -236,13 +243,7 @@ class ConfiguredHost:
 
 
 def _calibration_parameters(config) -> dict[str, float]:
-    raw = getattr(config, "calibration_json", None)
-    if raw is None:
-        return {}
-    document = json.loads(raw)
-    gains = document["gains"]
-    baseline = document["profile"]["baseline_parameters"]
-    return {**baseline, **gains}
+    return _effective_calibration_parameters(config)
 
 
 def run_configured(config) -> int:

@@ -25,6 +25,14 @@ COPY artifacts/src /opt/drone_sim/artifacts/src
 COPY companion/pyproject.toml /opt/drone_sim/companion/pyproject.toml
 COPY companion/src /opt/drone_sim/companion/src
 COPY companion/comp2026/src /opt/drone_sim/comp2026/src
+COPY config/course.yaml /opt/drone_sim/config/course.yaml
+COPY config/scenario.yaml /opt/drone_sim/config/scenario.yaml
+COPY ardupilot_sitl/provenance/ardupilot.json /opt/drone_sim/ardupilot_sitl/provenance/ardupilot.json
+COPY ardupilot_sitl/params/descent.parm /opt/drone_sim/ardupilot_sitl/params/descent.parm
+COPY ardupilot_sitl/params/competition.parm /opt/drone_sim/ardupilot_sitl/params/competition.parm
+COPY gazebo/resources/models/iris_competition/model.sdf /opt/drone_sim/gazebo/resources/models/iris_competition/model.sdf
+COPY gazebo/resources/worlds/competition_mission.sdf /opt/drone_sim/gazebo/resources/worlds/competition_mission.sdf
+COPY gazebo/resources/worlds/competition_mission_1x.sdf /opt/drone_sim/gazebo/resources/worlds/competition_mission_1x.sdf
 RUN python3 -m venv --system-site-packages /opt/drone_sim/venv \
     && /opt/drone_sim/venv/bin/pip install --no-cache-dir \
         "dronekit==2.9.2" "fastcrc==0.3.6" "future==1.0.0" \

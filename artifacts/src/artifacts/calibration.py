@@ -11,8 +11,30 @@ from pathlib import Path
 import tempfile
 from typing import Any
 from uuid import UUID
+import xml.etree.ElementTree as ET
 
 from pymavlink import mavutil
+
+
+def airframe_fingerprint(model_xml: bytes) -> str:
+    """Bind physical dynamics, excluding only declared evidence/payload plugins."""
+    document = ET.fromstring(model_xml)
+    model = document.find("model")
+    if model is None:
+        raise ValueError("airframe SDF requires an outer model")
+    model.set("name", "competition-airframe")
+    for plugin in list(model.findall("plugin")):
+        if plugin.get("name") == "gz::sim::systems::PosePublisher" or plugin.get("filename") in {
+            "libcwru_payload_command_coordinator.so",
+            "libdrone_sim_detachable_joint_system.so",
+        }:
+            model.remove(plugin)
+        elif plugin.get("name") == "ArduPilotPlugin":
+            rc_input = plugin.find("rc_input_pwm")
+            if rc_input is not None:
+                plugin.remove(rc_input)
+    canonical = ET.canonicalize(ET.tostring(document, encoding="unicode"), strip_text=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 CALIBRATION_PARAMETERS = (

@@ -26,6 +26,7 @@ if(BUILD_ARDUPILOT_PLUGIN)
     ${ARDUPILOT_GAZEBO_SOURCE}/src/Util.cc
   )
   target_include_directories(ArduPilotPlugin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${ARDUPILOT_GAZEBO_SOURCE}/include
   )
   target_link_libraries(ArduPilotPlugin PRIVATE gz-sim8::gz-sim8)
@@ -68,6 +69,14 @@ ament_target_dependencies(clock_decimator rclcpp rosgraph_msgs)
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(imu_sample_synchronizer_test
+    test/ImuSampleSynchronizerTest.cc
+  )
+  target_link_libraries(imu_sample_synchronizer_test PRIVATE
+    gz-msgs10::gz-msgs10
+  )
+  add_test(NAME imu_sample_synchronizer_test COMMAND imu_sample_synchronizer_test)
+
   add_executable(clock_decimator_test
     ClockDecimator.cc
     test/ClockDecimatorTest.cc

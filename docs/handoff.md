@@ -3,17 +3,677 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-02. Branch `design/moving-pad-landing` adds the moving-pad
+Audited 2026-10-08. Branch `feat/manual-ci-suite` extends
+`design/moving-pad-landing`, which adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
-SITL overlay, physical scoring, and independent artifact checks. The core-runner
-PR and imported `companion/comp2026` source remain unchanged.
+SITL overlay, physical scoring, and independent artifact checks. Imported
+`companion/comp2026` history and provenance remain preserved.
+
+Project paused at the user's request on 2026-10-08 at 18:53 UTC. The latest
+suite `a0a575bb-4b75-444c-9880-72482387718d`, from clean `fb92033`, exited 130
+with state `INTERRUPTED`. Evidence remains under
+`/home/willis/projects/drone_sim/runs/local-ci/20261008-fb92033`; its report is
+`suites/a0a575bb-4b75-444c-9880-72482387718d/report.json`.
+
+- All-axis calibration `51b4f10f-9e32-4663-a345-4f978ee0b679` and fresh reload
+  `f0ea3376-8306-471e-8f32-3d75b45160db` both established `LANDED`, scored
+  100/100, and passed the suite's independent artifact acceptance. Their full
+  recording windows were 900 and 120 simulated seconds. Calibration took
+  8,397 wall seconds, within the new three-hour allowance.
+- Reload's 15 imported gains matched fresh firmware readbacks before arming.
+  Both finalized manifests retain the same source and seven image identities.
+- Configured descent `e9d9a510-fb85-4d81-96b0-e0f33e0381ee` was aborted during
+  private warmup. Its failed report row records `ABORTED: operator_abort`,
+  not a completed regression test. The other eight cases were unrun.
+- Suite, launcher and observation processes exited; all current-suite Compose
+  containers were removed. No simulation containers were running at 18:53 UTC.
+  Existing evidence remains intact; all seven images have `:fb92033-suite`
+  preservation tags.
+
+The full 11-case demonstration remains incomplete. Additional native-log and
+physical diagnostics were deferred, not run after the pause. Resume from this
+checkpoint with a fresh full-suite run when workstation use is authorized again.
+The manual workflow is still absent from `main` and its registered runner is
+offline; provider verification remains unrun. No runtime behavior changed in
+this pause checkpoint, so module READMEs, architecture and runbook are unchanged.
+
+The earlier common-build suite `be09da8c-d096-4b34-82ac-de5b05d25d30`, from clean
+`d1335a3`, attempted all 11 cases and finished **FAILED**, six passed and five
+failed, on 2026-10-07 at 21:50 UTC. It ran for 6 h 4 min. All 11 manifests
+match the suite's frozen source and seven image identities. No simulation
+containers remained when checked after completion. Evidence root:
+`/home/willis/projects/drone_sim/runs/local-ci/20261007-d1335a3`; the full verdicts
+and bundle paths are in `suites/be09da8c-d096-4b34-82ac-de5b05d25d30/report.json`.
+
+- Calibration `43cc89d8-9080-47ab-a4ef-c56ec8e4becf`, fresh reload,
+  configured descent, operator wait, controlled descent, and moving pad each
+  established `LANDED`, scored 100/100, and passed independent acceptance.
+- Hover roll and roll AutoTune failed with `clock_source_stall`; their incomplete
+  ground-truth streams also failed sample-count validation. Neither flew a
+  completed accepted mission. The partial parameter cache kept calibration
+  readiness closed. Requesting a complete list during private warmup did not
+  resolve this: focused hover run `277a9bdb-fc64-4fbb-bef1-2a1f9d605a5a`
+  stopped advancing at the 90-second private boundary with incomplete readback.
+  A normal diagnostic abort finalized it as `ABORTED`, 0/100, without acceptance.
+- Stationary pad failed its final precision-handoff deadline. Recorded physical
+  contact remained continuous and world height stopped changing, but EKF3 still
+  estimated downward motion after touchdown. The 25 Hz DataFlash IMU log cannot
+  establish whether the nominal 1 kHz collision impulse reached SITL. A later
+  unchanged-runtime run is recorded below; the intermittent cause remains open.
+- Both competition timings failed before flight with
+  `a guarded transport enqueue transaction is required`. A real DroneKit
+  connection probe reproduced the cause: automatic MAVLink 1-to-2 switching
+  replaces its output queue writer. The simulation composition now selects
+  MAVLink 2 before opening the connection. Rebuilt companion run
+  `792196c6-7c5f-4796-b654-74cd1507885e` passed that constructor boundary, then
+  failed before flight on absent/stale safe-ground telemetry. It scored 0/150
+  and was not accepted.
+
+At `8896714`, the full host/module checks passed 2,350 tests with 27 environment
+skips; all 1,129 imported mission tests passed. Lockfile, compilation and diff
+checks passed. The companion image rebuilt successfully and its real import
+smoke passed before the focused native cases below. Their source and all seven
+image identities remain frozen in
+`runs/diagnostics/20261008-8896714-startup-paths/`.
+
+The later startup repair waits for actual fresh ground observations, live
+heartbeat, healthy prearm state and matching parameters before declaring
+competition readiness. It preserves the existing startup deadline and command
+admission guard. The simulation adapter also suppresses DroneKit's automatic
+indexed parameter retries while preserving real cache contents, completion
+state, explicit requests and the unchanged readback gate.
+
+Passive MAVLink capture of roll AutoTune run
+`bfb4face-517a-41ac-876d-9526afbc9812` established a separate parameter retry
+flood: at the 90.029-second private boundary, 48,450 indexed requests had produced
+4,525 values. Only `LAND_SPD_MS` remained missing from the 46 required parameters.
+The controller then stopped responding while the sender continued retrying;
+normal diagnostic abort finalized the run as `ABORTED`, 0/100, not accepted.
+DroneKit starts these wall-clock retries on early unsolicited values, before
+the complete-list request.
+
+The combined startup repairs were rebuilt from clean `d878ac3`; the frozen
+source and seven image identities are recorded under
+`runs/diagnostics/20261008-d878ac3-startup-paths/`. Native reruns then established
+separate outcomes:
+
+- Hover-roll `473cbcab-a1eb-4adc-a156-f584cbcd6396` finished `LANDED`, scored
+  100/100, produced three complete valid final artifacts, and passed independent
+  acceptance.
+- Stationary-pad `96e73251-c39d-4ab4-8384-b4a98275f5e5` finished `LANDED`,
+  scored 100/100, produced three complete valid final artifacts, and passed
+  independent acceptance. Its detailed physical evidence and later IMU finding
+  are recorded below.
+- Competition `42bf9922-5670-414e-9e3c-700ebc9ddd9a` reached GUIDED but failed
+  the unchanged startup telemetry proof before an accepted flight. It finished
+  `FAILED`, scored 0/150, and had incomplete artifacts with an invalid rosbag;
+  independent acceptance was not run because the lifecycle did not complete.
+- Roll AutoTune `f79e3e21-2148-411d-bd53-d08f502d7982` finished `LANDED` and
+  saved the tuned roll gains. It scored 40/100 and independent acceptance was
+  rejected. Both videos and the MCAP are complete and valid.
+
+The failed rules in that frozen run remain evidence for the original behavior.
+Touchdown was 20.4838 m from the target and preimpact downward speed was
+1.052171 m/s, above the unchanged 1.0 m/s limit; horizontal speed was only
+0.09014 m/s. The vehicle descended in AUTOTUNE under the companion's 1300 PWM
+throttle override. The current source replaces that post-success descent with
+LOITER gain activation, a stable GUIDED return to the fresh launch point, and
+native LAND. It still requires the exact roll success/save statuses and now
+checks the coherent DataFlash gains against the activated readback.
+
+Focused rerun `c2f313d3-3aab-43f2-858d-69deb29833d2`, from clean `0d5945c` and
+its frozen seven images, verified that repair. Native roll success at public
+49.85 seconds was followed by pilot-testing activation at 49.90, settling at
+50.05, GUIDED return at 55.80, arrival and native LAND at 65.30, contact at
+75.70, disarm and saved-roll status at 77.60, and `LANDED` completion at 78.05.
+The preceding 20 Hz truth sample measured 0.500222 m/s downward with horizontal
+velocity `(0.000325, -0.001413)` m/s; touchdown error was 0.004118 m. All four
+descent rules passed for 100/100, independent acceptance passed, and the five
+activated gains matched the validated DataFlash artifact. Manifest SHA-256 is
+`281964dd7ae92c7c3cf1131d75d6a9124d67d2f9e84ca5b4837c0cc352f773c4`.
+
+The normal-speed before/after observer video is
+`runs/diagnostics/20261008-0d5945c-roll-native-land/review/f79-vs-native-land-observer.mp4`.
+It places failed f79 left and accepted c2f right, aligns contact at 8.35 seconds,
+and has 260 frames at 20 fps and 1280x480. Its SHA-256 is
+`6e72f238f08807e57890923ac87f1c58d4b22c1e0a6f99022dcba7a76383806c`;
+the original bundles remain unchanged.
+
+At exact source `0d5945c`, host checks passed 2,388 tests with 27 environment
+skips, all 1,130 imported mission tests passed, and the requested review found no
+material issues. The earlier `32d2455` Docker integration passed 17 tests and
+its Gazebo path passed five compiled checks plus six real UDP checks;
+the native ArduPilot probe produced the expected 12 m `DISTANCE_SENSOR`, and the
+actual 17-layer ArduPilot root filesystem and full configuration matched
+`0d5945c` despite an image-index identity change. A fresh actual-Gazebo
+ground-ray probe was inconclusive, so it does not establish a missing range
+producer.
+
+Frozen 11-case suite `6f82c124-c240-46bf-b97f-67e4a8a78981` finished `FAILED`
+at 04:12 UTC under `runs/local-ci/20261008-0d5945c`. Calibration
+`79d802a4-6172-45cb-9643-2fef4576554d` reported native
+`AutoTune: Rate D Gain Determination Failed` at public 50.75 seconds. DataFlash
+then records mode 9 LAND and `Disarming motors`, and the companion published
+`mission_failed` at 64.05. This establishes recovery and disarm, not physical
+contact: the suite report leaves `physical_outcome` null and the manifest marks
+the MCAP invalid for count mismatch. Calibration therefore has an incomplete
+0/100 score and rejected artifact acceptance; both videos are valid. The failed
+calibration gate blocked all ten later cases. The driver, wrappers and watchers
+exited, and no suite-owned containers remained. Repeat suite
+`cc127100-895d-444f-afa0-233531d602e0` under
+`runs/local-ci/20261008-0d5945c-repeat` finished `FAILED` at 04:39 UTC.
+Calibration `a0d189fa-a37d-47ef-89b2-e3456731b3c8` failed at public 41.75
+seconds on the same native D-floor guard; its physical outcome is unknown, its
+score is 0/100, and its MCAP is invalid. One case failed, ten were blocked, and
+teardown completed with no suite-owned containers left.
+
+The 2026-10-08 diagnosis found no sample-index or phase error in corrected IMU
+selection. Both corrected-IMU failures left Roll above the D floor in
+Rate-D-Down, then crossed it in Rate-P, where native ArduPilot treats the floor
+as fatal. Bounded legacy control `5eb7e15e-4b28-4b7d-b7c8-0222518fccf9`
+reached the same floor during Rate-D-Down, where native ArduPilot accepts it.
+Only `libArduPilotPlugin.so` changed among the named plugins; the named firmware,
+parameters, companion mission/config, and Gazebo models/worlds matched. This is
+not proof of whole-image, operating-system, or host identity.
+
+That diagnostic control completed its 900-second window: all-axis success was
+reported at public 438.8 seconds, gain activation at 438.95, return start at
+444.95, LAND at 456.2, saved gains after disarm at 468.5, and `LANDED` at 469.25.
+Physical landing completed, scoring was 100/100, independent artifact acceptance
+passed with `incomplete_paths=[]`, and the manifest SHA-256 is
+`0fae23cdad58693382b6a5f612cdec70a1a44477e1b3c65457a172bc1e5e97f4`.
+The driver finished with exit code 0 at 06:38:23 UTC, with no owned containers
+left after teardown. Its source was `dc4f51f`; the bundle is under
+`runs/diagnostics/20261008-dc4f51f-legacy-imu-calibration`.
+This causal control does not justify restoring the legacy sampler, promoting its
+gains, or weakening the native guard, score, or deadline. A production fix and
+full-suite pass remain pending.
+
+Corrected-IMU P/I-only diagnostic `cbdb5af6-ec44-43a0-aee1-66abc5157eab`, under
+`runs/diagnostics/20261008-da338196-pi-seed-calibration`, changed Roll P/I from
+`0.0503722` to `0.0675`; the other 40 parameters, including D, were unchanged.
+Named firmware, simulator and mission code, and Python interpreter bytes match
+the failed baseline. Roll completed at public 49.05 seconds, but native AutoTune
+failed to level during Pitch Angle P Up at 185.2. Recovery switched to LAND at
+185.2 and the companion published `mission_failed` at 198.05. The run lifecycle
+was `FAILED`; the driver finished with exit code 1 at 07:14:20 UTC. Native
+AutoTune's six-second leveling guard fired; the specific attitude or rate
+condition preventing its 250 ms stable interval remains under investigation.
+
+Native logs show LAND recovery, then disarm at public 197.58 seconds; independent safe
+physical contact is not established. The raw score is 0/100, independent
+acceptance was not performed because the lifecycle failed, and the manifest has
+`incomplete_paths=["rosbag"]` for a ground-truth sample-count mismatch. The
+original 15,941,632-byte native BIN is valid, with SHA-256
+`6488b6ea1f6113e73608ba274fa04dbeb6a04e2f881aee05ff2141bcbb20b061`;
+manifest SHA-256 is
+`4c30b689deeb94aadfb74d60f10f364dbe8c3ee1c0200bb01c304528ad875d01`.
+The driver and wrapper are gone, no owned containers remain, and all seven
+`:pi-seed-da338196` images are preserved. This diagnostic is not a production
+promotion or suite pass.
+
+Native guard trace `9612a69a-c6ed-473f-8582-97354bf631cb`, source `7794284`,
+reproduced the level failure during Pitch Rate P Up at public 140.3 seconds.
+Its 42 starting parameters match the P/I trial; the only native change adds
+diagnostic `ATLV` records. In the final 6.003-second wait, yaw rate exceeded the
+effective limit in 2,338 of 2,401 samples. The longest stable interval was 43 ms,
+below the required 250 ms. Actual yaw followed a roughly 19-to-15 degrees/second
+command while the guard's limit rose to 15 degrees/second. Samples were 2–3 ms
+apart, with no reported logger drops. This identifies the terminal guard path
+in this run, not the uninstrumented trial's exact cause or the source of drift.
+Pinned native position hold changes heading beyond 5 m of displacement; its
+initialization enables this only when entering from LOITER or POSHOLD.
+
+Native recovery entered LAND at public 140.287 seconds and disarmed at 152.705;
+independent safe physical contact remains unestablished. Scoring is incomplete
+0/100, and the manifest rejects the rosbag for sample-count mismatch. The driver
+finished with exit code 1 at 08:20:34 UTC; owned processes and containers are gone.
+The preserved bundle is `runs/diagnostics/20261008-7794284-level-trace-calibration`;
+all seven images have `:level-trace-7794284` aliases. Native BIN SHA-256 is
+`97ec9007aac306bb90832e037da02ecc679098ca5d7d97043a1eb94b12df3da4`,
+and manifest SHA-256 is
+`a5c36a48715d780074903e727350628947ab1353fd5b5b225915d93114bb9952`.
+The isolated ALT_HOLD-entry trial `f7c3f698`, source `074afe4`, completed native
+all-axis tuning, returned to launch, landed, disarmed and saved its gains. The
+vehicle drifted about 386 m during tuning; its GUIDED return took 45.25 simulated
+seconds within the unchanged 60-second limit. The companion reported `LANDED`
+at public 317.25 seconds. Recorded contact at public 315.0 seconds was 1.4 mm
+from the origin, with downward precontact speed 0.500258 m/s. All 11 samples
+in the unchanged half-second stability window passed. All 15 native saved
+gains match activation and post-disarm readback; the text export matches within
+the existing tolerance.
+
+The aggregate run nevertheless failed: the original 7,200-second wall limit
+expired at 10:39:09 UTC before the required 900-second public recording ended.
+The recording contains 16,743 of 18,000 required ground-truth samples, through
+public 837.15 seconds, leaving 62.85 seconds unrecorded.
+The persisted score is incomplete 0/100 with `ground_truth_sample_count_mismatch`,
+and the manifest rejects the rosbag for insufficient samples. The driver finished
+with exit code 1 at 10:40:42 UTC; owned processes and containers are gone. The
+bundle remains under `runs/diagnostics/20261008-074afe4-alt-hold-calibration`,
+with all seven images preserved as `:alt-hold-074afe4`. This is flight diagnostic
+evidence, not accepted calibration or a suite pass. The production calibration
+mission now writes and verifies the roll seeds locally and observes ALT_HOLD
+before AUTOTUNE; the global base profile and native instrumentation are unchanged.
+Verification passed 169 focused checks, 2,399 host tests and 1,130 imported
+Comp2026 tests; 27 environment-dependent host checks were skipped. No static
+typechecker is configured. This production revision still requires a fresh
+accepted calibration, reload and full suite.
+
+Production suite `7ff02439-db98-418a-bf15-8c26d9ca2f83`, source `ec1ba21`,
+attempted calibration run `6acce90c-2aea-419a-bcf4-eeeeb8b3ce27`. Native
+AutoTune completed Roll, Pitch and Yaw, then returned in GUIDED for 54 simulated
+seconds before native LAND, disarm and gain saving. All 15 activation,
+post-disarm and native saved values agree. The finalized partial recording also
+shows physical contact at 0.500079 m/s downward precontact speed and 3.987 mm XY
+error; all 11 samples in the unchanged stability window pass its physical
+predicates.
+
+The production run and suite remain `FAILED` with `clock_source_stall` after the
+unchanged 7,200-second wall limit. Its contiguous MCAP has 17,085 of 18,000
+required ground-truth samples through public 854.25 seconds, leaving 45.75
+seconds absent. The official result is incomplete 0/100, the rosbag is invalid,
+and all ten dependent cases were blocked. Teardown finished, the owned
+containers are absent, and the frozen seven image identities still match.
+Read-only evidence is under `.superpowers/full-suite-ec1ba21/final-native/`,
+`.superpowers/full-suite-ec1ba21/final-physical/`, and
+`.superpowers/full-suite-ec1ba21/terminal-verification.json`. These native and
+physical observations do not accept the calibration or establish a suite pass.
+
+A seven-second `/proc` sample during the run attributed about 0.50 CPU core to
+the driver's reaped health-query children. This establishes material
+`docker compose ps` overhead, not that polling alone caused the low simulation
+rate. The controller's default inter-probe delay is now 1.0 wall seconds without
+changing APIs, caches, deadlines, native code, physics,
+or scoring. The corrected controller, suite, and suite-runtime checks passed 106
+tests in 15.21 seconds. The full host suite passed 2,404 tests with 27 skips in
+67.94 seconds; all 1,130 imported Comp2026 tests passed in 19.37 seconds. No
+static typechecker is configured. A fresh production 11-case suite remains
+pending.
+
+Production suite `de526bc9-a906-4d89-af0b-25ad2d3468ff`, source `6947a86`,
+attempted calibration `826666a0-1240-4799-825c-43531e3f6676` on 2026-10-08.
+The finalized native log confirms all three axes completed, a 30.498-second
+GUIDED return, native LAND, disarm and gain saving. All 15 activation,
+post-disarm and native saved gains match. The recorded touchdown was stable,
+with 0.500375 m/s downward precontact speed and 8.980 mm XY error; all 11
+samples in the contact window pass the unchanged physical predicates.
+
+The suite nevertheless failed at the original 7,200-second wall deadline. Its
+contiguous recording ends at public 858.55 seconds, with 17,171 of 18,000 samples.
+The missing 41.45 seconds mean official score 0/100, incomplete artifacts and
+ten blocked dependent cases. Native and physical diagnostic success does not
+accept those gains. All owned processes and containers exited; all seven images
+are preserved under `:6947a86-suite`. Final evidence and separate diagnostic
+reports are under `.superpowers/full-suite-poll-1s/`.
+
+Reducing health polling did not establish a full recording within two hours.
+The calibration template now allows 10,800 wall seconds, sized for this
+workstation's measured throughput. Its 900 public seconds, 90-second warmup,
+simulated flight deadlines, native guards, physics, scoring and recording
+requirements are unchanged. The later paused run above accepted calibration
+and reload; a full 11-case run remains required. The 24-hour Actions job covers the catalog's
+70,200 seconds of run budgets plus 3,600 seconds of finalization.
+Improving the `clock_source_stall` diagnostic name for an overall wall timeout
+is deferred; the measured clock was advancing when the deadline expired.
+For this template change, 138 focused checks, 2,404 host tests and 1,130 imported
+Comp2026 tests passed; 27 environment-dependent checks were skipped. The focused
+review found no issues. These checks do not establish a fresh flight pass.
+
+Provider readiness checked again at 18:46 UTC on 2026-10-08 is unchanged: zero
+workflows exist and the registered runner is offline and idle. Actions dispatch
+remains unverified.
+
+Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
+`8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance
+on 2026-10-08. Native logs show an impact at 117.449658 seconds, EKF vertical
+velocity near zero by 117.529631, and disarm at 119.329026; the companion
+reported `LANDED` at public 30.05 seconds. This successful repetition does not
+explain the earlier failure. Its bundle is under
+`runs/diagnostics/20261008-8896714-stationary-sensors/`.
+
+The separate raw sensor capture missed touchdown because its diagnostic filter
+assumed a fixed SITL UDP port. Those empty files are invalid diagnostic evidence;
+they do not establish a missing acceleration pulse. The corrected observer
+discovers the actual servo peer and filters only its UDP traffic in the kernel.
+A live post-landing probe captured 1,930 FDM packets and 1,900 raw IMU messages
+at 1 ms native intervals, with zero socket drops or timestamp gaps. Stationary
+run `96e73251-c39d-4ab4-8384-b4a98275f5e5` then completed with continuous
+physical deck contact from public 27.40 seconds through the remaining 62.6
+seconds, `LANDED`, 100/100 and independent acceptance. Its manifest SHA-256 is
+`45ca6997155f5577e5154e1736d5e128b61bf05694442c5943bb1eb8df316845`;
+both videos and the final MCAP record are complete and valid.
+
+That run's lossless 1 ms capture proves a current JSON boundary defect. Raw IMU
+contained opposing collision samples at native 117.367 and 117.368 seconds, but
+JSON reused the ordinary 117.366 sample at 117.367 and carried only the second
+collision sample at 117.368. Raw vertical residual impulse was -0.501017 m/s;
+JSON retained -0.252066 m/s (50.3%), while raw lateral impulses nearly cancelled
+and JSON retained -0.222 m/s. This proves partial impulse loss in the current
+interface, not that it caused historical failure `a53915aa`. The plugin repair
+now waits for the exact current-step IMU timestamp and fails closed after one
+wall second; focused host, compiled C++ and real UDP checks pass. A fresh
+collision capture, EKF response and native mission suite remain unverified.
+The flight controller, landing deadline, physics and scoring remain unchanged.
+
+Competition startup run `42bf9922-5670-414e-9e3c-700ebc9ddd9a` later reached
+GUIDED and failed the unchanged post-GUIDED telemetry proof. Its DataFlash log
+records all ten `RNGFND*_TYPE` values as zero and no `RFND` records, while the
+required profile includes MAVLink message 132. The Gazebo ray was publishing,
+but the common ArduPilot plugin had no range subscription, so no native
+flight-controller `DISTANCE_SENSOR` producer existed. The source repair now
+wires the common ray to JSON `rng_1`, enables competition-only SITL rangefinder
+instance 1 at the sensor's 0.05–40 m limits, and includes all three settings in
+calibration identity and preflight readback. Review then found that pinned
+ArduPilot `1511f271` tests bits 7–12 while `rng_1`–`rng_6` occupy bits 10–15,
+so the wiring alone could not produce the correct first rangefinder. The image
+recipe now applies upstream fix `8fa852b` as a digest-bound downstream patch
+without changing the advertised source revision, and executes the exact source
+update block for all six keys before compilation. The unpatched check failed on
+`rng_1`; the patched check and focused host contracts pass. A no-arm native
+ArduPilot JSON-peer probe produced `DISTANCE_SENSOR` at boot times 2035 and 2135
+ms with current 1200 cm and 5--4000 cm limits for its 12 m fixture. Its evidence
+is under `runs/diagnostics/20261008-32d2455-native-range-smoke/`. This proves the
+ArduPilot producer, not the real Gazebo range path, repaired eight-family cadence,
+or a full mission; public-clock quantization may still expose a separate cadence
+failure.
+
+The five failed cases reported 0 points and no independently accepted physical
+outcome. Their bundles remain unchanged. This is evidence of honest per-case
+failure reporting and independent continuation, not an all-suite pass.
+
+Slower native-LAND diagnostic, verified 2026-10-07: run
+`f6b40251-efe5-46c0-9982-5d52fcd3aa52` used the clean `9416c22` source and a
+separately labelled ArduPilot image with only `LAND_SPD_MS` changed from 0.50 to
+0.30. The 5 m takeoff, two-second hold and native LAND completed with observed
+disarm and `LANDED` at public 29.10 seconds. DataFlash confirms 0.30; measured
+precontact descent was 0.299800 m/s. All 11 samples in the unchanged calibration
+first-contact window passed, with maximum speed 0.001000 m/s and continuous
+contact. Touchdown was 0.00397 m from the origin; raw descent score was 100/100.
+Fresh inventory hashes/sizes and MCAP validation passed. Evidence is under
+`runs/diagnostics/20261007-slower-native-land/`. This short base-gain experiment
+is not an accepted calibration or an all-suite result. A later controlled pair
+used identical saved gains: 0.50 m/s run `eb27fc47-7613-4cd2-8e5b-514fb9702cea`
+and 0.30 m/s run `18e415bd-53f5-4c38-a178-b2339f44fa92` both landed/disarmed,
+scored 100/100, passed all 11 strict first-contact checks, and had valid inventory
+and MCAP evidence. LAND-to-contact took 10.4 versus 17.0 simulated seconds.
+Neither reproduced the earlier failure, so this pair does not establish improved
+reliability. Evidence and the 22-second comparison clip are under
+`runs/diagnostics/20261007-saved-gain-land-compare/`. Checked-in landing profiles
+and scoring remain unchanged.
+
+The full 0.30 m/s AutoTune diagnostic `7ec54605-c40c-4499-9dc6-6145dba3c09f`
+failed on 2026-10-07 at public 109.80 seconds during Pitch Rate P Up. Roll had
+completed, but pitch could not level between tests; yaw never began. The
+companion requested recovery LAND after the native failure. The planned return,
+landing and gain-save sequence was not reached, and no calibration was exported.
+This failure occurred before the landing-speed comparison could be made and
+does not establish that slower LAND caused it. The manifest also marks the
+rosbag invalid because its camera/ground-truth counts differ from the configured
+window; the postflight analyzer therefore rejected inventory validation.
+DataFlash remains diagnostic evidence, not accepted calibration. The unchanged
+bundle is under `runs/diagnostics/20261007-autotune-slow-land/`.
+
+Comp2026 integration repair, 2026-10-07: the parent host now composes the imported
+source/authority guards, mission supervisor, output transactions and observed
+home using a simulation-specific policy. The original automatic sequencer
+receives the validated precision policy for both FM3 calls. Timestamped LiDAR
+samples and verified camera geometry satisfy its current sensor interfaces.
+Competition alone supplies native RC input through the JSON FDM connection and
+loads the matching mode-channel overlay. Docker packaging includes the import
+closure and canonical policy resources. Full host/module checks passed 2,349
+tests with 27 skips; imported mission checks passed 1,129. Python compilation,
+lockfile verification and diff checks passed. The native plugin compiled and
+all four C++ checks passed. All seven images built, and the real companion-image
+import smoke passed. The subsequent competition startup failures and full-suite
+outcome are recorded above; these checks do not establish an all-suite pass.
+
+Calibration return update 2026-10-07: the companion now captures the disarmed
+launch position, returns there in GUIDED at 5 m after tuning/gain activation,
+and requires two stable seconds within 0.5 m before native LAND. Checks passed
+2,285 host/module tests with 27 skips and 1,126 imported Comp2026 tests.
+Diagnostic run `a7c6d2e1-a4f6-4d12-a1e2-af4bfecbc7a6`, from clean `9416c22`,
+completed on 2026-10-06 at 22:26 UTC. It commanded the return at public
+411.95 seconds, verified arrival at 422.20 seconds, and made ground contact
+at 432.60 seconds, 0.0234 m from the zone origin. Recorded contact persisted through
+the recording end at 900 seconds. Native Roll/Pitch/Yaw gain saving preceded
+matching post-disarm readback and companion `LANDED` at 435.25 seconds.
+
+Physical return/landing succeeded, but raw scoring remained 60/100 because
+`stable_contact` failed. The first contact sample reports 0.101601 m/s against
+the 0.1 m/s limit; it is the only failing sample in the 432.60–433.10 second
+window. Contact stays true and tilt stays below 1.003 degrees throughout.
+Fresh checksum/size validation matches all 27 manifest records, and the MCAP
+independently parses; this does not establish semantic acceptance. The standard
+inspector rejects the diagnostic's noncanonical image references, and its raw
+score also falls short of the calibration gate. Do not import this run as an
+accepted CI calibration or treat it as an all-setup pass. The run and a
+side-by-side return/landing clip at original playback speed are retained beneath
+`runs/diagnostics/20261006-calibration-return-zone/`; the clip is
+`review/return-and-land-normal-speed.mp4`, covering public 407–441 seconds,
+observer left and onboard right. Source videos remain in the run bundle.
+Landing speed, physical scoring and saved-gain verification are unchanged.
+
+Static integration contract checks updated 2026-10-07: the frozen Compose
+source order now includes the optional operator actor, explicitly excluded from
+the Phase 2 profile, and the exact private SITL endpoint set includes SERIAL1
+port 5762. The seven main Phase 3 services and prohibition on host-published
+flight ports remain enforced. The two previously failing static checks now
+pass; the two static contract files plus the host operator checks passed 73
+tests. Runtime behavior and flight/scoring results are unchanged. The existing
+orchestration README, architecture and runbook already describe these interfaces.
+
+CI review update 2026-10-07: review of `d0cf025..6552414` found one new
+Important issue: template preparation errors escaped per-case handling and
+stopped later independent cases. Preparation now uses the existing case failure
+path. Three filesystem-failure regressions prove independent continuation and
+blocking after either prerequisite fails. Focused suite checks passed 52 tests;
+the full host suite passed 2,288 with 27 skips, and imported Comp2026 passed
+1,126. The orchestration README and runbook describe this failure reporting;
+the architecture already requires independent continuation. The review's merge
+verdict remains negative because the known competition integration and fresh
+flight/provider gates are incomplete. No scoring or flight-control change was
+made in this correction.
+
+Implementation update 2026-10-05: branch `feat/manual-ci-suite` implements the
+approved [11-setup design](superpowers/specs/2026-10-05-full-ci-suite-design.md)
+and [plan](superpowers/plans/2026-10-05-full-ci-suite.md). The shared local `suite`
+command builds once, gates consumers on accepted calibration/fresh reload and
+reports mission-specific independent results. After the final review fixes,
+host/module checks passed 2,257 tests with 27 environment skips; the imported
+Comp2026 suite passed 1,126 tests. Focused suite/CLI checks passed 48 tests.
+No static typechecker is configured; Python compilation passed. The latest
+common-build flight sweep and its remaining failures are recorded above.
+
+Suite `2079a7e2-cd19-4bd0-ba31-0bc45e0338ed` from clean `76dd2b9` was gracefully
+interrupted at 02:15 UTC on 2026-10-06 to test the startup fixes. Calibration,
+fresh reload, configured descent, and controlled descent each established
+`LANDED`, scored 100/100, and passed independent acceptance. Operator wait
+failed at public 60 seconds: GUIDED executed, but its ACK was not observed and
+ARM never ran. It scored 0/100 with rejected acceptance and no physical outcome.
+The operator now drains MAVLink during private warmup without producing public
+telemetry or flight commands, avoiding the previous interval without reads.
+
+The interrupted hover-roll run
+`0396e6e9-c5a0-414d-a584-691515da078f` reached the fixed 15-second private epoch
+without publishing the calibration snapshot, execution-ready status, or first
+mission command. The calibration guard remained unmet; the current evidence does
+not expose which cached parameter names were absent. Gazebo therefore retained
+the release barrier and no flight began. The roll diagnostic templates now use
+the existing 90-second calibrated-consumer warmup while retaining their 45- and
+120-second public windows, target RTF, seed, full 46-parameter gate, scoring, and
+wall deadlines. Hover finalized `ABORTED` at 0/100 with rejected acceptance and
+a ground-truth sample-count diagnostic; five later cases remained unrun. Both
+suite processes and its Compose projects exited, and all evidence remains under
+`runs/local-ci/20261006-76dd2b9/`. Both startup fixes are integrated on
+`feat/manual-ci-suite`; neither has fresh native-flight validation yet. This
+interrupted attempt is not an all-11 demonstration.
+
+Post-integration checks on 2026-10-06 passed 2,265 host/module tests with 27
+skips and 1,126 imported Comp2026 tests. Run the imported tests with
+`--import-mode=prepend`; the root import mode cannot resolve their sibling-test
+imports. The executable changes passed their focused checks before integration.
+
+Fresh suite `72cd9035-94f5-42ad-9ee3-c5a2ec798731` from clean `04aa25a`
+finished `FAILED` on 2026-10-06. Calibration run
+`b75e44b6-a378-4503-bfa7-2d23a32dc964` completed its full 900-second recording.
+Native all-axis AutoTune succeeded at public 725.299 seconds; the companion
+verified all 34 parameters after activation at 725.55 seconds. Native LAND
+began at 730.242 seconds, followed by disarm and saved Roll/Pitch/Yaw gains at
+742.759 seconds. Post-disarm readback verified all 34 parameters, and the
+companion recorded `LANDED` at 743.25 seconds. All 15 exported gains match
+that readback within export precision.
+
+The lifecycle completed without diagnostics, but physical scoring awarded
+60/100 and independent acceptance rejected the required 100/100 gate. The
+first contact sample at 740.850 seconds reported 0.438518 m/s smoothed speed,
+above the stable-contact limit; the following ten samples were at most
+0.001304 m/s. Contact and tilt passed throughout the evaluated half-second
+interval. Calibration still uses the first-contact interval, unlike descent's
+versioned bounded-settling policy. Native LAND targets 0.50 m/s in the current
+profile; its [pinned parameter metadata](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/ArduCopter/mode_land.cpp#L5-L12)
+starts at 0.3 m/s. A parameter change alone does not establish the
+first-contact stability requirement.
+
+The other ten setups were blocked before allocation. The report's physical
+outcome remains unknown because independent acceptance failed; the native and
+companion landing observations above are separate evidence. Both suite processes
+exited and the owned Compose project was removed. Reports, recordings and the
+canonical 60/100 result remain under `runs/local-ci/20261006-04aa25a/`.
+The landing-scoring contract decision is pending; no scoring rule or historical
+evidence was changed, and this attempt does not validate the consumer startup
+fixes or establish an all-11 pass.
+
+Read-only comparison of the preserved native Gazebo recordings on 2026-10-06
+found contact at native 611.487 seconds in accepted calibration `684758ab` and
+830.850 seconds in rejected calibration `b75e44b6`. Their first public contact
+samples correspond to native 611.500 and 830.850 seconds: respectively 13 ms
+after contact and the same simulation epoch as contact. Both approach at about
+0.50 m/s and their recorded poses stop descending within milliseconds. The
+retained failed image uses Gazebo OdometryPublisher 8.11.0, whose
+[velocity calculation](https://github.com/gazebosim/gz-sim/blob/gz-sim8_8.11.0/src/systems/odometry_publisher/OdometryPublisher.cc#L364-L451)
+smooths per-step pose differences before publishing at this world's 20 Hz.
+The first-contact stability check therefore depends on whether that sample's
+velocity window still contains preimpact motion. Native pose reconstruction
+supports this explanation; it is approximate because serialized poses are
+rounded. The old accepted core images are no longer retained, so executable
+equality across the two runs cannot be established. No scoring change follows
+from this observation. The exact failing-image diagnostic repeat `509424dc`
+observed physical contact at public 376.822 seconds and its first public contact
+sample 28 ms later at 376.850 seconds: the preceding speed was 0.500456 m/s and
+the contact sample 0.000796 m/s. The companion reported LANDED at 379.25 seconds.
+The full recording then exceeded its 7,200-second wall deadline; lifecycle FAILED,
+raw 0/100 with `ground_truth_sample_count_mismatch`, and rejected recording
+acceptance are separate from that physical observation. The raw probe is retained
+under `runs/diagnostics/20261006-calibration-repeat-04aa25a/`; this is diagnostic
+evidence, not an accepted CI calibration.
+Video inspection also found that both observer recordings miss the aircraft at
+touchdown; the onboard view shows featureless ground. These recordings cannot
+support visual landing acceptance. The rigid collision model and velocity/contact
+score contain no landing-gear damage or payload-shock criterion, so passing this
+contract does not establish a hardware-safe touchdown speed.
+
+First suite attempt `0d11a7cb-e3f3-4379-86e0-95d76b274ef1` from clean `8f628be`
+built all seven images and passed Comp2026 import smoke, then failed preflight
+before allocating a flight. Compose returned identical image identities in
+different orders; the suite compared ordered tuples. The suite now compares
+name/digest mappings and still rejects changed or missing images. The failed
+setup report is retained under `runs/local-ci/20261005-8f628be/suites/`.
+
+Retry suite `793556e0-f809-48f8-b172-986816a301c1` from clean `f5a4411` passed
+preflight, then calibration run `ee4bb972-5d94-4575-be42-90e7236e0864` failed
+during startup before arming. Malformed TCP server arguments bound both native
+UART channels to 5760; SITL exited and DroneKit's connection failed. Teardown
+completed with no diagnostics, and the gate blocked all ten remaining cases.
+The native arguments now use `tcp:5760` and `tcp:5762`; 49 SITL module tests
+passed, and a pinned-binary smoke observed both distinct listeners and connected
+both sockets. Failed evidence remains under `runs/local-ci/20261005-f5a4411/`.
+
+Third suite `664c1546-c36c-4ccd-a746-015e00676652` from clean `2f2ba2e`
+started calibration run `eba17a27-01bf-4e05-8b8c-efdb8773a8fa`. Native AutoTune
+failed roll rate-D gain determination at public 43.95 seconds. The driver missed
+that terminal text and kept waiting; the operator aborted the failed attempt,
+and all owned containers were removed. The suite failed and blocked the ten
+consumers. The interrupted recording has a ground-truth sample-count diagnostic;
+it is not accepted calibration evidence. Starting parameters and aircraft inputs
+match the earlier accepted calibration, but the first roll response differs;
+the cause remains under investigation. The driver now recognizes all three
+native gain-determination failure messages and enters existing bounded LAND
+recovery. Focused companion/runtime checks passed 91 tests; fresh flight proof
+of this change remains pending. Evidence is retained under
+`runs/local-ci/20261005-2f2ba2e/`.
+
+Fourth suite `8504b189-776f-442f-8053-62635ce0b601`, built from clean `91d8cae`,
+finished `FAILED` at 21:26 UTC on 2026-10-05 and attempted all 11 setups.
+Calibration, reload validation, configured descent, controlled descent, moving
+pad, and stationary pad each completed, established physical `LANDED`, scored
+100/100, and passed independent acceptance. Operator wait, hover-roll, and
+AutoTune-roll failed before flight: their physical outcomes are unknown,
+their raw scores are 0/100, and their artifacts are rejected. The operator
+production writer rejected its registered wait status. Both roll hosts invoked
+DroneKit's blocking complete-parameter wait when reading the cache.
+
+Both competition cases failed before flight with
+`DroneKit connection failed: source_identity must be explicit`. Their physical
+outcomes and scores are unknown; artifact acceptance rejected both. Each retained
+finalization/terminal-notification/runtime-failure-observation deadline
+diagnostics. All 11 owned Compose projects were removed. The report, failed
+bundles, and six accepted recordings remain in the shared
+`/home/willis/projects/drone_sim/runs/local-ci/20261005-91d8cae/` directory.
+The report is `suites/8504b189-776f-442f-8053-62635ce0b601/report.json` beneath it.
+
+Two focused regressions reproduced the status-writer and parameter-cache bugs.
+The fixes admit the companion-owned wait status and inspect DroneKit's current
+cache without blocking. Their focused checks passed 84 tests. A full host sweep
+passed 2,263 tests with 27 environment skips; one lock check failed while the live
+suite held the workstation lock, then passed after teardown. Imported Comp2026
+checks passed 1,126 tests. Compilation and edited local documentation links
+passed. Physical reruns of the fixes remain pending.
+
+Fresh suite `15ff4914-3356-42d9-aff9-0a241a3faa7c`, built from clean
+`e113217`, failed its calibration gate on 2026-10-06 with
+`AutoTune reserved landing window reached`. At public 540 seconds, native
+AutoTune was still tuning yaw angle-P-up at step 5. A complete DataFlash MSG
+scan contains neither native AutoTune failure nor success. Native LAND began
+at native 629.942 seconds, disarm was recorded at native 642.367 seconds, and
+the companion published `mission_failed` at public 553.05 seconds.
+
+The final report records calibration lifecycle `FAILED`, raw score 0/100 and
+rejected artifact acceptance. Its physical outcome remains unknown: native LAND
+and disarm do not establish the independently accepted mission contract. The
+failed calibration gate blocked the other ten cases before allocation. This
+run provides no consumer flight evidence or suite pass. Its retained report is
+`runs/local-ci/20261005-e113217/suites/15ff4914-3356-42d9-aff9-0a241a3faa7c/report.json`.
+The owned suite process exited and its Compose project was removed.
+
+The calibration template now allows 900 public seconds, with the same 60-second
+landing reserve and 7,200-second wall limit. The reserve therefore starts at
+public 840 seconds. Native tuning parameters, flight control, scoring and
+acceptance are unchanged. A fresh frozen-build calibration and full suite
+remain required to verify this timing change and the earlier runtime fixes.
+Timing, recorder, configuration, suite and workflow checks passed 179 tests;
+the full host sweep passed 2,264 tests with 27 environment skips. The recorder
+contract now requires 18,000 calibration camera frames at 20 Hz. All 79 local
+links in the edited guides resolve; external URLs and anchors were not checked.
+
+The manual Actions workflow is implemented. The operator
+added the missing `workflow` authentication scope; publishing the workflow is
+no longer blocked on that scope. The workflow remains absent from default
+branch `main`, so provider dispatch is still unrun. Official runner v2.337.0 is
+registered as `drone-sim-workstation` with label `drone-sim`. The temporary user
+listener was stopped for the service handoff. On 2026-10-08, the service file was
+absent and GitHub reported the runner offline. Noninteractive sudo is unavailable,
+so installation/start requires
+the operator steps in the [runbook](runbook.md#manual-workstation-ci).
+Actions dispatch remains unrun until the workflow exists on default branch
+`main` and the runner service is online. No current end-to-end pass is claimed.
 
 The new CI calibration implementation shares aircraft dynamics across the three
 vehicle variants, tunes all axes and saves gains after native LAND. It adds
 independent calibration acceptance and a fresh-SITL validation consumer.
 Calibration and fresh-SITL validation both passed independent acceptance at
-100/100. This completes the first calibration/reload milestone; whole-suite
-dependency execution remains unimplemented. The sweep below used the older
+100/100. This completes the first calibration/reload milestone; the new suite wires the dependency,
+but the latest all-setup sweep still has five failures, described above. The sweep below used the older
 `33da957` profile; its passes do not establish compatibility with the new body or
 gains. See the [calibration workflow](runbook.md#calibrate-and-validate-saved-gains).
 
@@ -615,13 +1275,15 @@ Earlier images remain under preservation tags; never retag them as new evidence.
 Rebuild after runtime edits and capture new expectations before the next flight.
 
 Latest stationary and moving landings: achieved, each 100/100 and independently
-accepted. Both competition attempts failed at startup; earlier accepted
-competition flights remain historical evidence.
+accepted. The latest competition rerun failed its startup telemetry proof at
+0/150 with invalid artifacts; earlier accepted competition flights remain
+historical evidence.
 
 ## Active priorities
 
-1. Repair the Comp2026 Docker-context allowlist and verify imports in the built
-   image, then rerun both competition templates. Preserve the failed bundles.
+1. Rebuild the range-producer inputs, create a matching fresh calibration, then
+   rerun both competition templates and verify all eight telemetry families.
+   Preserve the failed bundles.
 2. Reconcile diagnostic mission logs with independent acceptance, and define
    appropriate AutoTune scoring expectations without relabeling its 40/100.
 3. Diagnose the intermittent private pad-contact gap exposed by the earlier stationary

@@ -109,6 +109,7 @@ def test_container_contract_compose_has_frozen_service_order(
         "artifacts-runtime",
         "synthetic-companion",
         "companion-runtime",
+        "operator-wait-runtime",
         "synthetic-ardupilot-sitl",
         "ardupilot-sitl",
         "synthetic-gazebo",
@@ -120,6 +121,7 @@ def test_container_contract_compose_has_frozen_service_order(
     ]
 
     services = compose_document["services"]
+    assert "operator-wait-runtime" not in services
     for name, module in PHASE2_SERVICES:
         assert services[name]["environment"]["SIM_MODULE"] == module
 

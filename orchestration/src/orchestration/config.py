@@ -28,7 +28,7 @@ _TEMPLATE_FIELDS = {
 _RESOLVED_FIELDS = _TEMPLATE_FIELDS | {"run_id", "config_sha256"}
 _OPTIONAL_FIELDS = {
     "runtime_profile", "simulation", "competition", "mission_plan",
-    "calibration", "calibration_json", "calibration_profile",
+    "calibration", "calibration_json", "calibration_profile", "calibration_validation",
 }
 _STRING_FIELDS = ("world", "vehicle", "mission", "scenario", "output_root")
 _DEADLINE_FIELDS = (
@@ -150,6 +150,7 @@ class RunTemplate:
     mission_plan_json: str | None = None
     calibration_source_directory: Path | None = None
     calibration_profile_json: str | None = None
+    calibration_validation: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ class RunConfig:
     calibration_json: str | None = None
     calibration_sources: CalibrationImport | None = None
     calibration_profile_json: str | None = None
+    calibration_validation: bool = False
 
     @property
     def expected_camera_frames(self) -> int:
@@ -406,10 +408,14 @@ def _validate_common(
         _validate_mission_plan(document["mission_plan"])
     elif "mission_plan" in document:
         raise ValueError("mission_plan is only valid for the configured mission")
-    if "calibration" in document and document["mission"] != "configured":
-        raise ValueError("calibration import is only supported by the configured mission")
-    if "calibration_json" in document and document["mission"] != "configured":
-        raise ValueError("calibration_json is only supported by the configured mission")
+    calibrated_consumers = {"configured", "controlled_descent", "hover_roll", "autotune_roll", "comp2026_auto"}
+    if ("calibration" in document or "calibration_json" in document) and document["mission"] not in calibrated_consumers:
+        raise ValueError("calibration import is only supported by suite consumer missions")
+    validation = document.get("calibration_validation", False)
+    if not isinstance(validation, bool):
+        raise ValueError("calibration_validation must be a boolean")
+    if validation and (document["mission"] != "configured" or not ({"calibration", "calibration_json"} & document.keys())):
+        raise ValueError("calibration_validation requires a calibrated configured mission")
     if "calibration_profile" in document and document["mission"] != "autotune":
         raise ValueError("calibration_profile is only supported by the autotune mission")
     if runtime_profile == "phase3":
@@ -637,6 +643,7 @@ def _template_from_document(document: dict[str, Any], template_dir: Path) -> Run
             _canonical_json(document["calibration_profile"], field="calibration_profile")
             if "calibration_profile" in document else None
         ),
+        calibration_validation=document.get("calibration_validation", False),
     )
 
 
@@ -694,6 +701,8 @@ def _document_without_checksum(config: RunConfig) -> dict[str, Any]:
         document["calibration_json"] = json.loads(config.calibration_json)
     if config.calibration_profile_json is not None:
         document["calibration_profile"] = json.loads(config.calibration_profile_json)
+    if config.calibration_validation:
+        document["calibration_validation"] = True
     return document
 
 
@@ -704,7 +713,7 @@ def _checksum(document: dict[str, Any]) -> str:
 
 def resolve_run_config(
     path: str | Path, run_id_factory: Callable[[], UUID] = uuid4,
-    calibration_importer: Callable[[Path], CalibrationImport] | None = None,
+    calibration_importer: Callable[[Path, str, str], CalibrationImport] | None = None,
     calibration_profile_factory: Callable[[], dict[str, Any]] | None = None,
 ) -> RunConfig:
     """Validate an operator template and bind it to one generated run identity."""
@@ -728,7 +737,7 @@ def resolve_run_config(
     if template.calibration_source_directory is not None:
         if calibration_importer is None:
             raise ValueError("calibration import requires an accepted-source importer")
-        calibration = calibration_importer(template.calibration_source_directory)
+        calibration = calibration_importer(template.calibration_source_directory, template.vehicle, template.scenario)
         if not isinstance(calibration, CalibrationImport):
             raise ValueError("calibration importer returned an invalid result")
         try:
@@ -754,6 +763,7 @@ def resolve_run_config(
         calibration_json=calibration_json,
         calibration_sources=calibration,
         calibration_profile_json=calibration_profile_json,
+        calibration_validation=template.calibration_validation,
     )
     return replace(
         unresolved,
@@ -814,6 +824,7 @@ def load_run_config(path: str | Path) -> RunConfig:
                 source.parent / "calibration-manifest.json",
             ) if "calibration_json" in document else None
         ),
+        calibration_validation=document.get("calibration_validation", False),
         calibration_profile_json=(
             _canonical_json(document["calibration_profile"], field="calibration_profile")
             if "calibration_profile" in document else None

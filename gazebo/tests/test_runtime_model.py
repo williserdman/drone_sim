@@ -197,20 +197,23 @@ def test_invalid_or_incomplete_adapter_summary_fails_closed(summary: AdapterSumm
     assert model.accept(AdapterCompleted(RUN_ID, _summary())) == ()
 
 
-def test_child_exit_is_first_failure_and_later_timeout_cannot_replace_it():
+@pytest.mark.parametrize("returncode", [0, 17])
+def test_child_exit_is_first_failure_and_later_timeout_cannot_replace_it(
+    returncode,
+):
     model = _running_model()
 
-    actions = model.accept(ChildExited(RUN_ID, "server", 17))
+    actions = model.accept(ChildExited(RUN_ID, "server", returncode))
 
     assert actions == (
         WriteRuntimeFailure(
-            "runtime child server exited unexpectedly with return code 17",
+            f"runtime child server exited unexpectedly with return code {returncode}",
             ("gazebo/server.log.partial", "gazebo/state"),
         ),
         SetPaused(True),
         BeginFinalization(
             "FAILED",
-            "runtime child server exited unexpectedly with return code 17",
+            f"runtime child server exited unexpectedly with return code {returncode}",
         ),
     )
     assert model.accept(EndpointTimeout(RUN_ID, "world-control")) == ()

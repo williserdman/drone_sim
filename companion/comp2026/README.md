@@ -142,6 +142,10 @@ transport or creating output devices. The current contract requires:
 | `VisionConfig` and `PrecisionMissionPolicy` | FM3-only verified calibration/mounting paths, source/receipt timing, shared clock, and bounded acquisition controls |
 | `RuntimeConfiguration` | Fixed waypoint path, enabled phases, common cruise/drop heights, FC-home tolerances, attempt deadline, idle poll, and cleanup bound |
 
+`DroneControl` passes an optional DroneKit vehicle class through to `connect`.
+The default omits that keyword and preserves hardware behavior. The parent
+simulation composition supplies its simulation-only parameter retry adapter.
+
 `LiveComponentFactories.telemetry_startup_mode` defaults to `complete`. That
 mode preserves the full configure-and-collect proof before QGC listener
 installation for physical hardware and ordinary injected tests. Only the
@@ -152,6 +156,12 @@ first guarded GUIDED delivery releases Gazebo; ARM and TAKEOFF remain denied
 until complete requested telemetry arrives after that gate on strictly
 advancing shared simulation time. Cleanup closes the collector and startup
 request capability even if QGC sends no command.
+
+The safe-ground snapshot guard reports absent or stale required fields through
+`GroundTelemetryPending`, a `CommandRejected` subtype with ordered field
+reasons. A simulation host may poll only that transient case. Observed airborne,
+armed, unhealthy RC, wrong RC slot, failsafe, and dependency failures remain
+immediate rejections, and final FM1 admission repeats the complete guard.
 
 The stable composition interfaces are:
 
@@ -216,6 +226,11 @@ descriptor, and diagnostic failures as independent facts. A `BaseException`
 from one stage cannot skip later safe stages or replace the original run or
 observer error. Authority loss stops the payload cleanup operation that
 encountered it; cleanup does not retry flight or actuator output.
+
+The automatic single-attempt sequencer requires one validated
+`PrecisionMissionPolicy` before it starts FM1. It passes that same policy to
+both active FM3 payload cycles; missing or invalid policy fails before mission
+state, events, or flight output.
 
 `RuntimeConfiguration.components` selects exactly one component binding. Calling
 `build_live_listener` without explicit factories requires

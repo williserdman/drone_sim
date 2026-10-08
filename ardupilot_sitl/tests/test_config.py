@@ -42,6 +42,28 @@ def _moving_parameters() -> dict[str, str]:
     }
 
 
+def _competition_parameters() -> dict[str, str]:
+    parameter_file = Path(__file__).parents[1] / "params/competition.parm"
+    return {
+        name: value
+        for line in parameter_file.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+        for name, value in (line.split(),)
+    }
+
+
+def test_competition_parameters_map_native_rc7_slots() -> None:
+    assert _competition_parameters() == {
+        "FLTMODE_CH": "7",
+        "FLTMODE1": "0",
+        "FLTMODE4": "4",
+        "FLTMODE6": "5",
+        "RNGFND1_MIN": "0.05",
+        "RNGFND1_MAX": "40",
+        "RNGFND1_TYPE": "100",
+    }
+
+
 def test_descent_parameters_disable_rc_flight_mode_override() -> None:
     assert _descent_parameters()["FLTMODE_CH"] == "0"
 
@@ -193,7 +215,9 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "--sim-port-out",
         "9002",
         "--serial0",
-        "tcp:0.0.0.0:5760",
+        "tcp:5760",
+        "--serial1",
+        "tcp:5762",
         "--defaults",
         "/opt/drone_sim/ardupilot/params/descent.parm",
         "--home",
@@ -201,6 +225,27 @@ def test_runtime_config_builds_lockstep_json_and_network_only_mavlink_argv(tmp_p
         "--wipe",
     )
     assert "--no-lockstep" not in config.argv
+
+
+def test_operator_port_preserves_the_primary_endpoint(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        gazebo_host="127.0.0.1",
+    )
+
+    assert config.argv[config.argv.index("--serial0") + 1] == "tcp:5760"
+    assert config.argv[config.argv.index("--serial1") + 1] == "tcp:5762"
+
+
+def test_operator_port_must_be_distinct_from_the_primary_endpoint(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="operator_mavlink_port must differ"):
+        RuntimeConfig(
+            run_id=RUN_ID,
+            run_directory=tmp_path,
+            mavlink_port=5760,
+            operator_mavlink_port=5760,
+        )
 
 
 def test_moving_profile_overlays_ekf3_and_native_precision_estimator(tmp_path: Path) -> None:
@@ -220,6 +265,25 @@ def test_moving_profile_overlays_ekf3_and_native_precision_estimator(tmp_path: P
         "PLND_LAG": "0.04",
         "PSC_NE_POS_P": "1",
     }
+
+
+def test_competition_scenario_selects_native_rc_overlay(tmp_path: Path) -> None:
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    config_path = configuration / "run.json"
+    config_path.write_text(
+        json.dumps({"run_id": RUN_ID, "scenario": "competition_v1"}),
+        encoding="utf-8",
+    )
+
+    overlay, calibration = parameter_files_from_environment(
+        {"SIM_CONFIG_PATH": str(config_path)},
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+    )
+
+    assert overlay == Path("/opt/drone_sim/ardupilot/params/competition.parm")
+    assert calibration is None
 
 
 def test_frozen_calibration_is_verified_and_loaded_after_scenario(tmp_path: Path) -> None:
@@ -329,3 +393,25 @@ def test_gazebo_service_name_is_resolved_for_upstream_numeric_only_socket() -> N
 def test_gazebo_resolution_rejects_non_ipv4_result() -> None:
     with pytest.raises(ValueError, match="IPv4"):
         resolve_gazebo_address("gazebo-runtime", resolver=lambda _name: "not-an-address")
+
+
+def test_ardupilot_provenance_binds_rangefinder_backport() -> None:
+    module_root = Path(__file__).parents[1]
+    project_root = module_root.parent
+    patch_path = module_root / "patches/0001-sitl-json-rangefinder-bitmasks.patch"
+    patch_digest = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+    provenance = json.loads(
+        (module_root / "provenance/ardupilot.json").read_text(encoding="utf-8")
+    )
+
+    assert provenance["revision"] == "1511f27194f1dcc3728270883047bdf022b3fd53"
+    assert provenance["downstream_patches"] == [
+        {
+            "path": str(patch_path.relative_to(project_root)),
+            "sha256": "6b60ae6105e8c736c298243f6124204b97f4ae2daeccf2ebd627ac8aabd91218",
+            "upstream_commit": "8fa852b498bf6a2862c78ba688eb72b907d69e65",
+            "upstream_pull_request": "https://github.com/ArduPilot/ardupilot/pull/33342",
+            "license": "GPL-3.0-or-later",
+        }
+    ]
+    assert patch_digest == provenance["downstream_patches"][0]["sha256"]

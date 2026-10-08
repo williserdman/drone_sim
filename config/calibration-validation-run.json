@@ -14,6 +14,7 @@
   },
   "scenario": "descent_v1",
   "calibration": {"source_run_directory": "../runs/SOURCE_RUN_ID"},
+  "calibration_validation": true,
   "output_root": "runs",
   "max_wall_seconds": 7200,
   "startup_wall_seconds": 900,

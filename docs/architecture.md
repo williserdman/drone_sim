@@ -50,6 +50,41 @@ to exercise lifecycle and recording infrastructure.
 Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
+Template wall budgets must accommodate measured workstation throughput. Raising
+a host budget does not extend simulated mission deadlines or accept a recording
+shorter than the configured public window.
+Host orchestration owns polling of durable statuses and Compose child health;
+the [orchestration guide](../orchestration/README.md) defines its cadence and
+deadline behavior. Host polling changes do not alter simulation, flight,
+scoring, or lifecycle deadlines.
+Flight physics and raw IMU publication share a 1 ms native grid. Except for the
+single paused `0.000001`-second peer bootstrap, Gazebo's ArduPilot JSON producer
+must use the IMU sample whose integer timestamp equals the current physics step.
+It may wait up to one wall second for the parallel sensor worker. Missing,
+future, or regressing samples stop the native server and fail the runtime; they
+must not be replaced by the latest cached sample.
+
+For `competition_v1`, Gazebo's private JSON exchange also carries seven native
+RC PWM inputs. ArduPilot owns their receiver health and mode-switch effect: RC7
+at 1500 selects GUIDED, while 1000 and 2000 select STABILIZE and LOITER takeover
+slots. This input is scoped to the competition vehicle and is distinct from
+MAVLink RC override or fabricated telemetry. Other scenarios do not receive RC
+fields through the JSON bridge.
+
+The shared downward ray also enters the ArduPilot plugin in every generated
+vehicle variant and is serialized as JSON `rng_1`. The competition parameter
+overlay alone enables SITL rangefinder instance 1, with the same 0.05–40 m
+limits as the Gazebo sensor. ArduPilot then publishes flight-controller
+`DISTANCE_SENSOR` for the original mission's source-filtered startup telemetry
+proof. The companion's operational clearance path remains the public ROS LiDAR
+sample with its own timestamp and freshness checks. This common plugin wiring
+is part of the calibration airframe fingerprint; the scenario-only ArduPilot
+backend settings are part of the imported effective baseline and live readback.
+The pinned upstream JSON backend mapped these range keys with the wrong bit
+positions. The ArduPilot image applies upstream fix `8fa852b` as an audited
+downstream patch while retaining source and firmware revision `1511f271`; its
+build executes the extracted production update block against all six keys
+before compiling Copter.
 
 ## Where to read or change code
 
@@ -77,9 +112,21 @@ from mission success; scoring and artifact validity remain independent.
 After passive readiness, matching RUNNING, and accepted public clock, the
 companion publishes typed `MissionExecutionReadyStatus`. Gazebo selects this
 release fact only for `mission: configured`. Operator waiting can then observe
-advancing simulation without a fabricated GUIDED command. Other missions keep
-their existing command-delivery gate. See the
+advancing simulation without a fabricated GUIDED command. The first running wait
+also publishes typed `OperatorWaitStartedStatus` through the companion's
+production writer. The separate operator consumes this fact before its commands.
+Other missions keep their existing command-delivery gate. See the
 [tool contract](../companion/README.md#configured-diagnostic-missions).
+
+The Comp2026 companion publishes `MissionReadyStatus` only after its real
+MAVLink callbacks provide every fresh safe-ground observation and its full
+calibration cache matches, while DroneKit reports a live heartbeat and healthy
+prearm checks. Missing or stale observations keep the public epoch and mission
+admission closed until the companion startup deadline; positively unsafe
+observations fail admission. Orchestration may publish RUNNING only after this
+durable status. The companion then waits for an accepted public clock before
+releasing the worker, and FM1 admission repeats the full ground check before the
+first guarded GUIDED command.
 
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.
@@ -118,13 +165,23 @@ flight readiness evidence.
 
 Comp2026 process readiness does not release the original mission worker. The
 [runtime composition](../companion/src/drone_sim_companion/runtime_node.py)
-must assign the initial GUIDED mode and complete the durable
+must enqueue the initial GUIDED command through the imported output guards and complete the durable
 [`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
 write by the inclusive 50 ms public-time limit before the
 [start gate](../companion/src/drone_sim_companion/comp2026_host.py) can release
 that worker. The [companion lifecycle](../companion/src/drone_sim_companion/lifecycle.py)
 owns the executable deadline and status write. A missed deadline, mode-setting
 error, or status-write error fails the attempt and leaves the gate closed.
+The worker then requires the native acknowledgement and observed GUIDED state
+before entering the original sequencer. Its
+[simulation control composition](../companion/src/drone_sim_companion/comp2026_control.py)
+uses real source-filtered telemetry, RC authority, a consumed run-scoped attempt,
+and the observed launch position including AMSL home altitude. Telemetry request
+and firmware checks run before public release; cadence is checked on advancing
+public simulation time after GUIDED. Clock freshness, mission phases and output
+transactions retain the imported controller's guards. The simulation policy
+binds the pinned firmware, course, scenario, model and parameter inputs and does
+not approve physical-aircraft deployment.
 
 For payload precision landing, the camera boundary returns a marker vector and
 its source timestamp atomically; a side-channel timestamp is not sufficient
@@ -197,11 +254,19 @@ independent acceptance at 100/100 by 2026-10-02. The first deliverable is a reus
 calibration stage and a fresh-process validation flight; see
 [current verification](handoff.md). The eventual CI runner invokes this stage
 before the mission suite.
-Existing launch commands do not implement that suite dependency yet.
+The local `suite` command implements this dependency using the
+[executable catalog](../config/ci-suite.json). It builds once from clean committed
+source, freezes all source/image identities and runs cases sequentially with
+fresh SITL storage and Compose projects. Its account-wide workstation lock spans
+checkouts/output roots. Failed calibration/reload gates block dependents; other
+case failures continue unless provenance or teardown becomes uncertain. Reports
+retain lifecycle, physical outcome, raw score, artifact acceptance and teardown
+separately. Actual flight/provider verification remains in [handoff](handoff.md).
 
 ```mermaid
 flowchart LR
-    T[Roll, pitch, yaw AutoTune] --> L[Native LAND and saved gains]
+    T[Roll, pitch, yaw AutoTune] --> R[GUIDED return to launch zone]
+    R --> L[Native LAND and saved gains]
     L --> A[Independent calibration acceptance]
     A --> H[Fresh SITL: load gains, verify, hover and land]
     H --> M[Mission suite uses the same frozen gains]
@@ -215,45 +280,81 @@ course geometry remain mission-specific. Calibration starts without a payload;
 the competition flights exercise the same gains with their specified loads.
 The [shared generator](../gazebo/scripts/prepare_competition_assets.py) produces
 the diagnostic, moving-pad and competition variants from the same physical body.
-The first calibration importer supports the unloaded diagnostic variant only;
-whole-suite import and payload validation remain a separate delivery step.
+The version-2 importer binds all three stock variants to one canonical physical
+fingerprint and records their exact model digests. Only declared pose/payload
+coordination plugins are excluded; unknown plugins and all dynamics remain
+bound. Imported profiles freeze the consumer model and ordered parameter
+overlays, with gains loaded last. Legacy version-1 imports remain unloaded-only.
+The explicit `calibration_validation` flag distinguishes the reload hover from
+ordinary calibrated missions.
 
-The companion takes off in GUIDED, settles in LOITER, then enters AUTOTUNE with
-`AUTOTUNE_AXES=7` for roll, pitch, and the pinned implementation's standard yaw
-error-filter tuning. Completion requires all three axes. A completed subset
-cannot release parameters to the suite. Require body-rate feedforward enabled
-before tuning so calibration does not silently change an unexported base setting.
+After a healthy heartbeat, the companion writes the run-local seeds
+`ATC_RAT_RLL_P=0.0675`, `ATC_RAT_RLL_I=0.0675`, and `AUTOTUNE_AXES=7` before
+selecting GUIDED and requesting the complete parameter list. The global base
+gains remain unchanged. Before arming, the companion requires a fresh, complete
+readback of all 15 gain inputs and preserved base parameters. Roll seeds must
+match within float32 tolerance and `AUTOTUNE_AXES` must equal 7. Missing values
+or rejected seed writes fail within the existing 10-second entry phase.
+Body-rate feedforward must already be enabled so calibration does
+not silently change an unexported base setting.
+
+The companion takes off in GUIDED, settles in LOITER for two seconds, then
+commands and observes ALT_HOLD before entering AUTOTUNE. Starting native tuning
+from ALT_HOLD disables its weak position hold and position-dependent heading
+updates, which can otherwise breach the pitch settling guard. `AUTOTUNE_AXES=7`
+requests roll, pitch, and the pinned implementation's standard yaw error-filter tuning.
+Completion requires all three axes. A completed subset cannot release parameters
+to the suite.
 
 After tuning succeeds, the companion observes LOITER, invokes
 `MAV_CMD_DO_AUX_FUNCTION` with function 180 and position 2 to activate tuned
 gains, and waits for the matching testing status and live parameter readback.
-It then settles and commands native LAND. An ACK alone does not prove that
+It then settles, clears pilot overrides, and switches to GUIDED. A global-relative
+waypoint returns to the fresh ground position captured before arming, at 5 m.
+The return must finish within 60 simulated seconds and before the landing reserve.
+Two continuous seconds within 0.5 m horizontally and vertically, with speed at
+most 0.2 m/s and roll/pitch within 5 degrees, qualify native LAND. Stale or invalid
+position never qualifies arrival. An ACK alone does not prove that
 AutoTune accepted the gain-selection command. Unexpected mode changes, failed
 tuning, stale telemetry, or expired simulation deadlines fail calibration.
 Recovery landing never converts failure into success.
-Neutral RC overrides must be refreshed throughout LOITER and tuning: the pinned
-ArduPilot default expires them after three simulated seconds. An unexpected
-disarm before native landing fails immediately, even if the mode still reports
-AUTOTUNE. Overrides are cleared when commanding LAND.
+Neutral RC overrides must be refreshed throughout LOITER, ALT_HOLD entry, and
+tuning: the pinned ArduPilot default expires them after three simulated seconds.
+An unexpected mode, disarm before native landing, or expired phase deadline
+fails immediately. Overrides remain cleared during the GUIDED return and native
+LAND. Tuning may drift far from launch, so the bounded GPS waypoint return remains
+mandatory. See [the measured drift and return](handoff.md) for diagnostic evidence.
+Native LAND, disarm, and gain saving still follow the stable-arrival guards.
+The 15-gain artifact, native gain guards, D and aggression settings, simulated
+deadlines, 900-second recording window, and calibration scoring remain unchanged.
 
 This order matters in the
 [pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):
 leaving AUTOTUNE restores original gains; activating tuned gains after that exit
 allows native LAND followed by gain saving at disarm. This sequence has source
 evidence and an independently accepted calibration flight; see
-[current verification](handoff.md). The existing
-[roll mission](../companion/src/drone_sim_companion/autotune.py) uses a different,
-throttle-only descent and must not be presented as this implementation.
+[current verification](handoff.md). The
+[roll mission](../companion/src/drone_sim_companion/autotune.py) now applies the
+same ordering to its five roll gains. It requires the roll-specific testing and
+saved statuses, returns to the captured launch point, uses native LAND, and
+checks that its coherent DataFlash save epoch matches the activated values. Its
+original 120-second public deadline remains the outer bound; it does not inherit
+the all-axis mission's 60-second landing reserve.
 
 ### Acceptance and parameter artifact
 
 Calibration gets its own acceptance contract. It requires completed tuning for
 all requested axes, independent airborne/contact/stable-landing evidence, safe
 preimpact speed, observed disarm, and a coherent saved-parameter artifact. It does
-not require touchdown at the origin marker. Its physical checks retain the
+not score touchdown position at the origin marker. The mission now verifies its
+return above the launch zone before LAND; this waypoint check does not establish
+marker-relative touchdown precision. Its physical checks retain the
 airborne, preimpact-speed, and stable-contact thresholds from the original
-[descent rules](../scorekeeper/rules/descent_v1_legacy.json). Existing descent and precision-land
-scoring contracts retain their location requirements. Terminal `COMPLETED`,
+[descent rules](../scorekeeper/rules/descent_v1_legacy.json). Raw descent and precision-land scoring retain their location requirements.
+Hover and roll diagnostics accept safe airborne/contact and stable landing
+without requiring uncommanded origin precision; their reported score remains
+unchanged. Independent acceptance also checks their actual hold/tuning phases
+and saved-parameter evidence. A completed lifecycle alone never passes a case. Terminal `COMPLETED`,
 physical score, and artifact acceptance remain separate results.
 
 The artifact contains 15 tuned values: rate P/I/D, angle P, and acceleration
@@ -270,9 +371,22 @@ Freeze the source run ID, parameter values, artifact checksum, aircraft profile,
 base parameters, and firmware/image provenance with the calibration result.
 Each dependent run copies the exact artifact into its own configuration and
 loads its allowlisted gain keys after the base and scenario parameter overlays.
-Before arming, live readback must match that frozen input. This path does not
+Before any mission flight command or execution readiness, every calibrated
+host verifies the complete effective gain/baseline input and records one
+`calibration_parameters_verified` pre-arm event. DroneKit hosts poll only already
+received cache values without waiting for global parameter readiness. Missing
+values keep the gate closed; mismatches fail without arming. The gate then freezes
+its snapshot: a roll diagnostic may deliberately seed and retune its own controller
+without replacing the shared artifact, recording its seed writes separately. This path does not
 rewrite the tracked baseline through
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py).
+
+Simulation DroneKit connections suppress the library's automatic indexed
+parameter retry bursts. The simulation subclass leaves DroneKit's real cache,
+count changes, completion state, explicit full-list requests, and manual reads
+intact. Its callback runs after DroneKit 2.9.2's base `PARAM_VALUE` callback and
+restores the private retry duration to infinity. Hardware connections retain the
+default DroneKit vehicle class and retry behavior.
 
 [calibration_v1](../scorekeeper/rules/calibration_v1.json) awards 20 points for
 airborne/contact, 40 for safe preimpact speed and 40 for stable contact. Acceptance
@@ -435,3 +549,16 @@ truth, the SITL profile, configuration, and scoring/recording. Their module
 guides and the runbook describe the executable entry points. Turns,
 search sweeps, replanning the intercept during transit, payload handling, and
 agent transport are deferred. This design is separate from the core-runner PR.
+
+### External operator suite case
+
+The configured host publishes `OperatorWaitStartedStatus` only after its first
+wait operation starts. A separate companion-image service observes that status,
+execution readiness and public RUNNING, then uses ArduPilot SERIAL1 on private
+TCP 5762 with a distinct GCS system ID. It requires command acceptance and
+observed GUIDED before ARM, then observed arming, and remains passive afterward.
+It drains SERIAL1 during private warmup, but only public-clock telemetry may
+advance its state machine or produce a command or event.
+The auxiliary actor joins service health checks but not module ownership or
+the seven-owner quiescence barrier. Orchestration closes it after runtime-frozen
+and before hashing its optional log; suite acceptance requires that log.

@@ -73,6 +73,20 @@ Expect seven services. `start` uses `--no-build`; rebuild affected images after
 source/parameter changes. In particular, the SITL parameter overlay is copied
 into the ArduPilot image. Editing it on the host does not change an existing image.
 
+Check the deployed competition import closure before a flight:
+
+```bash
+docker run --rm drone-sim-companion-runtime:phase3 \
+  python3 -m drone_sim_companion.comp2026_smoke
+```
+
+This imports the original FM1/FM2/FM3 functions without opening devices. A
+nonzero exit identifies a packaging failure; success is not flight evidence.
+
+The manual operator template waits for external GUIDED/arming. The suite supplies
+that operator through the private `operator-wait` Compose profile, retaining the
+original mission plan. Ordinary `start` keeps manual operator behavior.
+
 ## Local developer workflow
 
 After editing `companion/comp2026` or simulator code, run from the repository root:
@@ -106,15 +120,15 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
 
 The automatic example targets 90 simulated seconds of warmup plus 30 recorded
 seconds at one-tenth real time, about 20 wall minutes before startup overhead.
-The operator example waits for external arming and GUIDED selection, but the
-shipped topology has no independent operator connection: companion owns the sole
-single-client MAVLink endpoint. Provision another endpoint or router before
-flying this template. Its 60-second public window must cover the wait and flight.
+The operator example waits for external arming and GUIDED selection. Native
+SERIAL1 exposes private TCP 5762 for that operator; the suite supplies the
+external actor while direct `start` retains manual operation. Its 60-second
+public window must cover the wait and flight.
 
 ### Calibrate and validate saved gains
 
-This two-run workflow is the first CI calibration stage. Whole-suite dependency
-execution is not implemented. Use a clean checkout and build all seven images
+This two-run workflow runs the calibration gates individually. The
+[full suite](#run-the-full-mission-suite) applies these dependencies automatically. Use a clean checkout and build all seven images
 with the [build command](#build-runtime-images); capture expected provenance using
 the [acceptance block](#moving-pad-landing) before either run. Keep that checkout
 and those image tags fixed through both flights and acceptance.
@@ -125,9 +139,24 @@ and those image tags fixed through both flights and acceptance.
    uv run --locked drone-sim start --config config/autotune-run.json
    ```
 
-   The mission settles in LOITER, tunes all axes, reactivates the tuned gains,
-   settles again and uses native LAND. The public/warmup windows total 690
-   simulated seconds at target RTF 0.25, about 46 wall minutes plus startup.
+   After a healthy heartbeat, the mission applies run-local roll P/I seeds of
+   `0.0675` and `AUTOTUNE_AXES=7`, then requires a fresh, complete,
+   float32-aware parameter readback before arming. Missing or mismatched seed
+   values fail within 10 simulated seconds; tracked base parameters remain
+   unchanged. It takes off in GUIDED, settles in LOITER for two seconds, then
+   commands and observes ALT_HOLD. It tunes all axes, reactivates the tuned
+   gains, and settles again.
+   Neutral overrides remain active through ALT_HOLD entry and tuning. It then
+   returns in GUIDED to the launch zone at 5 m before native LAND. The return
+   must reach within 0.5 m and remain steady for two seconds;
+   `autotune_return_target` and `autotune_return_arrived` identify it in the logs.
+   The public/warmup windows total 990
+   simulated seconds at target RTF 0.25, about 66 wall minutes plus startup.
+   The final 60 public seconds remain reserved for LAND or failure recovery;
+   calibration stops tuning at public 840 seconds. The overall host limit is
+   10,800 seconds (three hours), allowing for the measured workstation slowdown.
+   This allowance leaves the simulated windows and complete-recording requirement
+   unchanged; finalization still has its separate 300-second budget.
    A failed tune or landing cannot release accepted parameters.
 
 2. Save its UUID and prepare a temporary validation template:
@@ -173,37 +202,86 @@ in `configuration/run.json`. This workflow does not edit tracked defaults.
 Other scenarios need fresh flights with the shared aircraft before claiming no
 regressions. The old `autotune-roll-run.json` remains a historical diagnostic.
 
-### Run all automatic templates
+### Run the full mission suite
 
-There is no `run-all` command. This Bash sequence attempts all seven automatic
-templates, stops on the first failure or abort, and retains each normal run bundle:
+Commit runtime edits, then run from this checkout:
 
 ```bash
-(
-  set -euo pipefail
-  for mission_config in \
-    config/configured-descent-run.json \
-    config/configured-moving-pad-run.json \
-    config/vertical-descent-run.json \
-    config/hover-roll-run.json \
-    config/autotune-roll-run.json \
-    config/default-run.json \
-    config/realtime-run.json
-  do
-    uv run --locked drone-sim start --config "$mission_config"
-  done
-)
+uv sync --locked
+uv run --locked drone-sim suite --config config/ci-suite.json
 ```
 
-The operator template is excluded until its connection gap above is resolved. The batch
-includes the existing AutoTune experiment and both competition timing variants;
-allow several hours. It checks process exit codes, not independent physical
-acceptance. Inspect each bundle and use [competition acceptance](#independent-competition-acceptance)
-for competition runs. AutoTune records candidates without promoting parameters.
+The [catalog](../config/ci-suite.json) covers all 11 checked-in flight templates,
+including the stationary fixture, operator wait and both competition timings.
+The command builds seven Phase 3 images once, checks the original competition
+imports, calibrates all axes, then validates saved gains in fresh SITL. These
+first two cases gate the other nine. Every consumer loads the same accepted
+artifact after its base/scenario overlays and verifies live parameters before
+flight. Each case has fresh SITL storage, Compose project and normal recordings.
 
-The [latest sweep](handoff.md#scenario-regression-sweep) records known image-packaging
-and diagnostic-acceptance failures. A completed process or image build does not
-establish that all templates can fly or pass independent acceptance.
+Individual mission failures, including template preparation errors, do not skip
+later independent cases. A preparation failure has no allocated run or recording;
+its cause appears in that case's report row. Failed gates,
+changed source/images or unconfirmed teardown block remaining cases. Keep source
+and image tags unchanged until the command returns. One account-wide workstation
+lock prevents concurrent suites across checkouts and output roots. Ctrl-C
+requests the active run's existing bounded abort/finalization and retains a
+partial report; keep the process alive until teardown returns.
+
+The final `suite_result` JSON points to `runs/suites/SUITE_ID/report.json` and
+adjacent `report.md`. Reports separate lifecycle, physical outcome, raw score,
+independent acceptance and teardown, linking to `runs/RUN_ID` bundles. Recordings
+remain in each bundle's `video/onboard.mp4` and `video/observer.mp4`. Diagnostic
+safe landing can pass at 60/100; other cases require their maximum score. Exit
+codes are 0 passed, 1 failed/blocked/unrun, 2 setup failure, 130 interrupted.
+
+Use an absolute persistent destination when needed:
+
+```bash
+uv run --locked drone-sim suite --config config/ci-suite.json \
+  --output-root /home/willis/projects/drone_sim/runs/local-ci
+```
+
+The existing seeds, plans, timing and recording settings remain unchanged. The
+catalog's target timing totals about 4 h 40 min before build, startup and
+finalization; use the report's timestamps for actual duration. Configuration
+coverage fails if a new top-level flight template is absent from the catalog.
+
+### Manual workstation CI
+
+The [Mission suite workflow](../.github/workflows/mission-suite.yml) uses the same
+catalog and CLI, with no scheduled, push or PR trigger. It selects this workstation
+by `self-hosted`, `linux`, `x64`, `drone-sim` labels and queues dispatches without
+cancelling an active suite. Its persistent outputs are
+`/home/willis/projects/drone_sim/runs/ci/GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT`.
+Full MP4s and bags remain local; Actions publishes the report and compact logs,
+configuration, manifests, score results and parameters.
+
+The official runner is registered at `/home/willis/actions-runner-drone-sim`.
+Service installation needs interactive workstation sudo:
+
+```bash
+cd /home/willis/actions-runner-drone-sim
+sudo ./svc.sh install willis
+sudo ./svc.sh start
+```
+
+Confirm the service with `sudo ./svc.sh status` and the repository runner page.
+Registration alone does not establish that the service is online. Machine setup
+and verification are recorded in `/home/willis/SETUP_REPLICATION.md`.
+
+After the workflow definition is present on `main`, dispatch through Actions →
+Mission suite → Run workflow, or from this repository:
+
+```bash
+gh workflow run mission-suite.yml --ref main
+gh run list --workflow mission-suite.yml --limit 1
+```
+
+Watch that run's job summary for the report. The self-hosted job allows 24 hours;
+the local command still enforces its own build, run, inspection and finalization
+bounds. Existing [handoff](handoff.md) evidence distinguishes local sweeps from
+actual Actions dispatches; neither registration nor workflow syntax proves a flight.
 
 ## Run and monitor
 
@@ -252,14 +330,18 @@ mission logs alone as a stopped process.
 | [configured-operator-run.json](../config/configured-operator-run.json) | Operator arms/selects GUIDED, then takeoff/hold/land | 60 s / 90 s / 0.1 |
 | [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
-| [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |
-| [autotune-roll-run.json](../config/autotune-roll-run.json) | Roll AutoTune experiment | 120 s / 15 s / 0.1 |
+| [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 90 s / 0.1 |
+| [autotune-roll-run.json](../config/autotune-roll-run.json) | Roll AutoTune experiment | 120 s / 90 s / 0.1 |
 | [realtime-run.json](../config/realtime-run.json) | Competition with a higher speed target, not a speed guarantee | 600 s / 90 s / 1.0 |
 
 Short diagnostic missions do not prove competition success. AutoTune promotion
 is a separate, explicit source change using
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py); it is not part of
 normal launch. Inspect the saved gains and resulting parameter diff before reuse.
+The calibrated roll diagnostics use the same 90-second empirical private warmup
+as the other calibrated consumers so their complete parameter readback can finish
+before the fixed public epoch. This is a runtime allowance, not a MAVLink timing
+guarantee; the calibration gate still requires every configured parameter.
 
 ### Optional NVIDIA path
 

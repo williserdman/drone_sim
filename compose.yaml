@@ -92,6 +92,20 @@ services:
       SIM_MAVLINK_ENDPOINT: tcp:ardupilot-sitl:5760
     command: ["drone-sim-companion-runtime"]
 
+  operator-wait-runtime:
+    <<: *runtime-defaults
+    profiles: [operator-wait]
+    image: drone-sim-companion-runtime:phase3
+    depends_on:
+      ardupilot-sitl:
+        condition: service_started
+        required: true
+    environment:
+      <<: *run-environment
+      SIM_MODULE: operator_wait
+      SIM_MAVLINK_ENDPOINT: tcp:ardupilot-sitl:5762
+    command: ["drone-sim-operator-wait"]
+
   synthetic-ardupilot-sitl:
     <<: *runtime-defaults
     profiles: [phase2]
@@ -122,6 +136,7 @@ services:
       SIM_GAZEBO_HOST: gazebo-runtime
     expose:
       - "5760/tcp"
+      - "5762/tcp"
       - "9003/udp"
 
   synthetic-gazebo:

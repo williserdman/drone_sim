@@ -213,6 +213,7 @@ def _start(
     sleep=lambda _seconds: None,
     group: FakeProcessGroup | None = None,
     observe_leader_exit=None,
+    observe_leader_status=None,
     state_compressor=None,
 ):
     process = process or FakeProcess()
@@ -227,11 +228,22 @@ def _start(
         "signal_process_group": group.signal,
     }
     options["observe_leader_exit"] = observe_leader_exit or process.observe_exit
+    options["observe_leader_status"] = observe_leader_status or (
+        lambda _pid: process.returncode
+    )
     options["state_compressor"] = state_compressor or _fake_state_compressor
     server = GazeboServer(spec, **options)
     server.start()
     spec.native_state_path.parent.mkdir()
     return server, factory, group.signals
+
+
+def test_poll_observes_zero_exit_without_reaping_leader(tmp_path: Path):
+    process = FakeProcess(returncode=0, waits=[])
+    server, _factory, _signals = _start(_spec(tmp_path), process=process)
+
+    assert server.poll() == 0
+    assert process.poll_calls == 0
 
 
 def _fake_state_compressor(source: Path, destination: Path, _timeout: float) -> None:
