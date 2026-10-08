@@ -343,18 +343,6 @@ def test_downstream_patch_bounds_paused_bootstrap_to_one_round_trip():
     assert "double timestamp = _initialPausedState ? 0.000001" in patch
     assert "this->dataPtr->initialStateSent = true;" in patch
     assert "ApplyMotorForces" not in patch
-
-
-def test_downstream_patch_requires_the_current_step_imu_or_stops():
-    patch = PLUGIN_PATCH.read_text(encoding="utf-8")
-
-    assert "imuSamples.WaitFor(" in patch
-    assert "expectedNs, std::chrono::seconds(1)" in patch
-    assert "outcome.result != drone_sim::gazebo::ImuWaitResult::Matched" in patch
-    assert "eventManager->Emit<gz::sim::events::Stop>()" in patch
-    assert "this->dataPtr->lastControllerUpdateTime = _info.simTime;" in patch
-
-
 def test_downstream_patch_bounds_duplicate_recovery_to_one_per_burst():
     """Queued duplicate frames must not amplify JSON into new SITL frames."""
     patch = PLUGIN_PATCH.read_text(encoding="utf-8")

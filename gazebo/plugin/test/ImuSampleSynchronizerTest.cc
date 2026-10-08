@@ -115,8 +115,8 @@ void TestCancelAndResetReleaseWaitersWithoutReusingState()
 
 int main()
 {
-  TestDelayedCurrentSampleReplacesStaleSample();
   TestTimeoutAndFutureSampleFailClosed();
+  TestDelayedCurrentSampleReplacesStaleSample();
   TestCancelAndResetReleaseWaitersWithoutReusingState();
   return EXIT_SUCCESS;
 }
