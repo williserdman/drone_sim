@@ -91,22 +91,41 @@ Touchdown was 20.4838 m from the target and preimpact downward speed was
 throttle override. The current source replaces that post-success descent with
 LOITER gain activation, a stable GUIDED return to the fresh launch point, and
 native LAND. It still requires the exact roll success/save statuses and now
-checks the coherent DataFlash gains against the activated readback. This repair
-has focused source tests only; no rebuilt image or native flight has tested it.
+checks the coherent DataFlash gains against the activated readback.
 
-At source `303cf1c`, the final host checks passed 2,379 tests with 27
-environment skips; the separately held workstation-lock test passed after the
-live AutoTune driver released it. All 1,130 imported mission tests passed. This
-is not a common-build or provider-suite pass. The subsequent
-exact-step IMU repair and competition range-producer/ArduPilot backport are
-source changes outside the frozen `d878ac3` images. At `32d2455`, Docker
-integration passed 17 tests and the rebuilt ArduPilot/Gazebo path passed five
-C++ checks plus six real Gazebo UDP tests. The ArduPilot image digest is
-`abbc8bef92e09abf95ff0e8dc54977acad7adde82f89ce1ea9f62847559fe397`; the
-Gazebo image digest is
-`ea5921014605fe407d7659c5695a50aa426c9425f9e7609ad9060d7b0847491e`.
-No rebuilt-image flight, fresh calibration, or full 11-case provider result has
-tested those repairs.
+Focused rerun `c2f313d3-3aab-43f2-858d-69deb29833d2`, from clean `0d5945c` and
+its frozen seven images, verified that repair. Native roll success at public
+49.85 seconds was followed by pilot-testing activation at 49.90, settling at
+50.05, GUIDED return at 55.80, arrival and native LAND at 65.30, contact at
+75.70, disarm and saved-roll status at 77.60, and `LANDED` completion at 78.05.
+The preceding 20 Hz truth sample measured 0.500222 m/s downward with horizontal
+velocity `(0.000325, -0.001413)` m/s; touchdown error was 0.004118 m. All four
+descent rules passed for 100/100, independent acceptance passed, and the five
+activated gains matched the validated DataFlash artifact. Manifest SHA-256 is
+`281964dd7ae92c7c3cf1131d75d6a9124d67d2f9e84ca5b4837c0cc352f773c4`.
+
+The normal-speed before/after observer video is
+`runs/diagnostics/20261008-0d5945c-roll-native-land/review/f79-vs-native-land-observer.mp4`.
+It places failed f79 left and accepted c2f right, aligns contact at 8.35 seconds,
+and has 260 frames at 20 fps and 1280x480. Its SHA-256 is
+`6e72f238f08807e57890923ac87f1c58d4b22c1e0a6f99022dcba7a76383806c`;
+the original bundles remain unchanged.
+
+At exact source `0d5945c`, host checks passed 2,388 tests with 27 environment
+skips, all 1,130 imported mission tests passed, and the requested review found no
+material issues. The earlier `32d2455` Docker integration passed 17 tests and
+its Gazebo path passed five compiled checks plus six real UDP checks;
+the native ArduPilot probe produced the expected 12 m `DISTANCE_SENSOR`, and the
+actual 17-layer ArduPilot root filesystem and full configuration matched
+`0d5945c` despite an image-index identity change. A fresh actual-Gazebo
+ground-ray probe was inconclusive, so it does not establish a missing range
+producer.
+
+Frozen 11-case suite `6f82c124-c240-46bf-b97f-67e4a8a78981` is running under
+`runs/local-ci/20261008-0d5945c`; calibration
+`79d802a4-6172-45cb-9643-2fef4576554d` remains in progress. This is not a suite
+pass. Provider readiness checked at 03:17 UTC is also unchanged: the workflow on
+`main` returns 404 and the registered runner is offline.
 
 Stationary rerun `97be81d4-4a71-469f-9252-01b31e1af4ed`, on the unchanged
 `8896714` runtime, completed with `LANDED`, 100/100 and independent acceptance
