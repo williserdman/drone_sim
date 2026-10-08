@@ -183,6 +183,33 @@ manifest SHA-256 is
 The driver and wrapper are gone, no owned containers remain, and all seven
 `:pi-seed-da338196` images are preserved. This diagnostic is not a production
 promotion or suite pass.
+
+Native guard trace `9612a69a-c6ed-473f-8582-97354bf631cb`, source `7794284`,
+reproduced the level failure during Pitch Rate P Up at public 140.3 seconds.
+Its 42 starting parameters match the P/I trial; the only native change adds
+diagnostic `ATLV` records. In the final 6.003-second wait, yaw rate exceeded the
+effective limit in 2,338 of 2,401 samples. The longest stable interval was 43 ms,
+below the required 250 ms. Actual yaw followed a roughly 19-to-15 degrees/second
+command while the guard's limit rose to 15 degrees/second. Samples were 2–3 ms
+apart, with no reported logger drops. This identifies the terminal guard path
+in this run, not the uninstrumented trial's exact cause or the source of drift.
+Pinned native position hold changes heading beyond 5 m of displacement; its
+initialization enables this only when entering from LOITER or POSHOLD.
+
+Native recovery entered LAND at public 140.287 seconds and disarmed at 152.705;
+independent safe physical contact remains unestablished. Scoring is incomplete
+0/100, and the manifest rejects the rosbag for sample-count mismatch. The driver
+finished with exit code 1 at 08:20:34 UTC; owned processes and containers are gone.
+The preserved bundle is `runs/diagnostics/20261008-7794284-level-trace-calibration`;
+all seven images have `:level-trace-7794284` aliases. Native BIN SHA-256 is
+`97ec9007aac306bb90832e037da02ecc679098ca5d7d97043a1eb94b12df3da4`,
+and manifest SHA-256 is
+`a5c36a48715d780074903e727350628947ab1353fd5b5b225915d93114bb9952`.
+An isolated ALT_HOLD-entry trial will test native tuning without the moving
+position-hold heading, retaining all-axis tuning, guards, gain saving and return.
+Horizontal drift during tuning remains a required observation. No diagnostic
+profile or instrumentation has been promoted to production.
+
 Provider readiness checked again on 2026-10-08 is unchanged: zero workflows exist
 and the registered runner is offline and idle. Actions dispatch remains unverified.
 
