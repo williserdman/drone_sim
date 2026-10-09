@@ -73,6 +73,11 @@ and source. These frames remain private throughout preparation. After companion
 readiness, Gazebo pauses the live world, selects the next 50 ms native boundary,
 arms the output gate, and writes the immutable start admission before public
 zero can be released.
+Acquisition continues into a bounded queue after the epoch latches and before
+RUNNING activates publication, preserving the paused first 50 ms sample for every
+sensor stream. Vehicle odometry and contact may consume one additional private
+50 ms interval to close the last camera-aligned truth sample; that lookahead
+cannot extend the public clock, camera window, or emitted truth timestamps.
 
 The downward Gazebo ray has two consumers. The ROS adapter publishes it for
 companion clearance decisions. The common ArduPilot plugin subscription writes

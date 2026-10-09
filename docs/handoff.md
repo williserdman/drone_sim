@@ -39,8 +39,10 @@ contain 599 samples, starting at 100 ms, while the public clock contains all
 601 ticks from zero through 30 seconds. Source completion never arrived. The
 run was stopped through the console and finalized `ABORTED: simulation_stop`,
 with an invalid bag, incomplete score 0/100 (`scenario_initialization_missing`),
-preserved recordings and native logs, and complete cleanup. The handoff fix and
-a fresh full recording verification remain in progress.
+preserved recordings and native logs, and complete cleanup. The handoff is fixed
+in `b979012`; fresh full recording verification remains pending. Focused Linux
+Gazebo/acceptance checks passed 417 tests (18 capability skips), and the actual
+ROS Jazzy node checks passed 14, including the admission-order regression.
 
 The named-volume media spool supports Linux `O_TMPFILE`, which this Mac shared
 directory and Colima writable layer do not. Verified closed media is published
