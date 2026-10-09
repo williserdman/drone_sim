@@ -4,6 +4,7 @@ import importlib
 from types import SimpleNamespace
 
 import pytest
+from pymavlink import mavutil
 from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
 
@@ -34,8 +35,11 @@ class Mav:
 
 
 class Handler:
-    def __init__(self):
-        self.master = SimpleNamespace(mav=Mav(), target_system=1, target_component=1)
+    def __init__(self, master=None):
+        self.master = master or SimpleNamespace(
+            mav=Mav(), target_system=1, target_component=1
+        )
+        self.target_system = 0
         self.loop_listeners = []
         self.message_listeners = []
 
@@ -189,3 +193,62 @@ def test_simulation_vehicle_requests_frequent_vehicle_heartbeat_after_connect(mo
             0,
         )
     ]
+
+
+def test_simulation_vehicle_pins_real_pymavlink_discovery_before_dronekit_initialize(
+    monkeypatch,
+):
+    vehicle_type = _simulation_vehicle_type()
+    master = mavutil.mavfile(
+        None,
+        "test",
+        source_system=191,
+        source_component=191,
+    )
+    handler = Handler(master)
+    vehicle = vehicle_type(handler)
+    foreign_heartbeat = sourced_message(
+        mavlink.MAVLink_heartbeat_message(
+            mavlink.MAV_TYPE_QUADROTOR,
+            mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+            mavlink.MAV_MODE_FLAG_SAFETY_ARMED,
+            4,
+            mavlink.MAV_STATE_ACTIVE,
+            3,
+        ),
+        system_id=42,
+        component_id=7,
+    )
+    encoded_targets = []
+
+    def initialize_with_foreign_discovery(_vehicle, *, rate, heartbeat_timeout):
+        assert (rate, heartbeat_timeout) == (4, 30)
+        assert (master.target_system, master.target_component) == (1, 1)
+        master.post_message(foreign_heartbeat)
+        vehicle.notify_message_listeners("HEARTBEAT", foreign_heartbeat)
+        command = master.mav.command_long_encode(
+            master.target_system,
+            master.target_component,
+            mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        encoded_targets.append((command.target_system, command.target_component))
+
+    monkeypatch.setattr(vehicle_type.__mro__[1], "initialize", initialize_with_foreign_discovery)
+    module = importlib.import_module("drone_sim_companion.dronekit_sim")
+    monkeypatch.setattr(module, "request_flight_controller_heartbeat", lambda *_args, **_kwargs: None)
+
+    vehicle.initialize(rate=4, heartbeat_timeout=30)
+
+    assert master.target_system == 1
+    assert master.target_component == 1
+    assert handler.target_system == 1
+    assert encoded_targets == [(1, 1)]
+    assert vehicle.armed is False
