@@ -1,8 +1,11 @@
 # Local simulation console with QGroundControl flight control
 
-Revised 2026-10-09. The user selected existing onboard missions started from
-QGC. This revision awaits written-spec review; it does not describe an
-implemented QGC command path. The earlier browser-controlled design and its
+Revised and approved 2026-10-09. The user selected existing onboard missions
+started from QGC and approved this written specification. Implementation is
+pending; this document does not describe an implemented QGC command path.
+The [implementation plan](../plans/2026-10-09-qgc-mission-control.md) records
+the changes and verification steps for review.
+The earlier browser-controlled design and its
 acceptance evidence remain in Git history at 9ff4e5f and in
 [handoff](../../handoff.md).
 
