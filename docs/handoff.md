@@ -17,13 +17,16 @@ camera connected during real preparation. A prepared cancellation finalized as
 `ABORTED: prepared_cancelled`, retained partial recordings, and removed all owned
 containers and the verified media spool volume.
 
-Full Linux runtime checks recorded 2,484 passes, 38 capability skips and two
-environment/fixture failures; both failures were corrected and 36 affected checks
-passed. Later cleanup/controller checks passed 703 tests, actual ROS adapter
-checks passed 28, and companion checks passed 360. The subsequent DroneKit target
-fix passed 151 focused checks. Configured static checks cover nine host source
-files. Chrome regression covers startup reconnect, actual iframe connection
-observations, preparation-only guidance, and stale views after owner loss.
+The final supported Linux suite at `bf7e16c` passed **2,557 tests**, with 41
+explicit capability skips. Configured mypy passed all nine host source files.
+Actual ROS adapter checks additionally passed 14 tests, including the admission
+boundary regression. Chrome regression covers startup reconnect, actual iframe
+connection observations, preparation-only guidance, and stale views after owner
+loss. Earlier failed checks and their corrections remain in the ledger.
+
+**Standards review:** no unresolved material findings; repeated companion host
+composition remains a maintenance observation. **Spec review:** no unresolved
+implementation findings; the real competition recovery check remains pending.
 
 Live testing corrected mixed-peer MAVLink telemetry and a controller budget bug
 that applied the 120-second process-startup limit to prearm readiness. The next

@@ -79,5 +79,5 @@
 - [x] Build matching committed sources and exercise a real configured descent: native preflight advances while disarmed, QGC connects, actual Gazebo scene is interactive, onboard preview updates, Start admits once, and mission/evidence are independently assessed.
 - [ ] Exercise prepared cancellation, stale view indication, flight recovery, Stop Simulation, refresh/reconnect, and a fresh repeat identity. Save logs/results and record what was actually verified.
 - [x] Run scoped typechecking and the full test suite once; diagnose any failures against baseline and implementation.
-- [ ] Use the code-review skill with independent Standards and Spec reviews against fixed base `646892f`; resolve material findings, rerun affected checks, and commit final changes without authorship trailers.
+- [x] Use the code-review skill with independent Standards and Spec reviews against fixed base `646892f`; resolve material findings, rerun affected checks, and commit final changes without authorship trailers.
 - [ ] Give concise run instructions and distinguish implemented behavior, passing checks, and any unverified runtime acceptance.
