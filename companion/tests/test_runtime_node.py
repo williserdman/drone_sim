@@ -1469,7 +1469,18 @@ def test_run_comp2026_concurrent_input_failure_prevents_guided_and_status(
 
 @pytest.mark.parametrize(
     "recovery_exit",
-    ["clock_advance", "clock_regression", "finalizing", "wall_deadline"],
+    [
+        "clock_advance",
+        "home_landed",
+        "unconfirmed",
+        "pilot",
+        "fc_failsafe",
+        "unknown_outcome",
+        "clock_regression",
+        "finalizing",
+        "finalizing_before_publication",
+        "wall_deadline",
+    ],
 )
 def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
     tmp_path: Path,
@@ -1488,6 +1499,8 @@ def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
     recovery_interrupted = threading.Event()
     post_recovery_observed = threading.Event()
     recovery_failure_reported = threading.Event()
+    outcome_classification_started = threading.Event()
+    allow_outcome_classification = threading.Event()
     handlers: dict[int, object] = {}
     callbacks: dict[str, object] = {}
     recoveries: list[str] = []
@@ -1536,19 +1549,54 @@ def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
         cancellation_requested.set()
         assert cancellation_rendered.wait(1.0)
 
-    def recover(_control: object) -> None:
+    def recover(_control: object) -> object:
         recoveries.append("operator recovery")
         recovery_started.set()
         try:
-            timebase.sleep(0.05 if recovery_exit == "clock_advance" else 900.0)
+            timebase.sleep(
+                0.05
+                if recovery_exit
+                in {
+                    "clock_advance",
+                    "home_landed",
+                    "unconfirmed",
+                    "pilot",
+                    "fc_failsafe",
+                    "unknown_outcome",
+                    "finalizing_before_publication",
+                }
+                else 900.0
+            )
         except timebase.ClockError:
             recovery_interrupted.set()
             raise
         recovery_completed.set()
+        return {
+            "clock_advance": "LOCAL_LANDED",
+            "home_landed": "HOME_LANDED",
+            "unconfirmed": "UNCONFIRMED",
+            "pilot": "PILOT",
+            "fc_failsafe": "FC_FAILSAFE",
+            "unknown_outcome": "NEW_RECOVERY_OUTCOME",
+            "finalizing_before_publication": "UNCONFIRMED",
+        }.get(recovery_exit)
 
     monkeypatch.setattr(sys.modules["drone.auto_attempt"], "run_auto_attempt", blocked_attempt)
     monkeypatch.setattr(competition_type, "abort", abort)
     monkeypatch.setattr(competition_type, "recover", recover)
+    classify_recovery_outcome = runtime_node._comp2026_recovery_failure_detail
+
+    def pause_before_terminal_publication(outcome: object) -> str | None:
+        if recovery_exit == "finalizing_before_publication":
+            outcome_classification_started.set()
+            assert allow_outcome_classification.wait(1.0)
+        return classify_recovery_outcome(outcome)
+
+    monkeypatch.setattr(
+        runtime_node,
+        "_comp2026_recovery_failure_detail",
+        pause_before_terminal_publication,
+    )
 
     class OperatorControl:
         operator_mode = True
@@ -1616,14 +1664,31 @@ def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
         assert not recovery_interrupted.is_set()
         callbacks["/camera/onboard/image_raw"](object())  # type: ignore[operator]
         callbacks["/competition/range/downward"](object())  # type: ignore[operator]
-        if recovery_exit == "clock_advance":
+        if recovery_exit in {
+            "clock_advance",
+            "home_landed",
+            "unconfirmed",
+            "pilot",
+            "fc_failsafe",
+            "unknown_outcome",
+            "finalizing_before_publication",
+        }:
             callbacks["/clock"](  # type: ignore[operator]
                 SimpleNamespace(
                     clock=SimpleNamespace(sec=0, nanosec=100_000_000)
                 )
             )
             assert recovery_completed.wait(1.0)
-            assert post_recovery_observed.wait(1.0)
+            if recovery_exit == "finalizing_before_publication":
+                assert outcome_classification_started.wait(1.0)
+                callbacks["/simulation/run_state"](  # type: ignore[operator]
+                    SimpleNamespace(run_id=RUN_ID, state=2)
+                )
+                allow_outcome_classification.set()
+            elif recovery_exit in {"clock_advance", "home_landed"}:
+                assert post_recovery_observed.wait(1.0)
+            else:
+                assert recovery_failure_reported.wait(1.0)
             handlers[runtime_node.signal.SIGTERM](runtime_node.signal.SIGTERM, None)
         elif recovery_exit == "clock_regression":
             callbacks["/clock"](  # type: ignore[operator]
@@ -1645,6 +1710,7 @@ def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
         runtime.join(timeout=2.0)
     finally:
         allow_cancellation_failure.set()
+        allow_outcome_classification.set()
         handler = handlers.get(runtime_node.signal.SIGTERM)
         if handler is not None:
             handler(runtime_node.signal.SIGTERM, None)  # type: ignore[operator]
@@ -1652,18 +1718,59 @@ def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
 
     assert result == [1]
     assert recoveries == ["operator recovery"]
-    assert recovery_completed.is_set() is (recovery_exit == "clock_advance")
-    assert recovery_interrupted.is_set() is (recovery_exit != "clock_advance")
-    if recovery_exit == "clock_advance":
+    normal_outcome = recovery_exit in {
+        "clock_advance",
+        "home_landed",
+        "unconfirmed",
+        "pilot",
+        "fc_failsafe",
+        "unknown_outcome",
+        "finalizing_before_publication",
+    }
+    assert recovery_completed.is_set() is normal_outcome
+    assert recovery_interrupted.is_set() is (
+        recovery_exit in {"clock_regression", "finalizing", "wall_deadline"}
+    )
+    if recovery_exit in {"clock_advance", "home_landed"}:
         assert 100_000_000 in observed_native_timestamps
-    if recovery_exit in {"clock_regression", "wall_deadline"}:
+    if recovery_exit in {
+        "unconfirmed",
+        "pilot",
+        "fc_failsafe",
+        "unknown_outcome",
+        "clock_regression",
+        "wall_deadline",
+    }:
         assert len(recovery_failures) == 1
     else:
         assert recovery_failures == []
     if recovery_exit == "clock_regression":
         assert "authoritative simulation clock regressed" in recovery_failures[0]
+    expected_outcome_failures = {
+        "unconfirmed": "competition recovery ended without confirmed landing",
+        "pilot": "competition recovery yielded flight authority to the pilot",
+        "fc_failsafe": (
+            "competition recovery yielded flight authority to the "
+            "flight-controller failsafe"
+        ),
+        "unknown_outcome": (
+            "competition recovery returned an unrecognized outcome: "
+            "'NEW_RECOVERY_OUTCOME'"
+        ),
+    }
+    if recovery_exit in expected_outcome_failures:
+        assert recovery_failures == [expected_outcome_failures[recovery_exit]]
     assert not any(isinstance(status, RuntimeFailureStatus) for status in statuses)
-    assert '"event":"mission_failed"' not in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert '"event":"mission_failed"' not in output
+    records = [json.loads(line) for line in output.splitlines()]
+    if recovery_exit in {"unconfirmed", "pilot", "fc_failsafe", "unknown_outcome"}:
+        recovery_failed = [
+            record for record in records if record["event"] == "recovery_failed"
+        ]
+        assert [record["sim_timestamp"] for record in recovery_failed] == [0.1]
+    if recovery_exit in {"finalizing", "finalizing_before_publication"}:
+        assert '"event":"recovery_interrupted"' in output
 
 
 @pytest.mark.parametrize("shutdown_source", ["finalizing", "signal"])

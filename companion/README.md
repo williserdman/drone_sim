@@ -42,9 +42,13 @@ and records append-only
 `accepted`, `recovering`, `landed_disarmed`, `rejected`, `failed`, or
 `interrupted` progress. A terminal recovery result does not finalize the
 companion; Stop Simulation remains the distinct finalization action. Landing
-success requires fresh landed and disarmed telemetry. A rejected command,
-missing telemetry, timeout, QGC authority change, or Stop Simulation remains a
-visible non-success result rather than fabricated landing evidence.
+success requires fresh landed and disarmed telemetry, even when the Comp2026
+supervisor reports that its home or local landing sequence completed. A
+supervisor result that yields to the pilot or flight-controller failsafe, lacks
+landing confirmation, or is unknown records failed recovery immediately. A
+rejected command, missing telemetry, timeout, QGC authority change, or Stop
+Simulation remains a visible non-success result rather than fabricated landing
+evidence.
 
 ## Configured diagnostic missions
 

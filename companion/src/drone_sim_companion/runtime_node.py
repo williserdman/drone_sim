@@ -1938,6 +1938,21 @@ def _create_simulator_camera(
     return camera_type(100, manager=manager, mounting_path=mounting_path)
 
 
+def _comp2026_recovery_failure_detail(outcome: object) -> str | None:
+    if outcome == "HOME_LANDED" or outcome == "LOCAL_LANDED":
+        return None
+    if outcome == "UNCONFIRMED":
+        return "competition recovery ended without confirmed landing"
+    if outcome == "PILOT":
+        return "competition recovery yielded flight authority to the pilot"
+    if outcome == "FC_FAILSAFE":
+        return (
+            "competition recovery yielded flight authority to the "
+            "flight-controller failsafe"
+        )
+    return f"competition recovery returned an unrecognized outcome: {outcome!r}"
+
+
 def _run_comp2026(config: RuntimeConfig) -> int:
     """Host one original nested attempt behind current ROS/lifecycle seams."""
 
@@ -2125,24 +2140,40 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         )
         recovery_wall_timeout.daemon = True
         recovery_wall_timeout.start()
+
+        def publish_recovery_failure(detail: str) -> None:
+            lifecycle.emit(
+                "recovery_failed", recovery_clock.timestamp_ns, {"reason": detail}
+            )
+            operator_control.fail_recovery(detail)
+
         with timebase.configured(recovery_clock):
             try:
-                competition_control.recover()
+                outcome = competition_control.recover()
+                detail = _comp2026_recovery_failure_detail(outcome)
+                published = shutdown_admission.run_if_active(
+                    lambda: publish_recovery_failure(detail)
+                    if detail is not None
+                    else None
+                )
+                if not published:
+                    lifecycle.emit(
+                        "recovery_interrupted",
+                        recovery_clock.timestamp_ns,
+                        {"reason": "runtime finalization began during recovery"},
+                    )
             except Exception as error:
                 with recovery_clock_failure_lock:
                     failure_detail = recovery_clock_failure
-                if shutdown_admission.shutdown_requested and failure_detail is None:
+                detail = failure_detail or f"competition recovery failed: {error}"
+                if not shutdown_admission.run_if_active(
+                    lambda: publish_recovery_failure(detail)
+                ):
                     lifecycle.emit(
                         "recovery_interrupted",
-                        clock.timestamp_ns,
+                        recovery_clock.timestamp_ns,
                         {"reason": str(error)},
                     )
-                else:
-                    detail = failure_detail or f"competition recovery failed: {error}"
-                    lifecycle.emit(
-                        "recovery_failed", clock.timestamp_ns, {"reason": detail}
-                    )
-                    operator_control.fail_recovery(detail)
             finally:
                 recovery_wall_timeout.cancel()
 
