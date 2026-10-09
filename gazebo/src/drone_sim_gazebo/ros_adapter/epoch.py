@@ -137,3 +137,16 @@ class OutputEpochGate:
         if public is not None and public > self._maximum_public_timestamp_ns:
             return None
         return public
+
+    def rebase_truth_sample(self, native_timestamp_ns: object) -> int | None:
+        """Admit one private interval beyond the public run to close final truth."""
+        if not self._activation_requested:
+            return None
+        assert self._target_native_epoch_ns is not None
+        public = PublicEpoch(self._target_native_epoch_ns).rebase(native_timestamp_ns)
+        if (
+            public is not None
+            and public > self._maximum_public_timestamp_ns + FRAME_INTERVAL_NS
+        ):
+            return None
+        return public

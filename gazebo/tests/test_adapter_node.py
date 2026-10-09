@@ -559,6 +559,159 @@ def test_live_ros_node_hides_warmup_then_rebases_every_public_stamp_at_activatio
         rclpy.shutdown()
 
 
+@pytest.mark.parametrize("lookahead", ["contact", "odometry"])
+def test_live_ros_node_uses_bounded_private_truth_lookahead_at_run_end(lookahead):
+    """A late physical callback may close, but never extend, final public truth."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from nav_msgs.msg import Odometry
+    from ros_gz_interfaces.msg import Contacts
+    from rosgraph_msgs.msg import Clock
+    from sensor_msgs.msg import Image
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    faults = []
+    completions = []
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=1,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        on_completed=completions.append,
+        on_fault=faults.append,
+    )
+
+    def image(timestamp_ns):
+        message = Image()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        message.height = 240
+        message.width = 320
+        message.encoding = "rgb8"
+        message.step = 960
+        message.data = bytes(320 * 240 * 3)
+        return message
+
+    def odometry(timestamp_ns):
+        message = Odometry()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        message.pose.pose.orientation.w = 1.0
+        return message
+
+    def contacts(timestamp_ns):
+        message = Contacts()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        return message
+
+    try:
+        adapter.activate_output()
+        epoch = Clock()
+        _set_stamp(epoch.clock, PUBLIC_EPOCH_NATIVE_NS)
+        adapter._accept_clock(epoch)
+
+        final_native_ns = PUBLIC_EPOCH_NATIVE_NS + 50_000_000
+        adapter._accept_image("onboard", image(final_native_ns))
+        adapter._accept_image("observer", image(final_native_ns))
+        adapter._accept_odometry(odometry(final_native_ns))
+        assert completions == []
+
+        if lookahead == "contact":
+            adapter._accept_contacts(contacts(final_native_ns + 1_000_000))
+        else:
+            adapter._accept_odometry(odometry(final_native_ns + 50_000_000))
+
+        assert faults == []
+        assert len(completions) == 1
+        assert completions[0].onboard_frames == 1
+        assert completions[0].observer_frames == 1
+        assert completions[0].paired_frames == 1
+        assert completions[0].ground_truth_samples == 1
+        assert completions[0].last_sim_timestamp_ns == 50_000_000
+        assert adapter._last_public_clock_ns == 50_000_000
+    finally:
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
+def test_live_ros_node_queues_first_frame_while_paused_at_epoch_lookahead():
+    """Operator admission observes +50 ms before RUNNING activates output."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("simulation_interfaces.msg")
+    from nav_msgs.msg import Odometry
+    from ros_gz_interfaces.msg import Contacts
+    from rosgraph_msgs.msg import Clock
+    from sensor_msgs.msg import Image
+    from drone_sim_gazebo.ros_adapter.node import GazeboAdapterNode
+
+    faults = []
+    completions = []
+    rclpy.init()
+    adapter = GazeboAdapterNode(
+        run_id=RUN_ID,
+        expected_frames=2,
+        public_epoch_native_ns=PUBLIC_EPOCH_NATIVE_NS,
+        on_completed=completions.append,
+        on_fault=faults.append,
+    )
+
+    def image(timestamp_ns):
+        message = Image()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        message.height = 240
+        message.width = 320
+        message.encoding = "rgb8"
+        message.step = 960
+        message.data = bytes(320 * 240 * 3)
+        return message
+
+    def odometry(timestamp_ns):
+        message = Odometry()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        message.pose.pose.orientation.w = 1.0
+        return message
+
+    def contacts(timestamp_ns):
+        message = Contacts()
+        _set_stamp(message.header.stamp, timestamp_ns)
+        return message
+
+    try:
+        adapter.prepare_output_epoch()
+        epoch = Clock()
+        _set_stamp(epoch.clock, PUBLIC_EPOCH_NATIVE_NS)
+        adapter._accept_clock(epoch)
+        first_native_ns = PUBLIC_EPOCH_NATIVE_NS + 50_000_000
+        adapter._accept_image("onboard", image(first_native_ns))
+        adapter._accept_image("observer", image(first_native_ns))
+        adapter._accept_contacts(contacts(first_native_ns))
+        adapter._accept_odometry(odometry(first_native_ns))
+
+        assert completions == []
+        assert adapter._last_public_clock_ns is None
+
+        adapter.activate_output()
+
+        assert faults == []
+        assert completions == []
+        assert adapter._last_public_clock_ns == 50_000_000
+
+        second_native_ns = PUBLIC_EPOCH_NATIVE_NS + 100_000_000
+        adapter._accept_image("onboard", image(second_native_ns))
+        adapter._accept_image("observer", image(second_native_ns))
+        adapter._accept_contacts(contacts(second_native_ns))
+        adapter._accept_odometry(odometry(second_native_ns))
+
+        assert len(completions) == 1
+        assert completions[0].onboard_frames == 2
+        assert completions[0].observer_frames == 2
+        assert completions[0].ground_truth_samples == 2
+        assert completions[0].first_sim_timestamp_ns == 50_000_000
+        assert completions[0].last_sim_timestamp_ns == 100_000_000
+        assert adapter._last_public_clock_ns == 100_000_000
+    finally:
+        adapter.destroy_node()
+        rclpy.shutdown()
+
+
 def test_live_ros_node_publishes_public_clock_at_camera_evidence_cadence():
     """Native physics clock callbacks must not flood every public ROS process."""
     rclpy = pytest.importorskip("rclpy")

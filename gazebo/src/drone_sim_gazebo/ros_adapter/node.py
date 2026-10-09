@@ -377,6 +377,17 @@ class GazeboAdapterNode(_node_base()):
         """Report the epoch latched from the reliable private Gazebo clock."""
         return self._output_epoch.native_epoch_ns is not None
 
+    def _accepting_private_samples(self) -> bool:
+        return (
+            not self._faulted
+            and not self._completion_reported
+            and (
+                self._output_active
+                or self._output_epoch.activation_pending
+                or self.public_epoch_reached()
+            )
+        )
+
     def _enable_public_output(self) -> None:
         if self._output_active:
             return
@@ -446,7 +457,7 @@ class GazeboAdapterNode(_node_base()):
                     source="onboard",
                 )
                 self._latest_private_camera_ns = timestamp_ns
-            if not self._output_active and not self._output_epoch.activation_pending:
+            if not self._accepting_private_samples():
                 return
             public_timestamp_ns = self._output_epoch.accept_camera(
                 stream, timestamp_ns
@@ -469,15 +480,11 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_odometry(self, message) -> None:
-        if (
-            self._faulted
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
-            public_timestamp_ns = self._output_epoch.rebase_sample(timestamp_ns)
+            public_timestamp_ns = self._output_epoch.rebase_truth_sample(timestamp_ns)
             if public_timestamp_ns is None:
                 return
             pose = message.pose.pose
@@ -496,15 +503,11 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_contacts(self, message) -> None:
-        if (
-            self._faulted
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             timestamp_ns = _nanoseconds(message.header.stamp)
-            public_timestamp_ns = self._output_epoch.rebase_sample(timestamp_ns)
+            public_timestamp_ns = self._output_epoch.rebase_truth_sample(timestamp_ns)
             if public_timestamp_ns is None:
                 return
             output = self._live.accept_contact(
@@ -519,11 +522,7 @@ class GazeboAdapterNode(_node_base()):
         return self._output_epoch.rebase_sample(timestamp_ns)
 
     def _accept_payload_contact(self, aruco_id: int, message) -> None:
-        if (
-            self._faulted
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             timestamp_ns = self._sample_timestamp(message)
@@ -538,12 +537,7 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_landing_pad_odometry(self, message) -> None:
-        if (
-            self._faulted
-            or self._completion_reported
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             timestamp_ns = self._sample_timestamp(message)
@@ -566,12 +560,7 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_landing_pad_contacts(self, message) -> None:
-        if (
-            self._faulted
-            or self._completion_reported
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             timestamp_ns = self._sample_timestamp(message)
@@ -587,12 +576,7 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_payload_attachment(self, aruco_id: int, message) -> None:
-        if (
-            self._faulted
-            or self._completion_reported
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             native_timestamp_ns, physical_state = parse_joint_state(message.data)
@@ -608,12 +592,7 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_payload_pose(self, aruco_id: int, message) -> None:
-        if (
-            self._faulted
-            or self._completion_reported
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             timestamp_ns = self._sample_timestamp(message)
@@ -633,12 +612,7 @@ class GazeboAdapterNode(_node_base()):
             self._fail(error)
 
     def _accept_range(self, message) -> None:
-        if (
-            self._faulted
-            or self._completion_reported
-            or not self._output_active
-            and not self._output_epoch.activation_pending
-        ):
+        if not self._accepting_private_samples():
             return
         try:
             timestamp_ns = self._sample_timestamp(message)
