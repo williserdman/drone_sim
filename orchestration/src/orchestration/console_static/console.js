@@ -66,6 +66,14 @@ function render(snapshot) {
   let detail = waiting ? "Bringing up physics, sensors, and the disarmed vehicle. This does not start the mission." : snapshot.reason || "";
   if (state === "PREPARED") detail = snapshot.can_start ? "Live preflight is ready. Inspect the world, camera, and QGC, then start when ready." : "Waiting for fresh telemetry and all operator views before mission start.";
   if (state === "RUNNING") detail = "The selected onboard mission owns flight commands. QGC controls remain available and interventions are recorded.";
+  if (state === "RUNNING" && snapshot.recovery) {
+    const recovered = snapshot.recovery.state === "landed_disarmed";
+    const needsAttention = ["failed", "rejected", "interrupted"].includes(snapshot.recovery.state);
+    text("flight-title", recovered ? "Flight recovery complete" : needsAttention ? "Flight recovery needs attention" : "Recovering flight");
+    detail = recovered ? "The vehicle is confirmed landed and disarmed. Stop simulation to finalize this run."
+      : needsAttention ? "Landing is not confirmed. Inspect QGC; Stop simulation ends this run."
+      : "Onboard recovery is active. Watch QGC and the live views; Stop simulation remains separate.";
+  }
   if (state === "BUILDING") detail = "Building matching native images. Open Runtime logs & build output below to follow progress.";
   if (snapshot.preflight && !snapshot.preflight.ready && (waiting || state === "PREPARED" || state === "STARTING_MISSION")) detail += ` ${snapshot.preflight.reasons.join("; ")}`;
   text("flight-detail", detail || "Select a preset, prepare the simulation, then inspect the live views before starting.");
@@ -100,7 +108,7 @@ function render(snapshot) {
   text("mode", vehicle.fresh ? vehicle.mode : "—");
   text("armed", vehicle.fresh && typeof vehicle.armed === "boolean" ? (vehicle.armed ? "Armed" : "Disarmed") : "—");
   text("altitude", vehicle.fresh && vehicle.relative_altitude_m != null ? `${vehicle.relative_altitude_m.toFixed(2)} m` : "—");
-  text("elapsed", snapshot.admission && stamp != null ? `${Math.max(0, (stamp - snapshot.admission.native_epoch_ns) / 1e9).toFixed(2)} s` : "Not started");
+  text("elapsed", snapshot.admission && stamp != null ? `${Math.max(0, (stamp - snapshot.admission.native_epoch_ns) / 1e9).toFixed(2)} s` : snapshot.admission ? "—" : "Not started");
   show("recovery-status", Boolean(snapshot.recovery));
   if (snapshot.recovery) text("recovery-status", `Flight recovery: ${snapshot.recovery.state.replaceAll("_", " ")} — ${snapshot.recovery.detail}`);
   text("cleanup", `Cleanup: ${snapshot.cleanup || "pending"}`); text("evidence-path", snapshot.run_directory || "");
