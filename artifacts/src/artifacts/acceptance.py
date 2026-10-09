@@ -357,13 +357,23 @@ def _validate_phase3_provenance(
             "manifest source provenance does not match external expectation"
         )
     images = manifest["image_digests"]
-    required_image_names = (
-        _OPERATOR_IMAGE_NAMES if launch_mode == "operator" else _PHASE3_IMAGE_NAMES
+    expected_image_names = set(expected_image_digests)
+    base_image_names = set(_PHASE3_IMAGE_NAMES)
+    operator_image_names = set(_OPERATOR_IMAGE_NAMES)
+    allowed_expected_names = (
+        (base_image_names, operator_image_names)
+        if launch_mode == "operator"
+        else (base_image_names,)
     )
-    if set(expected_image_digests) != set(required_image_names):
+    if expected_image_names not in allowed_expected_names:
         raise BundleAcceptanceError(
             "expected image provenance does not match the configured launch mode"
         )
+    required_image_names = (
+        _OPERATOR_IMAGE_NAMES
+        if expected_image_names == operator_image_names
+        else _PHASE3_IMAGE_NAMES
+    )
     if len(set(expected_image_digests.values())) != len(expected_image_digests):
         raise BundleAcceptanceError("expected image provenance has duplicate digests")
     names = {record["name"] for record in images}

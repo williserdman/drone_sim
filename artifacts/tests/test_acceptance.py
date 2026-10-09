@@ -538,7 +538,6 @@ def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
             "launch_mode": "operator",
             "preparation_wall_seconds": 1800,
         },
-        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
     )
     admission_sha256 = json.loads(
         (tmp_path / "manifest.json").read_text(encoding="utf-8")
@@ -547,9 +546,7 @@ def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
     report = inspect_phase3_semantics(
         tmp_path,
         rules_path=RULES_PATH,
-        expected_source_revision=EXPECTED_SOURCE_REVISION,
-        expected_source_dirty=EXPECTED_SOURCE_DIRTY,
-        expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        **_expected_provenance_kwargs(),
         semantic_check=lambda *_args: _physical_evidence(
             tmp_path,
             achieved=60.0,
@@ -562,9 +559,7 @@ def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
         inspect_phase3_semantics(
             tmp_path,
             rules_path=RULES_PATH,
-            expected_source_revision=EXPECTED_SOURCE_REVISION,
-            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
-            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            **_expected_provenance_kwargs(),
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0, admission_sha256="c" * 64
             ),
@@ -603,6 +598,26 @@ def test_operator_acceptance_requires_and_accepts_local_viewer_provenance(tmp_pa
             expected_source_revision=EXPECTED_SOURCE_REVISION,
             expected_source_dirty=EXPECTED_SOURCE_DIRTY,
             expected_image_digests=EXPECTED_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
+            ),
+        )
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["image_digests"] = [
+        image
+        for image in manifest["image_digests"]
+        if image["name"] != VIEWER_IMAGE_NAME
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(BundleAcceptanceError, match="image provenance"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0, admission_sha256=admission_sha256
             ),

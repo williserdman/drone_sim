@@ -92,12 +92,12 @@ record and retain their configured fixed epoch.
 
 Image provenance is launch-mode specific. Unattended bundles and their external
 digest expectations contain exactly the seven production Phase 3 images.
-Operator bundles contain those same seven images plus
-`drone-sim-gazebo-viewer:local`, because the local viewer participates in the
-operator topology. The acceptance CLI permits only those two exact input sets;
-semantic inspection binds the selected set to the frozen `launch_mode` in
-`configuration/run.json` and rejects missing, unknown, duplicate, or substituted
-names and digests.
+Operator bundles contain those seven images and may also contain
+`drone-sim-gazebo-viewer:local` when the local console overlay participated in
+the run. The acceptance CLI permits only those two exact input sets; semantic
+inspection allows the viewer only for frozen `launch_mode: operator` and requires
+the manifest to match the externally captured set exactly. Missing, unknown,
+duplicate, or substituted names and digests are rejected.
 
 Local Colima runs set
 `SIM_MEDIA_SPOOL_DIRECTORY=/var/lib/drone-sim/media`. That directory must be a
