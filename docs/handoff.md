@@ -10,20 +10,34 @@ sibling worktree, based on PR #3 head `646892f`. The original local checkout and
 cloud evidence are preserved. The shared `upstream` remote points to
 `williserdman/drone_sim`.
 
-Current local verification: host console HTTP/CLI, preset filtering, idempotent
-start/recovery controls, independent preparation budget, admission manifest
-binding, and real TCP/UDP QGC bridge tests have passed. Chrome smoke verification
-covered filtering, the manual-preset notice, disabled premature start, and no
-JavaScript errors. Companion focused checks: 352 passed. Static checks cover the
-new host boundary. These checks do not establish a local flight outcome.
+All eight native arm64 images have built and run on Colima with 6 CPUs and
+12 GiB RAM. Actual Chrome/noVNC verification covered scene rendering, mouse orbit,
+entity selection and read-only inspection. Native QGC and the separate onboard
+camera connected during real preparation. A prepared cancellation finalized as
+`ABORTED: prepared_cancelled`, retained partial recordings, and removed all owned
+containers and the verified media spool volume.
 
-Colima is running native arm64 with 6 CPUs and 12 GiB RAM. The pinned ROS base
-supports arm64. Native image builds and actual simulator/view acceptance are
-still in progress. Actual probes found that macOS shared folders and this
-container writable layer reject `O_TMPFILE`; a named Docker volume supports it.
-The local artifact spool and publication path addresses that deployment boundary
-without weakening Linux recorder validation. Follow [the ledger](LEDGER.md) for
-current build failures/fixes and the final acceptance evidence.
+Full Linux runtime checks recorded 2,484 passes, 38 capability skips and two
+environment/fixture failures; both failures were corrected and 36 affected checks
+passed. Later cleanup/controller checks passed 703 tests, actual ROS adapter
+checks passed 28, and companion checks passed 360. The subsequent DroneKit target
+fix passed 151 focused checks. Configured static checks cover nine host source
+files. Chrome regression covers startup reconnect, actual iframe connection
+observations, preparation-only guidance, and stale views after owner loss.
+
+Live testing found and corrected mixed-peer MAVLink telemetry; companion and QGC
+then agreed on disarmed state with fresh heartbeats. That second preparation
+(`ccc62102-1f1f-42ef-a006-fc2d8d4356f7`) exposed a separate controller budget bug:
+prearm readiness still used the 120-second process-startup limit even though the
+preset needs 90 simulated seconds at 0.1 RTF. The run ended before Start, with
+cleanup complete. Its fix and real flight acceptance are in progress. No local
+mission landing or fully valid mission recording is claimed yet.
+
+The named-volume media spool supports Linux `O_TMPFILE`, which this Mac shared
+directory and Colima writable layer do not. Verified closed media is published
+into the retained run directory before finalization. Failed publication preserves
+the volume and blocks another run. Follow [the ledger](LEDGER.md) for current
+failures, fixes, review dispositions and acceptance evidence.
 
 ## Cloud branch checkpoint
 

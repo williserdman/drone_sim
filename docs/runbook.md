@@ -92,6 +92,8 @@ not close the application.
    browser. Native physics and camera frames advance while the vehicle stays
    disarmed. The separate preflight limit defaults to 30 wall minutes. Warmup
    and rendering may take substantial wall time at a preset's configured pace.
+   Configured Descent's 90 simulated seconds at 0.1 RTF takes about 15 wall
+   minutes before inspection; its 30-second mission then takes about five more.
    Inspect the live views; Start remains unavailable until current observations
    and all operator connections are ready.
 
@@ -115,12 +117,17 @@ supervisors observe changes in authority. A stale camera image is visibly marked
 and cannot establish readiness. Closing a browser tab leaves the session owner
 running; reload the console to reconnect. Interrupting the console process asks
 the active controller to finalize before exit.
+Desktop readiness uses the actual browser RFB connection. A disconnected desktop
+disables Start before admission; losing the viewer during flight leaves healthy
+flight services running. Reopen the console to reconnect and inspect them.
 
 The local artifacts service uses a run-scoped **Docker named volume** for its
 recording spool because both the macOS shared directory and this Colima writable
 container layer reject `O_TMPFILE`. Closed media is published to the host evidence
 directory before recorder finalization is reported. Do not replace the spool
 with a macOS bind mount or remove it while recording/finalizing.
+Cleanup removes the volume only after verified publication; if publication fails,
+the retained volume appears in the remaining resources and blocks another run.
 
 CLI actions use the same persistent console, running in another terminal:
 
