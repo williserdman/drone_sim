@@ -24,6 +24,7 @@ _INTERVENTION_TYPES = {
 }
 # QGC uses these commands to request telemetry, not to change flight intent.
 _OBSERVATION_COMMANDS = {510, 511, 512, 519, 520, 521, 522}
+_FLIGHT_CONTROLLER_SOURCE = (1, 1)
 
 
 class GcsBridge:
@@ -92,8 +93,11 @@ class GcsBridge:
             os.close(descriptor)
 
     def _observe(self, message: Any) -> None:
+        source = (message.get_srcSystem(), message.get_srcComponent())
+        if source != _FLIGHT_CONTROLLER_SOURCE:
+            return
         self._update(last_telemetry_wall_time=time.time())
-        if message.get_type() == "HEARTBEAT" and message.get_srcSystem() == 1:
+        if message.get_type() == "HEARTBEAT":
             self._update(armed=bool(message.base_mode & 128), mode=mavutil.mode_string_v10(message))
         elif message.get_type() == "GLOBAL_POSITION_INT":
             self._update(relative_altitude_m=message.relative_alt / 1000)
