@@ -40,9 +40,22 @@ contain 599 samples, starting at 100 ms, while the public clock contains all
 run was stopped through the console and finalized `ABORTED: simulation_stop`,
 with an invalid bag, incomplete score 0/100 (`scenario_initialization_missing`),
 preserved recordings and native logs, and complete cleanup. The handoff is fixed
-in `b979012`; fresh full recording verification remains pending. Focused Linux
+in `b979012`. Focused Linux
 Gazebo/acceptance checks passed 417 tests (18 capability skips), and the actual
 ROS Jazzy node checks passed 14, including the admission-order regression.
+
+Fresh configured-descent acceptance passed on clean `680345e`: run
+`1edbaa7f-88d8-42db-bd95-d6e21e009a00` admitted native epoch 91.25 seconds,
+flew to 1.5 m, held, landed and disarmed. Both camera streams and ground truth
+contain exactly 600 samples, from 50 ms through 30 seconds. Physical outcome was
+`LANDED`; the independent score was **100/100**; all artifacts validated; cleanup
+completed. Independent acceptance verified externally captured source revisions
+and all eight image IDs. Evidence remains under `runs/1edbaa7f-88d8-42db-bd95-d6e21e009a00`.
+
+A competition recovery check subsequently failed during preparation, before
+Start, because a changing preflight file was replaced while being opened.
+Its cleanup completed. The mutable-read race and a same-system companion
+heartbeat display issue are being corrected before retrying recovery.
 
 The named-volume media spool supports Linux `O_TMPFILE`, which this Mac shared
 directory and Colima writable layer do not. Verified closed media is published

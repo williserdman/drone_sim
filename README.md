@@ -16,9 +16,10 @@ validated run bundle establish what actually happened.
    unfinished work, and the next useful tasks.
 
 **Verification scope:** the cloud branch has accepted calibration and reload
-runs; its complete eleven-case sweep remains unfinished. The local console has
-its own verification record in [current status](docs/handoff.md). A working UI
-or a successful build is not evidence of an accepted physical mission.
+runs; its complete eleven-case sweep remains unfinished. The local console
+passed an independently accepted configured descent with a 100/100 score and
+complete cleanup. See [current status](docs/handoff.md) for the exact revision,
+flight evidence, and remaining verification scope.
 
 ## Local Mac flight console
 
