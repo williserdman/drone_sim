@@ -5,69 +5,55 @@
 
 ## Local console work — 2026-10-08
 
-Implementation is on `feature/local-simulation-console` in the user-approved
-sibling worktree, based on PR #3 head `646892f`. The original local checkout and
-cloud evidence are preserved. The shared `upstream` remote points to
-`williserdman/drone_sim`.
+Implemented on `feature/local-simulation-console` in
+`/Users/williserdman/Documents/projects/drone_sim-console`, based on PR #3 head
+`646892f`. The original checkout and cloud evidence are preserved. The shared
+`upstream` remote points to `williserdman/drone_sim`.
 
-All eight native arm64 images have built and run on Colima with 6 CPUs and
-12 GiB RAM. Actual Chrome/noVNC verification covered scene rendering, mouse orbit,
-entity selection and read-only inspection. Native QGC and the separate onboard
-camera connected during real preparation. A prepared cancellation finalized as
-`ABORTED: prepared_cancelled`, retained partial recordings, and removed all owned
-containers and the verified media spool volume.
+Start with `uv run --locked drone-sim console`, then use the
+[local Mac workflow](runbook.md#local-mac-console): select a world/preset,
+Prepare, inspect native QGC, interactive Gazebo and the separate camera, then
+Start Mission. Abort Flight requests guarded recovery; Stop Simulation finalizes
+the run separately. Presets retain their configured timing: Configured Descent
+needs about 15 wall minutes of warmup at 0.1 RTF, followed by a five-minute run.
 
-The final supported Linux suite at `bf7e16c` passed **2,557 tests**, with 41
-explicit capability skips. Configured mypy passed all nine host source files.
-Actual ROS adapter checks additionally passed 14 tests, including the admission
-boundary regression. Chrome regression covers startup reconnect, actual iframe
-connection observations, preparation-only guidance, and stale views after owner
-loss. Earlier failed checks and their corrections remain in the ledger.
+Actual configured-descent acceptance passed at clean `680345e`, run
+`1edbaa7f-88d8-42db-bd95-d6e21e009a00`: takeoff to 1.5 m, hold, LAND and disarm;
+independent score **100/100**; all artifacts valid; cleanup complete. Both camera
+streams and ground truth contain exactly 600 samples from 50 ms through 30 s.
+Independent acceptance verified externally captured source revisions and all
+eight image IDs. Evidence remains in that run's directory under `runs/`.
+
+Actual competition control verification used clean `2ca879d`, run
+`cad25c37-be37-4704-a247-1867904c3072`. Prepare and Start passed; the aircraft
+was airborne when Abort Flight was clicked. Guarded recovery entered LAND but
+held near 4.65 m armed. After the onboard policy window, the console correctly
+reported failed recovery without confirmed landing, kept all views live, and
+showed physical outcome Not established. Separate Stop finalized
+`ABORTED: simulation_stop`; cleanup completed. Recordings are retained and valid,
+but the interrupted full-mission bag is invalid and score is incomplete 0/150.
+Successful competition recovery, a complete competition mission, and the full
+eleven-preset flight sweep are **not** established by this check. Flight guards
+and mission parameters were preserved; this console does not force a landing.
+
+Other actual checks covered mouse orbit, entity selection/read-only inspection,
+prepared cancellation, a prepared/disarmed hold longer than 61 simulated seconds,
+browser reconnect, Start retry without a second admission, viewer loss during
+flight, viewer recovery, and fresh Run Again identities. Historical failures and
+fixes are retained in [the implementation ledger](LEDGER.md).
+
+The supported Linux suite at `bf7e16c` passed **2,557 tests**, with 41 explicit
+capability skips. Subsequent recovery changes passed 120 focused tests. Configured
+mypy passed all nine host files; actual ROS adapter checks passed 14 tests;
+Chrome checks passed reconnect, readiness guidance, recovery status and terminal
+elapsed-time behavior. The named-volume recording spool supports Linux
+`O_TMPFILE`; verified closed media is published before the volume is removed.
+Failed publication preserves the volume and blocks another run.
 
 **Standards review:** no unresolved material findings; repeated companion host
 composition remains a maintenance observation. **Spec review:** no unresolved
-implementation findings; the real competition recovery check remains pending.
-
-Live testing corrected mixed-peer MAVLink telemetry and a controller budget bug
-that applied the 120-second process-startup limit to prearm readiness. The next
-run, `201f9dff-0bf8-4ffc-8b63-fe7228b7ef84` at clean `fc785f8`, stayed prepared and
-disarmed for more than 61 native simulated seconds, then admitted the mission
-at native 151.60 seconds. Browser reconnect, start retry, loss of the real viewer
-during flight, and viewer recovery passed. The companion reported `LANDED` and
-QGC observed disarm at public 12.45 seconds.
-
-That run did not pass artifact acceptance: the admission handoff dropped the
-first 50 ms camera and truth samples. Both camera metadata streams and truth
-contain 599 samples, starting at 100 ms, while the public clock contains all
-601 ticks from zero through 30 seconds. Source completion never arrived. The
-run was stopped through the console and finalized `ABORTED: simulation_stop`,
-with an invalid bag, incomplete score 0/100 (`scenario_initialization_missing`),
-preserved recordings and native logs, and complete cleanup. The handoff is fixed
-in `b979012`. Focused Linux
-Gazebo/acceptance checks passed 417 tests (18 capability skips), and the actual
-ROS Jazzy node checks passed 14, including the admission-order regression.
-
-Fresh configured-descent acceptance passed on clean `680345e`: run
-`1edbaa7f-88d8-42db-bd95-d6e21e009a00` admitted native epoch 91.25 seconds,
-flew to 1.5 m, held, landed and disarmed. Both camera streams and ground truth
-contain exactly 600 samples, from 50 ms through 30 seconds. Physical outcome was
-`LANDED`; the independent score was **100/100**; all artifacts validated; cleanup
-completed. Independent acceptance verified externally captured source revisions
-and all eight image IDs. Evidence remains under `runs/1edbaa7f-88d8-42db-bd95-d6e21e009a00`.
-
-A competition recovery check subsequently failed during preparation, before
-Start, because a changing preflight file was replaced while being opened.
-Its cleanup completed. The mutable-read race and same-system companion
-heartbeat display issue are fixed. Review also corrected competition cancellation
-being mistaken for runtime failure and separated recovery time from the stopped
-mission clock. Focused recovery checks passed 114 tests; a rebuilt real recovery
-run remains pending.
-
-The named-volume media spool supports Linux `O_TMPFILE`, which this Mac shared
-directory and Colima writable layer do not. Verified closed media is published
-into the retained run directory before finalization. Failed publication preserves
-the volume and blocks another run. Follow [the ledger](LEDGER.md) for current
-failures, fixes, review dispositions and acceptance evidence.
+console implementation findings. The physical competition recovery limitation
+above remains visible and is not a successful-flight claim.
 
 ## Cloud branch checkpoint
 

@@ -72,12 +72,12 @@
 - [x] Implement controller integration and a workstation lock shared with direct launches/suites, avoiding nested acquisition. Hold ownership through cleanup, persist session identity, and reconcile orphaned owners before another launch.
 - [x] Add failing HTTP/CLI tests for duplicate Prepare, foreign/invalid requests, refresh, local-origin enforcement, bounded input, and disconnected runtime.
 - [x] Implement the local service, catalog from approved complete templates, prerequisites/provenance checks, native QGC launch and dedicated telemetry bridge, and UI actions/status/views/results.
-- [ ] Verify browser selection/Prepare/Start/recovery/Stop/Run Again using the public interface and focused test files; update README/runbook and commit.
+- [x] Verify browser selection/Prepare/Start/recovery/Stop/Run Again using the public interface and focused test files; update README/runbook and commit.
 
 ## Task 5: Real acceptance and whole-change review
 
 - [x] Build matching committed sources and exercise a real configured descent: native preflight advances while disarmed, QGC connects, actual Gazebo scene is interactive, onboard preview updates, Start admits once, and mission/evidence are independently assessed.
-- [ ] Exercise prepared cancellation, stale view indication, flight recovery, Stop Simulation, refresh/reconnect, and a fresh repeat identity. Save logs/results and record what was actually verified.
+- [x] Exercise prepared cancellation, stale view indication, flight recovery, Stop Simulation, refresh/reconnect, and a fresh repeat identity. Save logs/results and record what was actually verified.
 - [x] Run scoped typechecking and the full test suite once; diagnose any failures against baseline and implementation.
 - [x] Use the code-review skill with independent Standards and Spec reviews against fixed base `646892f`; resolve material findings, rerun affected checks, and commit final changes without authorship trailers.
-- [ ] Give concise run instructions and distinguish implemented behavior, passing checks, and any unverified runtime acceptance.
+- [x] Give concise run instructions and distinguish implemented behavior, passing checks, and any unverified runtime acceptance.

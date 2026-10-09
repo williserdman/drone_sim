@@ -104,8 +104,8 @@ not close the application.
    in QGC after mission start, then its companion sequence continues.
 
 5. **Abort flight** invokes guarded onboard recovery and reports observed
-   progress. A rejected command, stale telemetry, timeout, or manual takeover
-   remains visible. **Stop simulation** requests finalization and teardown,
+   progress. A rejected command, stale telemetry, timeout, unconfirmed landing,
+   or manual takeover remains visible. **Stop simulation** requests finalization and teardown,
    including before mission start; it may interrupt an airborne vehicle.
    Wait for cleanup before **Run again**, which allocates a new run identity and
    returns to preparation.
