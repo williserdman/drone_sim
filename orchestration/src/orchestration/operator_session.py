@@ -59,6 +59,8 @@ class OperatorSession:
         self._record: dict[str, Any] = {"state": "IDLE", "run_id": None, "preset_id": None,
                                          "prepare_request_id": None, "error": "", "cleanup": "not started"}
         self._checks: dict[str, Any] | None = None
+        self._checks_generation: int | None = None
+        self._owner_generation = 0
         receipt = self.state_directory / "session.json"
         if receipt.exists():
             previous = json.loads(receipt.read_text())
@@ -91,6 +93,12 @@ class OperatorSession:
     def _active(self) -> bool:
         return self._worker is not None and self._worker.is_alive()
 
+    def _begin_owner(self) -> None:
+        """Invalidate prerequisite observations made for an earlier owner."""
+        self._owner_generation += 1
+        self._checks = None
+        self._checks_generation = None
+
     def prepare(self, *, preset_id: str, request_id: str | None = None,
                 preparation_wall_seconds: int = 1800, calibration_source: str | None = None) -> dict[str, Any]:
         preset = self.catalog.get(preset_id)
@@ -110,6 +118,7 @@ class OperatorSession:
                 return self.snapshot()
             if self._active() or self._record["state"] == "ORPHANED":
                 raise RuntimeError("a session is active; stop and finalize it before preparing another")
+            self._begin_owner()
             self._cancel.clear()
             self._record = {"state": "PREPARING", "run_id": None, "preset_id": preset_id,
                             "prepare_request_id": request_id, "error": "", "cleanup": "pending",
@@ -127,6 +136,7 @@ class OperatorSession:
                 checks = self.runtime.checks()
                 with self._lock:
                     self._checks = checks
+                    self._checks_generation = self._owner_generation
                 if not checks["ok"]:
                     raise RuntimeError("; ".join(f'{row["name"]}: {row["detail"]}' for row in checks["checks"] if not row["ok"]))
                 if self._cancel.is_set():
@@ -208,6 +218,7 @@ class OperatorSession:
                           else "simulation_stop")
                 self.controller.abort(self._record["run_id"], directory.parent, reason=reason)
                 if self._record["state"] == "ORPHANED":
+                    self._begin_owner()
                     self._worker = threading.Thread(target=self._cleanup_orphan, name="orphan-cleanup")
                     self._record["state"] = "FINALIZING"
                     self._worker.start()
@@ -302,10 +313,21 @@ class OperatorSession:
             return result
 
     def checks(self) -> dict[str, Any]:
-        result = self.runtime.checks(active=self._active())
-        with self._lock:
-            self._checks = result
-        return result
+        while True:
+            with self._lock:
+                generation = self._owner_generation
+                active = self._active()
+            result = self.runtime.checks(active=active)
+            with self._lock:
+                if generation == self._owner_generation and active == self._active():
+                    self._checks = result
+                    self._checks_generation = generation
+                    return result
+                if (
+                    self._checks is not None
+                    and self._checks_generation == self._owner_generation
+                ):
+                    return self._checks
 
     def open_qgc(self) -> dict[str, Any]:
         self.runtime.open_qgc()
@@ -315,6 +337,7 @@ class OperatorSession:
         with self._lock:
             if self._active() or self._record["state"] == "ORPHANED":
                 raise RuntimeError("finish the active session before building")
+            self._begin_owner()
             self._record["state"] = "BUILDING"
             self._worker = threading.Thread(target=self._build_worker, name="runtime-build")
             self._worker.start()
@@ -326,6 +349,7 @@ class OperatorSession:
                 checks = self.runtime.build()
                 with self._lock:
                     self._checks = checks
+                    self._checks_generation = self._owner_generation
                     self._record.update(state="IDLE", error="")
         except (OSError, RuntimeError, ValueError) as error:
             with self._lock:

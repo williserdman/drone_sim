@@ -28,6 +28,29 @@ class Runtime:
         return {"ok": False, "checks": [{"name": "Matching runtime images", "ok": False, "detail": "build needed"}]}
 
 
+class TransitionRuntime:
+    def __init__(self):
+        self.first_entered = threading.Event()
+        self.first_release = threading.Event()
+        self.active_arguments = []
+
+    def checks(self, *, active=False):
+        self.active_arguments.append(active)
+        if len(self.active_arguments) == 1:
+            self.first_entered.set()
+            self.first_release.wait(3)
+        return {
+            "ok": active,
+            "checks": [
+                {
+                    "name": "Local ports",
+                    "ok": active,
+                    "detail": "owned by active session" if active else "port 5762 is busy",
+                }
+            ],
+        }
+
+
 def test_prepare_is_single_owned_attempt_and_failed_prerequisites_are_actionable(tmp_path):
     runtime = Runtime()
     session = OperatorSession(ROOT, state_directory=tmp_path, runtime=runtime)
@@ -57,3 +80,64 @@ def test_unknown_preset_never_starts_a_worker(tmp_path):
     with pytest.raises(ValueError, match="unknown preset"):
         session.prepare(preset_id="../../arbitrary.json")
     assert session.snapshot()["state"] == "IDLE"
+
+
+def test_checks_retry_when_a_new_owner_starts_during_slow_prerequisites(tmp_path):
+    runtime = TransitionRuntime()
+    session = OperatorSession(ROOT, state_directory=tmp_path, runtime=runtime)
+    owner_release = threading.Event()
+    owner_entered = threading.Event()
+
+    def owner_worker(*_args):
+        owner_entered.set()
+        owner_release.wait(3)
+
+    session._prepare_worker = owner_worker
+    returned = []
+    request = threading.Thread(target=lambda: returned.append(session.checks()))
+    request.start()
+    assert runtime.first_entered.wait(2)
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="11111111-1111-4111-8111-111111111111",
+    )
+    assert owner_entered.wait(2)
+    runtime.first_release.set()
+    request.join(3)
+
+    assert runtime.active_arguments == [False, True]
+    assert returned[0]["ok"] is True
+    assert session.snapshot()["checks"] == returned[0]
+    owner_release.set()
+    session._worker.join(3)
+
+
+def test_checks_retry_when_owner_finishes_during_slow_prerequisites(tmp_path):
+    runtime = TransitionRuntime()
+    session = OperatorSession(ROOT, state_directory=tmp_path, runtime=runtime)
+    owner_release = threading.Event()
+
+    def owner_worker(*_args):
+        owner_release.wait(3)
+        with session._lock:
+            session._record["state"] = "FAILED"
+
+    session._prepare_worker = owner_worker
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="11111111-1111-4111-8111-111111111111",
+    )
+    returned = []
+    request = threading.Thread(target=lambda: returned.append(session.checks()))
+    request.start()
+    assert runtime.first_entered.wait(2)
+
+    owner_release.set()
+    session._worker.join(3)
+    runtime.first_release.set()
+    request.join(3)
+
+    assert runtime.active_arguments == [True, False]
+    assert returned[0]["ok"] is False
+    assert session.snapshot()["checks"] == returned[0]
