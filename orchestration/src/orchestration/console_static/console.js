@@ -110,7 +110,7 @@ async function results() {
   text("result-lifecycle", manifest?.terminal_status || (current.run_id ? "Awaiting terminal manifest" : "—"));
   text("result-physical", result.physical_outcome ? "Mission completion observed" : current.recovery?.state === "landed_disarmed" ? "Recovered: landed & disarmed" : "Not established");
   text("result-score", result.score?.achieved_score != null ? `${result.score.achieved_score} / ${result.score.maximum_available_score}` : "Not available");
-  text("result-intervention", !current.run_id ? "—" : result.interventions ? "Manual commands recorded" : "None recorded");
+  text("result-intervention", !current.run_id ? "—" : result.interventions ? "QGC control commands recorded" : "None recorded");
   text("result-artifacts", manifest ? (manifest.incomplete_paths?.length ? "Incomplete / invalid" : manifest.artifacts?.every((item) => item.validation === "valid") ? "Valid" : "See manifest validation") : "Not finalized");
   text("result-details", pretty(result));
 }

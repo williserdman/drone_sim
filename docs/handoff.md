@@ -25,13 +25,22 @@ fix passed 151 focused checks. Configured static checks cover nine host source
 files. Chrome regression covers startup reconnect, actual iframe connection
 observations, preparation-only guidance, and stale views after owner loss.
 
-Live testing found and corrected mixed-peer MAVLink telemetry; companion and QGC
-then agreed on disarmed state with fresh heartbeats. That second preparation
-(`ccc62102-1f1f-42ef-a006-fc2d8d4356f7`) exposed a separate controller budget bug:
-prearm readiness still used the 120-second process-startup limit even though the
-preset needs 90 simulated seconds at 0.1 RTF. The run ended before Start, with
-cleanup complete. Its fix and real flight acceptance are in progress. No local
-mission landing or fully valid mission recording is claimed yet.
+Live testing corrected mixed-peer MAVLink telemetry and a controller budget bug
+that applied the 120-second process-startup limit to prearm readiness. The next
+run, `201f9dff-0bf8-4ffc-8b63-fe7228b7ef84` at clean `fc785f8`, stayed prepared and
+disarmed for more than 61 native simulated seconds, then admitted the mission
+at native 151.60 seconds. Browser reconnect, start retry, loss of the real viewer
+during flight, and viewer recovery passed. The companion reported `LANDED` and
+QGC observed disarm at public 12.45 seconds.
+
+That run did not pass artifact acceptance: the admission handoff dropped the
+first 50 ms camera and truth samples. Both camera metadata streams and truth
+contain 599 samples, starting at 100 ms, while the public clock contains all
+601 ticks from zero through 30 seconds. Source completion never arrived. The
+run was stopped through the console and finalized `ABORTED: simulation_stop`,
+with an invalid bag, incomplete score 0/100 (`scenario_initialization_missing`),
+preserved recordings and native logs, and complete cleanup. The handoff fix and
+a fresh full recording verification remain in progress.
 
 The named-volume media spool supports Linux `O_TMPFILE`, which this Mac shared
 directory and Colima writable layer do not. Verified closed media is published
