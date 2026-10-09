@@ -1995,6 +1995,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         daemon=True,
     )
     clock = SimulationClock()
+    recovery_clock = SimulationClock()
     frame_source = RosFrameSource(width_px=640, height_px=480)
     lidar = RosLidar(clock)
     gate = Comp2026StartGate()
@@ -2017,6 +2018,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     initial_command_delivered = False
     runtime_failure_written = False
     runtime_failure_lock = threading.Lock()
+    recovery_clock_failure: str | None = None
+    recovery_clock_failure_lock = threading.Lock()
     exit_code = 0
     controller: Any | None = None
     competition_control: Any | None = None
@@ -2029,6 +2032,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
 
     def stop(_signum: int, _frame: Any) -> None:
         shutdown_admission.request_stop_from_signal()
+        recovery_clock.stop("runtime shutdown requested")
 
     def state_callback(message: Any) -> None:
         nonlocal mission_running
@@ -2040,13 +2044,27 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             )
         elif message.state == RunState.FINALIZING:
             shutdown_admission.begin_finalizing()
+            recovery_clock.stop("runtime finalizing")
 
     def clock_callback(message: Any) -> None:
+        nonlocal recovery_clock_failure
         if not mission_running:
             return
 
+        try:
+            timestamp_ns = stamp_ns(message.clock)
+            recovery_clock.accept(timestamp_ns)
+        except Exception as error:
+            reason = f"competition clock input failed: {error}"
+            with recovery_clock_failure_lock:
+                if recovery_clock_failure is None:
+                    recovery_clock_failure = reason
+            recovery_clock.stop(reason)
+            attempt_failure.fail(reason)
+            return
+
         def accept() -> None:
-            clock.accept(stamp_ns(message.clock))
+            clock.accept(timestamp_ns)
             gate.accept_clock()
 
         attempt_failure.guard_input("clock", accept)
@@ -2100,12 +2118,33 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     def best_effort_recovery() -> None:
         if competition_control is None:
             return
-        with timebase.configured(clock):
+        recovery_wall_timeout = threading.Timer(
+            config.finalization_wall_seconds,
+            recovery_clock.stop,
+            args=("competition recovery wall deadline expired",),
+        )
+        recovery_wall_timeout.daemon = True
+        recovery_wall_timeout.start()
+        with timebase.configured(recovery_clock):
             try:
                 competition_control.recover()
             except Exception as error:
-                lifecycle.emit("recovery_failed", clock.timestamp_ns, {"reason": str(error)})
-                operator_control.fail_recovery(f"competition recovery failed: {error}")
+                with recovery_clock_failure_lock:
+                    failure_detail = recovery_clock_failure
+                if shutdown_admission.shutdown_requested and failure_detail is None:
+                    lifecycle.emit(
+                        "recovery_interrupted",
+                        clock.timestamp_ns,
+                        {"reason": str(error)},
+                    )
+                else:
+                    detail = failure_detail or f"competition recovery failed: {error}"
+                    lifecycle.emit(
+                        "recovery_failed", clock.timestamp_ns, {"reason": detail}
+                    )
+                    operator_control.fail_recovery(detail)
+            finally:
+                recovery_wall_timeout.cancel()
 
     def stop_attempt(reason: str) -> None:
         if competition_control is not None:
@@ -2136,7 +2175,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         nonlocal exit_code
         if competition_control is None:
             return False
-        stop_attempt(reason)
+        if not attempt_failure.cancel(reason):
+            return False
         lifecycle.emit("operator_flight_abort", clock.timestamp_ns, {"reason": reason})
         exit_code = 1
         return True
@@ -2318,7 +2358,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     and altitude <= 0.3
                 )
                 operator_control.observe_vehicle(
-                    native_timestamp_ns=clock.timestamp_ns,
+                    native_timestamp_ns=recovery_clock.timestamp_ns,
                     heartbeat_live=dronekit_heartbeat_is_fresh(
                         getattr(controller.vehicle, "last_heartbeat", None)
                     ),
@@ -2478,8 +2518,13 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 finalizing=False,
                 begin_recovery=begin_operator_recovery,
             )
+            with recovery_clock_failure_lock:
+                recovery_failure = recovery_clock_failure
+            if recovery_failure is not None:
+                operator_control.fail_recovery(recovery_failure)
             if protocol.read_finalize_request() is not None:
                 shutdown_admission.begin_finalizing()
+                recovery_clock.stop("runtime finalizing")
             if (
                 not operator_control.abort_observed
                 and time.monotonic_ns() >= operator_control.wall_deadline_ns
@@ -2488,6 +2533,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 attempt_failure.fail("companion exceeded the overall run wall failsafe")
             time.sleep(0.02)
     finally:
+        recovery_clock.stop("runtime finalizing")
         operator_control.poll_abort(
             finalizing=True,
             begin_recovery=begin_operator_recovery,

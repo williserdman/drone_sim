@@ -443,6 +443,86 @@ def test_fatal_input_prevents_further_phase_or_success_and_recovers_once() -> No
     assert recoveries == ["recovered"]
 
 
+def test_operator_cancel_prevents_later_failure_success_and_failure_recovery() -> None:
+    stops: list[str] = []
+    failures: list[str] = []
+    recoveries: list[str] = []
+    guarded_inputs: list[str] = []
+    terminal: list[str] = []
+    coordinator = AttemptFailureCoordinator(
+        stop_attempt=stops.append,
+        write_failure=failures.append,
+        recover=lambda: recoveries.append("recovered"),
+    )
+
+    assert coordinator.cancel("operator requested recovery") is True
+    assert coordinator.guard_input(
+        "image", lambda: guarded_inputs.append("accepted")
+    ) is False
+    assert coordinator.fail("later worker failure") is False
+    assert coordinator.finish_success(lambda: terminal.append("mission-finished")) is False
+    assert coordinator.recover_once() is False
+
+    assert stops == ["operator requested recovery"]
+    assert guarded_inputs == []
+    assert failures == []
+    assert terminal == []
+    assert recoveries == []
+
+
+def test_genuine_failure_keeps_ownership_when_operator_cancel_arrives_later() -> None:
+    failure_rendering = threading.Event()
+    allow_failure_claim = threading.Event()
+    cancel_returned = threading.Event()
+    stops: list[str] = []
+    failures: list[str] = []
+    recoveries: list[str] = []
+    callback_results: list[bool] = []
+    cancel_results: list[bool] = []
+    coordinator = AttemptFailureCoordinator(
+        stop_attempt=stops.append,
+        write_failure=failures.append,
+        recover=lambda: recoveries.append("recovered"),
+    )
+
+    class PausingInputError(ValueError):
+        def __str__(self) -> str:
+            failure_rendering.set()
+            assert allow_failure_claim.wait(1.0)
+            return "camera input failed"
+
+    failure_thread = threading.Thread(
+        target=lambda: callback_results.append(
+            coordinator.guard_input(
+                "image", lambda: (_ for _ in ()).throw(PausingInputError())
+            )
+        )
+    )
+
+    def cancel() -> None:
+        cancel_results.append(coordinator.cancel("operator requested recovery"))
+        cancel_returned.set()
+
+    cancel_thread = threading.Thread(target=cancel)
+    failure_thread.start()
+    assert failure_rendering.wait(1.0)
+    cancel_thread.start()
+    try:
+        assert not cancel_returned.wait(0.05)
+    finally:
+        allow_failure_claim.set()
+        failure_thread.join(timeout=1.0)
+        cancel_thread.join(timeout=1.0)
+
+    assert coordinator.recover_once() is True
+
+    assert callback_results == [False]
+    assert cancel_results == [False]
+    assert stops == ["competition image input failed: camera input failed"]
+    assert failures == ["competition image input failed: camera input failed"]
+    assert recoveries == ["recovered"]
+
+
 def test_callback_failure_claim_precedes_terminal_success() -> None:
     rendering_exception = threading.Event()
     allow_failure_claim = threading.Event()

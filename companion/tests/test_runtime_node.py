@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from contextlib import nullcontext
 import hashlib
+import importlib.util
 import json
 from io import StringIO
 from pathlib import Path
@@ -1464,6 +1465,205 @@ def test_run_comp2026_concurrent_input_failure_prevents_guided_and_status(
     assert [status.reason for status in failures] == [
         "competition image input failed: bad image"
     ]
+
+
+@pytest.mark.parametrize(
+    "recovery_exit",
+    ["clock_advance", "clock_regression", "finalizing", "wall_deadline"],
+)
+def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    recovery_exit: str,
+) -> None:
+    allow_write = threading.Event()
+    allow_write.set()
+    mission_entered = threading.Event()
+    cancellation_requested = threading.Event()
+    cancellation_rendered = threading.Event()
+    allow_cancellation_failure = threading.Event()
+    recovery_started = threading.Event()
+    recovery_completed = threading.Event()
+    recovery_interrupted = threading.Event()
+    post_recovery_observed = threading.Event()
+    recovery_failure_reported = threading.Event()
+    handlers: dict[int, object] = {}
+    callbacks: dict[str, object] = {}
+    recoveries: list[str] = []
+    recovery_failures: list[str] = []
+    observed_native_timestamps: list[int | None] = []
+    statuses, _vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=threading.Event(),
+        allow_command_write=allow_write,
+        mission_entered=mission_entered,
+        runtime_callbacks=callbacks,
+        installed_signal_handlers=handlers,
+    )
+    timebase_path = (
+        Path(runtime_node.__file__).parents[2]
+        / "comp2026"
+        / "src"
+        / "drone"
+        / "timebase.py"
+    )
+    timebase_spec = importlib.util.spec_from_file_location(
+        "test_comp2026_recovery_timebase", timebase_path
+    )
+    assert timebase_spec is not None and timebase_spec.loader is not None
+    timebase = importlib.util.module_from_spec(timebase_spec)
+    timebase_spec.loader.exec_module(timebase)
+    monkeypatch.setitem(sys.modules, "drone.timebase", timebase)
+    monkeypatch.setattr(sys.modules["drone"], "timebase", timebase)
+
+    class OperatorCancellation(RuntimeError):
+        def __str__(self) -> str:
+            cancellation_rendered.set()
+            assert allow_cancellation_failure.wait(1.0)
+            return "operator requested recovery"
+
+    def blocked_attempt(**_options: object) -> None:
+        mission_entered.set()
+        assert cancellation_requested.wait(1.0)
+        raise OperatorCancellation
+
+    competition_module = sys.modules["drone_sim_companion.comp2026_control"]
+    competition_type = competition_module.SimulationCompetitionControl
+
+    def abort(_control: object, _reason: str) -> None:
+        cancellation_requested.set()
+        assert cancellation_rendered.wait(1.0)
+
+    def recover(_control: object) -> None:
+        recoveries.append("operator recovery")
+        recovery_started.set()
+        try:
+            timebase.sleep(0.05 if recovery_exit == "clock_advance" else 900.0)
+        except timebase.ClockError:
+            recovery_interrupted.set()
+            raise
+        recovery_completed.set()
+
+    monkeypatch.setattr(sys.modules["drone.auto_attempt"], "run_auto_attempt", blocked_attempt)
+    monkeypatch.setattr(competition_type, "abort", abort)
+    monkeypatch.setattr(competition_type, "recover", recover)
+
+    class OperatorControl:
+        operator_mode = True
+        wall_deadline_ns = 10**30
+
+        def __init__(self) -> None:
+            self.abort_observed = False
+            self.recovery_active = False
+            self._admitted = False
+
+        def observe_vehicle(self, **facts: object) -> None:
+            native_timestamp_ns = facts.get("native_timestamp_ns")
+            assert native_timestamp_ns is None or isinstance(native_timestamp_ns, int)
+            observed_native_timestamps.append(native_timestamp_ns)
+            if native_timestamp_ns == 100_000_000 and recovery_completed.is_set():
+                post_recovery_observed.set()
+
+        def poll_start(self, *, run_state: object | None) -> object:
+            admitted_now = run_state is not None and not self._admitted
+            self._admitted = self._admitted or admitted_now
+            return SimpleNamespace(
+                command_allowed=run_state is not None,
+                admitted_now=admitted_now,
+            )
+
+        def poll_abort(self, *, finalizing: bool, begin_recovery: object) -> None:
+            if finalizing or self.abort_observed or not mission_entered.is_set():
+                return
+            self.abort_observed = True
+            self.recovery_active = begin_recovery(  # type: ignore[operator]
+                "operator requested recovery"
+            )
+
+        def fail_recovery(self, detail: str) -> None:
+            if recovery_failures:
+                return
+            recovery_failures.append(detail)
+            recovery_failure_reported.set()
+
+    monkeypatch.setattr(
+        runtime_node,
+        "_operator_control",
+        lambda _config, _protocol: OperatorControl(),
+    )
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=tmp_path,
+        mission="comp2026_auto",
+        launch_mode="operator",
+        course_path=tmp_path / "course.yaml",
+        scenario_path=tmp_path / "scenario.yaml",
+        max_wall_seconds=10,
+        finalization_wall_seconds=1,
+    )
+    result: list[int] = []
+    runtime = threading.Thread(
+        target=lambda: result.append(runtime_node._run_comp2026(config))
+    )
+    runtime.start()
+    try:
+        assert cancellation_rendered.wait(1.0)
+        allow_cancellation_failure.set()
+        assert recovery_started.wait(1.0)
+        assert not recovery_completed.wait(0.05)
+        assert not recovery_interrupted.is_set()
+        callbacks["/camera/onboard/image_raw"](object())  # type: ignore[operator]
+        callbacks["/competition/range/downward"](object())  # type: ignore[operator]
+        if recovery_exit == "clock_advance":
+            callbacks["/clock"](  # type: ignore[operator]
+                SimpleNamespace(
+                    clock=SimpleNamespace(sec=0, nanosec=100_000_000)
+                )
+            )
+            assert recovery_completed.wait(1.0)
+            assert post_recovery_observed.wait(1.0)
+            handlers[runtime_node.signal.SIGTERM](runtime_node.signal.SIGTERM, None)
+        elif recovery_exit == "clock_regression":
+            callbacks["/clock"](  # type: ignore[operator]
+                SimpleNamespace(
+                    clock=SimpleNamespace(sec=0, nanosec=49_000_000)
+                )
+            )
+            assert recovery_interrupted.wait(0.3)
+            assert recovery_failure_reported.wait(0.3)
+            handlers[runtime_node.signal.SIGTERM](runtime_node.signal.SIGTERM, None)
+        elif recovery_exit == "finalizing":
+            callbacks["/simulation/run_state"](  # type: ignore[operator]
+                SimpleNamespace(run_id=RUN_ID, state=2)
+            )
+            assert recovery_interrupted.wait(1.0)
+        else:
+            assert recovery_interrupted.wait(1.5)
+            handlers[runtime_node.signal.SIGTERM](runtime_node.signal.SIGTERM, None)
+        runtime.join(timeout=2.0)
+    finally:
+        allow_cancellation_failure.set()
+        handler = handlers.get(runtime_node.signal.SIGTERM)
+        if handler is not None:
+            handler(runtime_node.signal.SIGTERM, None)  # type: ignore[operator]
+        runtime.join(timeout=2.0)
+
+    assert result == [1]
+    assert recoveries == ["operator recovery"]
+    assert recovery_completed.is_set() is (recovery_exit == "clock_advance")
+    assert recovery_interrupted.is_set() is (recovery_exit != "clock_advance")
+    if recovery_exit == "clock_advance":
+        assert 100_000_000 in observed_native_timestamps
+    if recovery_exit in {"clock_regression", "wall_deadline"}:
+        assert len(recovery_failures) == 1
+    else:
+        assert recovery_failures == []
+    if recovery_exit == "clock_regression":
+        assert "authoritative simulation clock regressed" in recovery_failures[0]
+    assert not any(isinstance(status, RuntimeFailureStatus) for status in statuses)
+    assert '"event":"mission_failed"' not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("shutdown_source", ["finalizing", "signal"])

@@ -31,8 +31,14 @@ AutoTune, hover, or controlled-descent host selected by the frozen run.
 request cancels further mission intent once, then invokes that host's guarded
 recovery path: configured missions use `recover_land`, Comp2026 uses its mission
 supervisor, tuning and hover clear overrides and select LAND, and controlled
-descent sends LAND only from fresh armed GUIDED/LAND state. The companion keeps
-the runtime available while recovery is observed and records append-only
+descent sends LAND only from fresh armed GUIDED/LAND state. Comp2026 claims the
+operator cancellation before it stops the attempt, so cancellation exceptions
+cannot become runtime failures; a genuine failure claimed first retains the
+unattended failure and recovery path. Its stopped mission clock and inputs stay
+closed while a separate view of the authoritative public clock drives recovery;
+an invalid clock, global finalization, or the recovery wall deadline interrupts
+that view. The companion keeps the runtime available while recovery is observed
+and records append-only
 `accepted`, `recovering`, `landed_disarmed`, `rejected`, `failed`, or
 `interrupted` progress. A terminal recovery result does not finalize the
 companion; Stop Simulation remains the distinct finalization action. Landing

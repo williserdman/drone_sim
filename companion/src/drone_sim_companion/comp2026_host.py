@@ -520,6 +520,7 @@ class AttemptFailureCoordinator:
         self._recover = recover
         self._lock = threading.Lock()
         self._failure_reason: str | None = None
+        self._cancel_reason: str | None = None
         self._recovery_claimed = False
 
     @property
@@ -535,7 +536,7 @@ class AttemptFailureCoordinator:
     def guard_input(self, name: str, operation) -> bool:
         failure_reason: str | None = None
         with self._lock:
-            if self._failure_reason is not None:
+            if self._failure_reason is not None or self._cancel_reason is not None:
                 return False
             try:
                 operation()
@@ -549,10 +550,19 @@ class AttemptFailureCoordinator:
 
     def fail(self, reason: str) -> bool:
         with self._lock:
-            if self._failure_reason is not None:
+            if self._failure_reason is not None or self._cancel_reason is not None:
                 return False
             self._failure_reason = reason
         self._complete_failure(reason)
+        return True
+
+    def cancel(self, reason: str) -> bool:
+        """Claim an operator cancellation without converting it into a failure."""
+        with self._lock:
+            if self._failure_reason is not None or self._cancel_reason is not None:
+                return False
+            self._cancel_reason = reason
+        self._stop_attempt(reason)
         return True
 
     def _complete_failure(self, reason: str) -> None:
@@ -561,7 +571,7 @@ class AttemptFailureCoordinator:
 
     def finish_success(self, operation) -> bool:
         with self._lock:
-            if self._failure_reason is not None:
+            if self._failure_reason is not None or self._cancel_reason is not None:
                 return False
             operation()
             return True
