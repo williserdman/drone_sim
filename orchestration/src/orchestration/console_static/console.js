@@ -67,7 +67,7 @@ function render(snapshot) {
   if (state === "PREPARED") detail = snapshot.can_start ? "Live preflight is ready. Inspect the world, camera, and QGC, then start when ready." : "Waiting for fresh telemetry and all operator views before mission start.";
   if (state === "RUNNING") detail = "The selected onboard mission owns flight commands. QGC controls remain available and interventions are recorded.";
   if (state === "BUILDING") detail = "Building matching native images. Open Runtime logs & build output below to follow progress.";
-  if (snapshot.preflight && !snapshot.preflight.ready && !terminal.has(state)) detail += ` ${snapshot.preflight.reasons.join("; ")}`;
+  if (snapshot.preflight && !snapshot.preflight.ready && (waiting || state === "PREPARED" || state === "STARTING_MISSION")) detail += ` ${snapshot.preflight.reasons.join("; ")}`;
   text("flight-detail", detail || "Select a preset, prepare the simulation, then inspect the live views before starting.");
   text("run-id", snapshot.run_id ? snapshot.run_id.slice(0, 8) : "No active run");
   ["world", "preset", "calibration", "preparation-limit"].forEach((id) => { $(id).disabled = active || busy; });

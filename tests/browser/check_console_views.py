@@ -9,11 +9,13 @@ class Session:
     project_directory = Path.cwd()
     connected = False
     failed = False
+    state = 'PREPARED'
     observations = []
     def snapshot(self):
         if self.failed:
             raise RuntimeError('owner unavailable')
-        return {'state':'PREPARED', 'run_id':'11111111-1111-4111-8111-111111111111', 'can_start':False,
+        return {'state':self.state, 'run_id':'11111111-1111-4111-8111-111111111111', 'can_start':False,
+                'preflight': {'ready': False, 'reasons': ['waiting for disarmed preflight']},
                 'views': {'gazebo': {'available':self.connected, 'connected':bool(self.observations)}, 'camera': {'fresh':self.connected}, 'qgc':{}}}
     def checks(self): return {'checks':[], 'ok':True}
     def results(self): return {}
@@ -46,13 +48,18 @@ def main():
             page.wait_for_timeout(2600)
             assert any(visits), f'Gazebo did not reconnect when runtime became available: {visits}'
             assert session.observations == [{'run_id':'11111111-1111-4111-8111-111111111111', 'connected':True}]
+            assert 'waiting for disarmed preflight' in page.locator('#flight-detail').inner_text()
+            session.state='RUNNING'
+            page.wait_for_timeout(2600)
+            assert 'onboard mission owns flight commands' in page.locator('#flight-detail').inner_text()
+            assert 'waiting for disarmed preflight' not in page.locator('#flight-detail').inner_text()
             session.failed=True
             page.wait_for_timeout(2600)
             assert page.locator('#gazebo-status').inner_text() == 'Disconnected'
             assert 'STALE' in page.locator('#camera-stale').inner_text()
             assert page.locator('#camera-stale').is_visible()
             assert page.locator('#start').is_disabled()
-            print('PASS: desktop startup reconnect and disconnected view indicators')
+            print('PASS: desktop reconnect, preparation-only reasons, and disconnected view indicators')
             browser.close()
     finally:
         server.shutdown()
