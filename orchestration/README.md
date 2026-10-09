@@ -105,11 +105,12 @@ validated by the companion. Examples are
 Every resolved run also freezes `launch_mode` and
 `preparation_wall_seconds`; the defaults are `unattended` and 1800 wall
 seconds. Operator mode keeps simulation live and disarmed during preparation,
-then waits for an immutable start request, companion readiness, and Gazebo's
-request-scoped admission. The admission digest is published in `RunState` from
-`RUNNING` onward so each runtime producer can reject a different or missing
-decision. Unattended mode retains the fixed-epoch startup path and publishes an
-empty admission digest.
+then waits for mission/prearm readiness, an immutable start request, and Gazebo's
+request-scoped admission within one preparation wall-time budget. Process and
+transport readiness retain the separate startup budget. The admission digest is
+published in `RunState` from `RUNNING` onward so each runtime producer can reject
+a different or missing decision. Unattended mode retains the fixed-epoch startup
+path and publishes an empty admission digest.
 
 An `autotune` run receives a host-generated `calibration_profile` in its resolved
 configuration before Compose starts. The version-2 profile binds the shared physics of `iris_flight`,

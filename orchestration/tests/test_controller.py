@@ -1206,6 +1206,123 @@ def test_operator_preparation_can_outlast_mission_budget_and_admission_is_manife
     assert trace[-1] == "compose down"
 
 
+def test_operator_mission_readiness_can_outlast_startup_deadline(tmp_path):
+    import time
+    from artifacts.operator_protocol import OperatorProtocol, PreflightStatus
+
+    clock = FakeClock()
+    directory = tmp_path / "runs" / RUN_ID
+    request_id = "11111111-1111-4111-8111-111111111111"
+    sequence = 0
+
+    class DelayedMissionReadyStore(TraceStore):
+        def read_runtime_status(self, run_id, status_type, deadline_check=None):
+            if status_type is MissionReadyStatus and clock.value < 112.0:
+                return None
+            return super().read_runtime_status(run_id, status_type, deadline_check)
+
+    def advance(seconds):
+        nonlocal sequence
+        clock.sleep(seconds)
+        sequence += 1
+        config = config_module.load_run_config(directory / "configuration/run.json")
+        with OperatorProtocol(directory, RUN_ID, config.config_sha256) as operator:
+            operator.write_preflight(PreflightStatus(
+                RUN_ID, config.config_sha256, "gazebo", sequence, time.time_ns(),
+                native_timestamp_ns=90_000_000_000 + sequence * 50_000_000,
+                physics_advancing=True,
+                camera_native_timestamp_ns=90_000_000_000 + sequence * 50_000_000,
+                ready=True, detail="live private physics",
+            ))
+            operator.write_preflight(PreflightStatus(
+                RUN_ID, config.config_sha256, "companion", sequence, time.time_ns(),
+                heartbeat_live=True, prearm_checks_healthy=True, armed=False,
+                ready=True, detail="ready",
+            ))
+            status = StatusStore(directory.parent).read_operator_status(RUN_ID)
+            if status.state == "PREPARED" and operator.read_start_request() is None:
+                controller.start_mission(RUN_ID, directory.parent, request_id=request_id)
+                operator.write_start_admission(
+                    operator.read_start_request(), native_epoch_ns=95_000_000_000
+                )
+
+    controller, _trace, _, _holder = _controller(
+        tmp_path,
+        clock=clock,
+        sleep=advance,
+        store_type=DelayedMissionReadyStore,
+        statuses=(
+            ArtifactsReadyStatus, GazeboReadyStatus, ArduPilotReadyStatus,
+            CompanionReadyStatus, MissionReadyStatus, RuntimeRunningStatus,
+            SourceFinishedStatus, MissionFinishedStatus, ScoreFinishedStatus,
+            RuntimeFrozenStatus, TerminalNotifiedStatus,
+        ),
+    )
+
+    result = controller.start(
+        _template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        ),
+        launch_mode="operator",
+        preparation_wall_seconds=20,
+    )
+
+    assert result.state == "COMPLETED"
+    assert clock.value >= 112.0
+
+
+def test_operator_mission_readiness_and_admission_share_one_preparation_deadline(tmp_path):
+    clock = FakeClock()
+    finalization_requested_at = []
+
+    class DelayedMissionReadyStore(TraceStore):
+        def read_runtime_status(self, run_id, status_type, deadline_check=None):
+            if status_type is MissionReadyStatus and clock.value < 108.0:
+                return None
+            return super().read_runtime_status(run_id, status_type, deadline_check)
+
+        def request_finalization(self, run_id, requested_terminal, reason):
+            finalization_requested_at.append(clock.value)
+            return super().request_finalization(run_id, requested_terminal, reason)
+
+    controller, _trace, _, _holder = _controller(
+        tmp_path,
+        clock=clock,
+        store_type=DelayedMissionReadyStore,
+        statuses=(
+            ArtifactsReadyStatus, GazeboReadyStatus, ArduPilotReadyStatus,
+            CompanionReadyStatus, MissionReadyStatus, RuntimeFrozenStatus,
+            TerminalNotifiedStatus,
+        ),
+    )
+
+    result = controller.start(
+        _template(
+            tmp_path,
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        ),
+        launch_mode="operator",
+        preparation_wall_seconds=10,
+    )
+
+    assert result.state == "FAILED"
+    assert result.reason == "preparation_wall_deadline"
+    assert finalization_requested_at[0] == pytest.approx(110.0)
+
+
 def test_phase3_completed_run_rejects_score_for_another_run(tmp_path):
     def replace_score_run_id(path: Path) -> None:
         document = json.loads(path.read_text(encoding="utf-8"))

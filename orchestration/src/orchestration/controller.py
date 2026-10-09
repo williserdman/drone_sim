@@ -949,6 +949,11 @@ class RunController:
                             TerminalCause("startup_deadline", "companion_readiness_stall"),
                         )
                     overall_deadline = mono_started + config.max_wall_seconds
+                    preparation_deadline = overall_deadline
+                    if primary is None and operator_mode:
+                        preparation_deadline = (
+                            self.monotonic() + config.preparation_wall_seconds
+                        )
                     if primary is None and config.runtime_profile == "phase3":
                         mission_ready, primary = self._wait_for(
                             store,
@@ -956,13 +961,18 @@ class RunController:
                             compose,
                             topology,
                             MissionReadyStatus,
-                            startup_deadline if operator_mode else overall_deadline,
-                            TerminalCause("mission_stall", "mission_readiness_stall"),
+                            preparation_deadline if operator_mode else overall_deadline,
+                            TerminalCause(
+                                "preparation_deadline",
+                                "preparation_wall_deadline",
+                            )
+                            if operator_mode
+                            else TerminalCause("mission_stall", "mission_readiness_stall"),
                         )
                     if primary is None and operator_mode:
                         lifecycle, primary = self._wait_operator_admission(
                             config, run_directory, store, compose, lifecycle,
-                            self.monotonic() + config.preparation_wall_seconds,
+                            preparation_deadline,
                         )
                         overall_deadline = self.monotonic() + config.max_wall_seconds
                     if primary is None:
