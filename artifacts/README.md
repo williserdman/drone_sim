@@ -90,6 +90,15 @@ public-zero mapping, manifest digest, and the matching admission digest recorded
 in `RunState` at `RUNNING` and `FINALIZING`. Unattended bundles carry no admission
 record and retain their configured fixed epoch.
 
+Image provenance is launch-mode specific. Unattended bundles and their external
+digest expectations contain exactly the seven production Phase 3 images.
+Operator bundles contain those same seven images plus
+`drone-sim-gazebo-viewer:local`, because the local viewer participates in the
+operator topology. The acceptance CLI permits only those two exact input sets;
+semantic inspection binds the selected set to the frozen `launch_mode` in
+`configuration/run.json` and rejects missing, unknown, duplicate, or substituted
+names and digests.
+
 Local Colima runs set
 `SIM_MEDIA_SPOOL_DIRECTORY=/var/lib/drone-sim/media`. That directory must be a
 Docker named volume backed by the Linux VM filesystem; the container writable

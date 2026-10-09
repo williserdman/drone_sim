@@ -63,6 +63,8 @@ _PHASE3_IMAGE_NAMES = (
     "drone-sim-electromagnet-runtime:phase3",
     "drone-sim-scorekeeper-runtime:phase3",
 )
+_LOCAL_VIEWER_IMAGE_NAME = "drone-sim-gazebo-viewer:local"
+_OPERATOR_IMAGE_NAMES = (*_PHASE3_IMAGE_NAMES, _LOCAL_VIEWER_IMAGE_NAME)
 
 
 class BundleAcceptanceError(RuntimeError):
@@ -341,6 +343,7 @@ def _validate_phase3_provenance(
     expected_source_revisions: Mapping[str, str],
     expected_source_dirty: Mapping[str, bool],
     expected_image_digests: Mapping[str, str],
+    launch_mode: str,
 ) -> None:
     sources = manifest["source_revisions"]
     if tuple(expected_source_revisions) != tuple(expected_source_dirty):
@@ -354,11 +357,20 @@ def _validate_phase3_provenance(
             "manifest source provenance does not match external expectation"
         )
     images = manifest["image_digests"]
+    required_image_names = (
+        _OPERATOR_IMAGE_NAMES if launch_mode == "operator" else _PHASE3_IMAGE_NAMES
+    )
+    if set(expected_image_digests) != set(required_image_names):
+        raise BundleAcceptanceError(
+            "expected image provenance does not match the configured launch mode"
+        )
+    if len(set(expected_image_digests.values())) != len(expected_image_digests):
+        raise BundleAcceptanceError("expected image provenance has duplicate digests")
     names = {record["name"] for record in images}
     digests = {record["digest"] for record in images}
     if (
-        len(images) != len(_PHASE3_IMAGE_NAMES)
-        or names != set(_PHASE3_IMAGE_NAMES)
+        len(images) != len(required_image_names)
+        or names != set(required_image_names)
         or len(digests) != len(images)
     ):
         raise BundleAcceptanceError("manifest image provenance is incomplete")
@@ -822,8 +834,18 @@ def semantic_container_command(
     expected_image_digests: Mapping[str, str],
     require_maximum_score: bool = False,
 ) -> tuple[str, ...]:
-    if set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES):
-        raise ValueError("expected_image_digests must contain exact Phase 3 image names")
+    expected_image_names = tuple(expected_image_digests)
+    if set(expected_image_names) == set(_PHASE3_IMAGE_NAMES):
+        expected_image_names = _PHASE3_IMAGE_NAMES
+    elif set(expected_image_names) == set(_OPERATOR_IMAGE_NAMES):
+        expected_image_names = _OPERATOR_IMAGE_NAMES
+    else:
+        raise ValueError(
+            "expected_image_digests must contain exact Phase 3 image names, "
+            "with the local viewer only for operator runs"
+        )
+    if len(set(expected_image_digests.values())) != len(expected_image_digests):
+        raise ValueError("expected_image_digests must contain unique image digests")
     source_revisions, source_dirty = _expected_sources(
         expected_source_revision=expected_source_revision,
         expected_source_dirty=expected_source_dirty,
@@ -869,7 +891,7 @@ def semantic_container_command(
         *provenance_arguments,
         *(
             argument
-            for name in _PHASE3_IMAGE_NAMES
+            for name in expected_image_names
             for argument in (
                 "--expected-image-digest",
                 f"{name}={expected_image_digests[name]}",
@@ -1027,14 +1049,14 @@ def inspect_phase3_semantics(
         expected_source_dirty=expected_source_dirty,
         expected_source_revisions=expected_source_revisions,
     )
+    configuration, expected_frames = _validate_config(directory, run_id)
     _validate_phase3_provenance(
         manifest,
         expected_source_revisions=source_revisions,
         expected_source_dirty=source_dirty,
         expected_image_digests=expected_image_digests,
+        launch_mode=configuration.get("launch_mode", "unattended"),
     )
-
-    configuration, expected_frames = _validate_config(directory, run_id)
     admission_record, admission_sha256 = _validate_start_admission(
         directory, configuration
     )
@@ -1262,12 +1284,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if (
             not (legacy_valid or named_valid)
-            or len(arguments.expected_image_digest) != len(_PHASE3_IMAGE_NAMES)
-            or set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES)
+            or len(arguments.expected_image_digest) != len(expected_image_digests)
+            or (
+                set(expected_image_digests) != set(_PHASE3_IMAGE_NAMES)
+                and set(expected_image_digests) != set(_OPERATOR_IMAGE_NAMES)
+            )
+            or len(set(expected_image_digests.values())) != len(expected_image_digests)
         ):
             parser.error(
                 "semantic acceptance requires matching source revision/dirty "
-                "expectations and exact seven Phase 3 image digests"
+                "expectations and exact Phase 3 image digests (seven unattended, "
+                "or those seven plus the local viewer for operator runs)"
             )
         common = {
             "rules_path": arguments.rules_path,

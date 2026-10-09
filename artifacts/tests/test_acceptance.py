@@ -38,10 +38,15 @@ PHASE3_IMAGE_NAMES = (
     "drone-sim-electromagnet-runtime:phase3",
     "drone-sim-scorekeeper-runtime:phase3",
 )
+VIEWER_IMAGE_NAME = "drone-sim-gazebo-viewer:local"
 EXPECTED_SOURCE_REVISION = "abc123"
 EXPECTED_SOURCE_DIRTY = False
 EXPECTED_IMAGE_DIGESTS = {
     name: f"{index + 1:064x}" for index, name in enumerate(PHASE3_IMAGE_NAMES)
+}
+EXPECTED_OPERATOR_IMAGE_DIGESTS = {
+    **EXPECTED_IMAGE_DIGESTS,
+    VIEWER_IMAGE_NAME: "8" * 64,
 }
 
 
@@ -61,6 +66,7 @@ def _completed_bundle(
     log_mutator=None,
     source_revisions: tuple[SourceRevision, ...] | None = None,
     configuration_updates: dict | None = None,
+    image_digests: dict[str, str] | None = None,
 ) -> None:
     modules = tuple(Path(path).stem for path in MODULE_LOGS)
     for relative_path in REQUIRED_ARTIFACT_PATHS:
@@ -294,8 +300,8 @@ def _completed_bundle(
                 ),
             ),
             image_digests=tuple(
-                ImageDigest(name, EXPECTED_IMAGE_DIGESTS[name])
-                for name in PHASE3_IMAGE_NAMES
+                ImageDigest(name, digest)
+                for name, digest in (image_digests or EXPECTED_IMAGE_DIGESTS).items()
             ),
             configuration_records=tuple(configuration_records),
             achieved_score=achieved,
@@ -532,6 +538,7 @@ def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
             "launch_mode": "operator",
             "preparation_wall_seconds": 1800,
         },
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
     )
     admission_sha256 = json.loads(
         (tmp_path / "manifest.json").read_text(encoding="utf-8")
@@ -540,7 +547,9 @@ def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
     report = inspect_phase3_semantics(
         tmp_path,
         rules_path=RULES_PATH,
-        **_expected_provenance_kwargs(),
+        expected_source_revision=EXPECTED_SOURCE_REVISION,
+        expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+        expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
         semantic_check=lambda *_args: _physical_evidence(
             tmp_path,
             achieved=60.0,
@@ -553,9 +562,68 @@ def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
         inspect_phase3_semantics(
             tmp_path,
             rules_path=RULES_PATH,
-            **_expected_provenance_kwargs(),
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0, admission_sha256="c" * 64
+            ),
+        )
+
+
+def test_operator_acceptance_requires_and_accepts_local_viewer_provenance(tmp_path):
+    """Operator evidence binds the auxiliary viewer image used during the run."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={"launch_mode": "operator"},
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+    )
+    admission_sha256 = json.loads(
+        (tmp_path / "manifest.json").read_text(encoding="utf-8")
+    )["configurations"][1]["sha256"]
+
+    report = inspect_phase3_semantics(
+        tmp_path,
+        rules_path=RULES_PATH,
+        expected_source_revision=EXPECTED_SOURCE_REVISION,
+        expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+        expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        semantic_check=lambda *_args: _physical_evidence(
+            tmp_path, achieved=60.0, admission_sha256=admission_sha256
+        ),
+    )
+    assert report.run_id == RUN_ID
+
+    with pytest.raises(BundleAcceptanceError, match="image provenance"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
+            ),
+        )
+
+
+def test_unattended_acceptance_rejects_local_viewer_provenance(tmp_path):
+    """The unattended topology remains exactly the seven production images."""
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    _completed_bundle(tmp_path, image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS)
+
+    with pytest.raises(BundleAcceptanceError, match="image provenance"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
             ),
         )
 
@@ -736,6 +804,27 @@ def test_acceptance_rejects_incomplete_phase3_provenance(tmp_path, mutation):
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(BundleAcceptanceError, match="provenance"):
+        inspect_phase3_bundle(
+            tmp_path,
+            rules_path=RULES_PATH,
+            **_expected_provenance_kwargs(),
+            compose_resources=lambda _project: (),
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0
+            ),
+        )
+
+
+def test_acceptance_rejects_duplicate_manifest_image_name(tmp_path):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
+
+    _completed_bundle(tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["image_digests"][1]["name"] = manifest["image_digests"][0]["name"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BundleAcceptanceError, match="image digest names must be unique"):
         inspect_phase3_bundle(
             tmp_path,
             rules_path=RULES_PATH,
@@ -1042,6 +1131,38 @@ def test_semantic_container_command_rejects_nonexact_expected_image_map(tmp_path
         )
 
 
+def test_semantic_container_command_forwards_operator_viewer_digest(tmp_path):
+    from artifacts.acceptance import semantic_container_command
+
+    command = semantic_container_command(
+        tmp_path / "run",
+        rules_path=RULES_PATH,
+        expected_source_revision=EXPECTED_SOURCE_REVISION,
+        expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+        expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+    )
+
+    assert command.count("--expected-image-digest") == 8
+    assert f"{VIEWER_IMAGE_NAME}={'8' * 64}" in command
+
+
+def test_semantic_container_command_rejects_duplicate_expected_digest(tmp_path):
+    from artifacts.acceptance import semantic_container_command
+
+    duplicate = {
+        **EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        VIEWER_IMAGE_NAME: EXPECTED_IMAGE_DIGESTS[PHASE3_IMAGE_NAMES[0]],
+    }
+    with pytest.raises(ValueError, match="unique image digests"):
+        semantic_container_command(
+            tmp_path / "run",
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=duplicate,
+        )
+
+
 def test_host_inventory_uses_exact_label_filtered_read_only_docker_commands():
     from artifacts.acceptance import docker_compose_resources
 
@@ -1168,6 +1289,62 @@ def test_semantic_cli_passes_external_expected_provenance(tmp_path, monkeypatch)
             },
         )
     ]
+
+
+def test_semantic_cli_passes_operator_viewer_provenance(tmp_path, monkeypatch):
+    """The CLI preserves all eight externally captured operator image IDs."""
+    import artifacts.acceptance as acceptance
+
+    calls = []
+    monkeypatch.setattr(
+        acceptance,
+        "inspect_phase3_semantics",
+        lambda run_directory, **kwargs: calls.append((run_directory, kwargs))
+        or acceptance.BundleAcceptanceReport(
+            RUN_ID, 60.0, 100.0, "drone-sim-" + RUN_ID.replace("-", ""), "b" * 64
+        ),
+    )
+    arguments = [
+        str(tmp_path / "run"),
+        "--rules-path",
+        str(RULES_PATH),
+        "--semantic-only",
+        "--expected-source-revision",
+        EXPECTED_SOURCE_REVISION,
+        "--expected-source-dirty",
+        "false",
+    ]
+    for name, digest in EXPECTED_OPERATOR_IMAGE_DIGESTS.items():
+        arguments.extend(["--expected-image-digest", f"{name}={digest}"])
+
+    assert acceptance.main(arguments) == 0
+    assert calls[0][1]["expected_image_digests"] == EXPECTED_OPERATOR_IMAGE_DIGESTS
+
+
+def test_semantic_cli_rejects_duplicate_image_name(tmp_path):
+    import artifacts.acceptance as acceptance
+
+    arguments = [
+        str(tmp_path / "run"),
+        "--rules-path",
+        str(RULES_PATH),
+        "--semantic-only",
+        "--expected-source-revision",
+        EXPECTED_SOURCE_REVISION,
+        "--expected-source-dirty",
+        "false",
+    ]
+    for name, digest in EXPECTED_IMAGE_DIGESTS.items():
+        arguments.extend(["--expected-image-digest", f"{name}={digest}"])
+    arguments.extend(
+        [
+            "--expected-image-digest",
+            f"{PHASE3_IMAGE_NAMES[0]}={'f' * 64}",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        acceptance.main(arguments)
 
 
 def test_makefile_exposes_exact_supported_target_inventory():
