@@ -428,8 +428,6 @@ class RunController:
             else frozenset(service for service, _module in topology.ownership)
         )
         critical = expected - {"gazebo-viewer"}
-        if len(services) != len(set(services)) or not critical <= set(services) <= expected:
-            return TerminalCause("child_process", "compose_child_set_invalid")
         # Viewer readiness gates admission in the operator boundary. Losing the
         # desktop must not terminate an otherwise healthy airborne mission.
         if any(
@@ -438,6 +436,8 @@ class RunController:
             for row in rows if row["Service"] in critical
         ):
             return TerminalCause("child_process", "compose_child_exited")
+        if len(services) != len(set(services)) or not critical <= set(services) <= expected:
+            return TerminalCause("child_process", "compose_child_set_invalid")
         return None
 
     def _observed_cause(
