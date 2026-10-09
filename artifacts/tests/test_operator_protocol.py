@@ -1,10 +1,12 @@
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
 
+from artifacts import protocol_files
 from artifacts.operator_protocol import (
     FlightAbortStatus,
     MissionStartReadiness,
@@ -208,6 +210,160 @@ def test_preflight_updates_advance_sequence_and_reject_regression(
         assert protocol.read_preflight("gazebo") == second
         with pytest.raises(OperatorProtocolConflict, match="sequence regressed"):
             protocol.write_preflight(first)
+
+
+@pytest.mark.parametrize(
+    "replacement_stage",
+    (
+        "opening",
+        "reading",
+        "post_read_snapshot",
+        "decoding",
+        "post_decode_snapshot",
+    ),
+)
+def test_read_preflight_retries_one_real_atomic_replacement(
+    run_directory: Path, monkeypatch, replacement_stage: str,
+) -> None:
+    first = PreflightStatus(
+        RUN_ID, CONFIG_SHA256, "gazebo", 1, 100,
+        native_timestamp_ns=90_000_000_000, physics_advancing=True,
+        camera_native_timestamp_ns=90_000_000_000, ready=True, detail="live",
+    )
+    second = PreflightStatus(
+        RUN_ID, CONFIG_SHA256, "gazebo", 2, 200,
+        native_timestamp_ns=90_050_000_000, physics_advancing=True,
+        camera_native_timestamp_ns=90_050_000_000, ready=True, detail="live",
+    )
+    target = run_directory / ".status/preflight-gazebo.json"
+    replacement = run_directory / ".status/replacement.json"
+    replacement.write_text(json.dumps(asdict(second)), encoding="utf-8")
+    real_inspect = protocol_files._inspect_existing
+    real_read = protocol_files.os.read
+    real_loads = protocol_files.json.loads
+    replaced = False
+    target_inspections = 0
+
+    def inspect_then_replace(directory_fd, name):
+        nonlocal replaced, target_inspections
+        if name == target.name:
+            target_inspections += 1
+        if (
+            not replaced
+            and (
+                replacement_stage == "post_read_snapshot" and target_inspections == 2
+                or replacement_stage == "post_decode_snapshot"
+                and target_inspections == 3
+            )
+        ):
+            os.replace(replacement, target)
+            replaced = True
+        metadata = real_inspect(directory_fd, name)
+        if replacement_stage == "opening" and name == target.name and not replaced:
+            os.replace(replacement, target)
+            replaced = True
+        return metadata
+
+    def read_then_replace(descriptor, size):
+        nonlocal replaced
+        chunk = real_read(descriptor, size)
+        if replacement_stage == "reading" and chunk and not replaced:
+            os.replace(replacement, target)
+            replaced = True
+        return chunk
+
+    def decode_then_replace(*args, **kwargs):
+        nonlocal replaced
+        document = real_loads(*args, **kwargs)
+        if replacement_stage == "decoding" and not replaced:
+            os.replace(replacement, target)
+            replaced = True
+        return document
+
+    with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
+        protocol.write_preflight(first)
+        monkeypatch.setattr(protocol_files, "_inspect_existing", inspect_then_replace)
+        monkeypatch.setattr(protocol_files.os, "read", read_then_replace)
+        monkeypatch.setattr(protocol_files.json, "loads", decode_then_replace)
+        assert protocol.read_preflight("gazebo") == second
+
+
+@pytest.mark.parametrize(
+    "replacement_kind", ("malformed", "foreign", "symlink", "hardlink")
+)
+def test_read_preflight_retry_still_rejects_hostile_replacement(
+    run_directory: Path, monkeypatch, replacement_kind: str,
+) -> None:
+    first = PreflightStatus(
+        RUN_ID, CONFIG_SHA256, "gazebo", 1, 100,
+        native_timestamp_ns=90_000_000_000, physics_advancing=True,
+        camera_native_timestamp_ns=90_000_000_000, ready=True, detail="live",
+    )
+    target = run_directory / ".status/preflight-gazebo.json"
+    replacement = run_directory / ".status/replacement.json"
+    replacement_document = asdict(first)
+    if replacement_kind == "foreign":
+        replacement_document["run_id"] = OTHER_RUN_ID
+    replacement.write_text(
+        "{" if replacement_kind == "malformed" else json.dumps(replacement_document)
+    )
+    real_inspect = protocol_files._inspect_existing
+    replaced = False
+
+    def inspect_then_replace(directory_fd, name):
+        nonlocal replaced
+        metadata = real_inspect(directory_fd, name)
+        if name == target.name and not replaced:
+            if replacement_kind in {"malformed", "foreign"}:
+                os.replace(replacement, target)
+            else:
+                target.unlink()
+                if replacement_kind == "symlink":
+                    target.symlink_to(replacement.name)
+                else:
+                    os.link(replacement, target)
+            replaced = True
+        return metadata
+
+    with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
+        protocol.write_preflight(first)
+        monkeypatch.setattr(protocol_files, "_inspect_existing", inspect_then_replace)
+        with pytest.raises(OperatorProtocolError):
+            protocol.read_preflight("gazebo")
+
+
+def test_immutable_control_read_does_not_retry_atomic_replacement(
+    run_directory: Path, monkeypatch,
+) -> None:
+    target = run_directory / ".control/mission-start-request.json"
+    replacement = run_directory / ".control/replacement.json"
+    replacement.write_text(
+        json.dumps(
+            {
+                "run_id": RUN_ID,
+                "config_sha256": CONFIG_SHA256,
+                "request_id": OTHER_REQUEST_ID,
+                "schema_version": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_inspect = protocol_files._inspect_existing
+    replaced = False
+
+    def inspect_then_replace(directory_fd, name):
+        nonlocal replaced
+        metadata = real_inspect(directory_fd, name)
+        if name == target.name and not replaced:
+            os.replace(replacement, target)
+            replaced = True
+        return metadata
+
+    with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
+        protocol.write_start_request(REQUEST_ID)
+        monkeypatch.setattr(protocol_files, "_inspect_existing", inspect_then_replace)
+        with pytest.raises(OperatorProtocolError, match="changed while opening"):
+            protocol.read_start_request()
 
 
 def test_flight_abort_progress_is_append_only_and_admission_bound(

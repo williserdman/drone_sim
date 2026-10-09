@@ -59,7 +59,7 @@ class OperatorSession:
         self._record: dict[str, Any] = {"state": "IDLE", "run_id": None, "preset_id": None,
                                          "prepare_request_id": None, "error": "", "cleanup": "not started"}
         self._checks: dict[str, Any] | None = None
-        self._checks_generation: int | None = None
+        self._checks_context: tuple[int, bool] | None = None
         self._owner_generation = 0
         receipt = self.state_directory / "session.json"
         if receipt.exists():
@@ -97,7 +97,7 @@ class OperatorSession:
         """Invalidate prerequisite observations made for an earlier owner."""
         self._owner_generation += 1
         self._checks = None
-        self._checks_generation = None
+        self._checks_context = None
 
     def prepare(self, *, preset_id: str, request_id: str | None = None,
                 preparation_wall_seconds: int = 1800, calibration_source: str | None = None) -> dict[str, Any]:
@@ -136,7 +136,7 @@ class OperatorSession:
                 checks = self.runtime.checks()
                 with self._lock:
                     self._checks = checks
-                    self._checks_generation = self._owner_generation
+                    self._checks_context = (self._owner_generation, False)
                 if not checks["ok"]:
                     raise RuntimeError("; ".join(f'{row["name"]}: {row["detail"]}' for row in checks["checks"] if not row["ok"]))
                 if self._cancel.is_set():
@@ -321,11 +321,12 @@ class OperatorSession:
             with self._lock:
                 if generation == self._owner_generation and active == self._active():
                     self._checks = result
-                    self._checks_generation = generation
+                    self._checks_context = (generation, active)
                     return result
                 if (
                     self._checks is not None
-                    and self._checks_generation == self._owner_generation
+                    and self._checks_context
+                    == (self._owner_generation, self._active())
                 ):
                     return self._checks
 
@@ -349,7 +350,7 @@ class OperatorSession:
                 checks = self.runtime.build()
                 with self._lock:
                     self._checks = checks
-                    self._checks_generation = self._owner_generation
+                    self._checks_context = (self._owner_generation, False)
                     self._record.update(state="IDLE", error="")
         except (OSError, RuntimeError, ValueError) as error:
             with self._lock:

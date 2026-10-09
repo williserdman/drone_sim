@@ -11,6 +11,7 @@ from typing import Any, Literal, Mapping, TypeVar
 from uuid import UUID
 
 from .protocol_files import (
+    ProtocolFileReplaced,
     ProtocolIOError,
     WritePolicy,
     canonical_json,
@@ -331,10 +332,16 @@ class OperatorProtocol:
     ) -> DocumentT | None:
         descriptor = self._open_directory(directory)
         try:
-            try:
-                document = read_json_object_at(descriptor, name)
-            except ProtocolIOError as error:
-                raise OperatorProtocolError(str(error)) from error
+            attempts = 1 if immutable else 3
+            for attempt in range(attempts):
+                try:
+                    document = read_json_object_at(descriptor, name)
+                    break
+                except ProtocolFileReplaced as error:
+                    if getattr(error, "__notes__", None) or attempt + 1 == attempts:
+                        raise OperatorProtocolError(str(error)) from error
+                except ProtocolIOError as error:
+                    raise OperatorProtocolError(str(error)) from error
         finally:
             os.close(descriptor)
         if document is None:

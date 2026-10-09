@@ -33,10 +33,21 @@ _SNAPSHOT_FIELDS = (
     "st_mtime_ns",
     "st_ctime_ns",
 )
+_CONTENT_SNAPSHOT_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_size",
+    "st_mtime_ns",
+)
 
 
 class ProtocolIOError(RuntimeError):
     """A protocol file could not be encoded, inspected, read, or persisted."""
+
+
+class ProtocolFileReplaced(ProtocolIOError):
+    """A regular protocol file was atomically replaced during one read."""
 
 
 class WritePolicy(Enum):
@@ -168,6 +179,32 @@ def _same_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
     )
 
 
+def _same_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+def _stable_unlinked_descriptor(
+    first: os.stat_result, second: os.stat_result
+) -> bool:
+    """Allow only the metadata changes caused by unlinking an open file."""
+    return (
+        all(
+            getattr(first, field) == getattr(second, field)
+            for field in _CONTENT_SNAPSHOT_FIELDS
+        )
+        and first.st_nlink == 1
+        and second.st_nlink == 0
+    )
+
+
+def _stable_replaced_descriptor(*snapshots: os.stat_result) -> bool:
+    return all(
+        _same_snapshot(first, second)
+        or _stable_unlinked_descriptor(first, second)
+        for first, second in zip(snapshots, snapshots[1:])
+    )
+
+
 def _inspect_existing(directory_fd: int, name: str) -> os.stat_result | None:
     try:
         metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -240,8 +277,21 @@ def _read_json_object_and_metadata_at(
     try:
         descriptor = os.open(name, _FILE_FLAGS, dir_fd=directory_fd)
         opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            if not _same_identity(before, opened):
+                raise ProtocolIOError(
+                    f"protocol file {name!r} changed while opening"
+                )
+            raise ProtocolIOError(
+                f"protocol file {name!r} must be regular with exactly one hard link"
+            )
         if not _same_snapshot(before, opened):
-            raise ProtocolIOError(f"protocol file {name!r} changed while opening")
+            error_type = (
+                ProtocolFileReplaced
+                if not _same_identity(before, opened)
+                else ProtocolIOError
+            )
+            raise error_type(f"protocol file {name!r} changed while opening")
         if opened.st_size > max_bytes:
             raise ProtocolIOError(f"protocol file {name!r} is too large")
 
@@ -261,11 +311,15 @@ def _read_json_object_and_metadata_at(
 
         after = os.fstat(descriptor)
         named_after = _inspect_existing(directory_fd, name)
-        if (
-            not _same_snapshot(opened, after)
-            or named_after is None
-            or not _same_snapshot(after, named_after)
-        ):
+        if named_after is None:
+            raise ProtocolIOError(f"protocol file {name!r} changed while reading")
+        if not _same_identity(after, named_after):
+            if _stable_replaced_descriptor(opened, after):
+                raise ProtocolFileReplaced(
+                    f"protocol file {name!r} changed while reading"
+                )
+            raise ProtocolIOError(f"protocol file {name!r} changed while reading")
+        if not _same_snapshot(opened, after) or not _same_snapshot(after, named_after):
             raise ProtocolIOError(f"protocol file {name!r} changed while reading")
 
         _check_deadline(deadline_check)
@@ -277,11 +331,17 @@ def _read_json_object_and_metadata_at(
         _check_deadline(deadline_check)
         verified = os.fstat(descriptor)
         named_decoded = _inspect_existing(directory_fd, name)
+        if decoded_payload != payload or named_decoded is None:
+            raise ProtocolIOError(f"protocol file {name!r} changed while reading")
+        if not _same_identity(verified, named_decoded):
+            if _stable_replaced_descriptor(after, decoded, verified):
+                raise ProtocolFileReplaced(
+                    f"protocol file {name!r} changed while reading"
+                )
+            raise ProtocolIOError(f"protocol file {name!r} changed while reading")
         if (
             not _same_snapshot(after, decoded)
-            or decoded_payload != payload
             or not _same_snapshot(decoded, verified)
-            or named_decoded is None
             or not _same_snapshot(verified, named_decoded)
         ):
             raise ProtocolIOError(f"protocol file {name!r} changed while reading")

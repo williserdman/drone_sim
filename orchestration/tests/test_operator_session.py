@@ -29,14 +29,15 @@ class Runtime:
 
 
 class TransitionRuntime:
-    def __init__(self):
+    def __init__(self, *, blocked_call=1):
         self.first_entered = threading.Event()
         self.first_release = threading.Event()
         self.active_arguments = []
+        self.blocked_call = blocked_call
 
     def checks(self, *, active=False):
         self.active_arguments.append(active)
-        if len(self.active_arguments) == 1:
+        if len(self.active_arguments) == self.blocked_call:
             self.first_entered.set()
             self.first_release.wait(3)
         return {
@@ -114,7 +115,7 @@ def test_checks_retry_when_a_new_owner_starts_during_slow_prerequisites(tmp_path
 
 
 def test_checks_retry_when_owner_finishes_during_slow_prerequisites(tmp_path):
-    runtime = TransitionRuntime()
+    runtime = TransitionRuntime(blocked_call=2)
     session = OperatorSession(ROOT, state_directory=tmp_path, runtime=runtime)
     owner_release = threading.Event()
 
@@ -128,6 +129,7 @@ def test_checks_retry_when_owner_finishes_during_slow_prerequisites(tmp_path):
         preset_id="configured-descent",
         request_id="11111111-1111-4111-8111-111111111111",
     )
+    assert session.checks()["ok"] is True
     returned = []
     request = threading.Thread(target=lambda: returned.append(session.checks()))
     request.start()
@@ -138,6 +140,6 @@ def test_checks_retry_when_owner_finishes_during_slow_prerequisites(tmp_path):
     runtime.first_release.set()
     request.join(3)
 
-    assert runtime.active_arguments == [True, False]
+    assert runtime.active_arguments == [True, True, False]
     assert returned[0]["ok"] is False
     assert session.snapshot()["checks"] == returned[0]

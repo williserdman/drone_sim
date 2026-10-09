@@ -178,6 +178,11 @@ moving-pad replay semantics remain unchanged.
   defined in the [architecture guide](../docs/architecture.md#shared-communication-guarantees).
   Its advisory lock is not a security boundary against a hostile process with
   the same filesystem permissions.
+- Reads retain strict stat/open/read/decode snapshot validation. The operator
+  protocol retries only mutable preflight observations when those checks prove
+  that a regular file inode was atomically replaced during the read. Immutable
+  controls, same-inode mutation, malformed content, symlinks, hardlinks, and
+  exhausted replacement retries remain fatal.
 - Runtime components publish typed values from the shared
   [`runtime_status.py`](src/artifacts/runtime_status.py) contract. Do not add a
   module-local JSON writer or duplicate its field validation here.
