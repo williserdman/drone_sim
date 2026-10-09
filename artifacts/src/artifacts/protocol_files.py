@@ -278,12 +278,9 @@ def _read_json_object_and_metadata_at(
         descriptor = os.open(name, _FILE_FLAGS, dir_fd=directory_fd)
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-            if not _same_identity(before, opened):
-                raise ProtocolIOError(
-                    f"protocol file {name!r} changed while opening"
-                )
             raise ProtocolIOError(
-                f"protocol file {name!r} must be regular with exactly one hard link"
+                f"protocol file {name!r} changed while opening: "
+                "must be regular with exactly one hard link"
             )
         if not _same_snapshot(before, opened):
             error_type = (

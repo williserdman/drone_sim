@@ -54,8 +54,11 @@ and all eight image IDs. Evidence remains under `runs/1edbaa7f-88d8-42db-bd95-d6
 
 A competition recovery check subsequently failed during preparation, before
 Start, because a changing preflight file was replaced while being opened.
-Its cleanup completed. The mutable-read race and a same-system companion
-heartbeat display issue are being corrected before retrying recovery.
+Its cleanup completed. The mutable-read race and same-system companion
+heartbeat display issue are fixed. Review also corrected competition cancellation
+being mistaken for runtime failure and separated recovery time from the stopped
+mission clock. Focused recovery checks passed 114 tests; a rebuilt real recovery
+run remains pending.
 
 The named-volume media spool supports Linux `O_TMPFILE`, which this Mac shared
 directory and Colima writable layer do not. Verified closed media is published
