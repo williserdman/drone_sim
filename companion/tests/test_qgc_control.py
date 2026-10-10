@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
+import json
 from pathlib import Path
 
 import pytest
 
-from artifacts.operator_protocol import OperatorProtocol
+from artifacts.operator_protocol import (
+    MissionStartRequest,
+    OperatorProtocol,
+    StartAdmission,
+)
 from artifacts.qgc_operator import (
+    MAX_ATTEMPT_TOKEN,
     MAV_RESULT_ACCEPTED,
     MAV_RESULT_CANCELLED,
     MAV_RESULT_DENIED,
@@ -33,6 +40,7 @@ RUN_ID = "00000000-0000-4000-8000-000000000001"
 CONFIG_SHA256 = "a" * 64
 START_REQUEST_ID = "00000000-0000-4000-8000-000000000002"
 ABORT_REQUEST_ID = "00000000-0000-4000-8000-000000000003"
+FOREIGN_REQUEST_ID = "00000000-0000-4000-8000-000000000004"
 QGC = MavlinkIdentity(255, 190)
 
 
@@ -92,6 +100,12 @@ def _envelope(
     )
 
 
+def _parameters_with(index: int, value: int | float) -> tuple[int | float, ...]:
+    parameters: list[int | float] = [17, 0, 0, 0, 0, 0, 0]
+    parameters[index] = value
+    return tuple(parameters)
+
+
 def _owner(
     protocol,
     io,
@@ -121,29 +135,180 @@ def _owner(
     )
 
 
+_READY_VEHICLE = {
+    "native_timestamp_ns": 10_000_000_000,
+    "heartbeat_live": True,
+    "prearm_checks_healthy": True,
+    "armed": False,
+    "landed": True,
+    "mode": "STABILIZE",
+}
+
+
 @pytest.mark.parametrize(
-    ("command", "expected"),
+    ("command", "vehicle", "host_reasons", "advance_ns", "expected"),
     (
-        (_envelope(command=999), MAV_RESULT_UNSUPPORTED),
-        (_envelope(wire_version=1), MAV_RESULT_DENIED),
-        (_envelope(source=MavlinkIdentity(254, 190)), MAV_RESULT_DENIED),
-        (_envelope(target=QGC_FLIGHT_CONTROLLER_IDENTITY), MAV_RESULT_DENIED),
-        (_envelope(parameters=(18, 0, 0, 0, 0, 0, 0)), MAV_RESULT_DENIED),
-        (_envelope(parameters=(17.5, 0, 0, 0, 0, 0, 0)), MAV_RESULT_DENIED),
-        (_envelope(parameters=(float("nan"), 0, 0, 0, 0, 0, 0)), MAV_RESULT_DENIED),
-        (_envelope(parameters=(17, 1, 0, 0, 0, 0, 0)), MAV_RESULT_DENIED),
+        pytest.param(
+            _envelope(command=999),
+            None,
+            (),
+            0,
+            MAV_RESULT_UNSUPPORTED,
+            id="unsupported",
+        ),
+        pytest.param(
+            _envelope(wire_version=1),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="mavlink-1",
+        ),
+        pytest.param(
+            _envelope(source=MavlinkIdentity(254, 190)),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="wrong-source",
+        ),
+        pytest.param(
+            _envelope(target=QGC_FLIGHT_CONTROLLER_IDENTITY),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="wrong-target",
+        ),
+        pytest.param(
+            _envelope(parameters=(0, 0, 0, 0, 0, 0, 0)),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="token-zero",
+        ),
+        pytest.param(
+            _envelope(parameters=(MAX_ATTEMPT_TOKEN + 1, 0, 0, 0, 0, 0, 0)),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="token-above-boundary",
+        ),
+        pytest.param(
+            _envelope(parameters=(17.5, 0, 0, 0, 0, 0, 0)),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="fractional-token",
+        ),
+        pytest.param(
+            _envelope(parameters=(float("nan"), 0, 0, 0, 0, 0, 0)),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="nan-token",
+        ),
+        pytest.param(
+            _envelope(parameters=(float("inf"), 0, 0, 0, 0, 0, 0)),
+            None,
+            (),
+            0,
+            MAV_RESULT_DENIED,
+            id="infinite-token",
+        ),
+        *(
+            pytest.param(
+                _envelope(parameters=_parameters_with(index, 1)),
+                None,
+                (),
+                0,
+                MAV_RESULT_DENIED,
+                id=f"nonzero-param-{index + 1}",
+            )
+            for index in range(1, 7)
+        ),
+        pytest.param(
+            _envelope(),
+            {**_READY_VEHICLE, "armed": True},
+            (),
+            0,
+            MAV_RESULT_TEMPORARILY_REJECTED,
+            id="armed",
+        ),
+        pytest.param(
+            _envelope(),
+            {**_READY_VEHICLE, "landed": False},
+            (),
+            0,
+            MAV_RESULT_TEMPORARILY_REJECTED,
+            id="airborne",
+        ),
+        pytest.param(
+            _envelope(),
+            _READY_VEHICLE,
+            (),
+            2_000_000_001,
+            MAV_RESULT_TEMPORARILY_REJECTED,
+            id="stale-vehicle",
+        ),
+        pytest.param(
+            _envelope(),
+            {**_READY_VEHICLE, "prearm_checks_healthy": False},
+            (),
+            0,
+            MAV_RESULT_TEMPORARILY_REJECTED,
+            id="unhealthy-vehicle",
+        ),
+        pytest.param(
+            _envelope(),
+            _READY_VEHICLE,
+            ("calibration pending",),
+            0,
+            MAV_RESULT_TEMPORARILY_REJECTED,
+            id="calibration",
+        ),
+        pytest.param(
+            _envelope(),
+            _READY_VEHICLE,
+            ("native camera producer is stale",),
+            0,
+            MAV_RESULT_TEMPORARILY_REJECTED,
+            id="producer",
+        ),
+        pytest.param(
+            _envelope(),
+            _READY_VEHICLE,
+            ("native clock is unavailable",),
+            0,
+            MAV_RESULT_TEMPORARILY_REJECTED,
+            id="native-clock",
+        ),
     ),
 )
 def test_invalid_or_early_start_does_not_reserve(
-    run_directory: Path, command: QgcCommandEnvelope, expected: int
+    run_directory: Path,
+    command: QgcCommandEnvelope,
+    vehicle: dict | None,
+    host_reasons: tuple[str, ...],
+    advance_ns: int,
+    expected: int,
 ) -> None:
     wall_ns = [command.received_wall_time_ns]
     io = CommandIO()
     with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
-        _operator, owner = _owner(protocol, io, wall_ns)
+        operator, owner = _owner(protocol, io, wall_ns, lambda: host_reasons)
+        if vehicle is not None:
+            operator.observe_vehicle(**vehicle)
+        wall_ns[0] += advance_ns
         owner.accept(command)
         assert owner.poll_start(run_state=None).command_allowed is False
         assert protocol.read_start_request() is None
+        assert protocol.read_start_admission() is None
+        assert operator.admission_sha256 is None
         assert io.responses[-1].result == expected
         assert io.responses[-1].status_text
         assert len(protocol.read_qgc_command_statuses()) == 1
@@ -300,22 +465,49 @@ def test_overflow_command_keeps_its_validation_result(run_directory: Path) -> No
         assert protocol.read_qgc_command_statuses()[-1].envelope.parameters[0] == "NaN"
 
 
-def test_restart_after_reservation_requires_new_prepare(run_directory: Path) -> None:
-    wall_ns = [1_000_000_000]
-    io = CommandIO()
-    with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
-        operator, owner = _owner(protocol, io, wall_ns)
-        operator.observe_vehicle(
-            native_timestamp_ns=10_000_000_000,
-            heartbeat_live=True,
-            prearm_checks_healthy=True,
-            armed=False,
-            landed=True,
+def _seed_restart_state(run_directory: Path, state: str) -> None:
+    request = MissionStartRequest(RUN_ID, CONFIG_SHA256, START_REQUEST_ID)
+    foreign_request = MissionStartRequest(RUN_ID, CONFIG_SHA256, FOREIGN_REQUEST_ID)
+    admission_request = foreign_request if state == "mismatched-admission" else request
+    admission = StartAdmission(
+        RUN_ID,
+        CONFIG_SHA256,
+        admission_request.request_id,
+        admission_request.sha256,
+        10_050_000_000,
+    )
+    if state in {"request-only", "matched-admission", "mismatched-admission"}:
+        (run_directory / ".control/mission-start-request.json").write_text(
+            json.dumps(asdict(request)), encoding="utf-8"
         )
-        owner.accept(_envelope())
-        owner.poll_start(run_state=None)
+    elif state == "foreign-request":
+        (run_directory / ".control/mission-start-request.json").write_text(
+            json.dumps(asdict(foreign_request)), encoding="utf-8"
+        )
+    if state in {"admission-only", "matched-admission", "mismatched-admission"}:
+        (run_directory / "configuration/start-admission.json").write_text(
+            json.dumps(asdict(admission)), encoding="utf-8"
+        )
 
+
+@pytest.mark.parametrize(
+    "durable_state",
+    (
+        "request-only",
+        "admission-only",
+        "foreign-request",
+        "matched-admission",
+        "mismatched-admission",
+    ),
+)
+def test_restart_after_reservation_requires_new_prepare(
+    run_directory: Path, durable_state: str
+) -> None:
+    _seed_restart_state(run_directory, durable_state)
+    wall_ns = [1_000_000_000]
     restarted_io = CommandIO()
+    request_path = run_directory / ".control/mission-start-request.json"
+    request_before = request_path.read_bytes() if request_path.exists() else None
     with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
         operator, restarted = _owner(protocol, restarted_io, wall_ns)
         operator.observe_vehicle(
@@ -329,6 +521,9 @@ def test_restart_after_reservation_requires_new_prepare(run_directory: Path) -> 
         assert restarted.poll_start(run_state=None).command_allowed is False
         assert restarted_io.responses[-1].result == MAV_RESULT_DENIED
         assert "new Prepare" in restarted_io.responses[-1].status_text
+        assert operator.admission_sha256 is None
+    request_after = request_path.read_bytes() if request_path.exists() else None
+    assert request_after == request_before
 
 
 def test_abort_cancels_pending_start_without_inventing_admission(

@@ -364,6 +364,7 @@ class OperatorProtocol:
         except ProtocolIOError as error:
             raise OperatorProtocolError(f"run directory is unsafe: {error}") from error
         self._observed_immutable: dict[str, bytes] = {}
+        self._qgc_next_sequence: int | None = None
 
     def close(self) -> None:
         descriptor = getattr(self, "_run_fd", None)
@@ -726,18 +727,42 @@ class OperatorProtocol:
                     "QGC command status sequence does not match its path"
                 )
             values.append(value)
+        self._qgc_next_sequence = len(values)
         return tuple(values)
 
     def write_qgc_command_status(self, value: QgcCommandStatus) -> QgcCommandStatus:
         """Append one command fact, allowing only an identical retry by sequence."""
         self._assert_bound(value)
-        existing = self.read_qgc_command_statuses()
-        if value.sequence < len(existing):
-            return self._require_equal("QGC command status", value, existing[value.sequence])
-        if value.sequence != len(existing):
+        if self._qgc_next_sequence is None:
+            self.read_qgc_command_statuses()
+        assert self._qgc_next_sequence is not None
+        if value.sequence < self._qgc_next_sequence:
+            existing = self._read(
+                ".status",
+                f"qgc-command-{value.sequence:04d}.json",
+                QgcCommandStatus,
+                immutable=True,
+            )
+            if existing is None:
+                raise OperatorProtocolConflict(
+                    "QGC command status sequence is not contiguous"
+                )
+            return self._require_equal("QGC command status", value, existing)
+        if value.sequence != self._qgc_next_sequence:
             raise OperatorProtocolConflict(
                 "QGC command status sequence must be contiguous"
             )
+        if value.sequence:
+            predecessor = self._read(
+                ".status",
+                f"qgc-command-{value.sequence - 1:04d}.json",
+                QgcCommandStatus,
+                immutable=True,
+            )
+            if predecessor is None or predecessor.sequence != value.sequence - 1:
+                raise OperatorProtocolConflict(
+                    "QGC command status predecessor is missing"
+                )
         persisted, _created = self._write(
             ".status",
             f"qgc-command-{value.sequence:04d}.json",
@@ -745,7 +770,9 @@ class OperatorProtocol:
             mode=0o644,
             policy=WritePolicy.IDENTICAL,
         )
-        return self._require_equal("QGC command status", value, persisted)
+        result = self._require_equal("QGC command status", value, persisted)
+        self._qgc_next_sequence += 1
+        return result
 
 
 def validate_admission_binding(

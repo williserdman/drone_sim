@@ -19,10 +19,11 @@ from artifacts import (
     SourceRevision,
 )
 from artifacts.manifest import MODULE_LOGS, REQUIRED_ARTIFACT_PATHS
-from artifacts.operator_protocol import OperatorProtocol
+from artifacts.operator_protocol import FlightAbortStatus, OperatorProtocol
 from artifacts.qgc_operator import (
     MAV_RESULT_ACCEPTED,
     MAV_RESULT_DENIED,
+    MAV_RESULT_FAILED,
     MAV_RESULT_IN_PROGRESS,
     MavlinkIdentity,
     QGC_ABORT_COMMAND,
@@ -765,6 +766,154 @@ def test_qgc_bundle_rejects_unbound_admitted_decision(tmp_path, mutation):
                 tmp_path, achieved=60.0, admission_sha256=admission_sha256
             ),
         )
+
+
+def test_qgc_bundle_rejects_operational_unsupported_command(tmp_path):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    def mutate(run_directory):
+        path = run_directory / ".status/qgc-command-0002.json"
+        document = json.loads(path.read_text())
+        document["envelope"]["command"] = 999
+        document["response"]["command"] = 999
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={
+            "launch_mode": "operator",
+            "operator_control": _qgc_descriptor_document(),
+        },
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        evidence_mutator=mutate,
+    )
+    admission_sha256 = hashlib.sha256(
+        (tmp_path / "configuration/start-admission.json").read_bytes()
+    ).hexdigest()
+    with pytest.raises(BundleAcceptanceError, match="invalid command identity"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("durable_state", "qgc_result", "accepted"),
+    (
+        ("failed", MAV_RESULT_ACCEPTED, False),
+        ("landed_disarmed", MAV_RESULT_FAILED, False),
+        ("landed_disarmed", MAV_RESULT_ACCEPTED, True),
+    ),
+)
+def test_qgc_bundle_binds_abort_result_to_durable_recovery(
+    tmp_path, durable_state, qgc_result, accepted
+):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    def add_abort_evidence(run_directory):
+        configuration = json.loads(
+            (run_directory / "configuration/run.json").read_text()
+        )
+        with OperatorProtocol(
+            run_directory, RUN_ID, configuration["config_sha256"]
+        ) as protocol:
+            admission = protocol.read_start_admission()
+            assert admission is not None
+            abort = protocol.write_flight_abort_request(
+                QGC_ABORT_REQUEST_ID,
+                admission.sha256,
+                "QGC requested guarded recovery",
+            )
+            protocol.write_flight_abort_status(
+                FlightAbortStatus(
+                    RUN_ID,
+                    configuration["config_sha256"],
+                    abort.request_id,
+                    admission.sha256,
+                    0,
+                    "accepted",
+                    19,
+                    None,
+                    "recovery accepted",
+                )
+            )
+            protocol.write_flight_abort_status(
+                FlightAbortStatus(
+                    RUN_ID,
+                    configuration["config_sha256"],
+                    abort.request_id,
+                    admission.sha256,
+                    1,
+                    durable_state,
+                    20,
+                    None,
+                    f"recovery {durable_state}",
+                )
+            )
+            envelope = QgcCommandEnvelope(
+                2,
+                QGC_SOURCE,
+                QGC_COMPANION_IDENTITY,
+                QGC_ABORT_COMMAND,
+                (17, 0, 0, 0, 0, 0, 0),
+                21,
+            )
+            protocol.write_qgc_command_status(
+                QgcCommandStatus(
+                    RUN_ID,
+                    configuration["config_sha256"],
+                    4,
+                    envelope,
+                    abort.request_id,
+                    abort.sha256,
+                    admission.sha256,
+                    22,
+                    QgcCommandResponse(
+                        QGC_ABORT_COMMAND,
+                        QGC_SOURCE,
+                        qgc_result,
+                        100,
+                        "Abort recovery confirmed landed and disarmed",
+                    ),
+                    "landed_disarmed",
+                )
+            )
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={
+            "launch_mode": "operator",
+            "operator_control": _qgc_descriptor_document(),
+        },
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        evidence_mutator=add_abort_evidence,
+    )
+    admission_sha256 = hashlib.sha256(
+        (tmp_path / "configuration/start-admission.json").read_bytes()
+    ).hexdigest()
+
+    def inspect():
+        return inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
+            ),
+        )
+    if accepted:
+        assert inspect().run_id == RUN_ID
+    else:
+        with pytest.raises(BundleAcceptanceError, match="Abort"):
+            inspect()
 
 
 def test_qgc_bundle_rejects_invented_terminal_success(tmp_path):

@@ -113,16 +113,22 @@ request and admission identity when one exists, integer MAV_RESULT, progress,
 readable status, and any later observed outcome. NaN and infinity are retained
 as explicit JSON strings so malformed input can still have durable rejection
 evidence. Packet sequence and COMMAND_LONG confirmation do not define operation
-identity. Finalization inventories these status files without adding them to the
-required paths for historical bundles.
+identity. The writer validates the full history once, then preserves contiguous
+append-only publication with constant-size predecessor and no-clobber target
+checks. Explicit evidence reads still validate the complete history.
+Finalization inventories these status files without adding them to the required
+paths for historical bundles.
 
 Independent acceptance for descriptor-backed completed runs rehashes the exact
 QGC action file and requires its configuration record. It then checks contiguous
 command evidence, the prepared request UUID and digest, the admission digest,
 and the frozen source, target, token, and parameter contract for admitted
-decisions. A rejected malformed command remains valid evidence. An accepted ACK
-does not supply physical or mission-success evidence; a recorded terminal
-mission outcome must match the companion's mission-finished log.
+decisions. Operational records must use the frozen Start or Abort command.
+Terminal Abort results must match the ordered durable recovery status, including
+landed-and-disarmed success. A rejected malformed command remains valid
+evidence. An accepted ACK does not supply physical or mission-success evidence;
+a recorded terminal mission outcome must match the companion's mission-finished
+log.
 
 Image provenance is launch-mode specific. Unattended bundles and their external
 digest expectations contain exactly the seven production Phase 3 images.

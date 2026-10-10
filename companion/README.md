@@ -59,7 +59,9 @@ QGC and companion identities, the current integer attempt token, zero parameters
 2 through 7, fresh healthy landed/disarmed vehicle facts, and the host's
 calibration, native-time, and producer checks. The owner repeats those readiness
 checks before it releases a pending admission. A restart after reservation fails
-closed and requires a new Prepare.
+closed and requires a new Prepare. Request-only, admission-only, foreign, and
+mismatched durable Start state all fail before another reservation or mission
+release.
 
 COMMAND_ACK `ACCEPTED` for Start means that the immutable admission and matching
 RUNNING state authorized mission execution. It does not mean the aircraft flew,

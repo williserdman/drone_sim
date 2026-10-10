@@ -76,7 +76,27 @@ class QgcMissionControl:
         self._overflow_command: QgcCommandEnvelope | None = None
         existing = protocol.read_qgc_command_statuses()
         self._sequence = len(existing)
-        self._restart_blocked = protocol.read_start_request() is not None
+        prior_start_reservation = any(
+            status.envelope.command == descriptor.start_command
+            and status.request_id is not None
+            for status in existing
+        )
+        try:
+            existing_request = protocol.read_start_request()
+            existing_admission = protocol.read_start_admission()
+        except OperatorProtocolError:
+            self._restart_blocked = True
+        else:
+            self._restart_blocked = (
+                prior_start_reservation
+                or existing_request is not None
+                or existing_admission is not None
+            )
+            if (
+                existing_request is not None
+                and existing_request.request_id != descriptor.start_request_id
+            ):
+                self._restart_blocked = True
         self._start_envelope: QgcCommandEnvelope | None = None
         self._start_request: MissionStartRequest | None = None
         self._start_state = "restart_blocked" if self._restart_blocked else "idle"

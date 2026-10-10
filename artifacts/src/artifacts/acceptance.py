@@ -32,6 +32,9 @@ from .manifest import (
 from .operator_protocol import OperatorProtocol, OperatorProtocolError
 from .qgc_operator import (
     MAV_RESULT_ACCEPTED,
+    MAV_RESULT_CANCELLED,
+    MAV_RESULT_DENIED,
+    MAV_RESULT_FAILED,
     MAV_RESULT_IN_PROGRESS,
     QGC_ACTIONS_BUNDLE_PATH,
     QgcCommandStatus,
@@ -626,6 +629,7 @@ def _valid_qgc_operation(
         envelope.wire_version == 2
         and envelope.source == descriptor.qgc_source
         and envelope.target == descriptor.companion
+        and envelope.command in {descriptor.start_command, descriptor.abort_command}
         and isinstance(token, (int, float))
         and not isinstance(token, bool)
         and math.isfinite(token)
@@ -676,6 +680,7 @@ def _validate_qgc_bundle(
             request = protocol.read_start_request()
             admission = protocol.read_start_admission()
             abort_request = protocol.read_flight_abort_request()
+            abort_statuses = protocol.read_flight_abort_statuses()
             statuses = protocol.read_qgc_command_statuses()
     except OperatorProtocolError as error:
         raise BundleAcceptanceError(f"QGC command evidence is invalid: {error}") from error
@@ -696,6 +701,13 @@ def _validate_qgc_bundle(
         raise BundleAcceptanceError("QGC command evidence inventory is incomplete")
     accepted_starts: list[QgcCommandStatus] = []
     reserved_start_seen = False
+    abort_terminal = abort_statuses[-1] if abort_statuses else None
+    abort_terminal_results = {
+        "landed_disarmed": MAV_RESULT_ACCEPTED,
+        "rejected": MAV_RESULT_DENIED,
+        "failed": MAV_RESULT_FAILED,
+        "interrupted": MAV_RESULT_CANCELLED,
+    }
     mission_outcomes = {
         row.get("fields", {}).get("outcome")
         for row in companion
@@ -706,6 +718,11 @@ def _validate_qgc_bundle(
     for status in statuses:
         is_start = status.envelope.command == descriptor.start_command
         is_abort = status.envelope.command == descriptor.abort_command
+        local_abort_cancellation = (
+            is_abort
+            and status.request_id is None
+            and status.observed_outcome == "pending_start_cancelled"
+        )
         operational = status.response.result in {
             MAV_RESULT_ACCEPTED,
             MAV_RESULT_IN_PROGRESS,
@@ -734,7 +751,7 @@ def _validate_qgc_bundle(
                     raise BundleAcceptanceError(
                         "QGC Start evidence is missing request or admission binding"
                     )
-        if operational and is_abort and (
+        if operational and is_abort and not local_abort_cancellation and (
             abort_request is None
             or status.request_id != descriptor.abort_request_id
             or status.request_id != abort_request.request_id
@@ -742,6 +759,44 @@ def _validate_qgc_bundle(
             or status.admission_sha256 != admission_sha256
         ):
             raise BundleAcceptanceError("QGC Abort evidence has wrong request binding")
+        if is_abort and status.observed_outcome is not None:
+            if status.request_id is None:
+                local_results = {
+                    "finalizing": MAV_RESULT_CANCELLED,
+                    "pending_start_cancelled": MAV_RESULT_ACCEPTED,
+                }
+                if (
+                    local_results.get(status.observed_outcome)
+                    != status.response.result
+                ):
+                    raise BundleAcceptanceError(
+                        "QGC Abort outcome does not match local cancellation"
+                    )
+            elif (
+                abort_terminal_results.get(status.observed_outcome)
+                != status.response.result
+                or abort_terminal is None
+                or abort_terminal.state != status.observed_outcome
+                or abort_request is None
+                or abort_terminal.request_id != abort_request.request_id
+                or abort_terminal.admission_sha256 != admission_sha256
+            ):
+                raise BundleAcceptanceError(
+                    "QGC Abort outcome does not match durable recovery"
+                )
+        if (
+            is_abort
+            and status.request_id is not None
+            and status.response.result in abort_terminal_results.values()
+            and (
+                abort_terminal is None
+                or abort_terminal_results.get(abort_terminal.state)
+                != status.response.result
+            )
+        ):
+            raise BundleAcceptanceError(
+                "QGC Abort result does not match durable recovery"
+            )
         if is_start and status.observed_outcome is not None:
             if (
                 status.response.result != MAV_RESULT_ACCEPTED

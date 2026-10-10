@@ -127,6 +127,67 @@ def test_qgc_command_statuses_require_contiguous_immutable_sequence(
             protocol.write_qgc_command_status(skipped)
 
 
+def test_qgc_command_status_append_scans_history_once(
+    run_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = MavlinkIdentity(255, 190)
+    envelope = QgcCommandEnvelope(
+        2, source, MavlinkIdentity(1, 191), 31020, (1, 0, 0, 0, 0, 0, 0), 10
+    )
+    with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
+        scans = 0
+        read_all = protocol.read_qgc_command_statuses
+
+        def counted_read_all():
+            nonlocal scans
+            scans += 1
+            return read_all()
+
+        monkeypatch.setattr(protocol, "read_qgc_command_statuses", counted_read_all)
+        for sequence in range(4):
+            protocol.write_qgc_command_status(
+                QgcCommandStatus(
+                    RUN_ID,
+                    CONFIG_SHA256,
+                    sequence,
+                    envelope,
+                    None,
+                    None,
+                    None,
+                    sequence + 11,
+                    QgcCommandResponse(
+                        31020, source, MAV_RESULT_DENIED, 100, "denied"
+                    ),
+                )
+            )
+
+        next_status = QgcCommandStatus(
+            RUN_ID,
+            CONFIG_SHA256,
+            4,
+            envelope,
+            None,
+            None,
+            None,
+            15,
+            QgcCommandResponse(31020, source, MAV_RESULT_DENIED, 100, "denied"),
+        )
+        target = run_directory / ".status/qgc-command-0004.json"
+        conflicting = asdict(next_status)
+        conflicting["response"]["status_text"] = "different"
+        target.write_text(json.dumps(conflicting), encoding="utf-8")
+        before = target.read_bytes()
+        with pytest.raises(OperatorProtocolError, match="conflicts"):
+            protocol.write_qgc_command_status(next_status)
+        assert target.read_bytes() == before
+
+        target.unlink()
+        (run_directory / ".status/qgc-command-0003.json").unlink()
+        with pytest.raises(OperatorProtocolConflict, match="predecessor"):
+            protocol.write_qgc_command_status(next_status)
+        assert scans == 1
+
+
 @pytest.fixture
 def run_directory(tmp_path: Path) -> Path:
     run = tmp_path / RUN_ID
