@@ -488,6 +488,30 @@ def test_success_moves_only_the_bound_pad_and_records_persistent_physical_eviden
     assert any(command[:3] == ("docker", "logs", "--tail") for command, _ in runner.calls)
 
 
+def test_success_accepts_nominal_twenty_hertz_persistence_samples(
+    tmp_path: Path,
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    runner.odometry = [
+        _odometry(35.0, 95_250_000_000),
+        *(
+            _odometry(55.0, timestamp)
+            for timestamp in range(95_300_000_000, 95_850_000_001, 50_000_000)
+        ),
+    ]
+
+    result = induce_precision_target_loss(run.directory, runner=runner)
+
+    persistence = result["post_command"]["persistence"]
+    assert len(persistence) == 11
+    assert (
+        persistence[-1]["native_timestamp_ns"]
+        - result["post_command"]["first"]["native_timestamp_ns"]
+        == 550_000_000
+    )
+
+
 @pytest.mark.parametrize(
     ("mutation", "detail"),
     (

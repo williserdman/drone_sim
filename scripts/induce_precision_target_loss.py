@@ -42,7 +42,8 @@ PL_FRESHNESS_NS = 500_000_000
 LAND_FRESHNESS_NS = 5_000_000_000
 SENSOR_FRESHNESS_NS = 500_000_000
 PERSISTENCE_NS = 500_000_000
-MAX_PERSISTENCE_SAMPLES = 8
+# Covers 0.8 simulated seconds at the world's nominal 20 Hz publication rate.
+MAX_PERSISTENCE_SAMPLES = 16
 POSITION_TOLERANCE_M = 0.25
 REQUEST_TEXT = (
     'name: "moving_pad" position { x: 55 y: 0 z: 0 } '
