@@ -33,8 +33,10 @@ required evidence is missing or invalid.
   [`protocol_files.py`](src/artifacts/protocol_files.py).
 - [`operator_protocol.py`](src/artifacts/operator_protocol.py) owns the
   request-scoped operator start, live preflight, immutable admission, and flight
-  abort documents. The admitted epoch wire shape is also published as the
-  [`start-admission.json` schema](schemas/start-admission.schema.json).
+  abort documents. It also appends contiguous immutable QGC response evidence.
+  The admitted epoch and command evidence wire shapes are published as the
+  [`start-admission.json` schema](schemas/start-admission.schema.json) and
+  [`qgc-command-status.json` schema](schemas/qgc-command-status.schema.json).
 - [`qgc_operator.py`](src/artifacts/qgc_operator.py) owns the frozen
   `qgc_actions_v1` descriptor shared by configuration, companion admission, and
   later evidence checks. It validates the two project command IDs, the
@@ -103,6 +105,24 @@ verified before persistence. The protocol fixes the companion at MAVLink 1/191
 and the flight controller at 1/1 while leaving the QGC source injectable. Older
 operator snapshots without this descriptor and all unattended snapshots keep
 their existing meaning and checksums.
+
+Every descriptor-backed command response is written first as
+`.status/qgc-command-NNNN.json`. Each record binds the received MAVLink version,
+source and target, command and seven parameters, receipt and response wall times,
+request and admission identity when one exists, integer MAV_RESULT, progress,
+readable status, and any later observed outcome. NaN and infinity are retained
+as explicit JSON strings so malformed input can still have durable rejection
+evidence. Packet sequence and COMMAND_LONG confirmation do not define operation
+identity. Finalization inventories these status files without adding them to the
+required paths for historical bundles.
+
+Independent acceptance for descriptor-backed completed runs rehashes the exact
+QGC action file and requires its configuration record. It then checks contiguous
+command evidence, the prepared request UUID and digest, the admission digest,
+and the frozen source, target, token, and parameter contract for admitted
+decisions. A rejected malformed command remains valid evidence. An accepted ACK
+does not supply physical or mission-success evidence; a recorded terminal
+mission outcome must match the companion's mission-finished log.
 
 Image provenance is launch-mode specific. Unattended bundles and their external
 digest expectations contain exactly the seven production Phase 3 images.

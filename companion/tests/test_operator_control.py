@@ -193,6 +193,27 @@ def test_operator_readiness_rejects_armed_and_stale_vehicle() -> None:
     assert "stale" in protocol.readiness[-1].detail
 
 
+def test_qgc_readiness_requires_fresh_confirmed_ground_state() -> None:
+    protocol = Protocol()
+    wall_ns = [1_000_000_000]
+    control = _control(protocol, wall_ns)
+
+    assert "telemetry" in " ".join(control.qgc_readiness_reasons())
+    control.observe_vehicle(
+        native_timestamp_ns=8_000_000_000,
+        heartbeat_live=True,
+        prearm_checks_healthy=True,
+        armed=False,
+        landed=False,
+        mode="STABILIZE",
+    )
+    assert control.qgc_readiness_reasons() == ("vehicle is not confirmed landed",)
+    control.observe_vehicle(native_timestamp_ns=8_050_000_000, landed=True)
+    assert control.qgc_readiness_reasons() == ()
+    wall_ns[0] += 2_000_000_001
+    assert "telemetry" in " ".join(control.qgc_readiness_reasons())
+
+
 def test_unattended_mode_preserves_running_gate_without_operator_files() -> None:
     protocol = Protocol()
     wall_ns = [1_000_000_000]

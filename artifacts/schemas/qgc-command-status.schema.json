@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "required": ["system_id", "component_id"],
+      "properties": {
+        "system_id": {"type": "integer", "minimum": 1, "maximum": 255},
+        "component_id": {"type": "integer", "minimum": 1, "maximum": 255}
+      },
+      "additionalProperties": false
+    },
+    "nullableDigest": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      ]
+    },
+    "nullableUuid": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "run_id",
+    "config_sha256",
+    "sequence",
+    "envelope",
+    "request_id",
+    "request_sha256",
+    "admission_sha256",
+    "responded_wall_time_ns",
+    "response",
+    "observed_outcome",
+    "schema_version"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 9999},
+    "envelope": {
+      "type": "object",
+      "required": [
+        "wire_version",
+        "source",
+        "target",
+        "command",
+        "parameters",
+        "received_wall_time_ns"
+      ],
+      "properties": {
+        "wire_version": {"type": "integer"},
+        "source": {"$ref": "#/$defs/identity"},
+        "target": {"$ref": "#/$defs/identity"},
+        "command": {"type": "integer"},
+        "parameters": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": {
+            "oneOf": [
+              {"type": "number"},
+              {"enum": ["NaN", "Infinity", "-Infinity"]}
+            ]
+          }
+        },
+        "received_wall_time_ns": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "request_id": {"$ref": "#/$defs/nullableUuid"},
+    "request_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "admission_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "responded_wall_time_ns": {"type": "integer", "minimum": 0},
+    "response": {
+      "type": "object",
+      "required": ["command", "recipient", "result", "progress", "status_text"],
+      "properties": {
+        "command": {"type": "integer"},
+        "recipient": {"$ref": "#/$defs/identity"},
+        "result": {"enum": [0, 1, 2, 3, 4, 5, 6]},
+        "progress": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0, "maximum": 100},
+            {"const": 255}
+          ]
+        },
+        "status_text": {"type": "string", "minLength": 1, "maxLength": 50}
+      },
+      "additionalProperties": false
+    },
+    "observed_outcome": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1, "maxLength": 1024}
+      ]
+    },
+    "schema_version": {"const": 1}
+  },
+  "additionalProperties": false
+}

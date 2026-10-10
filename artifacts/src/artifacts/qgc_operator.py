@@ -14,6 +14,16 @@ QGC_START_COMMAND = 31020
 QGC_ABORT_COMMAND = 31021
 MAX_ATTEMPT_TOKEN = 16_777_215
 QGC_ACTIONS_BUNDLE_PATH = "configuration/qgc-actions.json"
+MAV_RESULT_ACCEPTED = 0
+MAV_RESULT_TEMPORARILY_REJECTED = 1
+MAV_RESULT_DENIED = 2
+MAV_RESULT_UNSUPPORTED = 3
+MAV_RESULT_FAILED = 4
+MAV_RESULT_IN_PROGRESS = 5
+MAV_RESULT_CANCELLED = 6
+QGC_COMMAND_RESULTS = frozenset(range(7))
+QGC_PROGRESS_UNKNOWN = 255
+_NONFINITE_PARAMETERS = frozenset({"NaN", "Infinity", "-Infinity"})
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _DESCRIPTOR_FIELDS = frozenset(
@@ -74,6 +84,144 @@ class MavlinkIdentity:
 
 QGC_COMPANION_IDENTITY = MavlinkIdentity(system_id=1, component_id=191)
 QGC_FLIGHT_CONTROLLER_IDENTITY = MavlinkIdentity(system_id=1, component_id=1)
+
+
+def _wire_parameter(value: object) -> int | float | str:
+    """Keep malformed floating-point input as strict, lossless JSON evidence."""
+    if isinstance(value, str) and value in _NONFINITE_PARAMETERS:
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("command parameters must be numbers")
+    if isinstance(value, float):
+        if value != value:
+            return "NaN"
+        if value == float("inf"):
+            return "Infinity"
+        if value == float("-inf"):
+            return "-Infinity"
+    return value
+
+
+@dataclass(frozen=True)
+class QgcCommandEnvelope:
+    """One COMMAND_LONG delivery after transport metadata has been captured."""
+
+    wire_version: int
+    source: MavlinkIdentity
+    target: MavlinkIdentity
+    command: int
+    parameters: tuple[int | float | str, ...]
+    received_wall_time_ns: int
+
+    def __post_init__(self) -> None:
+        if type(self.wire_version) is not int:
+            raise ValueError("wire_version must be an integer")
+        if not isinstance(self.source, MavlinkIdentity) or not isinstance(
+            self.target, MavlinkIdentity
+        ):
+            raise ValueError("command identities must use MavlinkIdentity")
+        if type(self.command) is not int:
+            raise ValueError("command must be an integer")
+        if type(self.parameters) is not tuple or len(self.parameters) != 7:
+            raise ValueError("parameters must contain exactly seven values")
+        object.__setattr__(
+            self,
+            "parameters",
+            tuple(_wire_parameter(value) for value in self.parameters),
+        )
+        if type(self.received_wall_time_ns) is not int or self.received_wall_time_ns < 0:
+            raise ValueError("received_wall_time_ns must be a nonnegative integer")
+
+
+@dataclass(frozen=True)
+class QgcCommandResponse:
+    """A targeted COMMAND_ACK and its matching readable STATUSTEXT."""
+
+    command: int
+    recipient: MavlinkIdentity
+    result: int
+    progress: int
+    status_text: str
+
+    def __post_init__(self) -> None:
+        if type(self.command) is not int:
+            raise ValueError("command must be an integer")
+        if not isinstance(self.recipient, MavlinkIdentity):
+            raise ValueError("recipient must use MavlinkIdentity")
+        if type(self.result) is not int or self.result not in QGC_COMMAND_RESULTS:
+            raise ValueError("result must be a supported MAV_RESULT")
+        if type(self.progress) is not int or not (
+            0 <= self.progress <= 100 or self.progress == QGC_PROGRESS_UNKNOWN
+        ):
+            raise ValueError("progress must be 0 through 100 or 255")
+        if (
+            not isinstance(self.status_text, str)
+            or not self.status_text
+            or len(self.status_text.encode("utf-8")) > 50
+        ):
+            raise ValueError("status_text must be nonempty and at most 50 UTF-8 bytes")
+
+
+@dataclass(frozen=True)
+class QgcCommandStatus:
+    """Immutable, ordered evidence for one command response or later outcome."""
+
+    run_id: str
+    config_sha256: str
+    sequence: int
+    envelope: QgcCommandEnvelope
+    request_id: str | None
+    request_sha256: str | None
+    admission_sha256: str | None
+    responded_wall_time_ns: int
+    response: QgcCommandResponse
+    observed_outcome: str | None = None
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        _canonical_uuid(self.run_id, "run_id")
+        if not isinstance(self.config_sha256, str) or _SHA256.fullmatch(
+            self.config_sha256
+        ) is None:
+            raise ValueError("config_sha256 must be a lowercase SHA-256 digest")
+        if type(self.sequence) is not int or not 0 <= self.sequence <= 9_999:
+            raise ValueError("sequence must be an integer from 0 through 9999")
+        if not isinstance(self.envelope, QgcCommandEnvelope):
+            raise ValueError("envelope must be a QgcCommandEnvelope")
+        if self.request_id is not None:
+            _canonical_uuid(self.request_id, "request_id")
+        for field, value in (
+            ("request_sha256", self.request_sha256),
+            ("admission_sha256", self.admission_sha256),
+        ):
+            if value is not None and (
+                not isinstance(value, str) or _SHA256.fullmatch(value) is None
+            ):
+                raise ValueError(f"{field} must be null or a lowercase SHA-256 digest")
+        if type(self.responded_wall_time_ns) is not int or self.responded_wall_time_ns < 0:
+            raise ValueError("responded_wall_time_ns must be a nonnegative integer")
+        if self.responded_wall_time_ns < self.envelope.received_wall_time_ns:
+            raise ValueError("response cannot precede command receipt")
+        if not isinstance(self.response, QgcCommandResponse):
+            raise ValueError("response must be a QgcCommandResponse")
+        if self.response.command != self.envelope.command:
+            raise ValueError("response command must match its envelope")
+        if self.response.recipient != self.envelope.source:
+            raise ValueError("response recipient must match the command source")
+        if self.request_id is None and (
+            self.request_sha256 is not None or self.admission_sha256 is not None
+        ):
+            raise ValueError("command digests require a request identity")
+        if self.request_id is not None and self.request_sha256 is None:
+            raise ValueError("request identity requires its digest")
+        if self.observed_outcome is not None and (
+            not isinstance(self.observed_outcome, str)
+            or not self.observed_outcome
+            or len(self.observed_outcome.encode("utf-8")) > 1024
+        ):
+            raise ValueError("observed_outcome must be null or bounded nonempty text")
+        if self.schema_version != 1:
+            raise ValueError("schema_version must be 1")
 
 
 @dataclass(frozen=True)
@@ -156,6 +304,13 @@ def qgc_operator_descriptor_document(
 
 __all__ = [
     "MAX_ATTEMPT_TOKEN",
+    "MAV_RESULT_ACCEPTED",
+    "MAV_RESULT_CANCELLED",
+    "MAV_RESULT_DENIED",
+    "MAV_RESULT_FAILED",
+    "MAV_RESULT_IN_PROGRESS",
+    "MAV_RESULT_TEMPORARILY_REJECTED",
+    "MAV_RESULT_UNSUPPORTED",
     "MavlinkIdentity",
     "QGC_ABORT_COMMAND",
     "QGC_ACTIONS_BUNDLE_PATH",
@@ -163,6 +318,9 @@ __all__ = [
     "QGC_COMPANION_IDENTITY",
     "QGC_FLIGHT_CONTROLLER_IDENTITY",
     "QGC_START_COMMAND",
+    "QgcCommandEnvelope",
+    "QgcCommandResponse",
+    "QgcCommandStatus",
     "QgcOperatorDescriptor",
     "parse_qgc_operator_descriptor",
     "qgc_operator_descriptor_document",

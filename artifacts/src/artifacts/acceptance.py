@@ -30,6 +30,13 @@ from .manifest import (
     validate_manifest,
 )
 from .operator_protocol import OperatorProtocol, OperatorProtocolError
+from .qgc_operator import (
+    MAV_RESULT_ACCEPTED,
+    MAV_RESULT_IN_PROGRESS,
+    QGC_ACTIONS_BUNDLE_PATH,
+    QgcCommandStatus,
+    parse_qgc_operator_descriptor,
+)
 from .runtime_configuration import resolve_recording_runtime_config
 from .score_validation import ScoreValidationError, validate_score_outputs
 from .validation import (
@@ -609,6 +616,142 @@ def _validate_operator_evidence(run_directory, configuration, companion):
         raise BundleAcceptanceError(f"operator evidence is invalid: {error}") from error
 
 
+def _valid_qgc_operation(
+    status: QgcCommandStatus,
+    descriptor,
+) -> bool:
+    envelope = status.envelope
+    token = envelope.parameters[0]
+    return (
+        envelope.wire_version == 2
+        and envelope.source == descriptor.qgc_source
+        and envelope.target == descriptor.companion
+        and isinstance(token, (int, float))
+        and not isinstance(token, bool)
+        and math.isfinite(token)
+        and token == int(token) == descriptor.attempt_token
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value == 0
+            for value in envelope.parameters[1:]
+        )
+    )
+
+
+def _validate_qgc_bundle(
+    run_directory: Path,
+    configuration: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    companion: Sequence[Mapping[str, Any]],
+    admission_sha256: str,
+) -> None:
+    """Bind descriptor-backed operator acceptance to action and command bytes."""
+    try:
+        descriptor = parse_qgc_operator_descriptor(configuration["operator_control"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise BundleAcceptanceError(f"QGC operator descriptor is invalid: {error}") from error
+    action_validation, action_bytes = read_regular_file_bytes(
+        run_directory, QGC_ACTIONS_BUNDLE_PATH
+    )
+    if (
+        action_validation.status is not ValidationStatus.VALID
+        or action_bytes is None
+        or hashlib.sha256(action_bytes).hexdigest() != descriptor.actions_sha256
+    ):
+        raise BundleAcceptanceError("QGC action bytes do not match the frozen descriptor")
+    configurations = manifest.get("configurations")
+    if not isinstance(configurations, list) or {
+        "relative_path": QGC_ACTIONS_BUNDLE_PATH,
+        "sha256": descriptor.actions_sha256,
+    } not in configurations:
+        raise BundleAcceptanceError("QGC action evidence is absent from configuration provenance")
+    try:
+        with OperatorProtocol(
+            run_directory,
+            str(configuration["run_id"]),
+            str(configuration["config_sha256"]),
+        ) as protocol:
+            request = protocol.read_start_request()
+            admission = protocol.read_start_admission()
+            abort_request = protocol.read_flight_abort_request()
+            statuses = protocol.read_qgc_command_statuses()
+    except OperatorProtocolError as error:
+        raise BundleAcceptanceError(f"QGC command evidence is invalid: {error}") from error
+    if not statuses:
+        raise BundleAcceptanceError("QGC command evidence is missing")
+    expected_paths = {
+        f".status/qgc-command-{sequence:04d}.json"
+        for sequence in range(len(statuses))
+    }
+    inventoried = {
+        row.get("relative_path")
+        for row in manifest.get("artifacts", ())
+        if isinstance(row, Mapping)
+        and isinstance(row.get("relative_path"), str)
+        and row["relative_path"].startswith(".status/qgc-command-")
+    }
+    if inventoried != expected_paths:
+        raise BundleAcceptanceError("QGC command evidence inventory is incomplete")
+    accepted_starts: list[QgcCommandStatus] = []
+    reserved_start_seen = False
+    mission_outcomes = {
+        row.get("fields", {}).get("outcome")
+        for row in companion
+        if row.get("event") == "mission_finished"
+        and isinstance(row.get("fields"), Mapping)
+        and isinstance(row["fields"].get("outcome"), str)
+    }
+    for status in statuses:
+        is_start = status.envelope.command == descriptor.start_command
+        is_abort = status.envelope.command == descriptor.abort_command
+        operational = status.response.result in {
+            MAV_RESULT_ACCEPTED,
+            MAV_RESULT_IN_PROGRESS,
+        }
+        if operational and not _valid_qgc_operation(status, descriptor):
+            raise BundleAcceptanceError("admitted QGC decision has invalid command identity")
+        if operational and is_start:
+            if (
+                request is None
+                or status.request_id != descriptor.start_request_id
+                or status.request_id != request.request_id
+                or status.request_sha256 != request.sha256
+            ):
+                raise BundleAcceptanceError("QGC Start evidence has wrong request identity")
+            if status.response.result == MAV_RESULT_IN_PROGRESS:
+                reserved_start_seen = True
+            else:
+                accepted_starts.append(status)
+                if (
+                    not reserved_start_seen
+                    or admission is None
+                    or status.admission_sha256 is None
+                    or status.admission_sha256 != admission_sha256
+                    or status.admission_sha256 != admission.sha256
+                ):
+                    raise BundleAcceptanceError(
+                        "QGC Start evidence is missing request or admission binding"
+                    )
+        if operational and is_abort and (
+            abort_request is None
+            or status.request_id != descriptor.abort_request_id
+            or status.request_id != abort_request.request_id
+            or status.request_sha256 != abort_request.sha256
+            or status.admission_sha256 != admission_sha256
+        ):
+            raise BundleAcceptanceError("QGC Abort evidence has wrong request binding")
+        if is_start and status.observed_outcome is not None:
+            if (
+                status.response.result != MAV_RESULT_ACCEPTED
+                or status.observed_outcome not in mission_outcomes
+            ):
+                raise BundleAcceptanceError("QGC command evidence invents a mission outcome")
+    if not accepted_starts:
+        raise BundleAcceptanceError("completed QGC run has no admitted Start evidence")
+
+
 def _validate_calibration_inputs(run_directory, calibration, companion):
     for relative, field in (
         ("configuration/calibration.parm", "source_artifact_sha256"),
@@ -1078,6 +1221,20 @@ def inspect_phase3_semantics(
             "sha256": configuration["config_sha256"],
         }
     ]
+    operator_descriptor = configuration.get("operator_control")
+    if operator_descriptor is not None:
+        try:
+            descriptor = parse_qgc_operator_descriptor(operator_descriptor)
+        except ValueError as error:
+            raise BundleAcceptanceError(
+                f"QGC operator descriptor is invalid: {error}"
+            ) from error
+        expected_configurations.append(
+            {
+                "relative_path": QGC_ACTIONS_BUNDLE_PATH,
+                "sha256": descriptor.actions_sha256,
+            }
+        )
     if admission_record:
         expected_configurations.append(admission_record)
     calibration = configuration.get("calibration_json")
@@ -1106,6 +1263,14 @@ def inspect_phase3_semantics(
         if not any(row["relative_path"] == "logs/docker/operator.jsonl" for row in manifest["artifacts"]):
             raise BundleAcceptanceError("operator evidence is absent from manifest inventory")
         _validate_operator_evidence(directory, configuration, companion_logs)
+    if operator_descriptor is not None:
+        _validate_qgc_bundle(
+            directory,
+            configuration,
+            manifest,
+            companion_logs,
+            admission_sha256,
+        )
     physical_evidence = semantic_check(
         directory,
         run_id,

@@ -7,7 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
-from typing import Any, Literal, Mapping, TypeVar
+from typing import Any, Literal, Mapping, Protocol, TypeVar, cast
 from uuid import UUID
 
 from .protocol_files import (
@@ -19,10 +19,17 @@ from .protocol_files import (
     read_json_object_at,
     write_json_object_at,
 )
+from .qgc_operator import (
+    MavlinkIdentity,
+    QgcCommandEnvelope,
+    QgcCommandResponse,
+    QgcCommandStatus,
+)
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ABORT_STATUS_NAME = re.compile(r"flight-abort-(\d{4})\.json\Z")
+_QGC_COMMAND_STATUS_NAME = re.compile(r"qgc-command-(\d{4})\.json\Z")
 _ABORT_STATES = frozenset(
     {"accepted", "recovering", "landed_disarmed", "rejected", "failed", "interrupted"}
 )
@@ -260,28 +267,83 @@ class FlightAbortStatus(_Document):
             raise OperatorProtocolError("schema_version must be 1")
 
 
-DocumentT = TypeVar("DocumentT", bound=_Document)
+class _BoundDocument(Protocol):
+    @property
+    def run_id(self) -> str: ...
+
+    @property
+    def config_sha256(self) -> str: ...
 
 
-def _identity(value: _Document) -> None:
-    _canonical_uuid(getattr(value, "run_id"), "run_id")
-    _sha256(getattr(value, "config_sha256"), "config_sha256")
+DocumentT = TypeVar("DocumentT", bound=_BoundDocument)
 
 
-def _document(value: _Document) -> dict[str, Any]:
-    return asdict(value)
+def _identity(value: _BoundDocument) -> None:
+    _canonical_uuid(value.run_id, "run_id")
+    _sha256(value.config_sha256, "config_sha256")
+
+
+def _document(value: object) -> dict[str, Any]:
+    return asdict(cast(Any, value))
 
 
 def _parse(document_type: type[DocumentT], document: object) -> DocumentT:
-    expected = {field.name for field in fields(document_type)}
+    if document_type is QgcCommandStatus:
+        return _parse_qgc_command_status(document)  # type: ignore[return-value]
+    expected = {field.name for field in fields(cast(Any, document_type))}
     if not isinstance(document, dict) or set(document) != expected:
         raise OperatorProtocolError(
             f"{document_type.__name__} has missing or unknown fields"
         )
     try:
         return document_type(**document)
-    except TypeError as error:
+    except (TypeError, ValueError) as error:
         raise OperatorProtocolError(f"{document_type.__name__} has invalid fields") from error
+
+
+def _parse_qgc_identity(value: object) -> MavlinkIdentity:
+    if not isinstance(value, dict) or set(value) != {"system_id", "component_id"}:
+        raise OperatorProtocolError("QGC command identity has missing or unknown fields")
+    try:
+        return MavlinkIdentity(**value)
+    except (TypeError, ValueError) as error:
+        raise OperatorProtocolError("QGC command identity is invalid") from error
+
+
+def _parse_qgc_command_status(document: object) -> QgcCommandStatus:
+    expected = {field.name for field in fields(QgcCommandStatus)}
+    if not isinstance(document, dict) or set(document) != expected:
+        raise OperatorProtocolError("QgcCommandStatus has missing or unknown fields")
+    envelope_document = document.get("envelope")
+    response_document = document.get("response")
+    envelope_fields = {field.name for field in fields(QgcCommandEnvelope)}
+    response_fields = {field.name for field in fields(QgcCommandResponse)}
+    if not isinstance(envelope_document, dict) or set(envelope_document) != envelope_fields:
+        raise OperatorProtocolError("QGC command envelope has missing or unknown fields")
+    if not isinstance(response_document, dict) or set(response_document) != response_fields:
+        raise OperatorProtocolError("QGC command response has missing or unknown fields")
+    try:
+        envelope = QgcCommandEnvelope(
+            wire_version=envelope_document["wire_version"],
+            source=_parse_qgc_identity(envelope_document["source"]),
+            target=_parse_qgc_identity(envelope_document["target"]),
+            command=envelope_document["command"],
+            parameters=tuple(envelope_document["parameters"]),
+            received_wall_time_ns=envelope_document["received_wall_time_ns"],
+        )
+        response = QgcCommandResponse(
+            command=response_document["command"],
+            recipient=_parse_qgc_identity(response_document["recipient"]),
+            result=response_document["result"],
+            progress=response_document["progress"],
+            status_text=response_document["status_text"],
+        )
+        top = dict(document)
+        top["envelope"] = envelope
+        top["response"] = response
+        return QgcCommandStatus(**top)
+    except (KeyError, TypeError, ValueError) as error:
+        raise OperatorProtocolError("QgcCommandStatus has invalid fields") from error
 
 
 class OperatorProtocol:
@@ -296,6 +358,7 @@ class OperatorProtocol:
         self.run_directory = Path(run_directory)
         self.run_id = _canonical_uuid(run_id, "run_id")
         self.config_sha256 = _sha256(config_sha256, "config_sha256")
+        self._run_fd: int | None
         try:
             self._run_fd = open_directory(self.run_directory)
         except ProtocolIOError as error:
@@ -315,6 +378,8 @@ class OperatorProtocol:
         self.close()
 
     def _open_directory(self, name: str) -> int:
+        if self._run_fd is None:
+            raise OperatorProtocolError("operator protocol is closed")
         try:
             return open_directory(name, dir_fd=self._run_fd)
         except ProtocolIOError as error:
@@ -387,7 +452,7 @@ class OperatorProtocol:
         self._assert_bound(parsed)
         return parsed, created
 
-    def _assert_bound(self, value: _Document) -> None:
+    def _assert_bound(self, value: _BoundDocument) -> None:
         if value.run_id != self.run_id:
             raise OperatorProtocolError("operator document has the wrong run_id")
         if value.config_sha256 != self.config_sha256:
@@ -630,6 +695,58 @@ class OperatorProtocol:
         values = self.read_flight_abort_statuses()
         return values[-1] if values else None
 
+    def read_qgc_command_statuses(self) -> tuple[QgcCommandStatus, ...]:
+        """Read the complete immutable command-response history in order."""
+        descriptor = self._open_directory(".status")
+        try:
+            try:
+                names = sorted(
+                    name
+                    for name in os.listdir(descriptor)
+                    if _QGC_COMMAND_STATUS_NAME.fullmatch(name) is not None
+                )
+            except OSError as error:
+                raise OperatorProtocolError(
+                    f"could not list QGC command statuses: {error}"
+                ) from error
+        finally:
+            os.close(descriptor)
+        values: list[QgcCommandStatus] = []
+        for expected_sequence, name in enumerate(names):
+            match = _QGC_COMMAND_STATUS_NAME.fullmatch(name)
+            assert match is not None
+            if int(match.group(1)) != expected_sequence:
+                raise OperatorProtocolConflict(
+                    "QGC command status sequence is not contiguous"
+                )
+            value = self._read(".status", name, QgcCommandStatus, immutable=True)
+            assert value is not None
+            if value.sequence != expected_sequence:
+                raise OperatorProtocolError(
+                    "QGC command status sequence does not match its path"
+                )
+            values.append(value)
+        return tuple(values)
+
+    def write_qgc_command_status(self, value: QgcCommandStatus) -> QgcCommandStatus:
+        """Append one command fact, allowing only an identical retry by sequence."""
+        self._assert_bound(value)
+        existing = self.read_qgc_command_statuses()
+        if value.sequence < len(existing):
+            return self._require_equal("QGC command status", value, existing[value.sequence])
+        if value.sequence != len(existing):
+            raise OperatorProtocolConflict(
+                "QGC command status sequence must be contiguous"
+            )
+        persisted, _created = self._write(
+            ".status",
+            f"qgc-command-{value.sequence:04d}.json",
+            value,
+            mode=0o644,
+            policy=WritePolicy.IDENTICAL,
+        )
+        return self._require_equal("QGC command status", value, persisted)
+
 
 def validate_admission_binding(
     protocol: OperatorProtocol | None,
@@ -665,6 +782,7 @@ __all__ = [
     "OperatorProtocolConflict",
     "OperatorProtocolError",
     "PreflightStatus",
+    "QgcCommandStatus",
     "StartAdmission",
     "validate_admission_binding",
 ]

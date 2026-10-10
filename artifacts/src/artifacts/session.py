@@ -166,6 +166,12 @@ class ArtifactSession:
 
     def _optional_paths(self) -> tuple[str, ...]:
         discovered: set[str] = set()
+        status_directory = self.run_directory / ".status"
+        if status_directory.exists():
+            for command_status in status_directory.glob("qgc-command-*.json"):
+                discovered.add(
+                    command_status.relative_to(self.run_directory).as_posix()
+                )
         for relative in ("ardupilot_sitl/autotune-roll.parm", "ardupilot_sitl/autotune.parm"):
             if (self.run_directory / relative).exists():
                 discovered.add(relative)
@@ -190,15 +196,15 @@ class ArtifactSession:
         if self.run_directory.exists():
             for candidate in self.run_directory.rglob("*.partial"):
                 self._check_deadline()
-                relative = candidate.relative_to(self.run_directory)
-                if relative.parts and relative.parts[0] in {".control", ".status"}:
+                candidate_relative = candidate.relative_to(self.run_directory)
+                if candidate_relative.parts and candidate_relative.parts[0] in {".control", ".status"}:
                     continue
                 try:
                     if stat.S_ISDIR(candidate.lstat().st_mode):
                         continue
                 except OSError:
                     continue
-                discovered.add(relative.as_posix())
+                discovered.add(candidate_relative.as_posix())
 
         discovered.discard("manifest.json")
         return tuple(
@@ -206,7 +212,10 @@ class ArtifactSession:
             for path in sorted(discovered)
             if path not in REQUIRED_ARTIFACT_PATHS
             and not path.startswith(".control/")
-            and not path.startswith(".status/")
+            and (
+                not path.startswith(".status/")
+                or path.startswith(".status/qgc-command-")
+            )
         )
 
     def _optional_records(self) -> tuple[ArtifactRecord, ...]:
@@ -245,7 +254,10 @@ class ArtifactSession:
     def finalize_with_result(self, request: FinalizationInput) -> FinalizationResult:
         """Commit the manifest and return its immutable authoritative facts."""
         for configuration in request.configuration_records:
-            if configuration.relative_path != "configuration/start-admission.json":
+            if configuration.relative_path not in {
+                "configuration/start-admission.json",
+                "configuration/qgc-actions.json",
+            }:
                 continue
             result = validate_regular_file(
                 self.run_directory,
@@ -257,7 +269,7 @@ class ArtifactSession:
                 or result.sha256 != configuration.sha256
             ):
                 raise ValueError(
-                    "start admission configuration record does not match its file"
+                    f"{configuration.relative_path} record does not match its file"
                 )
         required_records = self._required_records()
         incomplete_paths = tuple(

@@ -145,6 +145,27 @@ def test_finalize_writes_expanded_schema_valid_manifest(tmp_path):
     assert all(record["detail"] for record in manifest["artifacts"])
 
 
+def test_finalize_inventories_qgc_command_evidence_without_making_it_historical(
+    tmp_path,
+) -> None:
+    _complete_run_directory(tmp_path)
+    command = _write(
+        tmp_path,
+        ".status/qgc-command-0000.json",
+        b'{"immutable":"command evidence"}\n',
+    )
+
+    path = ArtifactSession(tmp_path).finalize(_finalization_input())
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    records = {
+        record["relative_path"]: record for record in manifest["artifacts"]
+    }
+
+    assert records[".status/qgc-command-0000.json"]["sha256"] == hashlib.sha256(
+        command.read_bytes()
+    ).hexdigest()
+
+
 def test_finalize_rejects_start_admission_record_not_matching_file(tmp_path):
     _complete_run_directory(tmp_path)
     admission = _write(
@@ -165,7 +186,7 @@ def test_finalize_rejects_start_admission_record_not_matching_file(tmp_path):
     other = tmp_path / "other"
     _complete_run_directory(other)
     _write(other, "configuration/start-admission.json", admission.read_bytes())
-    with pytest.raises(ValueError, match="start admission configuration record"):
+    with pytest.raises(ValueError, match="start-admission.json"):
         ArtifactSession(other).finalize(
             _finalization_input(
                 configuration_records=(
@@ -175,6 +196,33 @@ def test_finalize_rejects_start_admission_record_not_matching_file(tmp_path):
                     ),
                 )
             )
+        )
+    assert not (other / "manifest.json").exists()
+
+
+def test_finalize_rejects_qgc_action_record_not_matching_file(tmp_path):
+    _complete_run_directory(tmp_path)
+    action = _write(
+        tmp_path,
+        "configuration/qgc-actions.json",
+        b'{"fileType":"MavlinkActions","version":1}\n',
+    )
+    digest = hashlib.sha256(action.read_bytes()).hexdigest()
+    records = (
+        ConfigurationRecord("configuration/run.json", SHA_B),
+        ConfigurationRecord("configuration/qgc-actions.json", digest),
+    )
+
+    ArtifactSession(tmp_path).finalize(
+        _finalization_input(configuration_records=records)
+    )
+
+    other = tmp_path / "other-qgc"
+    _complete_run_directory(other)
+    _write(other, "configuration/qgc-actions.json", b"changed")
+    with pytest.raises(ValueError, match="qgc-actions.json"):
+        ArtifactSession(other).finalize(
+            _finalization_input(configuration_records=records)
         )
     assert not (other / "manifest.json").exists()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -19,6 +20,21 @@ from artifacts import (
 )
 from artifacts.manifest import MODULE_LOGS, REQUIRED_ARTIFACT_PATHS
 from artifacts.operator_protocol import OperatorProtocol
+from artifacts.qgc_operator import (
+    MAV_RESULT_ACCEPTED,
+    MAV_RESULT_DENIED,
+    MAV_RESULT_IN_PROGRESS,
+    MavlinkIdentity,
+    QGC_ABORT_COMMAND,
+    QGC_ACTIONS_KIND,
+    QGC_COMPANION_IDENTITY,
+    QGC_FLIGHT_CONTROLLER_IDENTITY,
+    QGC_START_COMMAND,
+    QgcCommandEnvelope,
+    QgcCommandResponse,
+    QgcCommandStatus,
+    QgcOperatorDescriptor,
+)
 from artifacts._adapters.rosbag import (
     GroundTruthEvidence,
     PhysicalBagEvidence,
@@ -48,6 +64,28 @@ EXPECTED_OPERATOR_IMAGE_DIGESTS = {
     **EXPECTED_IMAGE_DIGESTS,
     VIEWER_IMAGE_NAME: "8" * 64,
 }
+QGC_ACTION_BYTES = b'{"fileType":"MavlinkActions","version":1}\n'
+QGC_SOURCE = MavlinkIdentity(255, 190)
+QGC_START_REQUEST_ID = "00000000-0000-4000-8000-000000000707"
+QGC_ABORT_REQUEST_ID = "00000000-0000-4000-8000-000000000708"
+
+
+def _qgc_descriptor_document() -> dict:
+    return asdict(
+        QgcOperatorDescriptor(
+            kind=QGC_ACTIONS_KIND,
+            start_command=QGC_START_COMMAND,
+            abort_command=QGC_ABORT_COMMAND,
+            attempt_token=17,
+            start_request_id=QGC_START_REQUEST_ID,
+            abort_request_id=QGC_ABORT_REQUEST_ID,
+            qgc_source=QGC_SOURCE,
+            companion=QGC_COMPANION_IDENTITY,
+            flight_controller=QGC_FLIGHT_CONTROLLER_IDENTITY,
+            actions_path="configuration/qgc-actions.json",
+            actions_sha256=hashlib.sha256(QGC_ACTION_BYTES).hexdigest(),
+        )
+    )
 
 
 def _expected_provenance_kwargs():
@@ -67,6 +105,7 @@ def _completed_bundle(
     source_revisions: tuple[SourceRevision, ...] | None = None,
     configuration_updates: dict | None = None,
     image_digests: dict[str, str] | None = None,
+    evidence_mutator=None,
 ) -> None:
     modules = tuple(Path(path).stem for path in MODULE_LOGS)
     for relative_path in REQUIRED_ARTIFACT_PATHS:
@@ -116,6 +155,11 @@ def _completed_bundle(
         },
     }
     configuration.update(configuration_updates or {})
+    descriptor_document = configuration.get("operator_control")
+    if descriptor_document is not None:
+        (run_directory / "configuration/qgc-actions.json").write_bytes(
+            QGC_ACTION_BYTES
+        )
     config_sha = hashlib.sha256(
         json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -130,10 +174,77 @@ def _completed_bundle(
         (run_directory / ".status").mkdir()
         with OperatorProtocol(run_directory, RUN_ID, config_sha) as protocol:
             request = protocol.write_start_request(
-                "00000000-0000-4000-8000-000000000707"
+                descriptor_document["start_request_id"]
+                if descriptor_document is not None
+                else "00000000-0000-4000-8000-000000000707"
             )
             admission = protocol.write_start_admission(
                 request, native_epoch_ns=50_000_000
+            )
+            if descriptor_document is not None:
+                envelope = QgcCommandEnvelope(
+                    2,
+                    QGC_SOURCE,
+                    QGC_COMPANION_IDENTITY,
+                    QGC_START_COMMAND,
+                    (17, 0, 0, 0, 0, 0, 0),
+                    1,
+                )
+                pending = QgcCommandResponse(
+                    QGC_START_COMMAND,
+                    QGC_SOURCE,
+                    MAV_RESULT_IN_PROGRESS,
+                    0,
+                    "Start reserved",
+                )
+                accepted = QgcCommandResponse(
+                    QGC_START_COMMAND,
+                    QGC_SOURCE,
+                    MAV_RESULT_ACCEPTED,
+                    100,
+                    "Start admitted",
+                )
+                rejected_envelope = QgcCommandEnvelope(
+                    2,
+                    MavlinkIdentity(254, 190),
+                    QGC_COMPANION_IDENTITY,
+                    QGC_START_COMMAND,
+                    (17, 0, 0, 0, 0, 0, 0),
+                    0,
+                )
+                rejected = QgcCommandResponse(
+                    QGC_START_COMMAND,
+                    rejected_envelope.source,
+                    MAV_RESULT_DENIED,
+                    100,
+                    "source denied",
+                )
+                for sequence, row_envelope, response, request_identity, admission_digest, outcome in (
+                    (0, rejected_envelope, rejected, False, None, None),
+                    (1, envelope, pending, True, None, None),
+                    (2, envelope, accepted, True, admission.sha256, None),
+                    (3, envelope, accepted, True, admission.sha256, "LANDED"),
+                ):
+                    protocol.write_qgc_command_status(
+                        QgcCommandStatus(
+                            RUN_ID,
+                            config_sha,
+                            sequence,
+                            row_envelope,
+                            request.request_id if request_identity else None,
+                            request.sha256 if request_identity else None,
+                            admission_digest,
+                            sequence + 2,
+                            response,
+                            outcome,
+                        )
+                    )
+        if descriptor_document is not None:
+            configuration_records.append(
+                ConfigurationRecord(
+                    "configuration/qgc-actions.json",
+                    descriptor_document["actions_sha256"],
+                )
             )
         configuration_records.append(
             ConfigurationRecord(
@@ -284,6 +395,8 @@ def _completed_bundle(
         encoding="utf-8",
     )
     now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    if evidence_mutator is not None:
+        evidence_mutator(run_directory)
     ArtifactSession(run_directory, physical_gazebo=True).finalize(
         FinalizationInput(
             run_id=RUN_ID,
@@ -562,6 +675,161 @@ def test_operator_acceptance_binds_manifest_and_physical_evidence_to_admission(
             **_expected_provenance_kwargs(),
             semantic_check=lambda *_args: _physical_evidence(
                 tmp_path, achieved=60.0, admission_sha256="c" * 64
+            ),
+        )
+
+
+def test_qgc_bundle_requires_bound_action_and_command_evidence(tmp_path):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={
+            "launch_mode": "operator",
+            "operator_control": _qgc_descriptor_document(),
+        },
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+    )
+    admission_sha256 = hashlib.sha256(
+        (tmp_path / "configuration/start-admission.json").read_bytes()
+    ).hexdigest()
+
+    report = inspect_phase3_semantics(
+        tmp_path,
+        rules_path=RULES_PATH,
+        expected_source_revision=EXPECTED_SOURCE_REVISION,
+        expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+        expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        semantic_check=lambda *_args: _physical_evidence(
+            tmp_path, achieved=60.0, admission_sha256=admission_sha256
+        ),
+    )
+    assert report.run_id == RUN_ID
+
+    (tmp_path / "configuration/qgc-actions.json").write_bytes(b"changed")
+    with pytest.raises(BundleAcceptanceError, match="QGC action|checksum"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda document: document["envelope"]["source"].update(system_id=254),
+        lambda document: document["envelope"]["parameters"].__setitem__(0, 18),
+        lambda document: document.update(
+            request_id="00000000-0000-4000-8000-000000000799"
+        ),
+        lambda document: document.update(request_sha256=None),
+        lambda document: document.update(admission_sha256=None),
+    ),
+    ids=("foreign-source", "stale-token", "foreign-request", "no-request-digest", "no-admission-digest"),
+)
+def test_qgc_bundle_rejects_unbound_admitted_decision(tmp_path, mutation):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    def mutate(run_directory):
+        path = run_directory / ".status/qgc-command-0002.json"
+        document = json.loads(path.read_text())
+        mutation(document)
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={
+            "launch_mode": "operator",
+            "operator_control": _qgc_descriptor_document(),
+        },
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        evidence_mutator=mutate,
+    )
+    admission_sha256 = hashlib.sha256(
+        (tmp_path / "configuration/start-admission.json").read_bytes()
+    ).hexdigest()
+    with pytest.raises(BundleAcceptanceError, match="QGC"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
+            ),
+        )
+
+
+def test_qgc_bundle_rejects_invented_terminal_success(tmp_path):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    def mutate(run_directory):
+        path = run_directory / ".status/qgc-command-0003.json"
+        document = json.loads(path.read_text())
+        document["observed_outcome"] = "INVENTED_SUCCESS"
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={
+            "launch_mode": "operator",
+            "operator_control": _qgc_descriptor_document(),
+        },
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        evidence_mutator=mutate,
+    )
+    admission_sha256 = hashlib.sha256(
+        (tmp_path / "configuration/start-admission.json").read_bytes()
+    ).hexdigest()
+    with pytest.raises(BundleAcceptanceError, match="invents"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
+            ),
+        )
+
+
+def test_qgc_bundle_rejects_command_evidence_gap(tmp_path):
+    from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_semantics
+
+    def mutate(run_directory):
+        (run_directory / ".status/qgc-command-0002.json").rename(
+            run_directory / ".status/qgc-command-0004.json"
+        )
+
+    _completed_bundle(
+        tmp_path,
+        configuration_updates={
+            "launch_mode": "operator",
+            "operator_control": _qgc_descriptor_document(),
+        },
+        image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+        evidence_mutator=mutate,
+    )
+    admission_sha256 = hashlib.sha256(
+        (tmp_path / "configuration/start-admission.json").read_bytes()
+    ).hexdigest()
+    with pytest.raises(BundleAcceptanceError, match="QGC command evidence"):
+        inspect_phase3_semantics(
+            tmp_path,
+            rules_path=RULES_PATH,
+            expected_source_revision=EXPECTED_SOURCE_REVISION,
+            expected_source_dirty=EXPECTED_SOURCE_DIRTY,
+            expected_image_digests=EXPECTED_OPERATOR_IMAGE_DIGESTS,
+            semantic_check=lambda *_args: _physical_evidence(
+                tmp_path, achieved=60.0, admission_sha256=admission_sha256
             ),
         )
 

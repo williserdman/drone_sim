@@ -179,6 +179,27 @@ class CompanionOperatorControl:
     def abort_observed(self) -> bool:
         return self._abort_request_sha256 is not None
 
+    @property
+    def wall_deadline_expired(self) -> bool:
+        return self._monotonic_ns() >= self.wall_deadline_ns
+
+    def qgc_readiness_reasons(self) -> tuple[str, ...]:
+        """Return current vehicle reasons that prevent a QGC Start reservation."""
+        now = self._wall_time_ns()
+        heartbeat = self._fresh_bool("heartbeat_live", now)
+        prearm = self._fresh_bool("prearm_checks_healthy", now)
+        armed = self._fresh_bool("armed", now)
+        landed = self._fresh_bool("landed", now)
+        if armed is True:
+            return ("vehicle is armed",)
+        if heartbeat is not True or armed is not False or landed is None:
+            return ("vehicle telemetry is missing or stale",)
+        if prearm is not True:
+            return ("prearm checks are unhealthy",)
+        if landed is not True:
+            return ("vehicle is not confirmed landed",)
+        return ()
+
     def observe_vehicle(
         self,
         *,

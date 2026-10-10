@@ -50,6 +50,27 @@ rejected command, missing telemetry, timeout, QGC authority change, or Stop
 Simulation remains a visible non-success result rather than fabricated landing
 evidence.
 
+Descriptor-backed runs route project Start 31020 and Abort 31021 through
+[`QgcMissionControl`](src/drone_sim_companion/qgc_control.py). The transport
+callback only enters a bounded queue. The existing companion owner loop validates
+and persists commands, reserves the prepared Start UUID once, and invokes the
+existing admission or recovery controller. Start requires MAVLink 2, the frozen
+QGC and companion identities, the current integer attempt token, zero parameters
+2 through 7, fresh healthy landed/disarmed vehicle facts, and the host's
+calibration, native-time, and producer checks. The owner repeats those readiness
+checks before it releases a pending admission. A restart after reservation fails
+closed and requires a new Prepare.
+
+COMMAND_ACK `ACCEPTED` for Start means that the immutable admission and matching
+RUNNING state authorized mission execution. It does not mean the aircraft flew,
+landed, scored, or produced an acceptable bundle. Pending Start and recovery use
+bounded `IN_PROGRESS` updates. Rejections and terminal recovery results carry a
+50-byte readable STATUSTEXT and append command evidence before the ACK is sent.
+Abort during pending Start records cancellation without inventing an admission;
+Abort after admission delegates to the host's guarded recovery and requires fresh
+landed/disarmed observations for success. Finalization blocks new reservations
+and recovery output.
+
 ## Configured diagnostic missions
 
 `mission: configured` runs an ordered list of drone operations and stops on the

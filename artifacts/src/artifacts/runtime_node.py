@@ -77,6 +77,14 @@ def validate_artifacts_running_admission(
     return True
 
 
+def qgc_command_evidence_paths(protocol: OperatorProtocol) -> tuple[str, ...]:
+    """Freeze the exact command-status inventory after runtime quiescence."""
+    statuses = protocol.read_qgc_command_statuses()
+    return tuple(
+        f".status/qgc-command-{status.sequence:04d}.json" for status in statuses
+    )
+
+
 class _FinalizationProtocol(Protocol):
     def read_finalize_request(self) -> dict[str, Any] | None: ...
 
@@ -759,6 +767,7 @@ def main() -> None:
     finalization = FinalizationRequestLatch(finalization_seconds)
     saw_current_run_starting = False
     quiescent = False
+    qgc_evidence_checked = config.get("operator_control") is None
 
     def emit_log(event: str, **fields: Any) -> None:
         if quiescent:
@@ -922,6 +931,24 @@ def main() -> None:
             finalization_request = finalization.poll(protocol)
             if finalization_request is not None:
                 requested_outcome, finalization_deadline = finalization_request
+                if (
+                    not qgc_evidence_checked
+                    and operator_protocol is not None
+                    and protocol.read_status(RuntimeFrozenStatus) is not None
+                ):
+                    try:
+                        evidence_paths = qgc_command_evidence_paths(operator_protocol)
+                    except Exception as error:
+                        runtime.report_failure(
+                            f"QGC command evidence is invalid: {error}",
+                            [".status/qgc-command-0000.json"],
+                        )
+                    else:
+                        emit_log(
+                            "qgc_command_evidence_frozen",
+                            paths=list(evidence_paths),
+                        )
+                    qgc_evidence_checked = True
                 report = runtime.finalize(requested_outcome, deadline=finalization_deadline)
                 if report is not None or runtime.finalization_started:
                     quiescent = True
@@ -945,6 +972,7 @@ __all__ = [
     "FinalizationRequestLatch",
     "main",
     "publish_artifact_status",
+    "qgc_command_evidence_paths",
     "recording_media_directory",
     "validate_artifacts_running_admission",
 ]

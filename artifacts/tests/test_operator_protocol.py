@@ -17,6 +17,13 @@ from artifacts.operator_protocol import (
     StartAdmission,
     validate_admission_binding,
 )
+from artifacts.qgc_operator import (
+    MAV_RESULT_DENIED,
+    MavlinkIdentity,
+    QgcCommandEnvelope,
+    QgcCommandResponse,
+    QgcCommandStatus,
+)
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -51,6 +58,73 @@ def test_start_admission_schema_matches_protocol_domain() -> None:
     assert list(validator.iter_errors(asdict(protocol_valid_nil))) == []
     invalid = {**asdict(admission), "native_epoch_ns": 50_000_001}
     assert list(validator.iter_errors(invalid))
+
+
+def test_qgc_command_schema_and_protocol_preserve_nonfinite_rejection(
+    run_directory: Path,
+) -> None:
+    schema_path = Path(__file__).parents[1] / "schemas/qgc-command-status.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    envelope = QgcCommandEnvelope(
+        2,
+        MavlinkIdentity(255, 190),
+        MavlinkIdentity(1, 191),
+        31020,
+        (float("nan"), float("inf"), float("-inf"), 0, 0, 0, 0),
+        10,
+    )
+    value = QgcCommandStatus(
+        RUN_ID,
+        CONFIG_SHA256,
+        0,
+        envelope,
+        None,
+        None,
+        None,
+        11,
+        QgcCommandResponse(
+            31020,
+            MavlinkIdentity(255, 190),
+            MAV_RESULT_DENIED,
+            100,
+            "parameters are invalid",
+        ),
+    )
+
+    with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
+        assert protocol.write_qgc_command_status(value) == value
+        assert protocol.read_qgc_command_statuses() == (value,)
+    document = json.loads((run_directory / ".status/qgc-command-0000.json").read_text())
+    assert document["envelope"]["parameters"][:3] == [
+        "NaN",
+        "Infinity",
+        "-Infinity",
+    ]
+    assert list(Draft202012Validator(schema).iter_errors(document)) == []
+
+
+def test_qgc_command_statuses_require_contiguous_immutable_sequence(
+    run_directory: Path,
+) -> None:
+    source = MavlinkIdentity(255, 190)
+    envelope = QgcCommandEnvelope(
+        2, source, MavlinkIdentity(1, 191), 31020, (1, 0, 0, 0, 0, 0, 0), 10
+    )
+    skipped = QgcCommandStatus(
+        RUN_ID,
+        CONFIG_SHA256,
+        1,
+        envelope,
+        None,
+        None,
+        None,
+        11,
+        QgcCommandResponse(31020, source, MAV_RESULT_DENIED, 100, "denied"),
+    )
+    with OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256) as protocol:
+        with pytest.raises(OperatorProtocolConflict, match="contiguous"):
+            protocol.write_qgc_command_status(skipped)
 
 
 @pytest.fixture
