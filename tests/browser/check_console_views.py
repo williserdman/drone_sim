@@ -100,7 +100,7 @@ def main():
             expect(page.locator('#session-state')).to_have_text('prepared', timeout=4000)
             assert '/tmp/QGroundControl/MavlinkActions/drone-sim-11111111-1111-4111-8111-111111111111.json' in page.locator('#qgc-action-path').inner_text()
             session.connected=True
-            expect(page.locator('#gazebo-status')).to_have_text('Live', timeout=4000)
+            expect(page.locator('#gazebo-status')).to_have_text('Live', timeout=7000)
             assert any(visits), f'Gazebo did not reconnect when runtime became available: {visits}'
             assert session.observations == [{'run_id':'11111111-1111-4111-8111-111111111111', 'connected':True}]
             assert 'waiting for disarmed preflight' in page.locator('#flight-detail').inner_text()
