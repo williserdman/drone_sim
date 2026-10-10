@@ -22,6 +22,7 @@ from typing import Any, Mapping
 from uuid import UUID
 
 from artifacts.runtime_protocol import RuntimeProtocol
+from artifacts.qgc_operator import QgcOperatorDescriptor, parse_qgc_operator_descriptor
 from artifacts.runtime_status import (
     CompanionReadyStatus,
     MissionCommandDeliveredStatus,
@@ -105,6 +106,7 @@ class RuntimeConfig:
     scenario: str = ""
     public_duration_ns: int = 0
     calibration_json: str | None = None
+    operator_control: QgcOperatorDescriptor | None = None
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "RuntimeConfig":
@@ -145,6 +147,13 @@ class RuntimeConfig:
         launch_mode = document.get("launch_mode", "unattended")
         if launch_mode not in {"unattended", "operator"}:
             raise ValueError("launch_mode must be unattended or operator")
+        operator_control = (
+            parse_qgc_operator_descriptor(document["operator_control"])
+            if "operator_control" in document
+            else None
+        )
+        if operator_control is not None and launch_mode != "operator":
+            raise ValueError("operator_control requires launch_mode operator")
         preparation_wall_seconds = document.get("preparation_wall_seconds", 1800)
         if (
             isinstance(preparation_wall_seconds, bool)
@@ -248,6 +257,7 @@ class RuntimeConfig:
             scenario=str(document.get("scenario", "")),
             public_duration_ns=int(float(duration_seconds) * 1_000_000_000),
             calibration_json=calibration_json,
+            operator_control=operator_control,
         )
 
 
@@ -262,12 +272,19 @@ def connect_mavlink(
     deadline: float,
     now: Callable[[], float] = time.monotonic,
     pause: Callable[[float], None] = time.sleep,
+    source_identity: QgcOperatorDescriptor | None = None,
 ) -> Any:
     """Bound retries for unavailable TCP infrastructure using wall time only."""
     last_error: OSError | None = None
     while True:
         try:
-            return factory(endpoint, autoreconnect=False, source_system=255)
+            options: dict[str, Any] = {"autoreconnect": False, "source_system": 255}
+            if source_identity is not None:
+                options.update(
+                    source_system=source_identity.companion.system_id,
+                    source_component=source_identity.companion.component_id,
+                )
+            return factory(endpoint, **options)
         except OSError as error:
             last_error = error
         if now() >= deadline:
@@ -532,6 +549,7 @@ def connect_autotune_vehicle(
     *,
     heartbeat_timeout: float,
     run_state_subscription: Any,
+    qgc_descriptor: QgcOperatorDescriptor | None = None,
 ) -> Any:
     """Connect only after ROS can receive the READY state that starts simulation."""
     if run_state_subscription is None:
@@ -539,11 +557,22 @@ def connect_autotune_vehicle(
     _enable_dronekit_python312_compatibility()
     from .dronekit_sim import SimulationVehicle
 
+    options: dict[str, Any] = {}
+    if qgc_descriptor is not None:
+        from .qgc_transport import configure_dronekit_mavlink2
+
+        configure_dronekit_mavlink2()
+        options.update(
+            source_system=qgc_descriptor.companion.system_id,
+            source_component=qgc_descriptor.companion.component_id,
+        )
+
     return factory(
         endpoint,
         wait_ready=False,
         heartbeat_timeout=heartbeat_timeout,
         vehicle_class=SimulationVehicle,
+        **options,
     )
 
 
@@ -640,6 +669,65 @@ def _operator_control(config: RuntimeConfig, protocol: _ProductionProtocol) -> A
         mission_wall_seconds=config.max_wall_seconds,
         recovery_wall_seconds=config.finalization_wall_seconds,
     )
+
+
+def _compose_qgc_control(
+    config: RuntimeConfig,
+    protocol: _ProductionProtocol,
+    operator_control: Any,
+    io: Any,
+    *,
+    readiness_reasons: Callable[[], tuple[str, ...]],
+    is_finalizing: Callable[[], bool],
+) -> Any:
+    descriptor = getattr(config, "operator_control", None)
+    if descriptor is None:
+        return operator_control
+    from .qgc_transport import QgcHostControl
+
+    def live_readiness_reasons() -> tuple[str, ...]:
+        reasons: list[str] = []
+        gazebo = protocol.operator.read_preflight("gazebo")
+        now = time.time_ns()
+        if gazebo is None or gazebo.ready is not True:
+            reasons.append("Gazebo native physics and camera are not ready")
+        elif not -2_000_000_000 <= now - gazebo.observed_wall_time_ns <= 5_000_000_000:
+            reasons.append("Gazebo native physics and camera preflight is stale")
+        reasons.extend(readiness_reasons())
+        return tuple(reasons)
+
+    return QgcHostControl(
+        protocol=protocol.operator,
+        operator=operator_control,
+        descriptor=descriptor,
+        io=io,
+        readiness_reasons=live_readiness_reasons,
+        is_finalizing=is_finalizing,
+    )
+
+
+def _observe_qgc_vehicle_facts(
+    config: RuntimeConfig,
+    operator_control: Any,
+    vehicle: Any,
+) -> bool:
+    """Apply receipt-stamped facts on the host owner loop for QGC runs."""
+    if getattr(config, "operator_control", None) is None:
+        return False
+    drain = getattr(vehicle, "drain_operator_observations", None)
+    if not callable(drain):
+        raise RuntimeError("descriptor-backed host lacks fresh vehicle fact drain")
+    for observation in drain():
+        operator_control.observe_vehicle(
+            native_timestamp_ns=observation.native_timestamp_ns,
+            received_wall_time_ns=observation.received_wall_time_ns,
+            heartbeat_live=observation.heartbeat_live,
+            prearm_checks_healthy=observation.prearm_checks_healthy,
+            armed=observation.armed,
+            landed=observation.landed,
+            mode=observation.mode,
+        )
+    return True
 
 
 def process_runtime_telemetry(
@@ -753,6 +841,11 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     from rosgraph_msgs.msg import Clock
     from simulation_interfaces.msg import RunState
 
+    if config.operator_control is not None:
+        from .qgc_transport import configure_dronekit_mavlink2
+
+        configure_dronekit_mavlink2()
+
     started = time.monotonic()
     overall_wall_deadline = started + config.max_wall_seconds
     try:
@@ -763,6 +856,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                 started + config.startup_timeout_seconds,
                 overall_wall_deadline,
             ),
+            source_identity=config.operator_control,
         )
     except TimeoutError as error:
         lifecycle.observe_terminal(
@@ -772,7 +866,12 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
         protocol.close()
         return 1
     lifecycle.mark_transport_ready()
-    vehicle = MavlinkAdapter(connection, mavutil)
+    qgc_io = None
+    if config.operator_control is not None:
+        from .qgc_transport import PymavlinkQgcCommandIO
+
+        qgc_io = PymavlinkQgcCommandIO(connection, mavutil.mavlink)
+    vehicle = MavlinkAdapter(connection, mavutil, qgc_io=qgc_io)
     calibration = _CalibrationReadiness(calibration_parameters(config))
     controller = MissionController(
         vehicle,
@@ -791,6 +890,18 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     last_landed: bool | None = None
     operator_abort_reported = False
     exit_code = 0
+    operator_control = _compose_qgc_control(
+        config,
+        protocol,
+        operator_control,
+        qgc_io,
+        readiness_reasons=lambda: (
+            ("calibration parameters are not ready",)
+            if calibration.required and not calibration.ready
+            else ()
+        ),
+        is_finalizing=lambda: finalizing or requested_stop,
+    )
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
@@ -889,14 +1000,17 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                             last_armed = telemetry.armed
                         if telemetry.landed is not None:
                             last_landed = telemetry.landed
-                        operator_control.observe_vehicle(
-                            native_timestamp_ns=telemetry.timestamp_ns,
-                            heartbeat_live=True if telemetry.heartbeat else None,
-                            prearm_checks_healthy=telemetry.prearm_checks_healthy,
-                            armed=telemetry.armed,
-                            landed=telemetry.landed,
-                            mode=telemetry.mode,
-                        )
+                        if not _observe_qgc_vehicle_facts(
+                            config, operator_control, vehicle
+                        ):
+                            operator_control.observe_vehicle(
+                                native_timestamp_ns=telemetry.timestamp_ns,
+                                heartbeat_live=True if telemetry.heartbeat else None,
+                                prearm_checks_healthy=telemetry.prearm_checks_healthy,
+                                armed=telemetry.armed,
+                                landed=telemetry.landed,
+                                mode=telemetry.mode,
+                            )
                         if (
                             operator_control.recovery_active
                             and telemetry.ack is not None
@@ -1097,6 +1211,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
             config.mavlink_endpoint,
             heartbeat_timeout=config.startup_timeout_seconds,
             run_state_subscription=run_state_subscription,
+            qgc_descriptor=config.operator_control,
         )
     except Exception as error:
         reason = f"DroneKit connection failed: {error}"
@@ -1110,6 +1225,11 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
         return 1
 
     lifecycle.mark_transport_ready()
+    qgc_io = None
+    if config.operator_control is not None:
+        from .qgc_transport import DroneKitQgcCommandIO
+
+        qgc_io = DroneKitQgcCommandIO(vehicle, calibration_autotune.mavutil.mavlink)
     calibration = _CalibrationReadiness(calibration_parameters(config))
     hover_only = config.mission == "hover_roll"
     status_texts: collections.deque[str] = collections.deque()
@@ -1222,6 +1342,18 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     recovery_started_ns: int | None = None
     aux_ack_event_emitted = False
     operator_abort_reported = False
+    operator_control = _compose_qgc_control(
+        config,
+        protocol,
+        operator_control,
+        qgc_io,
+        readiness_reasons=lambda: (
+            ("calibration parameters are not ready",)
+            if calibration.required and not calibration.ready
+            else ()
+        ),
+        is_finalizing=lambda: finalizing or requested_stop,
+    )
 
     def begin_operator_recovery(reason: str) -> bool:
         nonlocal exit_code, operator_abort_reported
@@ -1263,16 +1395,17 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 and math.isfinite(altitude)
                 and altitude <= 0.3
             )
-            operator_control.observe_vehicle(
-                native_timestamp_ns=latest_clock_ns,
-                heartbeat_live=dronekit_heartbeat_is_fresh(
-                    getattr(vehicle, "last_heartbeat", None)
-                ),
-                prearm_checks_healthy=armable,
-                armed=armed,
-                landed=landed,
-                mode=mode,
-            )
+            if not _observe_qgc_vehicle_facts(config, operator_control, vehicle):
+                operator_control.observe_vehicle(
+                    native_timestamp_ns=latest_clock_ns,
+                    heartbeat_live=dronekit_heartbeat_is_fresh(
+                        getattr(vehicle, "last_heartbeat", None)
+                    ),
+                    prearm_checks_healthy=armable,
+                    armed=armed,
+                    landed=landed,
+                    mode=mode,
+                )
             start = operator_control.poll_start(run_state=mission_running)
             operator_control.poll_abort(
                 finalizing=False,
@@ -1624,13 +1757,24 @@ def _run_autotune(config: RuntimeConfig) -> int:
     node.create_subscription(Clock, "/clock", clock_callback, QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE))
     run_state_subscription = node.create_subscription(RunState, "/simulation/run_state", state_callback, QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
     try:
-        vehicle = connect_autotune_vehicle(connect, config.mavlink_endpoint, heartbeat_timeout=config.startup_timeout_seconds, run_state_subscription=run_state_subscription)
+        vehicle = connect_autotune_vehicle(
+            connect,
+            config.mavlink_endpoint,
+            heartbeat_timeout=config.startup_timeout_seconds,
+            run_state_subscription=run_state_subscription,
+            qgc_descriptor=config.operator_control,
+        )
     except Exception as error:
         lifecycle.observe_terminal(MissionState(MissionPhase.FAILED, last_timestamp_ns=0, failure_reason=f"DroneKit connection failed: {error}"))
         lifecycle.finalize(None); node.destroy_node(); rclpy.shutdown(); protocol.close()
         return 1
 
     lifecycle.mark_transport_ready()
+    qgc_io = None
+    if config.operator_control is not None:
+        from .qgc_transport import DroneKitQgcCommandIO
+
+        qgc_io = DroneKitQgcCommandIO(vehicle, calibration_autotune.mavutil.mavlink)
     state = calibration_autotune.AllAxisState.initial(public_deadline_ns=config.public_duration_ns)
     status_texts: collections.deque[str] = collections.deque()
     status_assembler = calibration_autotune.StatusTextAssembler()
@@ -1690,6 +1834,14 @@ def _run_autotune(config: RuntimeConfig) -> int:
     recovery_started_ns: int | None = None
     last_neutral_refresh_wall = 0.0
     operator_abort_reported = False
+    operator_control = _compose_qgc_control(
+        config,
+        protocol,
+        operator_control,
+        qgc_io,
+        readiness_reasons=lambda: (),
+        is_finalizing=lambda: finalizing or stopped,
+    )
 
     def export_readback() -> None:
         from artifacts.calibration import (
@@ -1753,16 +1905,17 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 and preflight_position is not None
                 and preflight_position[3] <= 0.3
             )
-            operator_control.observe_vehicle(
-                native_timestamp_ns=latest_clock_ns,
-                heartbeat_live=dronekit_heartbeat_is_fresh(
-                    getattr(vehicle, "last_heartbeat", None)
-                ),
-                prearm_checks_healthy=armable,
-                armed=armed,
-                landed=landed,
-                mode=mode,
-            )
+            if not _observe_qgc_vehicle_facts(config, operator_control, vehicle):
+                operator_control.observe_vehicle(
+                    native_timestamp_ns=latest_clock_ns,
+                    heartbeat_live=dronekit_heartbeat_is_fresh(
+                        getattr(vehicle, "last_heartbeat", None)
+                    ),
+                    prearm_checks_healthy=armable,
+                    armed=armed,
+                    landed=landed,
+                    mode=mode,
+                )
             start = operator_control.poll_start(run_state=mission_running)
             operator_control.poll_abort(
                 finalizing=False,
@@ -2343,6 +2496,32 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             attempt_failure.fail(f"DroneKit connection failed: {error}")
         else:
             lifecycle.mark_transport_ready()
+            qgc_io = None
+            if config.operator_control is not None:
+                from .qgc_transport import DroneKitQgcCommandIO
+
+                qgc_io = DroneKitQgcCommandIO(
+                    controller.vehicle, calibration_autotune.mavutil.mavlink
+                )
+
+            def competition_readiness_reasons() -> tuple[str, ...]:
+                assert competition_control is not None
+                ready = competition_control.ready_for_initial_command()
+                reasons = list(competition_control.ground_telemetry_pending_reasons)
+                if not ready and not reasons:
+                    reasons.append("competition ground telemetry is not ready")
+                if calibration.required and not calibration.ready:
+                    reasons.append("calibration parameters are not ready")
+                return tuple(reasons)
+
+            operator_control = _compose_qgc_control(
+                config,
+                protocol,
+                operator_control,
+                qgc_io,
+                readiness_reasons=competition_readiness_reasons,
+                is_finalizing=lambda: shutdown_admission.finalizing,
+            )
             mission_worker = threading.Thread(
                 target=run_original_attempt,
                 name="comp2026-original-attempt",
@@ -2388,16 +2567,19 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     and math.isfinite(altitude)
                     and altitude <= 0.3
                 )
-                operator_control.observe_vehicle(
-                    native_timestamp_ns=recovery_clock.timestamp_ns,
-                    heartbeat_live=dronekit_heartbeat_is_fresh(
-                        getattr(controller.vehicle, "last_heartbeat", None)
-                    ),
-                    prearm_checks_healthy=prearm_checks_healthy,
-                    armed=armed,
-                    landed=landed,
-                    mode=mode,
-                )
+                if not _observe_qgc_vehicle_facts(
+                    config, operator_control, controller.vehicle
+                ):
+                    operator_control.observe_vehicle(
+                        native_timestamp_ns=recovery_clock.timestamp_ns,
+                        heartbeat_live=dronekit_heartbeat_is_fresh(
+                            getattr(controller.vehicle, "last_heartbeat", None)
+                        ),
+                        prearm_checks_healthy=prearm_checks_healthy,
+                        armed=armed,
+                        landed=landed,
+                        mode=mode,
+                    )
                 start = operator_control.poll_start(run_state=mission_running)
                 if start.admitted_now:
                     competition_start_deadline = (

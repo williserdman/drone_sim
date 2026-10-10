@@ -1,6 +1,7 @@
 import collections
 import collections.abc
 import importlib
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -59,6 +60,7 @@ def parameter(*, count, index, name, value):
         param_id=name,
         param_value=value,
         get_srcSystem=lambda: 1,
+        get_srcComponent=lambda: 1,
     )
 
 
@@ -161,6 +163,94 @@ def test_simulation_vehicle_rejects_all_foreign_telemetry_before_dronekit_callba
 
     assert observed == ["HEARTBEAT"]
     assert vehicle.armed is False
+
+
+def test_qgc_dispatch_precedes_fc_filter_and_fresh_facts_are_not_refreshed():
+    vehicle = _simulation_vehicle_type()(Handler())
+    qgc_messages = []
+    vehicle.install_qgc_message_callback(qgc_messages.append)
+    qgc_command = sourced_message(
+        mavlink.MAVLink_command_long_message(
+            1, 191, 31020, 0, 123, 0, 0, 0, 0, 0, 0
+        ),
+        system_id=255,
+        component_id=190,
+    )
+    heartbeat = sourced_message(
+        mavlink.MAVLink_heartbeat_message(2, 3, 0, 4, 3, 3),
+        system_id=1,
+        component_id=1,
+    )
+    landed = sourced_message(
+        mavlink.MAVLink_extended_sys_state_message(0, 1),
+        system_id=1,
+        component_id=1,
+    )
+
+    vehicle.notify_message_listeners("COMMAND_LONG", qgc_command)
+    vehicle.notify_message_listeners("HEARTBEAT", heartbeat)
+    vehicle.notify_message_listeners("EXTENDED_SYS_STATE", landed)
+
+    assert qgc_messages == [qgc_command, heartbeat, landed]
+    observations = vehicle.drain_operator_observations()
+    assert len(observations) == 2
+    assert observations[0].heartbeat_live is True
+    assert observations[0].armed is False
+    assert observations[1].landed is True
+    assert vehicle.drain_operator_observations() == ()
+
+
+def test_operator_fact_drain_is_atomic_with_reader_callback() -> None:
+    vehicle = _simulation_vehicle_type()(Handler())
+    first = sourced_message(
+        mavlink.MAVLink_heartbeat_message(2, 3, 0, 0, 3, 3),
+        system_id=1,
+        component_id=1,
+    )
+    second = sourced_message(
+        mavlink.MAVLink_extended_sys_state_message(0, 1),
+        system_id=1,
+        component_id=1,
+    )
+    vehicle.notify_message_listeners("HEARTBEAT", first)
+
+    iteration_started = threading.Event()
+    allow_iteration = threading.Event()
+
+    class PausingDeque(collections.deque):
+        def __iter__(self):
+            iteration_started.set()
+            assert allow_iteration.wait(1.0)
+            return super().__iter__()
+
+    vehicle._operator_observations = PausingDeque(
+        vehicle._operator_observations,
+        maxlen=64,
+    )
+    drained = []
+    drain_finished = threading.Event()
+    append_finished = threading.Event()
+    drain = threading.Thread(
+        target=lambda: (drained.extend(vehicle.drain_operator_observations()), drain_finished.set())
+    )
+    append = threading.Thread(
+        target=lambda: (
+            vehicle.notify_message_listeners("EXTENDED_SYS_STATE", second),
+            append_finished.set(),
+        )
+    )
+    drain.start()
+    assert iteration_started.wait(1.0)
+    append.start()
+    assert not append_finished.wait(0.02)
+    allow_iteration.set()
+    drain.join(timeout=1.0)
+    append.join(timeout=1.0)
+
+    assert len(drained) == 1
+    remaining = vehicle.drain_operator_observations()
+    assert len(remaining) == 1
+    assert remaining[0].landed is True
 
 
 def test_simulation_vehicle_requests_frequent_vehicle_heartbeat_after_connect(monkeypatch):

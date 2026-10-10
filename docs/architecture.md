@@ -125,6 +125,24 @@ validate the same admission; recorded run-state evidence and the final manifest
 retain its digest. Private preparation frames never become public mission frames.
 Existing unattended launch mode retains its original fixed-epoch behavior.
 
+Descriptor-backed native QGC control uses each mission host's existing MAVLink
+connection. QGC sends MAVLink 2 `COMMAND_LONG` from 255/190 through the
+host-published local SERIAL1 endpoint; ArduPilot routing forwards target 1/191
+to the companion's SERIAL0 connection. The companion advertises 1/191 so that
+route can be learned. Raw pymavlink and DroneKit retain one reader and one
+encoder/queue, dispatch QGC commands before exact FC 1/1 telemetry filtering,
+and send targeted ACK plus STATUSTEXT without rewriting the recipient. Commands
+targeted to FC 1/1 remain owned by ArduPilot. Unit tests establish this adapter
+contract; current native-QGC routing remains a live acceptance gate.
+
+Before public mission `/clock` is released, QGC admission uses the Gazebo private
+preflight record for advancing native physics and camera production. Companion
+ground readiness uses only receipt-stamped FC HEARTBEAT, SYS_STATUS, and
+EXTENDED_SYS_STATE messages applied on the owner loop. Cached DroneKit state does
+not extend freshness or infer touchdown. The admitted request continues through
+Gazebo's existing request-scoped 50 ms epoch rendezvous, including configured
+operator-wait runs.
+
 Flight abort has a distinct durable request and observed recovery history. It
 stops mission intent through the selected onboard host's guarded recovery path
 while keeping runtime observation available. Stop Simulation uses finalization

@@ -73,6 +73,23 @@ Abort after admission delegates to the host's guarded recovery and requires fres
 landed/disarmed observations for success. Finalization blocks new reservations
 and recovery output.
 
+Both live MAVLink adapters keep their existing single reader and encoder. Raw
+pymavlink dispatches `COMMAND_LONG` before continuing to exact flight-controller
+1/1 telemetry; DroneKit dispatches through `SimulationVehicle` before its normal
+non-FC filter and queues responses through the existing `MAVWriter`. Each adapter
+advertises companion 1/191, accepts prepared QGC 255/190 separately, and
+preserves the QGC target on MAVLink 2 ACKs despite DroneKit's ordinary
+flight-controller target rewrite. Commands addressed to flight controller 1/1
+remain FC-owned and receive no companion ACK.
+
+Descriptor-backed readiness consumes only newly received exact-FC HEARTBEAT,
+SYS_STATUS, and EXTENDED_SYS_STATE facts with their wall receipt times. The owner
+loop applies those facts, so receive callbacks perform no persistence. Cached
+DroneKit attributes and later position packets cannot refresh disarm or ground
+evidence. QGC Start also reads fresh Gazebo private physics/camera preflight
+before public mission time exists, preserving Gazebo's request-scoped 50 ms
+epoch. Unattended and descriptor-absent runs retain their historical behavior.
+
 ## Configured diagnostic missions
 
 `mission: configured` runs an ordered list of drone operations and stops on the

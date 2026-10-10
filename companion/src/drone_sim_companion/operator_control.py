@@ -204,13 +204,21 @@ class CompanionOperatorControl:
         self,
         *,
         native_timestamp_ns: int | None,
+        received_wall_time_ns: int | None = None,
         heartbeat_live: bool | None = None,
         prearm_checks_healthy: bool | None = None,
         armed: bool | None = None,
         landed: bool | None = None,
         mode: str | None = None,
     ) -> None:
-        now = self._wall_time_ns()
+        wall_now = self._wall_time_ns()
+        observed_at = wall_now if received_wall_time_ns is None else received_wall_time_ns
+        if (
+            type(observed_at) is not int
+            or observed_at < 0
+            or observed_at > wall_now + _FRESH_WALL_NS
+        ):
+            raise ValueError("received_wall_time_ns must be a bounded wall timestamp")
         for name, value in (
             ("heartbeat_live", heartbeat_live),
             ("prearm_checks_healthy", prearm_checks_healthy),
@@ -220,21 +228,21 @@ class CompanionOperatorControl:
         ):
             if value is not None:
                 self._values[name] = value
-                self._observed_at[name] = now
+                self._observed_at[name] = observed_at
         if native_timestamp_ns is not None:
             self._native_timestamp_ns = native_timestamp_ns
         if not self.operator_mode:
             return
         values = (
-            self._fresh_bool("heartbeat_live", now),
-            self._fresh_bool("prearm_checks_healthy", now),
-            self._fresh_bool("armed", now),
+            self._fresh_bool("heartbeat_live", wall_now),
+            self._fresh_bool("prearm_checks_healthy", wall_now),
+            self._fresh_bool("armed", wall_now),
         )
         ready = values[0] is True and values[1] is True and values[2] is False
         if (
             values == self._last_preflight_values
             and self._last_preflight_write_ns is not None
-            and now - self._last_preflight_write_ns < 250_000_000
+            and wall_now - self._last_preflight_write_ns < 250_000_000
         ):
             return
         self._protocol.write_preflight(
@@ -243,7 +251,7 @@ class CompanionOperatorControl:
                 config_sha256=self._config_sha256,
                 component="companion",
                 sequence=self._preflight_sequence,
-                observed_wall_time_ns=now,
+                observed_wall_time_ns=wall_now,
                 native_timestamp_ns=self._native_timestamp_ns,
                 heartbeat_live=values[0],
                 prearm_checks_healthy=values[1],
@@ -257,7 +265,7 @@ class CompanionOperatorControl:
             )
         )
         self._preflight_sequence += 1
-        self._last_preflight_write_ns = now
+        self._last_preflight_write_ns = wall_now
         self._last_preflight_values = values
 
     def poll_start(self, *, run_state: RunningStateBinding | None) -> StartDecision:

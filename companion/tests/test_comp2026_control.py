@@ -80,6 +80,7 @@ class CallbackVehicle:
 
 
 def policy():
+    qgc = SourceIdentity(255, 190)
     companion = SourceIdentity(1, 191)
     fc = SourceIdentity(1, 1)
     freshness = MappingProxyType({
@@ -89,7 +90,7 @@ def policy():
         )
     })
     profile = FlightProfile(
-        "test", "a" * 64, "ArduCopter", companion, companion, fc, freshness,
+        "test", "a" * 64, "ArduCopter", qgc, companion, fc, freshness,
         1.0, 7,
         (RCModeBand("companion", 1400, 1600, "GUIDED"), RCModeBand("pilot", 1800, 2100, "LOITER")),
         2, 3, MappingProxyType({4: "GUIDED", 5: "LOITER"}),
@@ -290,6 +291,11 @@ def test_ground_readiness_attempt_and_original_phase_order(tmp_path):
     control.begin_attempt()
     assert control.controller.mission_home == MissionHome(37.4003371, -122.0800351, 0.0)
     assert control.supervisor.status(FM1) == "RUNNING"
+    reserved = control.supervisor.reserved_envelope(FM1)
+    assert reserved is not None
+    assert (reserved.source_system, reserved.source_component) == (1, 191)
+    assert (reserved.target_system, reserved.target_component) == (1, 191)
+    assert (reserved.source_system, reserved.source_component) != (255, 190)
 
     for event in (("FM1", "STARTED"), ("FM1", "COMPLETE"), ("FM2", "STARTED"),
                   ("FM2", "COMPLETE"), ("FM3_3", "STARTED"), ("FM3_3", "COMPLETE"),
@@ -301,6 +307,22 @@ def test_ground_readiness_attempt_and_original_phase_order(tmp_path):
     assert control.supervisor.terminal_result == "SUCCEEDED"
     with pytest.raises(RuntimeError, match="unexpected automatic mission event"):
         control.phase_event("HOME", "COMPLETE")
+
+
+def test_descriptor_absent_automatic_phase_is_internal_companion_bookkeeping(
+    tmp_path,
+):
+    control, selected = make_control(tmp_path)
+    seed_ground(control)
+
+    control.begin_attempt()
+
+    envelope = control.supervisor.reserved_envelope(FM1)
+    assert envelope is not None
+    assert selected.flight_profile.qgc_source == SourceIdentity(255, 190)
+    assert selected.flight_profile.companion_target == SourceIdentity(1, 191)
+    assert (envelope.source_system, envelope.source_component) == (1, 191)
+    assert (envelope.target_system, envelope.target_component) == (1, 191)
 
 
 def test_real_callbacks_keep_startup_pending_until_ground_snapshot_is_complete(

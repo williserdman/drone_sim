@@ -260,7 +260,8 @@ def build_competition_policy(
         "attitude": 0.5, "landed_state": 0.5, "armed": 2.0, "home": 2.0,
         "rc_input": 0.5, "range": 0.5, "failsafe": 2.0,
     })
-    identity = SourceIdentity(1, 191)
+    qgc = SourceIdentity(255, 190)
+    companion = SourceIdentity(1, 191)
     fc = SourceIdentity(1, 1)
     requests = tuple(
         TelemetryRequest(message_id, 100_000 if message_id == 0 else 50_000)
@@ -268,7 +269,7 @@ def build_competition_policy(
     )
     flight_profile = FlightProfile(
         profile_id="competition-sitl-copter-4.7-v1", raw_sha256=evidence_sha256,
-        firmware="ArduCopter 4.7.0", qgc_source=identity, companion_target=identity,
+        firmware="ArduCopter 4.7.0", qgc_source=qgc, companion_target=companion,
         flight_controller=fc, freshness_bounds=freshness, rc_health_max_age=0.5,
         rc_channel=7, rc_mode_bands=(
             RCModeBand("stabilize", 801, 1230, "STABILIZE"),

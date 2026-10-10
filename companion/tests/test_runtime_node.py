@@ -13,6 +13,15 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from artifacts.qgc_operator import (
+    MavlinkIdentity,
+    QGC_ABORT_COMMAND,
+    QGC_ACTIONS_KIND,
+    QGC_START_COMMAND,
+    QgcOperatorDescriptor,
+    qgc_operator_descriptor_document,
+)
+
 from artifacts.runtime_status import (
     MissionCommandDeliveredStatus,
     MissionExecutionReadyStatus,
@@ -1967,6 +1976,41 @@ def test_runtime_config_uses_resolved_run_startup_deadline(tmp_path: Path) -> No
     assert config.mission == "controlled_descent"
 
 
+def test_runtime_config_loads_frozen_qgc_operator_descriptor(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_resolved_config(run_directory)
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    descriptor = QgcOperatorDescriptor(
+        QGC_ACTIONS_KIND,
+        QGC_START_COMMAND,
+        QGC_ABORT_COMMAND,
+        17,
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+        MavlinkIdentity(255, 190),
+        MavlinkIdentity(1, 191),
+        MavlinkIdentity(1, 1),
+        "configuration/qgc-actions.json",
+        "b" * 64,
+    )
+    document.update(
+        launch_mode="operator",
+        preparation_wall_seconds=1800,
+        operator_control=qgc_operator_descriptor_document(descriptor),
+    )
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+
+    assert config.operator_control == descriptor
+
+
 def test_runtime_config_accepts_roll_autotune_without_competition_sources(
     tmp_path: Path,
 ) -> None:
@@ -2238,6 +2282,41 @@ def test_autotune_vehicle_connection_requires_run_state_subscription() -> None:
     assert vehicle_class.__name__ == "SimulationVehicle"
 
 
+def test_qgc_autotune_connection_sets_mavlink2_and_companion_source_before_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured: list[str] = []
+    module = ModuleType("drone_sim_companion.qgc_transport")
+    module.configure_dronekit_mavlink2 = lambda: configured.append("mavlink2")
+    monkeypatch.setitem(sys.modules, "drone_sim_companion.qgc_transport", module)
+    observed: list[dict[str, object]] = []
+    descriptor = QgcOperatorDescriptor(
+        QGC_ACTIONS_KIND,
+        QGC_START_COMMAND,
+        QGC_ABORT_COMMAND,
+        17,
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+        MavlinkIdentity(255, 190),
+        MavlinkIdentity(1, 191),
+        MavlinkIdentity(1, 1),
+        "configuration/qgc-actions.json",
+        "b" * 64,
+    )
+
+    connect_autotune_vehicle(
+        lambda _endpoint, **options: observed.append(options) or object(),
+        "tcp:ardupilot-sitl:5760",
+        heartbeat_timeout=120.0,
+        run_state_subscription=object(),
+        qgc_descriptor=descriptor,
+    )
+
+    assert configured == ["mavlink2"]
+    assert observed[0]["source_system"] == 1
+    assert observed[0]["source_component"] == 191
+
+
 def test_runtime_config_rejects_config_outside_current_run(tmp_path: Path) -> None:
     run_directory = tmp_path / RUN_ID
     config_path = write_resolved_config(tmp_path / "another-run")
@@ -2469,6 +2548,39 @@ def test_mavlink_connect_retries_only_within_wall_infrastructure_deadline() -> N
         == "connected"
     )
     assert pauses == [0.1, 0.1]
+
+
+def test_qgc_raw_connection_retries_with_companion_source_identity() -> None:
+    calls: list[dict[str, object]] = []
+    descriptor = QgcOperatorDescriptor(
+        QGC_ACTIONS_KIND,
+        QGC_START_COMMAND,
+        QGC_ABORT_COMMAND,
+        17,
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+        MavlinkIdentity(255, 190),
+        MavlinkIdentity(1, 191),
+        MavlinkIdentity(1, 1),
+        "configuration/qgc-actions.json",
+        "b" * 64,
+    )
+
+    result = connect_mavlink(
+        lambda _endpoint, **options: calls.append(options) or object(),
+        "tcp:ardupilot-sitl:5760",
+        deadline=1.0,
+        source_identity=descriptor,
+    )
+
+    assert result is not None
+    assert calls == [
+        {
+            "autoreconnect": False,
+            "source_system": 1,
+            "source_component": 191,
+        }
+    ]
 
 
 def test_runtime_wires_passive_facts_to_durable_mission_readiness() -> None:

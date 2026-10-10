@@ -36,7 +36,13 @@ The companion connects over Compose-only MAVLink TCP at
 `tcp://ardupilot-sitl:5760`. ArduPilot consumes flight commands and provides
 telemetry, modes, state, acknowledgements, and `STATUSTEXT` diagnostics.
 Native SERIAL1 adds private TCP `5762` for the suite's external operator. It has
-a distinct GCS system ID and no host-published port; SERIAL0 remains `5760`.
+a distinct GCS system ID and no host-published port in the base and suite
+topologies; SERIAL0 remains `5760`. The local-QGC overlay is the deliberate
+exception: `compose.local.yaml` publishes SERIAL1 only on `127.0.0.1:5762`,
+allowing native QGC 255/190 to reach ArduPilot without exposing the endpoint on
+non-loopback host interfaces. ArduPilot routes prepared project commands to
+advertised companion 1/191 on SERIAL0. Current-run routing is verified during
+native acceptance rather than inferred from adapter mocks.
 Native TCP server arguments use `tcp:<port>`, without a bind-address field.
 The pinned UART parser treats `tcp:0.0.0.0:<port>` as port zero, falling back to
 5760 and causing SERIAL1 to collide with the primary channel.

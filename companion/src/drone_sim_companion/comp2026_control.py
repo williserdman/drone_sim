@@ -185,11 +185,12 @@ class SimulationCompetitionControl:
 
         self.controller.install_startup_telemetry_verifier(verify, verified=False)
 
-    def _envelope(self, command: int) -> CommandEnvelope:
+    def _internal_phase_envelope(self, command: int) -> CommandEnvelope:
+        """Represent simulator-owned phase progression without fabricating QGC input."""
         profile = self.policy.flight_profile
         return CommandEnvelope(
-            source_system=profile.qgc_source.system_id,
-            source_component=profile.qgc_source.component_id,
+            source_system=profile.companion_target.system_id,
+            source_component=profile.companion_target.component_id,
             target_system=profile.companion_target.system_id,
             target_component=profile.companion_target.component_id,
             command=command,
@@ -199,7 +200,7 @@ class SimulationCompetitionControl:
         )
 
     def begin_attempt(self) -> None:
-        if self.supervisor.admit(self._envelope(FM1)) is not True:
+        if self.supervisor.admit(self._internal_phase_envelope(FM1)) is not True:
             raise CommandRejected("FM1 was already admitted")
         self.supervisor.begin(FM1)
 
@@ -232,11 +233,11 @@ class SimulationCompetitionControl:
         self._phase_event_index += 1
         if (phase, state) == ("FM1", "COMPLETE"):
             self.supervisor.finish(FM1, "SUCCEEDED")
-            self.supervisor.admit(self._envelope(FM2))
+            self.supervisor.admit(self._internal_phase_envelope(FM2))
             self.supervisor.begin(FM2)
         elif (phase, state) == ("FM2", "COMPLETE"):
             self.supervisor.finish(FM2, "SUCCEEDED")
-            self.supervisor.admit(self._envelope(FM3))
+            self.supervisor.admit(self._internal_phase_envelope(FM3))
             self.supervisor.begin(FM3)
         elif (phase, state) == ("HOME", "COMPLETE"):
             self.supervisor.finish(FM3, "SUCCEEDED")

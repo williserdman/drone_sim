@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import math
+import threading
+import time
+from collections import deque
 from typing import Any
 
 from .mission import Ack, CommandKind, Telemetry
+from .qgc_transport import VehicleFactObservation
 
 
 FLIGHT_CONTROLLER_SYSTEM_ID = 1
@@ -13,18 +17,23 @@ FLIGHT_CONTROLLER_COMPONENT_ID = 1
 
 
 def is_flight_controller_message(message: Any) -> bool:
-    """Accept only messages whose MAVLink source is the pinned vehicle system."""
-    source = getattr(message, "get_srcSystem", None)
-    if not callable(source):
+    """Accept only messages from the pinned flight-controller component."""
+    system_source = getattr(message, "get_srcSystem", None)
+    component_source = getattr(message, "get_srcComponent", None)
+    if not callable(system_source) or not callable(component_source):
         return False
     try:
-        system_id = source()
+        system_id = system_source()
+        component_id = component_source()
     except Exception:
         return False
     return (
         isinstance(system_id, int)
         and not isinstance(system_id, bool)
         and system_id == FLIGHT_CONTROLLER_SYSTEM_ID
+        and isinstance(component_id, int)
+        and not isinstance(component_id, bool)
+        and component_id == FLIGHT_CONTROLLER_COMPONENT_ID
     )
 
 
@@ -50,12 +59,62 @@ def request_flight_controller_heartbeat(
 
 
 class MavlinkAdapter:
-    def __init__(self, connection: Any, mavutil_module: Any) -> None:
+    def __init__(
+        self,
+        connection: Any,
+        mavutil_module: Any,
+        *,
+        qgc_io: Any | None = None,
+        wall_time_ns: Any = time.time_ns,
+    ) -> None:
         self._connection = connection
         self._mavutil = mavutil_module
         self._mode: str | None = None
         self._armed: bool | None = None
         self._landed: bool | None = None
+        self._qgc_io = qgc_io
+        self._wall_time_ns = wall_time_ns
+        self._operator_observations: deque[VehicleFactObservation] = deque(maxlen=64)
+        self._operator_observations_lock = threading.Lock()
+
+    def drain_operator_observations(self) -> tuple[VehicleFactObservation, ...]:
+        with self._operator_observations_lock:
+            observations = tuple(self._operator_observations)
+            self._operator_observations.clear()
+            return observations
+
+    def _observe_operator_fact(self, message: Any, timestamp_ns: int) -> None:
+        kind = message.get_type()
+        mavlink = self._mavutil.mavlink
+        values: dict[str, Any] = {}
+        if kind == "HEARTBEAT":
+            values = {
+                "heartbeat_live": True,
+                "armed": bool(message.base_mode & mavlink.MAV_MODE_FLAG_SAFETY_ARMED),
+                "mode": str(self._mavutil.mode_string_v10(message)).upper(),
+            }
+        elif kind == "SYS_STATUS":
+            prearm = int(mavlink.MAV_SYS_STATUS_PREARM_CHECK)
+            values = {
+                "prearm_checks_healthy": bool(
+                    int(message.onboard_control_sensors_enabled) & prearm
+                )
+                and bool(int(message.onboard_control_sensors_health) & prearm)
+            }
+        elif kind == "EXTENDED_SYS_STATE":
+            values = {
+                "landed": int(message.landed_state)
+                == mavlink.MAV_LANDED_STATE_ON_GROUND
+            }
+        if values:
+            with self._operator_observations_lock:
+                self._operator_observations.append(
+                    VehicleFactObservation(
+                        self._wall_time_ns(),
+                        native_timestamp_ns=timestamp_ns,
+                        **values,
+                    )
+                )
 
     def send(self, command: CommandKind, altitude_m: float | None) -> None:
         mavlink = self._mavutil.mavlink
@@ -209,11 +268,19 @@ class MavlinkAdapter:
         )
 
     def poll(self, timestamp_ns: int) -> Telemetry | None:
-        message = self._connection.recv_match(blocking=False)
+        message = None
+        for _ in range(100):
+            candidate = self._connection.recv_match(blocking=False)
+            if candidate is None:
+                return None
+            if self._qgc_io is not None:
+                self._qgc_io.observe_message(candidate)
+            if is_flight_controller_message(candidate):
+                message = candidate
+                break
         if message is None:
             return None
-        if not is_flight_controller_message(message):
-            return None
+        self._observe_operator_fact(message, timestamp_ns)
         kind = message.get_type()
         mavlink = self._mavutil.mavlink
         if kind == "HEARTBEAT":

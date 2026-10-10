@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from artifacts.operator_protocol import OperatorProtocol
 from drone_sim_companion.operator_control import (
     CompanionOperatorControl,
@@ -212,6 +214,39 @@ def test_qgc_readiness_requires_fresh_confirmed_ground_state() -> None:
     assert control.qgc_readiness_reasons() == ()
     wall_ns[0] += 2_000_000_001
     assert "telemetry" in " ".join(control.qgc_readiness_reasons())
+
+
+def test_receipt_timestamp_preserves_callback_age_on_owner_loop() -> None:
+    protocol = Protocol()
+    wall_ns = [10_000_000_000]
+    control = _control(protocol, wall_ns)
+
+    control.observe_vehicle(
+        native_timestamp_ns=8_000_000_000,
+        received_wall_time_ns=7_000_000_000,
+        heartbeat_live=True,
+        prearm_checks_healthy=True,
+        armed=False,
+        landed=True,
+        mode="STABILIZE",
+    )
+
+    assert "telemetry" in " ".join(control.qgc_readiness_reasons())
+    assert protocol.preflight[-1].ready is False
+
+
+@pytest.mark.parametrize("received", (True, -1, 12_000_000_001))
+def test_receipt_timestamp_rejects_malformed_or_unbounded_values(received) -> None:
+    protocol = Protocol()
+    wall_ns = [10_000_000_000]
+    control = _control(protocol, wall_ns)
+
+    with pytest.raises(ValueError, match="bounded wall timestamp"):
+        control.observe_vehicle(
+            native_timestamp_ns=0,
+            received_wall_time_ns=received,
+            heartbeat_live=True,
+        )
 
 
 def test_unattended_mode_preserves_running_gate_without_operator_files() -> None:

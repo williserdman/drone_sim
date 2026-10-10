@@ -19,19 +19,28 @@ Top-level code under `src/` includes:
 Aircraft flight is disabled. The authority, recovery, sensor, offline
 preparation, and live runtime contracts do not form a deployment by themselves.
 The parent `comp2026_auto` entry in
-`../src/drone_sim_companion/runtime_node.py` now provides the guarded QGC host
-for the FM1/FM2 simulator composition. That host has source and offline test
+`../src/drone_sim_companion/runtime_node.py` provides the simulator's shared
+31020 Start and 31021 Abort owner and runs the selected automatic mission through
+`run_auto_attempt`. It uses the existing DroneKit reader and guarded output
+composition; the legacy 31000–31015 listener contract below remains a separate
+aircraft/runtime interface. The simulator host has source and offline test
 evidence only. No matching current image or integrated QGC/SITL result exists,
 and no verified aircraft configuration or supported aircraft shell invocation
 is available in this checkout.
+
+The simulator's FM1/FM2/FM3 supervisor envelopes are internal phase bookkeeping
+with companion source and target 1/191. They are not received QGC commands and
+do not create QGC command evidence. Native QGC 255/190 owns only the shared
+31020 Start and 31021 Abort boundary for the selected complete mission.
 
 The settled programmatic entry point is
 `start_repl(files, runtime_config, *, factories=None, diagnostics=None,
 monitoring_stop=None) -> LiveRunResult`.
 It requires fully constructed and validated configuration objects; this is an
-API signature, not a copy-paste aircraft command. Simulator composition must
-inject explicit validated `LiveComponentFactories`. Do not use legacy
-`create_live_components()` or `run_auto_attempt` paths as substitutes. Import
+API signature, not a copy-paste aircraft command. Physical `start_repl`
+composition must inject explicit validated `LiveComponentFactories`. Do not use
+legacy `create_live_components()` or the simulator's `run_auto_attempt` path as
+an aircraft substitute. Import
 checks are not permission to open a MAVLink endpoint or construct GPIO, I2C,
 camera, or payload devices.
 

@@ -266,7 +266,13 @@ def run_configured(config) -> int:
     # Full plan validation happens in RuntimeConfig, before these live imports.
     if config.mission_plan is None:
         raise ValueError("configured runtime requires a validated mission plan")
-    from .runtime_node import _ProductionProtocol, connect_mavlink, stamp_ns
+    from .runtime_node import (
+        _ProductionProtocol,
+        _compose_qgc_control,
+        _observe_qgc_vehicle_facts,
+        connect_mavlink,
+        stamp_ns,
+    )
 
     import rclpy
     from pymavlink import mavutil
@@ -274,6 +280,12 @@ def run_configured(config) -> int:
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from rosgraph_msgs.msg import Clock
     from simulation_interfaces.msg import RunState
+
+    qgc_descriptor = getattr(config, "operator_control", None)
+    if qgc_descriptor is not None:
+        from .qgc_transport import configure_dronekit_mavlink2
+
+        configure_dronekit_mavlink2()
 
     moving_required = any(
         step.tool == "precision_land" for step in config.mission_plan.steps
@@ -389,9 +401,18 @@ def run_configured(config) -> int:
 
     try:
         lifecycle.emit("starting", None, {"mission": "configured", "steps": len(config.mission_plan.steps)})
-        connection = connect_mavlink(mavutil.mavlink_connection, config.mavlink_endpoint,
-                                    deadline=min(started + config.startup_timeout_seconds, overall_deadline))
-        vehicle = MavlinkAdapter(connection, mavutil)
+        connection = connect_mavlink(
+            mavutil.mavlink_connection,
+            config.mavlink_endpoint,
+            deadline=min(started + config.startup_timeout_seconds, overall_deadline),
+            source_identity=qgc_descriptor,
+        )
+        qgc_io = None
+        if qgc_descriptor is not None:
+            from .qgc_transport import PymavlinkQgcCommandIO
+
+            qgc_io = PymavlinkQgcCommandIO(connection, mavutil.mavlink)
+        vehicle = MavlinkAdapter(connection, mavutil, qgc_io=qgc_io)
         lifecycle.mark_transport_ready()
         rclpy.init()
         initialized = True
@@ -454,6 +475,21 @@ def run_configured(config) -> int:
             moving_vision=moving_vision,
             publish_mission_event=publish_event,
         )
+        operator_control = _compose_qgc_control(
+            config,
+            protocol,
+            operator_control,
+            qgc_io,
+            readiness_reasons=lambda: tuple(
+                reason
+                for ready, reason in (
+                    (host.operations.mission_ready, "configured vehicle producer is not ready"),
+                    (host.precision_profile_ready, "configured parameter profile is not ready"),
+                )
+                if not ready
+            ),
+            is_finalizing=lambda: finalizing or requested_stop,
+        )
         for signum in (signal.SIGTERM, signal.SIGINT):
             previous_handlers[signum] = signal.signal(signum, stop)
         telemetry_requested = False
@@ -472,14 +508,15 @@ def run_configured(config) -> int:
                             telemetry.attitude_timestamp_ns,
                         )
                 host.observe(telemetry)
-                operator_control.observe_vehicle(
-                    native_timestamp_ns=telemetry.timestamp_ns,
-                    heartbeat_live=True if telemetry.heartbeat else None,
-                    prearm_checks_healthy=telemetry.prearm_checks_healthy,
-                    armed=telemetry.armed,
-                    landed=telemetry.landed,
-                    mode=telemetry.mode,
-                )
+                if not _observe_qgc_vehicle_facts(config, operator_control, vehicle):
+                    operator_control.observe_vehicle(
+                        native_timestamp_ns=telemetry.timestamp_ns,
+                        heartbeat_live=True if telemetry.heartbeat else None,
+                        prearm_checks_healthy=telemetry.prearm_checks_healthy,
+                        armed=telemetry.armed,
+                        landed=telemetry.landed,
+                        mode=telemetry.mode,
+                    )
                 if telemetry.status_text is not None:
                     lifecycle.emit("mavlink_status_text", latest_clock_ns, {"text": telemetry.status_text})
                 if telemetry.heartbeat and not telemetry_requested:

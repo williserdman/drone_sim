@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -12,9 +14,10 @@ from drone_sim_companion.mission import CommandKind
 
 
 class Message:
-    def __init__(self, kind: str, *, source_system: int = 1, **fields: object) -> None:
+    def __init__(self, kind: str, *, source_system: int = 1, source_component: int = 1, **fields: object) -> None:
         self._kind = kind
         self._source_system = source_system
+        self._source_component = source_component
         for name, value in fields.items():
             setattr(self, name, value)
 
@@ -23,6 +26,9 @@ class Message:
 
     def get_srcSystem(self) -> int:
         return self._source_system
+
+    def get_srcComponent(self) -> int:
+        return self._source_component
 
 
 @dataclass
@@ -237,12 +243,46 @@ def test_foreign_and_gcs_heartbeats_cannot_change_vehicle_state() -> None:
     )
     adapter = MavlinkAdapter(connection, mavutil())
 
-    assert adapter.poll(1) is None
-    assert adapter.poll(2) is None
     vehicle = adapter.poll(3)
 
     assert vehicle is not None
     assert (vehicle.mode, vehicle.armed) == ("GUIDED", False)
+
+
+def test_qgc_dispatch_does_not_starve_following_fc_telemetry() -> None:
+    qgc = Message("COMMAND_LONG", source_system=255, source_component=190)
+    fc = Message("HEARTBEAT", custom_mode=4, base_mode=0)
+    connection = FakeConnection([qgc, fc])
+
+    class QgcIO:
+        def __init__(self) -> None:
+            self.messages = []
+
+        def observe_message(self, message) -> bool:
+            self.messages.append(message)
+            return message is qgc
+
+    qgc_io = QgcIO()
+    adapter = MavlinkAdapter(connection, mavutil(), qgc_io=qgc_io)
+
+    telemetry = adapter.poll(1)
+
+    assert qgc_io.messages == [qgc, fc]
+    assert telemetry is not None and telemetry.heartbeat is True
+
+
+def test_same_system_foreign_component_cannot_populate_fc_cache() -> None:
+    connection = FakeConnection(
+        [
+            Message("HEARTBEAT", source_component=191, custom_mode=4, base_mode=128),
+            Message("HEARTBEAT", source_component=1, custom_mode=4, base_mode=0),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil())
+
+    telemetry = adapter.poll(1)
+
+    assert telemetry is not None and telemetry.armed is False
 
 
 def test_foreign_and_source_less_command_acknowledgements_are_ignored() -> None:
@@ -258,9 +298,6 @@ def test_foreign_and_source_less_command_acknowledgements_are_ignored() -> None:
     )
     adapter = MavlinkAdapter(connection, mavutil())
 
-    assert adapter.poll(1) is None
-    assert adapter.poll(2) is None
-    assert adapter.poll(3) is None
     vehicle = adapter.poll(4)
 
     assert vehicle is not None and vehicle.ack is not None
@@ -428,6 +465,74 @@ def test_landed_state_is_preserved_across_later_heartbeat() -> None:
     assert landed is not None and landed.landed is True
     assert disarmed is not None
     assert disarmed.armed is False and disarmed.landed is True
+
+
+def test_operator_facts_only_record_new_exact_fc_ground_messages() -> None:
+    wall = iter((100, 200))
+    connection = FakeConnection(
+        [
+            Message("EXTENDED_SYS_STATE", landed_state=1),
+            Message("HEARTBEAT", custom_mode=9, base_mode=0),
+            Message("GLOBAL_POSITION_INT", relative_alt=0, vx=0, vy=0, vz=0),
+        ]
+    )
+    adapter = MavlinkAdapter(connection, mavutil(), wall_time_ns=lambda: next(wall))
+
+    adapter.poll(1)
+    adapter.poll(2)
+    observations = adapter.drain_operator_observations()
+    adapter.poll(3)
+
+    assert [(item.received_wall_time_ns, item.armed, item.landed) for item in observations] == [
+        (100, None, True),
+        (200, False, None),
+    ]
+    assert adapter.drain_operator_observations() == ()
+
+
+def test_raw_operator_fact_drain_is_atomic_with_message_observation() -> None:
+    adapter = MavlinkAdapter(FakeConnection(), mavutil(), wall_time_ns=lambda: 100)
+    adapter._observe_operator_fact(
+        Message("HEARTBEAT", custom_mode=0, base_mode=0),
+        1,
+    )
+    iteration_started = threading.Event()
+    allow_iteration = threading.Event()
+
+    class PausingDeque(deque):
+        def __iter__(self):
+            iteration_started.set()
+            assert allow_iteration.wait(1.0)
+            return super().__iter__()
+
+    adapter._operator_observations = PausingDeque(
+        adapter._operator_observations,
+        maxlen=64,
+    )
+    drained = []
+    drain_finished = threading.Event()
+    append_finished = threading.Event()
+    drain = threading.Thread(
+        target=lambda: (drained.extend(adapter.drain_operator_observations()), drain_finished.set())
+    )
+    append = threading.Thread(
+        target=lambda: (
+            adapter._observe_operator_fact(Message("EXTENDED_SYS_STATE", landed_state=1), 2),
+            append_finished.set(),
+        )
+    )
+    drain.start()
+    assert iteration_started.wait(1.0)
+    append.start()
+    assert not append_finished.wait(0.02)
+    allow_iteration.set()
+    drain.join(timeout=1.0)
+    append.join(timeout=1.0)
+
+    assert len(drained) == 1
+    remaining = adapter.drain_operator_observations()
+    assert len(remaining) == 1
+    assert remaining[0].landed is True
 
 
 def test_statustext_is_preserved_as_simulation_stamped_diagnostics() -> None:
