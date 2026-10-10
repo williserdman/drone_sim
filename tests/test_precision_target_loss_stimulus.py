@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import sysconfig
 import threading
 from uuid import UUID
 
@@ -335,7 +336,7 @@ class FakeRunner:
         elif command[:3] == ("docker", "logs", "--tail"):
             assert command[-1] == self.run.companion_container_id
             output = self.companion_log
-        elif "mavlogdump.py" in command[0]:
+        elif any(Path(part).name == "mavlogdump.py" for part in command):
             output = self.precision_csv if "PL" in command else self.mode_csv
         elif command[-3:] == ("gz", "service", "-l"):
             output = "/world/moving_pad_stationary/set_pose\n"
@@ -410,6 +411,49 @@ def test_dataflash_parser_rejects_a_partial_live_row_instead_of_guessing() -> No
         )
 
 
+def test_uses_current_locked_environment_mavlogdump_when_path_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    monkeypatch.setenv("PATH", "")
+
+    result = induce_precision_target_loss(run.directory, runner=runner)
+
+    expected_tool = str(Path(sysconfig.get_path("scripts")) / "mavlogdump.py")
+    dataflash_commands = [
+        command
+        for command, _kwargs in runner.calls
+        if expected_tool in command
+    ]
+    assert result["status"] == "succeeded"
+    assert dataflash_commands
+    assert all(command[:2] == (sys.executable, expected_tool) for command in dataflash_commands)
+
+
+def test_missing_current_environment_mavlogdump_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    real_get_path = sysconfig.get_path
+    monkeypatch.setattr(
+        sysconfig,
+        "get_path",
+        lambda name: str(tmp_path / "missing-bin")
+        if name == "scripts"
+        else real_get_path(name),
+    )
+
+    with pytest.raises(StimulusError, match="locked environment"):
+        induce_precision_target_loss(run.directory, runner=runner)
+
+    assert not any(
+        any(part.endswith("mavlogdump.py") for part in command)
+        for command, _kwargs in runner.calls
+    )
+
+
 def test_success_moves_only_the_bound_pad_and_records_persistent_physical_evidence(
     tmp_path: Path,
 ) -> None:
@@ -476,7 +520,7 @@ def test_success_moves_only_the_bound_pad_and_records_persistent_physical_eviden
     first_dataflash = next(
         index
         for index, (command, _kwargs) in enumerate(runner.calls)
-        if "mavlogdump.py" in command[0]
+        if any(Path(part).name == "mavlogdump.py" for part in command)
     )
     first_native_sample = next(
         index

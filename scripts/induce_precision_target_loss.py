@@ -16,8 +16,9 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
+import sys
+import sysconfig
 import time
 from typing import Any
 
@@ -678,13 +679,14 @@ def _dataflash_csv(
     logs = tuple((run_directory / "ardupilot_sitl/logs").glob("*.BIN"))
     if len(logs) != 1 or logs[0].is_symlink() or not logs[0].is_file():
         raise StimulusError("exactly one live DataFlash BIN log is required")
-    executable = shutil.which("mavlogdump.py")
-    if executable is None:
+    executable = Path(sysconfig.get_path("scripts")) / "mavlogdump.py"
+    if not executable.is_file():
         raise StimulusError("mavlogdump.py is unavailable in the locked environment")
     return _checked_output(
         runner,
         [
-            executable,
+            sys.executable,
+            str(executable),
             "--robust",
             "--types",
             message_type,
