@@ -748,6 +748,25 @@ the operator steps in the [runbook](runbook.md#manual-workstation-ci).
 Actions dispatch remains unrun until the workflow exists on default branch
 `main` and the runner service is online. No current end-to-end pass is claimed.
 
+The isolated Task 7 evidence reader is implemented pending integration review.
+`scripts/inspect_qgc_control_run.py` reports separate command, physical,
+landing-profile, and cleanup findings for routing, Start, Abort, ordinary LAND,
+and precision target loss. Its tests use real MAVLink 2 tlog bytes and an
+injectable real-shape DataFlash boundary. The reader binds selected files to the
+immutable configuration and final manifest, requires independent vehicle facts
+for physical claims, and validates the target-loss helper's three durable
+phases against the admitted operation, native clocks, bridge log, final
+DataFlash rows, and strict odometry persistence. Focused verification passed 17
+tests plus direct mypy checks of the script and test file. No native QGC click,
+simulator flight, Docker run, full artifact acceptance, or image build was
+performed for this implementation.
+
+Native acceptance must snapshot the selected genuine QGC tlog as
+`logs/docker/native-qgc.tlog` before `ArtifactSession` inventories and finalizes
+the bundle. Preserve the original log and capture metadata. The packet reader
+does not establish which action file the operator selected or which native
+button they clicked; retain those as separate operator evidence.
+
 The new CI calibration implementation shares aircraft dynamics across the three
 vehicle variants, tunes all axes and saves gains after native LAND. It adds
 independent calibration acceptance and a fresh-SITL validation consumer.

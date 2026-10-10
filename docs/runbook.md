@@ -164,6 +164,43 @@ crashes, the next console identifies the orphaned session and blocks another
 preparation until cleanup. Its interrupted evidence does not acquire a fabricated
 landing or artifact-validity claim.
 
+### Inspect QGC control evidence
+
+After finalization, inspect one bounded QGC claim with the read-only evidence
+reader:
+
+```bash
+uv run --locked python scripts/inspect_qgc_control_run.py runs/RUN_ID \
+  --expect routing
+```
+
+Choose `routing`, `start`, `abort`, `ordinary-land`, or `precision-loss`. The
+JSON result reports `command`, `physical`, `profile`, and `cleanup` separately.
+A dimension that the selected claim does not need is `not_required`; it is not
+reported as passed. The process exits zero only when every dimension required
+for that claim passes.
+
+The reader accepts evidence selected by the committed manifest. It checks the
+immutable run, action, request, and admission bindings before interpreting the
+native MAVLink log, DataFlash log, companion events, landing-profile events, or
+precision-loss stimulus. Missing, malformed, stale, ambiguous, unsupported, or
+checksum-mismatched evidence fails the affected finding. An ACK never proves
+airborne flight, touchdown, disarm, profile restoration, or target loss by
+itself.
+
+Native command inspection uses `logs/docker/native-qgc.tlog`. The acceptance
+workflow must copy a labeled snapshot of the genuine QGC telemetry log to that
+path while the run still owns its `.control` lock and before artifact inventory
+and finalization. Preserve the original QGC log and record the selected source
+and capture boundary outside the bundle. Do not copy into or edit a finalized
+bundle. The retained packet stream establishes wire identity, command fields,
+heartbeat, ACK, progress, and status text. Native file selection and button
+clicks remain a separate operator observation.
+
+This command does not replace full artifact acceptance. Video, public rosbag,
+score, source and image provenance, and live Compose cleanup still use the
+existing acceptance workflow.
+
 Focused host checks, including the new typed operator boundary:
 
 ```bash
