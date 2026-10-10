@@ -131,9 +131,11 @@ calculating `config_sha256`. `operator_control` binds commands 31020 and 31021,
 the token, request identities, MAVLink identities, relative bundle path, and
 digest. The nonserialized `operator_actions` field retains the complete host
 publication material, including the run ID, derived run-named filename, and
-exact bytes. `write_resolved_config` checks that material against the descriptor
-and writes the unchanged bytes to `configuration/qgc-actions.json`. Templates
-cannot provide either runtime value. Descriptor-absent operator and unattended
+exact bytes. Material construction requires those bytes to equal the canonical
+rendering for its run ID and attempt token and to match the descriptor digest.
+`write_resolved_config` checks that material against the descriptor and writes
+the unchanged bytes to `configuration/qgc-actions.json`. Templates cannot
+provide either runtime value. Descriptor-absent operator and unattended
 configurations retain their historical serialization.
 
 An `autotune` run receives a host-generated `calibration_profile` in its resolved

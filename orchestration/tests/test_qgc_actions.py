@@ -58,6 +58,33 @@ def test_actions_bind_exact_bytes_and_monotonic_tokens(tmp_path: Path) -> None:
         replace(first, run_id="../custom")
 
 
+def test_action_material_rejects_retagged_or_foreign_bytes(tmp_path: Path) -> None:
+    material = QgcActionStore(tmp_path / "state", QGC_SOURCE).allocate(RUN_ID)
+    other_run_id = "22222222-2222-4222-8222-222222222222"
+
+    with pytest.raises(ValueError, match="canonical rendering"):
+        replace(material, run_id=other_run_id)
+
+    foreign_bytes = material.action_bytes.replace(
+        RUN_ID.encode(), other_run_id.encode()
+    )
+    matching_digest = replace(
+        material.descriptor,
+        actions_sha256=hashlib.sha256(foreign_bytes).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="canonical rendering"):
+        QgcActionMaterial(
+            run_id=RUN_ID,
+            descriptor=matching_digest,
+            action_bytes=foreign_bytes,
+        )
+    with pytest.raises(ValueError, match="descriptor digest"):
+        replace(
+            material,
+            descriptor=replace(material.descriptor, actions_sha256="0" * 64),
+        )
+
+
 def test_reserved_commands_do_not_collide_with_shipped_or_legacy_registries() -> None:
     reserved = {31020, 31021}
     for family in (v10, v20):
@@ -167,19 +194,18 @@ def test_publish_preserves_existing_qgc_files(tmp_path: Path) -> None:
         material, save_directory
     ) == published
 
-    conflict = replace(material, action_bytes=b"different\n")
-    with pytest.raises(ValueError, match="digest"):
-        QgcActionStore(tmp_path / "state", QGC_SOURCE).publish(
-            conflict, save_directory
-        )
+    with pytest.raises(ValueError, match="canonical rendering"):
+        replace(material, action_bytes=b"different\n")
 
     different_run = QgcActionStore(tmp_path / "state", QGC_SOURCE).allocate(
         "22222222-2222-4222-8222-222222222222"
     )
-    forced_conflict = replace(different_run, run_id=RUN_ID)
+    forced_conflict = save_directory / different_run.published_name
+    forced_conflict.write_bytes(b"existing user bytes\n")
     with pytest.raises(FileExistsError):
         QgcActionStore(tmp_path / "state", QGC_SOURCE).publish(
-            forced_conflict, save_directory
+            different_run, save_directory
         )
+    assert forced_conflict.read_bytes() == b"existing user bytes\n"
     assert published.read_bytes() == material.action_bytes
     assert unrelated.read_bytes() == b"user-owned\n"

@@ -427,13 +427,8 @@ def test_operator_descriptor_round_trip_retains_publication_material(tmp_path):
     assert loaded.operator_control == resolved.operator_control
     assert loaded.operator_actions == resolved.operator_actions
 
-    corrupted = replace(
-        resolved,
-        operator_actions=replace(resolved.operator_actions, action_bytes=b"changed\n"),
-    )
-    with pytest.raises(ValueError, match="action bytes"):
-        write_resolved_config(tmp_path / "corrupted", corrupted)
-    assert not (tmp_path / "corrupted/configuration/run.json").exists()
+    with pytest.raises(ValueError, match="canonical rendering"):
+        replace(resolved.operator_actions, action_bytes=b"changed\n")
 
     template_document = json.loads(
         CONFIGURED_OPERATOR_TEMPLATE.read_text(encoding="utf-8")

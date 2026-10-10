@@ -46,6 +46,15 @@ class QgcActionMaterial:
             raise TypeError("descriptor must be a QgcOperatorDescriptor")
         if not isinstance(self.action_bytes, bytes) or not self.action_bytes:
             raise ValueError("action_bytes must be nonempty bytes")
+        expected = _render_actions(self.run_id, self.descriptor.attempt_token)
+        if self.action_bytes != expected:
+            raise ValueError(
+                "action_bytes must equal the canonical rendering for run_id and token"
+            )
+        if hashlib.sha256(self.action_bytes).hexdigest() != (
+            self.descriptor.actions_sha256
+        ):
+            raise ValueError("action_bytes do not match the descriptor digest")
 
     @property
     def published_name(self) -> str:
