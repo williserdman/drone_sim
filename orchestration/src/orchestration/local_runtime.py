@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 from pathlib import Path
@@ -19,8 +20,16 @@ _RUN_MEDIA_VOLUME = re.compile(r"drone-sim-[0-9a-f]{32}_artifacts-media")
 
 
 class LocalRuntime:
-    def __init__(self, project_directory: Path) -> None:
+    def __init__(
+        self,
+        project_directory: Path,
+        *,
+        qgc_settings_path: Path | None = None,
+    ) -> None:
         self.project_directory = project_directory.resolve()
+        self.qgc_settings_path = qgc_settings_path or (
+            Path.home() / ".config/qgroundcontrol.com/QGroundControl.ini"
+        )
 
     def _run(self, command: list[str], *, timeout: float = 15) -> subprocess.CompletedProcess[str]:
         return subprocess.run(command, cwd=self.project_directory, capture_output=True, text=True,
@@ -116,6 +125,22 @@ class LocalRuntime:
         result = self._run(["open", "-a", "/Applications/QGroundControl.app"])
         if result.returncode:
             raise RuntimeError(result.stderr.strip() or "QGroundControl could not be opened")
+
+    def qgc_actions_directory(self) -> Path:
+        """Read QGC's active save path without changing its settings or selection."""
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            with self.qgc_settings_path.open(encoding="utf-8") as source:
+                parser.read_file(source)
+            save_path = parser.get("General", "savePath")
+        except (OSError, configparser.Error, KeyError) as error:
+            raise RuntimeError(
+                f"Could not read QGroundControl savePath from {self.qgc_settings_path}"
+            ) from error
+        directory = Path(save_path).expanduser()
+        if not directory.is_absolute():
+            raise RuntimeError("QGroundControl savePath must be absolute")
+        return directory / "MavlinkActions"
 
     def build(self) -> dict[str, Any]:
         directory = self.project_directory / ".local-runtime"

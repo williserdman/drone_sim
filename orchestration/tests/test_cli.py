@@ -213,6 +213,23 @@ def test_operator_commands_delegate_to_persistent_console(command):
     assert json.loads(output.getvalue())["run_id"] == RUN_ID
 
 
+@pytest.mark.parametrize("command", ["start-mission", "abort-flight"])
+def test_qgc_host_flight_action_rejection_is_a_controlled_cli_error(command):
+    def client(_action, _body, *, port):
+        raise RuntimeError("Use the run-bound QGroundControl action")
+
+    output, errors = io.StringIO(), io.StringIO()
+    actual = main(
+        [command, RUN_ID, "--request-id", RUN_ID],
+        console_client=client,
+        stdout=output,
+        stderr=errors,
+    )
+    assert actual == 2
+    assert output.getvalue() == ""
+    assert errors.getvalue() == "Use the run-bound QGroundControl action\n"
+
+
 def test_prepare_selects_catalog_preset_without_starting_mission():
     calls = []
     output, errors = io.StringIO(), io.StringIO()

@@ -40,7 +40,14 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--preparation-wall-seconds", type=int, default=1800)
     prepare.add_argument("--port", type=int, default=8765)
     for name in ("start-mission", "abort-flight", "stop"):
-        command = commands.add_parser(name)
+        command = commands.add_parser(
+            name,
+            help=(
+                "legacy descriptor-absent operator action"
+                if name != "stop"
+                else "finalize and stop simulation infrastructure"
+            ),
+        )
         command.add_argument("run_id", nargs="?" if name == "stop" else None)
         command.add_argument("--port", type=int, default=8765)
         if name != "stop":

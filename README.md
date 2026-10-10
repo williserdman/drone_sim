@@ -33,14 +33,16 @@ uv run --locked drone-sim console
 
 The console opens at `http://127.0.0.1:8765`. Build matching images when prompted,
 choose a world and mission preset, then click **Prepare simulation**. Inspect
-native QGC, the interactive Gazebo desktop, and the onboard camera before the
-separate **Start mission** action. Preparation keeps the aircraft disarmed and
-does not consume the mission budget.
+native QGC, the interactive Gazebo desktop, and the onboard camera. Prepare
+publishes a run-named QGC action file and shows its exact path. In QGC, select
+that file under **Application Settings > Fly View > MAVLink Actions > Fly View
+Actions**, then use **Start selected mission** or **Abort and recover**.
+Preparation keeps the aircraft disarmed and does not consume the mission budget.
 
-**Abort flight** requests onboard recovery. **Stop simulation** finalizes and
-stops the runtime; it does not promise a landing. **Run again** prepares a fresh
-run. See the [console workflow](docs/runbook.md#local-mac-console) for prerequisites,
-manual-operator presets, CLI controls, and evidence paths.
+**Stop simulation** finalizes and stops the runtime; it does not request a
+landing. **Run again** waits for cleanup and prepares a fresh run, token, and
+action file. See the [console workflow](docs/runbook.md#local-mac-console) for
+prerequisites, Operator Wait guidance, CLI controls, and evidence paths.
 
 ## First local check
 

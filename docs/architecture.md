@@ -113,8 +113,10 @@ The workstation lease spans direct launches, suites, preparation, and teardown.
 `launch_mode: operator` keeps native Gazebo physics and private camera observations
 live while holding initial mission commands. Host `PREPARED` requires advancing
 fresh preflight facts and an observed disarmed healthy vehicle. Its independent
-wall-time limit does not consume the mission budget. The browser additionally
-checks the streamed desktop, real camera freshness, and native QGC connection.
+wall-time limit does not consume the mission budget. The browser reports the
+streamed desktop connection, camera freshness, and native QGC telemetry as
+separate observations. Browser focus, polling, and RFB state do not authorize a
+QGC command.
 
 The shared [operator protocol](../artifacts/src/artifacts/operator_protocol.py)
 binds start requests to run/configuration identity. The companion rechecks
@@ -134,6 +136,12 @@ encoder/queue, dispatch QGC commands before exact FC 1/1 telemetry filtering,
 and send targeted ACK plus STATUSTEXT without rewriting the recipient. Commands
 targeted to FC 1/1 remain owned by ArduPilot. Unit tests establish this adapter
 contract; current native-QGC routing remains a live acceptance gate.
+
+Before Compose starts, the host writes the immutable run configuration and
+bundled action bytes, publishes the retained bytes under QGC's configured
+`savePath/MavlinkActions`, and opens or focuses QGC. The final manifest binds
+the bundled copy. QGC file selection remains an explicit native operator step.
+The browser cannot write Start or Abort requests for descriptor-backed runs.
 
 Before public mission `/clock` is released, QGC admission uses the Gazebo private
 preflight record for advancing native physics and camera production. Companion

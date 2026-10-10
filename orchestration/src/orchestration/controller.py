@@ -66,6 +66,7 @@ from .config import (
 from .calibration import build_source_calibration_profile, freeze_calibration_import
 from .lifecycle import LifecycleEvent, LifecycleState, RunLifecycle
 from .operator_readiness import preflight_snapshot
+from .qgc_actions import QgcActionMaterial
 from .workstation import exclusive_run
 from .status_store import (
     OperatorStatus,
@@ -774,6 +775,8 @@ class RunController:
         *,
         auxiliary_services: Sequence[str] = (),
         on_allocated: Callable[[str, Path], None] | None = None,
+        on_configuration_ready: Callable[[RunConfig, Path], None] | None = None,
+        operator_control_factory: Callable[[str], QgcActionMaterial] | None = None,
         launch_mode: str | None = None,
         preparation_wall_seconds: int | None = None,
         output_root: Path | None = None,
@@ -794,6 +797,7 @@ class RunController:
                 launch_mode=launch_mode,
                 preparation_wall_seconds=preparation_wall_seconds,
                 output_root=output_root,
+                operator_control_factory=operator_control_factory,
             )
         except (OSError, ValueError) as exc:
             raise ControllerError(str(exc)) from exc
@@ -842,6 +846,8 @@ class RunController:
         source_revisions: tuple[SourceRevision, ...] = ()
         try:
             self.config_writer(run_directory, config)
+            if on_configuration_ready is not None:
+                on_configuration_ready(config, run_directory)
             lifecycle = lifecycle.apply(LifecycleEvent.START)
             store.write_operator_status(self._status(lifecycle))
             emit_event("run_starting", config_sha256=config.config_sha256)
@@ -1341,6 +1347,15 @@ class RunController:
                     image_digests=image_digests,
                     configuration_records=(
                         ConfigurationRecord("configuration/run.json", config.config_sha256),
+                        *(
+                            (
+                                ConfigurationRecord(
+                                    config.operator_control.actions_path,
+                                    config.operator_control.actions_sha256,
+                                ),
+                            )
+                            if config.operator_control is not None else ()
+                        ),
                         *admission_records,
                         *(
                             (
@@ -1578,6 +1593,10 @@ class RunController:
         status = store.read_operator_status(run_id)
         directory = root / run_id
         config = load_run_config(directory / "configuration/run.json")
+        if config.operator_control is not None:
+            raise ControllerError(
+                "descriptor-backed runs accept flight actions only in QGroundControl"
+            )
         if config.launch_mode != "operator":
             raise ControllerError("explicit start requires an operator session")
         with OperatorProtocol(directory, run_id, config.config_sha256) as protocol:
@@ -1600,11 +1619,15 @@ class RunController:
 
         root = self._absolute_output_root(output_root)
         store = self.status_store_factory(root)
+        directory = root / run_id
+        config = load_run_config(directory / "configuration/run.json")
+        if config.operator_control is not None:
+            raise ControllerError(
+                "descriptor-backed runs accept flight actions only in QGroundControl"
+            )
         status = store.read_operator_status(run_id)
         if status.state != "RUNNING" or store.read_finalize_request(run_id) is not None:
             raise ControllerError("flight abort requires a running session")
-        directory = root / run_id
-        config = load_run_config(directory / "configuration/run.json")
         with OperatorProtocol(directory, run_id, config.config_sha256) as protocol:
             admission = protocol.read_start_admission()
             if admission is None:

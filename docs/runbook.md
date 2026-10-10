@@ -88,38 +88,49 @@ not close the application.
    accepted calibration run. The console still validates that run's calibration
    identity against the current firmware, airframe, and images.
 
-3. Click **Prepare simulation**. QGC opens; Gazebo and the camera connect in the
-   browser. Native physics and camera frames advance while the vehicle stays
-   disarmed. The separate preflight limit defaults to 30 wall minutes. Warmup
-   and rendering may take substantial wall time at a preset's configured pace.
-   Configured Descent's 90 simulated seconds at 0.1 RTF takes about 15 wall
-   minutes before inspection; its 30-second mission then takes about five more.
-   Inspect the live views; Start remains unavailable until current observations
-   and all operator connections are ready.
+3. Click **Prepare simulation**. While it owns the workstation lease, the console
+   allocates the run and its action token, writes immutable configuration, and
+   publishes the exact action bytes under QGC's configured
+   `savePath/MavlinkActions` directory. It displays the full path, then opens or
+   focuses QGC and starts Compose. It does not change QGC preferences or the
+   currently selected action file. Publication failure retains the run identity
+   for diagnosis and starts no simulator.
 
-4. Click **Start mission**. One immutable request admits one mission epoch;
-   refreshing the browser or retrying the request does not create another
-   flight. Automatic presets retain onboard command ownership. The
-   **Operator Wait** preset specifically requires you to select GUIDED and arm
-   in QGC after mission start, then its companion sequence continues.
+4. In QGC, open **Application Settings > Fly View > MAVLink Actions > Fly View
+   Actions**. Reopen that settings page if its file list is stale. Select the
+   exact `drone-sim-RUN_ID.json` filename shown by the console. This selection is
+   a native QGC step; the console does not claim it succeeded. Native physics
+   and camera frames advance while the vehicle stays disarmed. The separate
+   preflight limit defaults to 30 wall minutes. Warmup and rendering may take
+   substantial wall time at a preset's configured pace.
 
-5. **Abort flight** invokes guarded onboard recovery and reports observed
-   progress. A rejected command, stale telemetry, timeout, unconfirmed landing,
-   or manual takeover remains visible. **Stop simulation** requests finalization and teardown,
-   including before mission start; it may interrupt an airborne vehicle.
-   Wait for cleanup before **Run again**, which allocates a new run identity and
-   returns to preparation.
+5. Use **Start selected mission** in QGC after the console reports fresh vehicle,
+   native clock, calibration, and producer readiness. Browser focus, polling,
+   Gazebo desktop connection, and camera-view freshness do not authorize the
+   command. One immutable request admits one mission epoch. Automatic presets
+   retain onboard command ownership. For **Operator Wait** only, use Start first,
+   then select GUIDED and arm in QGC so its companion sequence can continue.
+
+6. Use **Abort and recover** in QGC to invoke guarded onboard recovery. The
+   console reports admission, mission, and recovery observations alongside
+   viewer and camera freshness. A rejected command, stale telemetry, timeout,
+   unconfirmed landing, or manual takeover remains visible. **Stop simulation**
+   requests infrastructure finalization and teardown; it does not request a
+   landing and may interrupt an airborne vehicle. Wait for cleanup before **Run
+   again**, which allocates a new run identity, token, and action file.
 
 The streamed Gazebo GUI supports navigation, selection, and read-only inspection.
 World mutation controls are excluded. QGC retains its native operator controls;
 manual commands are recorded in `logs/docker/qgc-interventions.jsonl` and flight
 supervisors observe changes in authority. A stale camera image is visibly marked
-and cannot establish readiness. Closing a browser tab leaves the session owner
-running; reload the console to reconnect. Interrupting the console process asks
-the active controller to finalize before exit.
-Desktop readiness uses the actual browser RFB connection. A disconnected desktop
-disables Start before admission; losing the viewer during flight leaves healthy
-flight services running. Reopen the console to reconnect and inspect them.
+and remains separate from the private camera-producer readiness used by QGC
+admission. Closing a browser tab leaves the session owner running; reload the
+console to reconnect. Interrupting the console process asks the active controller
+to finalize before exit.
+Desktop status uses the actual browser RFB connection. A disconnected desktop is
+reported as stale but cannot block an otherwise eligible QGC action. Losing the
+viewer during flight leaves healthy flight services running. Reopen the console
+to reconnect and inspect them.
 
 The local artifacts service uses a run-scoped **Docker named volume** for its
 recording spool because both the macOS shared directory and this Colima writable
@@ -133,17 +144,17 @@ CLI actions use the same persistent console, running in another terminal:
 
 ```bash
 uv run --locked drone-sim prepare --preset configured-descent
-uv run --locked drone-sim start-mission RUN_ID --request-id REQUEST_UUID
-uv run --locked drone-sim abort-flight RUN_ID --request-id ABORT_UUID
 uv run --locked drone-sim stop RUN_ID
 uv run --locked drone-sim status RUN_ID
 uv run --locked drone-sim collect-results RUN_ID
 ```
 
-Use a stable request UUID when retrying Start or Abort Flight. `stop` without a
-run ID cancels the current preparation as well. Add `--port` to console actions
-when using a nondefault console port. The original `start` and `suite` commands
-remain unattended workflows; original `abort` means simulator finalization.
+Descriptor-backed runs reject the historical `start-mission` and `abort-flight`
+HTTP and CLI actions before writing a request file. Descriptor-absent operator
+runs retain those commands for compatibility. `stop` without a run ID cancels
+the current preparation as well. Add `--port` to console actions when using a
+nondefault console port. The original `start` and `suite` commands remain
+unattended workflows; original `abort` means simulator finalization.
 
 Evidence remains under `runs/RUN_ID/`. The console displays physical completion,
 score, artifact validity, and cleanup separately. `configuration/run.json` stays

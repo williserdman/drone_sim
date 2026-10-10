@@ -18,8 +18,10 @@ validates; it does not infer physical success from a command or log message.
 - The installed `drone-sim` command maps to [`cli.main`](src/orchestration/cli.py)
   through [`pyproject.toml`](pyproject.toml). Its operator commands are `start`,
   `status`, `abort`, `collect-results`, and `suite`. `console` hosts the local
-  browser interface; `prepare`, `start-mission`, `abort-flight`, and `stop` call
-  that same persistent operator boundary.
+  browser interface; `prepare` and `stop` call that persistent operator boundary.
+  Historical `start-mission` and `abort-flight` calls remain available only for
+  descriptor-absent operator runs. Descriptor-backed runs reject them before a
+  request file is written.
 - [`RunController`](src/orchestration/controller.py) owns run allocation, Compose
   supervision, deadlines, terminal-cause selection, log capture, and manifest
   commit.
@@ -65,6 +67,11 @@ keeps the controller alive independently of browser connections. The approved
 static UI, and bounded camera proxy connections. Mutations require a local host,
 local origin, and per-server token. The CLI uses
 [`console_client.py`](src/orchestration/console_client.py), not a second controller.
+Prepare allocates its action token while holding the workstation lease. After
+the controller writes immutable configuration, a separate callback publishes
+the retained action bytes under QGC's configured save path and opens or focuses
+QGC. Publication precedes Compose startup. A publication failure retains the
+allocated run identity and starts no simulator.
 
 Host lifecycle adds `PREPARED` and `STARTING_MISSION`. Preparation requires fresh,
 advancing Gazebo observations and fresh disarmed companion preflight. The
@@ -88,7 +95,11 @@ cannot reuse the token. A durable initialization marker distinguishes first use
 from lost state. Missing, corrupt, symlinked, or exhausted state fails Prepare
 instead of resetting the counter. Publication takes an explicit QGC
 `MavlinkActions` directory, accepts an existing byte-identical run file, and
-never overwrites a conflicting file or another user action file.
+never overwrites a conflicting file or another user action file. The console
+reads `savePath` from the active
+`~/.config/qgroundcontrol.com/QGroundControl.ini`; it does not change QGC's
+selected action file or other preferences. The bundled action bytes are a
+separate manifest configuration record.
 
 [`gcs_bridge.py`](src/orchestration/gcs_bridge.py) forwards the dedicated SITL GCS
 MAVLink connection to native QGC, preserves wire frames, and inventories manual

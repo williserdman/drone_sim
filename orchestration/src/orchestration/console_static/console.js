@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 let token = "", presets = [], current = {}, shownRun = null, busy = false;
-let startRequest = null, abortRequest = null, prepareRequest = null, cameraFailed = false;
+let prepareRequest = null, cameraFailed = false;
 let gazeboAvailable = false;
 const terminal = new Set(["COMPLETED", "FAILED", "ABORTED", "INTERRUPTED"]);
 const text = (id, value) => { $(id).textContent = value ?? "—"; };
@@ -64,7 +64,7 @@ function render(snapshot) {
   const titles = {IDLE: "Ready to prepare", PREPARING: "Checking & preparing", CREATED: "Allocating simulation", STARTING: "Starting the local runtime", READY: "Waiting for live preflight", PREPARED: "Preflight inspection", STARTING_MISSION: "Admitting mission start", RUNNING: "Mission in progress", FINALIZING: "Finalizing evidence", COMPLETED: "Run completed", FAILED: "Run needs attention", ABORTED: "Simulation stopped", INTERRUPTED: "Interrupted run retained", ORPHANED: "Session owner disconnected", BUILDING: "Building local runtime images"};
   text("flight-title", titles[state] || state);
   let detail = waiting ? "Bringing up physics, sensors, and the disarmed vehicle. This does not start the mission." : snapshot.reason || "";
-  if (state === "PREPARED") detail = snapshot.can_start ? "Live preflight is ready. Inspect the world, camera, and QGC, then start when ready." : "Waiting for fresh telemetry and all operator views before mission start.";
+  if (state === "PREPARED") detail = snapshot.qgc_admission_ready ? "Native preflight is ready. Select this run's action file and start from QGroundControl when ready." : "Waiting for fresh vehicle, native clock, calibration, and producer readiness.";
   if (state === "RUNNING") detail = "The selected onboard mission owns flight commands. QGC controls remain available and interventions are recorded.";
   if (state === "RUNNING" && snapshot.recovery) {
     const recovered = snapshot.recovery.state === "landed_disarmed";
@@ -76,18 +76,17 @@ function render(snapshot) {
   }
   if (state === "BUILDING") detail = "Building matching native images. Open Runtime logs & build output below to follow progress.";
   if (snapshot.preflight && !snapshot.preflight.ready && (waiting || state === "PREPARED" || state === "STARTING_MISSION")) detail += ` ${snapshot.preflight.reasons.join("; ")}`;
-  text("flight-detail", detail || "Select a preset, prepare the simulation, then inspect the live views before starting.");
+  text("flight-detail", detail || "Select a preset, prepare the simulation, then use the run-bound actions in QGroundControl.");
   text("run-id", snapshot.run_id ? snapshot.run_id.slice(0, 8) : "No active run");
   ["world", "preset", "calibration", "preparation-limit"].forEach((id) => { $(id).disabled = active || busy; });
-  $("prepare").disabled = active || busy; $("build").disabled = active || busy;
-  $("start").disabled = !snapshot.can_start || busy;
-  $("abort-flight").disabled = state !== "RUNNING" || Boolean(snapshot.recovery) || busy;
+  const cleanupReady = !snapshot.run_id || snapshot.cleanup === "complete";
+  $("prepare").disabled = active || busy || !cleanupReady; $("build").disabled = active || busy;
   $("stop").disabled = !active || ["BUILDING", "FINALIZING"].includes(state) || busy;
-  show("again", terminal.has(state) && Boolean(snapshot.run_id)); $("again").disabled = busy || snapshot.cleanup === "incomplete";
+  show("again", terminal.has(state) && Boolean(snapshot.run_id)); $("again").disabled = busy || !cleanupReady;
   if (snapshot.error || snapshot.observation_error) error(snapshot.error || snapshot.observation_error);
   renderChecks(snapshot.checks);
   if (snapshot.run_id && snapshot.run_id !== shownRun) {
-    shownRun = snapshot.run_id; startRequest = null; abortRequest = null;
+    shownRun = snapshot.run_id;
     gazeboAvailable = false;
     show("gazebo", false); show("gazebo-empty", true); connectCamera();
   }
@@ -105,6 +104,7 @@ function render(snapshot) {
   const stamp = views.camera?.native_timestamp_ns;
   text("camera-stamp", stamp == null ? "Native sensor time —" : `Native sensor time ${(stamp / 1e9).toFixed(2)} s`);
   text("qgc-status", vehicle.qgc_fresh ? "QGC connected · live vehicle telemetry" : vehicle.fresh ? "SITL connected · waiting for QGC" : vehicle.detail || "Native macOS window");
+  text("qgc-action-path", snapshot.qgc_action_path || "Prepare a run to publish its action file.");
   text("mode", vehicle.fresh ? vehicle.mode : "—");
   text("armed", vehicle.fresh && typeof vehicle.armed === "boolean" ? (vehicle.armed ? "Armed" : "Disarmed") : "—");
   text("altitude", vehicle.fresh && vehicle.relative_altitude_m != null ? `${vehicle.relative_altitude_m.toFixed(2)} m` : "—");
@@ -139,8 +139,6 @@ async function poll() { render(await api("session")); }
 $("world").addEventListener("change", () => updateWorld()); $("preset").addEventListener("change", updatePreset);
 $("prepare").addEventListener("click", () => action(prepare));
 $("again").addEventListener("click", () => action(async () => { prepareRequest = null; await prepare(); }));
-$("start").addEventListener("click", () => action(() => { startRequest ||= crypto.randomUUID(); return api("start-mission", {run_id: current.run_id, request_id: startRequest}); }));
-$("abort-flight").addEventListener("click", () => action(() => { abortRequest ||= crypto.randomUUID(); return api("abort-flight", {run_id: current.run_id, request_id: abortRequest}); }));
 $("stop").addEventListener("click", () => action(() => api("stop", {run_id: current.run_id})));
 $("qgc").addEventListener("click", () => action(() => api("open-qgc", {})));
 $("check").addEventListener("click", () => action(async () => renderChecks(await api("checks"))));

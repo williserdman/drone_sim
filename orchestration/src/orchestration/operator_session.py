@@ -13,12 +13,16 @@ from typing import Any
 from urllib.request import urlopen
 from uuid import UUID, uuid4
 
+from artifacts.qgc_operator import MavlinkIdentity
+from artifacts.runtime_status import MissionFinishedStatus
+
 from .catalog import PresetCatalog, Preset
-from .config import load_run_config
+from .config import RunConfig, load_run_config
 from .controller import RunController
 from .gcs_bridge import GcsBridge
 from .local_runtime import LocalRuntime
 from .operator_readiness import preflight_snapshot
+from .qgc_actions import QgcActionStore
 from .status_store import StatusStore
 from .workstation import workstation_lock
 
@@ -44,13 +48,18 @@ def _tail(path: Path, maximum: int = 16384) -> str:
 
 class OperatorSession:
     def __init__(self, project_directory: Path, *, state_directory: Path | None = None,
-                 runtime: Any = None, controller: Any = None) -> None:
+                 runtime: Any = None, controller: Any = None,
+                 qgc_action_store: QgcActionStore | None = None) -> None:
         self.project_directory = project_directory.resolve()
         self.state_directory = state_directory or self.project_directory / ".local-runtime"
         self.state_directory.mkdir(parents=True, exist_ok=True)
         self.catalog = PresetCatalog(self.project_directory)
         self.runtime = runtime or LocalRuntime(self.project_directory)
         self.controller = controller or RunController(project_directory=self.project_directory)
+        self.qgc_action_store = qgc_action_store or QgcActionStore(
+            Path.home() / "Library/Application Support/drone-sim/qgc",
+            MavlinkIdentity(255, 190),
+        )
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
         self._cancel = threading.Event()
@@ -118,6 +127,8 @@ class OperatorSession:
                 return self.snapshot()
             if self._active() or self._record["state"] == "ORPHANED":
                 raise RuntimeError("a session is active; stop and finalize it before preparing another")
+            if self._record.get("run_id") and self._record.get("cleanup") != "complete":
+                raise RuntimeError("previous run cleanup must complete before preparing another")
             self._begin_owner()
             self._cancel.clear()
             self._record = {"state": "PREPARING", "run_id": None, "preset_id": preset_id,
@@ -149,8 +160,6 @@ class OperatorSession:
                     document["calibration"] = {"source_run_directory": str(Path(calibration_source).expanduser().resolve())}
                     source = self.state_directory / f'input-{self._record["prepare_request_id"]}.json'
                     source.write_text(json.dumps(document))
-                self.runtime.open_qgc()
-
                 def allocated(run_id: str, directory: Path) -> None:
                     with self._lock:
                         self._record.update(run_id=run_id, run_directory=str(directory))
@@ -160,12 +169,29 @@ class OperatorSession:
                     if self._cancel.is_set():
                         StatusStore(directory.parent).request_finalization(run_id, "ABORTED", "prepared_cancelled")
 
+                def configuration_ready(config: RunConfig, _directory: Path) -> None:
+                    material = config.operator_actions
+                    if material is None:
+                        raise RuntimeError("operator preparation did not allocate QGC actions")
+                    action_path = self.qgc_action_store.publish(
+                        material, self.runtime.qgc_actions_directory()
+                    )
+                    with self._lock:
+                        self._record.update(
+                            qgc_action_path=str(action_path),
+                            qgc_action_filename=action_path.name,
+                        )
+                        self._save()
+                    self.runtime.open_qgc()
+
                 with (self.state_directory / "owner.log").open("w") as events:
                     self.controller.event_stream = events
                     result = self.controller.start(source, launch_mode="operator",
                         preparation_wall_seconds=preparation_wall_seconds,
                         output_root=self.project_directory / "runs", auxiliary_services=("gazebo-viewer",),
-                        on_allocated=allocated)
+                        on_allocated=allocated,
+                        on_configuration_ready=configuration_ready,
+                        operator_control_factory=self.qgc_action_store.allocate)
                 if self._bridge:
                     self._bridge.stop()
                 remaining = self.runtime.remaining_resources()
@@ -174,7 +200,20 @@ class OperatorSession:
                         cleanup="complete" if not remaining else "incomplete", remaining_resources=remaining)
         except (OSError, ValueError, RuntimeError) as error:
             with self._lock:
-                self._record.update(state="FAILED", error=str(error))
+                update: dict[str, Any] = {"state": "FAILED", "error": str(error)}
+                if self._record.get("run_id") is not None:
+                    try:
+                        remaining = self.runtime.remaining_resources()
+                        update.update(
+                            cleanup="complete" if not remaining else "incomplete",
+                            remaining_resources=remaining,
+                        )
+                    except (OSError, ValueError, RuntimeError) as cleanup_error:
+                        update.update(
+                            cleanup="incomplete",
+                            error=f"{error}; cleanup inspection failed: {cleanup_error}",
+                        )
+                self._record.update(update)
         finally:
             if self._bridge:
                 self._bridge.stop()
@@ -192,6 +231,10 @@ class OperatorSession:
             directory = self._current(run_id)
             from artifacts.operator_protocol import OperatorProtocol
             config = load_run_config(directory / "configuration/run.json")
+            if config.operator_control is not None:
+                raise RuntimeError(
+                    "descriptor-backed runs accept flight actions only in QGroundControl"
+                )
             with OperatorProtocol(directory, run_id, config.config_sha256) as protocol:
                 existing = protocol.read_start_request()
             if existing is None:
@@ -204,6 +247,11 @@ class OperatorSession:
     def abort_flight(self, *, run_id: str, request_id: str) -> dict[str, Any]:
         with self._lock:
             directory = self._current(run_id)
+            config = load_run_config(directory / "configuration/run.json")
+            if config.operator_control is not None:
+                raise RuntimeError(
+                    "descriptor-backed runs accept flight actions only in QGroundControl"
+                )
             return self.controller.abort_flight(run_id, directory.parent, request_id=_uuid(request_id)).to_dict()
 
     def stop(self, *, run_id: str | None = None) -> dict[str, Any]:
@@ -279,7 +327,7 @@ class OperatorSession:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             result = dict(self._record)
-            result.update(can_start=False, checks=self._checks)
+            result.update(can_start=False, qgc_admission_ready=False, checks=self._checks)
             run_id = result.get("run_id")
             if run_id is None:
                 return result
@@ -295,9 +343,11 @@ class OperatorSession:
                 with OperatorProtocol(directory, run_id, config.config_sha256) as protocol:
                     result["preflight"] = preflight_snapshot(protocol)
                     request = protocol.read_start_request()
+                    readiness = protocol.read_start_readiness()
                     admission = protocol.read_start_admission()
                     recovery = protocol.read_latest_flight_abort_status()
                     result["start_request"] = asdict(request) if request else None
+                    result["readiness"] = asdict(readiness) if readiness else None
                     result["admission"] = asdict(admission) if admission else None
                     result["recovery"] = asdict(recovery) if recovery else None
                     if request and result["state"] == "PREPARED":
@@ -305,9 +355,21 @@ class OperatorSession:
                 if self._active():
                     result["views"] = self._views()
                     views = result["views"]
-                    result["can_start"] = (result["state"] == "PREPARED" and result["preflight"]["ready"]
-                        and views["qgc"].get("qgc_fresh", False) and views["gazebo"]["connected"]
-                        and views["camera"].get("fresh", False))
+                    preflight_ready = (
+                        result["state"] == "PREPARED" and result["preflight"]["ready"]
+                    )
+                    result["qgc_admission_ready"] = preflight_ready
+                    if config.operator_control is None:
+                        result["can_start"] = (
+                            preflight_ready
+                            and views["qgc"].get("qgc_fresh", False)
+                            and views["gazebo"]["connected"]
+                            and views["camera"].get("fresh", False)
+                        )
+                mission = StatusStore(directory.parent).read_runtime_status(
+                    run_id, MissionFinishedStatus
+                )
+                result["mission"] = asdict(mission) if mission else None
             except (OSError, ValueError, RuntimeError) as error:
                 result["observation_error"] = str(error)
             return result

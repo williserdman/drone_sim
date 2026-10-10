@@ -15,6 +15,8 @@ class Session:
         if self.failed:
             raise RuntimeError('owner unavailable')
         return {'state':self.state, 'run_id':'11111111-1111-4111-8111-111111111111', 'can_start':False,
+                'qgc_admission_ready':False,
+                'qgc_action_path':'/tmp/QGroundControl/MavlinkActions/drone-sim-11111111-1111-4111-8111-111111111111.json',
                 'preflight': {'ready': False, 'reasons': ['waiting for disarmed preflight']},
                 'views': {'gazebo': {'available':self.connected, 'connected':bool(self.observations)}, 'camera': {'fresh':self.connected}, 'qgc':{}}}
     def checks(self): return {'checks':[], 'ok':True}
@@ -44,6 +46,21 @@ def main():
             page.route('http://127.0.0.1:6080/**',desktop)
             page.goto(f'http://127.0.0.1:{server.server_address[1]}')
             page.wait_for_timeout(500)
+            assert page.locator('#start').count() == 0
+            assert page.locator('#abort-flight').count() == 0
+            assert page.locator('#prepare').count() == 1
+            assert page.locator('#stop').count() == 1
+            assert page.locator('#again').count() == 1
+            assert '/tmp/QGroundControl/MavlinkActions/drone-sim-11111111-1111-4111-8111-111111111111.json' in page.locator('#qgc-action-path').inner_text()
+            guidance = page.locator('#qgc-guidance').inner_text()
+            assert 'Application Settings' in guidance
+            assert 'Fly View Actions' in guidance
+            assert 'Start selected mission' in guidance
+            assert not page.locator('#manual-note').is_visible()
+            page.locator('#preset').evaluate("element => { element.disabled = false; }")
+            page.locator('#preset').select_option('operator-wait')
+            assert page.locator('#manual-note').is_visible()
+            assert 'GUIDED' in page.locator('#manual-note').inner_text()
             session.connected=True
             page.wait_for_timeout(2600)
             assert any(visits), f'Gazebo did not reconnect when runtime became available: {visits}'
@@ -58,8 +75,7 @@ def main():
             assert page.locator('#gazebo-status').inner_text() == 'Disconnected'
             assert 'STALE' in page.locator('#camera-stale').inner_text()
             assert page.locator('#camera-stale').is_visible()
-            assert page.locator('#start').is_disabled()
-            print('PASS: desktop reconnect, preparation-only reasons, and disconnected view indicators')
+            print('PASS: native-QGC controls, desktop reconnect, preparation-only reasons, and disconnected view indicators')
             browser.close()
     finally:
         server.shutdown()

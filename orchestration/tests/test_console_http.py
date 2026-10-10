@@ -19,6 +19,10 @@ class Session:
         self.actions.append(kwargs)
         return {"state": "PREPARING"}
 
+    def start_mission(self, **kwargs):
+        self.actions.append(kwargs)
+        raise RuntimeError("Use the run-bound QGroundControl action")
+
 
 def test_console_refresh_reads_same_session_and_mutations_require_token_and_local_origin():
     session = Session()
@@ -48,6 +52,10 @@ def test_console_refresh_reads_same_session_and_mutations_require_token_and_loca
         assert request("POST", "/api/prepare", body, {**headers, "Origin": "https://example.com"})[0] == 403
         assert request("POST", "/api/prepare", body, headers)[0] == 200
         assert len(session.actions) == 1
+        start = json.dumps({"run_id": "existing-run", "request_id": "request"})
+        status, payload = request("POST", "/api/start-mission", start, headers)
+        assert status == 409
+        assert "QGroundControl" in json.loads(payload)["error"]
         assert request("GET", "/../config/default-run.json")[0] == 404
         assert request("POST", "/api/prepare", "{}" * 20000, headers)[0] == 413
     finally:
