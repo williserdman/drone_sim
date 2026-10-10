@@ -188,6 +188,16 @@ checksum-mismatched evidence fails the affected finding. An ACK never proves
 airborne flight, touchdown, disarm, profile restoration, or target loss by
 itself.
 
+Every selected `.status/qgc-command-NNNN.json` must appear in the final manifest,
+with no extra status file outside that inventory. Landing-profile inspection
+accepts Task 5's one shared generation boundary for the batched full-profile
+request; each parameter verification must be newer than that boundary. Later
+set requests may capture the current generation, and their matching verification
+must be newer. Ordinary LAND also requires both restoration events after the
+independent touchdown observation and an eventual independent disarm. Abort
+status wall times must not regress, and adjacent native times must not regress
+when both records provide one.
+
 Native command inspection uses `logs/docker/native-qgc.tlog`. The acceptance
 workflow must copy a labeled snapshot of the genuine QGC telemetry log to that
 path while the run still owns its `.control` lock and before artifact inventory

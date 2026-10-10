@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
@@ -225,39 +225,41 @@ def _intervention(command: int, wall_time_ns: int) -> dict[str, object]:
     }
 
 
-def _profile_events(*, restore: bool) -> list[dict[str, object]]:
+def _profile_events(
+    *, restore: bool, restore_timestamp: float = 8.0
+) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
-    generation = 1
-    timestamp = 1.0
     for parameter, value in PROFILE.items():
-        events.extend(
-            (
-                _log_row(
-                    "landing_profile_transition",
-                    {
-                        "parameter": parameter,
-                        "action": "read",
-                        "stage": "requested",
-                        "value": value,
-                        "generation": generation,
-                    },
-                    timestamp,
-                ),
-                _log_row(
-                    "landing_profile_transition",
-                    {
-                        "parameter": parameter,
-                        "action": "read",
-                        "stage": "verified",
-                        "value": value,
-                        "generation": generation + 1,
-                    },
-                    timestamp + 0.01,
-                ),
+        events.append(
+            _log_row(
+                "landing_profile_transition",
+                {
+                    "parameter": parameter,
+                    "action": "read",
+                    "stage": "requested",
+                    "value": value,
+                    "generation": 1,
+                },
+                1.0,
             )
         )
-        generation += 2
-        timestamp += 0.02
+    verified_generations = (4, 8, 3, 12, 6, 10, 5, 13, 7, 11, 2, 9)
+    for index, ((parameter, value), generation) in enumerate(
+        zip(PROFILE.items(), verified_generations, strict=True)
+    ):
+        events.append(
+            _log_row(
+                "landing_profile_transition",
+                {
+                    "parameter": parameter,
+                    "action": "read",
+                    "stage": "verified",
+                    "value": value,
+                    "generation": generation,
+                },
+                1.1 + index * 0.01,
+            )
+        )
     events.extend(
         (
             _log_row(
@@ -267,7 +269,7 @@ def _profile_events(*, restore: bool) -> list[dict[str, object]]:
                     "action": "set",
                     "stage": "requested",
                     "value": 0.0,
-                    "generation": generation,
+                    "generation": 13,
                 },
                 2.0,
             ),
@@ -278,7 +280,7 @@ def _profile_events(*, restore: bool) -> list[dict[str, object]]:
                     "action": "set",
                     "stage": "verified",
                     "value": 0.0,
-                    "generation": generation + 1,
+                    "generation": 14,
                 },
                 2.1,
             ),
@@ -294,9 +296,9 @@ def _profile_events(*, restore: bool) -> list[dict[str, object]]:
                         "action": "set",
                         "stage": "requested",
                         "value": 1.0,
-                        "generation": generation + 2,
+                        "generation": 14,
                     },
-                    8.0,
+                    restore_timestamp,
                 ),
                 _log_row(
                     "landing_profile_transition",
@@ -305,9 +307,9 @@ def _profile_events(*, restore: bool) -> list[dict[str, object]]:
                         "action": "set",
                         "stage": "verified",
                         "value": 1.0,
-                        "generation": generation + 3,
+                        "generation": 15,
                     },
-                    8.1,
+                    restore_timestamp + 0.1,
                 ),
             )
         )
@@ -454,8 +456,11 @@ def _make_run(
     companion_events: list[dict[str, object]] | None = None,
     abort: bool = False,
     abort_recovery: bool = False,
+    abort_native_regression: bool = False,
+    abort_accepted_native_missing: bool = False,
     ordinary: bool = False,
     restore: bool = True,
+    restore_before_touchdown: bool = False,
     precision: bool = False,
     precision_complete_phases: bool = True,
     stimulus_mutator: Callable[[dict[str, object]], None] | None = None,
@@ -656,8 +661,15 @@ def _make_run(
                 )
             )
             if abort_recovery:
+                accepted_native_ns: int | None
+                if abort_accepted_native_missing:
+                    accepted_native_ns = None
+                elif abort_native_regression:
+                    accepted_native_ns = 100_000_000_000
+                else:
+                    accepted_native_ns = 94_000_000_000
                 for sequence, state, native_ns in (
-                    (0, "accepted", 94_000_000_000),
+                    (0, "accepted", accepted_native_ns),
                     (1, "recovering", 94_100_000_000),
                     (2, "landed_disarmed", 98_000_000_000),
                 ):
@@ -702,7 +714,12 @@ def _make_run(
 
     companion = list(companion_events or [])
     if ordinary:
-        companion.extend(_profile_events(restore=restore))
+        companion.extend(
+            _profile_events(
+                restore=restore,
+                restore_timestamp=6.0 if restore_before_touchdown else 8.0,
+            )
+        )
     if precision:
         companion.extend(_precision_events())
         stimulus = _stimulus_record()
@@ -766,9 +783,18 @@ def _make_run(
             Message("PARM", 92_100_000, Name="PLND_ENABLED", Value=0.0),
             Message("MODE", 92_200_000, Mode=9, ModeNum=9),
             Message("CTUN", 94_000_000, Alt=2.0, DAlt=0.0),
+            *(
+                [Message("PARM", 96_100_000, Name="PLND_ENABLED", Value=1.0)]
+                if restore and restore_before_touchdown
+                else []
+            ),
             Message("RFND", 97_000_000, Dist=0.1),
-            Message("ARM", 97_100_000, ArmState=0),
-            Message("PARM", 98_100_000, Name="PLND_ENABLED", Value=1.0),
+            *(
+                [Message("PARM", 98_100_000, Name="PLND_ENABLED", Value=1.0)]
+                if restore and not restore_before_touchdown
+                else []
+            ),
+            Message("ARM", 98_200_000, ArmState=0),
         ]
     if precision and dataflash_rows is None:
         rows = [
@@ -936,6 +962,46 @@ def test_inspection_rejects_old_action_bytes_after_manifest_binding(tmp_path: Pa
     assert "action" in report["findings"]["command"]["detail"]
 
 
+def test_inspection_rejects_corrupted_immutable_run_configuration(
+    tmp_path: Path,
+) -> None:
+    run = _make_run(tmp_path, admitted=False)
+    path = run.directory / "configuration/run.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["max_wall_seconds"] += 1
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    report = _inspect(run, "routing")
+
+    assert report["accepted"] is False
+    assert report["findings"]["command"]["status"] == "failed"
+    assert "immutable run configuration" in report["findings"]["command"]["detail"]
+
+
+def test_routing_rejects_command_status_added_after_manifest_commit(
+    tmp_path: Path,
+) -> None:
+    run = _make_run(tmp_path, admitted=False)
+    configuration = json.loads(
+        (run.directory / "configuration/run.json").read_text(encoding="utf-8")
+    )
+    with OperatorProtocol(run.directory, RUN_ID, configuration["config_sha256"]) as protocol:
+        existing = protocol.read_qgc_command_statuses()
+        protocol.write_qgc_command_status(
+            replace(
+                existing[-1],
+                sequence=1,
+                responded_wall_time_ns=existing[-1].responded_wall_time_ns + 1,
+            )
+        )
+
+    report = _inspect(run, "routing")
+
+    assert report["accepted"] is False
+    assert report["findings"]["command"]["status"] == "failed"
+    assert "command evidence inventory" in report["findings"]["command"]["detail"]
+
+
 def test_routing_rejects_incomplete_native_source_evidence(tmp_path: Path) -> None:
     run = _make_run(tmp_path, admitted=False, include_native_tlog=False)
 
@@ -987,6 +1053,51 @@ def test_abort_requires_touchdown_and_disarm_after_recovery_begins(tmp_path: Pat
     assert report["findings"]["physical"]["status"] == "passed"
 
 
+def test_abort_rejects_regressing_present_native_status_timestamps(
+    tmp_path: Path,
+) -> None:
+    run = _make_run(
+        tmp_path,
+        abort=True,
+        abort_recovery=True,
+        abort_native_regression=True,
+        dataflash_rows=[
+            Message("ARM", 90_100_000, ArmState=1),
+            Message("CTUN", 91_000_000, Alt=2.0, DAlt=2.0),
+            Message("RFND", 97_000_000, Dist=0.1),
+            Message("ARM", 97_100_000, ArmState=0),
+        ],
+    )
+
+    report = _inspect(run, "abort")
+
+    assert report["accepted"] is False
+    assert report["findings"]["physical"]["status"] == "failed"
+    assert "native timestamps regress" in report["findings"]["physical"]["detail"]
+
+
+def test_abort_accepts_optional_native_timestamp_absent_before_recovery(
+    tmp_path: Path,
+) -> None:
+    run = _make_run(
+        tmp_path,
+        abort=True,
+        abort_recovery=True,
+        abort_accepted_native_missing=True,
+        dataflash_rows=[
+            Message("ARM", 90_100_000, ArmState=1),
+            Message("CTUN", 91_000_000, Alt=2.0, DAlt=2.0),
+            Message("RFND", 97_000_000, Dist=0.1),
+            Message("ARM", 97_100_000, ArmState=0),
+        ],
+    )
+
+    report = _inspect(run, "abort")
+
+    assert report["accepted"] is True
+    assert report["findings"]["physical"]["status"] == "passed"
+
+
 def test_ordinary_landing_rejects_touchdown_without_verified_restore(tmp_path: Path) -> None:
     run = _make_run(tmp_path, ordinary=True, restore=False)
 
@@ -998,7 +1109,7 @@ def test_ordinary_landing_rejects_touchdown_without_verified_restore(tmp_path: P
     assert "restore" in report["findings"]["profile"]["detail"]
 
 
-def test_ordinary_landing_accepts_full_read_disable_land_touchdown_restore(
+def test_ordinary_landing_accepts_task5_batched_read_and_touchdown_restore(
     tmp_path: Path,
 ) -> None:
     run = _make_run(tmp_path, ordinary=True)
@@ -1012,6 +1123,18 @@ def test_ordinary_landing_accepts_full_read_disable_land_touchdown_restore(
         "profile": "passed",
         "cleanup": "passed",
     }
+
+
+def test_ordinary_landing_rejects_restore_before_independent_touchdown(
+    tmp_path: Path,
+) -> None:
+    run = _make_run(tmp_path, ordinary=True, restore_before_touchdown=True)
+
+    report = _inspect(run, "ordinary-land")
+
+    assert report["accepted"] is False
+    assert report["findings"]["physical"]["status"] == "failed"
+    assert "restore precedes independent touchdown" in report["findings"]["physical"]["detail"]
 
 
 def test_precision_loss_requires_acquisition_loss_policy_and_persistent_stimulus(

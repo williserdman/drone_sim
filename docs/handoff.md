@@ -756,10 +756,13 @@ injectable real-shape DataFlash boundary. The reader binds selected files to the
 immutable configuration and final manifest, requires independent vehicle facts
 for physical claims, and validates the target-loss helper's three durable
 phases against the admitted operation, native clocks, bridge log, final
-DataFlash rows, and strict odometry persistence. Focused verification passed 17
-tests plus direct mypy checks of the script and test file. No native QGC click,
-simulator flight, Docker run, full artifact acceptance, or image build was
-performed for this implementation.
+DataFlash rows, and strict odometry persistence. Review corrections bind the
+exact command-status inventory, consume Task 5's shared batched-read generation,
+require restoration after touchdown while allowing disarm afterward, reject
+regressing present Abort native times, and cover corrupted immutable run
+configuration. Focused verification passed 22 tests plus direct mypy checks of
+the script and test file. No native QGC click, simulator flight, Docker run,
+full artifact acceptance, or image build was performed for this implementation.
 
 Native acceptance must snapshot the selected genuine QGC tlog as
 `logs/docker/native-qgc.tlog` before `ArtifactSession` inventories and finalizes

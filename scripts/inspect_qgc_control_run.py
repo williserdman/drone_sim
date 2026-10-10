@@ -300,6 +300,21 @@ def _validate_configuration_records(
         raise InspectionError("manifest inventories a start admission that does not exist")
 
 
+def _validate_command_status_inventory(
+    artifacts: Mapping[str, Mapping[str, Any]],
+    statuses: Sequence[QgcCommandStatus],
+) -> None:
+    expected = {
+        f".status/qgc-command-{sequence:04d}.json"
+        for sequence in range(len(statuses))
+    }
+    inventoried = {
+        path for path in artifacts if path.startswith(".status/qgc-command-")
+    }
+    if inventoried != expected:
+        raise InspectionError("QGC command evidence inventory does not match status files")
+
+
 def _load_evidence(run_directory: Path | str) -> Evidence:
     directory = Path(run_directory).resolve()
     try:
@@ -329,6 +344,7 @@ def _load_evidence(run_directory: Path | str) -> Evidence:
     _validate_configuration_records(
         manifest, descriptor, configuration.config_sha256, admission
     )
+    _validate_command_status_inventory(artifacts, command_statuses)
     provisional = Evidence(
         directory,
         configuration.run_id,
@@ -817,7 +833,6 @@ def _ground_and_disarm_after(
 
 def _profile_transitions(evidence: Evidence) -> tuple[ProfileTransition, ...]:
     transitions: list[ProfileTransition] = []
-    previous_generation: int | None = None
     for row in evidence.companion_events:
         if row.get("event") != PROFILE_EVENT_NAME:
             continue
@@ -859,10 +874,6 @@ def _profile_transitions(evidence: Evidence) -> tuple[ProfileTransition, ...]:
         )
         if timestamp < 0:
             raise InspectionError("landing-profile public timestamp is negative")
-        if generation is not None:
-            if previous_generation is not None and generation <= previous_generation:
-                raise InspectionError("landing-profile generations do not increase")
-            previous_generation = generation
         transitions.append(
             ProfileTransition(
                 parameter, action, stage, value, generation, timestamp, detail
@@ -920,6 +931,7 @@ def _ordinary_profile(
     transitions = _profile_transitions(evidence)
     if any(item.stage == "failed" for item in transitions):
         raise InspectionError("landing profile contains a failed transition")
+    read_requests: list[ProfileTransition] = []
     read_verifications: list[ProfileTransition] = []
     for parameter, expected_value in PRECISION_PROFILE.items():
         requested = _single_transition(
@@ -937,7 +949,13 @@ def _ordinary_profile(
             value=expected_value,
         )
         _verified_after(requested, verified)
+        read_requests.append(requested)
         read_verifications.append(verified)
+    read_boundaries = {item.generation for item in read_requests}
+    if len(read_boundaries) != 1 or None in read_boundaries:
+        raise InspectionError(
+            "full landing-profile read requests do not share one captured boundary"
+        )
     illegal_sets = [
         item
         for item in transitions
@@ -957,6 +975,17 @@ def _ordinary_profile(
         for verified in read_verifications
     ):
         raise InspectionError("full landing-profile read was not fresh before disable")
+    if (
+        disable_requested.generation is None
+        or any(
+            verified.generation is None
+            or disable_requested.generation < verified.generation
+            for verified in read_verifications
+        )
+    ):
+        raise InspectionError(
+            "PLND_ENABLED disable boundary predates a full-profile observation"
+        )
     disable_verified = _single_transition(
         transitions,
         parameter="PLND_ENABLED",
@@ -987,6 +1016,12 @@ def _ordinary_profile(
         value=1.0,
     )
     _verified_after(restore_requested, restore_verified)
+    if (
+        restore_requested.generation is None
+        or disable_verified.generation is None
+        or restore_requested.generation < disable_verified.generation
+    ):
+        raise InspectionError("PLND_ENABLED restore boundary predates verified disable")
     if restore_requested.sim_timestamp <= disable_verified.sim_timestamp:
         raise InspectionError("PLND_ENABLED restore does not follow verified disable")
     parameter_rows = [row for row in rows if row.message_type == "PARM"]
@@ -1050,6 +1085,12 @@ def _check_abort_physical(
     for before, after in zip(evidence.abort_statuses, evidence.abort_statuses[1:]):
         if after.observed_wall_time_ns < before.observed_wall_time_ns:
             raise InspectionError("Abort recovery wall timestamps regress")
+        if (
+            before.observed_native_ns is not None
+            and after.observed_native_ns is not None
+            and after.observed_native_ns < before.observed_native_ns
+        ):
+            raise InspectionError("Abort recovery native timestamps regress")
     recovering = evidence.abort_statuses[1]
     if recovering.observed_native_ns is None:
         raise InspectionError("Abort recovery start lacks a native timestamp")
@@ -1107,6 +1148,33 @@ def _check_ordinary_physical(
     ):
         raise InspectionError("DataFlash does not show descent after LAND")
     ground_us, disarm_us = _ground_and_disarm_after(rows, land_us)
+    restore_rows = [
+        item
+        for item in transitions
+        if item.parameter == "PLND_ENABLED"
+        and item.action == "set"
+        and math.isclose(item.value, 1.0, rel_tol=1e-6, abs_tol=1e-6)
+    ]
+    if restore_rows:
+        restore_requested = _single_transition(
+            transitions,
+            parameter="PLND_ENABLED",
+            action="set",
+            stage="requested",
+            value=1.0,
+        )
+        restore_verified = _single_transition(
+            transitions,
+            parameter="PLND_ENABLED",
+            action="set",
+            stage="verified",
+            value=1.0,
+        )
+        if (
+            _native_us(evidence, restore_requested.sim_timestamp) <= ground_us
+            or _native_us(evidence, restore_verified.sim_timestamp) <= ground_us
+        ):
+            raise InspectionError("PLND_ENABLED restore precedes independent touchdown")
     return Finding(
         "passed",
         f"LAND at {land_us} us is followed by descent, ground at {ground_us} us, "
