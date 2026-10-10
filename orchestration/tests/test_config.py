@@ -8,6 +8,7 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
+from artifacts.qgc_operator import MavlinkIdentity
 import orchestration.config as config_module
 from orchestration.config import (
     CALIBRATION_PARAMETERS,
@@ -19,6 +20,7 @@ from orchestration.config import (
     resolve_run_config,
     write_resolved_config,
 )
+from orchestration.qgc_actions import QgcActionStore
 
 
 ROOT = Path(__file__).parents[1]
@@ -332,6 +334,61 @@ def test_operator_launch_overrides_are_frozen_serialized_and_hashed(tmp_path):
     assert loaded.preparation_wall_seconds == resolved.preparation_wall_seconds
     assert loaded.output_root == resolved.output_root
     assert loaded.config_sha256 == resolved.config_sha256
+
+
+def test_operator_descriptor_round_trip_preserves_historical_bytes(tmp_path):
+    store = QgcActionStore(tmp_path / "qgc-state", MavlinkIdentity(255, 190))
+    calls = []
+
+    def allocate(run_id: str):
+        calls.append(run_id)
+        return store.allocate(run_id)
+
+    resolved = resolve_run_config(
+        CONFIGURED_OPERATOR_TEMPLATE,
+        run_id_factory=lambda: FIXED_RUN_ID,
+        launch_mode="operator",
+        operator_control_factory=allocate,
+    )
+
+    assert calls == [str(FIXED_RUN_ID)]
+    assert resolved.operator_control is not None
+    assert resolved.operator_control.attempt_token == 1
+    written = write_resolved_config(tmp_path / "run", resolved)
+    action_path = written.parent / "qgc-actions.json"
+    assert action_path.read_bytes() == resolved._operator_action_bytes
+    document = json.loads(written.read_text(encoding="utf-8"))
+    _load_validator("run.schema.json").validate(document)
+    assert document["operator_control"]["actions_sha256"] == hashlib.sha256(
+        action_path.read_bytes()
+    ).hexdigest()
+    loaded = load_run_config(written)
+    assert loaded.operator_control == resolved.operator_control
+    assert loaded._operator_action_bytes == resolved._operator_action_bytes
+
+    corrupted = replace(resolved, _operator_action_bytes=b"changed\n")
+    with pytest.raises(ValueError, match="action bytes"):
+        write_resolved_config(tmp_path / "corrupted", corrupted)
+    assert not (tmp_path / "corrupted/configuration/run.json").exists()
+
+    template_document = json.loads(
+        CONFIGURED_OPERATOR_TEMPLATE.read_text(encoding="utf-8")
+    )
+    template_document["operator_control"] = document["operator_control"]
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(template_document)
+    with pytest.raises(ValueError, match="operator_control"):
+        resolve_run_config(
+            _write_template(tmp_path, template_document, "injected.json"),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+
+    for template in (DEFAULT_TEMPLATE, CONFIGURED_OPERATOR_TEMPLATE):
+        before = template.read_bytes()
+        compatible = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+        assert compatible.operator_control is None
+        assert compatible._operator_action_bytes is None
+        assert template.read_bytes() == before
 
 
 @pytest.mark.parametrize(

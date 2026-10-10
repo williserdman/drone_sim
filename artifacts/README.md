@@ -35,6 +35,11 @@ required evidence is missing or invalid.
   request-scoped operator start, live preflight, immutable admission, and flight
   abort documents. The admitted epoch wire shape is also published as the
   [`start-admission.json` schema](schemas/start-admission.schema.json).
+- [`qgc_operator.py`](src/artifacts/qgc_operator.py) owns the frozen
+  `qgc_actions_v1` descriptor shared by configuration, companion admission, and
+  later evidence checks. It validates the two project command IDs, the
+  float32-exact attempt-token range, distinct request UUIDs and MAVLink
+  identities, the bundle-relative action path, and the action-file digest.
 - [`acceptance.py`](src/artifacts/acceptance.py) and
   the scenario score validators, including
   [`moving_pad_score_validation.py`](src/artifacts/moving_pad_score_validation.py),
@@ -89,6 +94,13 @@ acceptance also validates its start request, config binding, 50 ms native epoch,
 public-zero mapping, manifest digest, and the matching admission digest recorded
 in `RunState` at `RUNNING` and `FINALIZING`. Unattended bundles carry no admission
 record and retain their configured fixed epoch.
+
+A descriptor-backed operator run also freezes `operator_control` in
+`configuration/run.json` and preserves the exact hashed QGC file as
+`configuration/qgc-actions.json`. The descriptor contains only public protocol
+values and the file digest. The action bytes remain outside `run.json` and are
+verified before persistence. Older operator snapshots without this descriptor
+and all unattended snapshots keep their existing meaning and checksums.
 
 Image provenance is launch-mode specific. Unattended bundles and their external
 digest expectations contain exactly the seven production Phase 3 images.

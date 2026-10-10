@@ -26,6 +26,9 @@ validates; it does not infer physical success from a command or log message.
 - [`resolve_run_config`](src/orchestration/config.py) is the template-to-resolved-
   configuration boundary; [`ComposeRuntime`](src/orchestration/_adapters/compose.py)
   is the Docker boundary.
+- [`qgc_actions.py`](src/orchestration/qgc_actions.py) allocates durable
+  run-bound QGC attempt tokens, renders the two native Fly View actions, and
+  publishes a run-named file without replacing a different existing file.
 - [`RunLifecycle`](src/orchestration/lifecycle.py) defines valid state transitions.
   [`runtime_node.py`](src/orchestration/runtime_node.py) publishes runtime lifecycle
   state and aggregates the quiescence barrier.
@@ -77,6 +80,16 @@ inside a suite reuse its lease. Prerequisites and image provenance are checked b
 orphaned owner blocks another preparation. An interrupted owner can be cleaned
 up while preserving evidence, without inventing a completed manifest.
 
+QGC token allocation uses a separate monotonic ledger under
+`~/Library/Application Support/drone-sim/qgc/`; callers inject that directory
+for tests. Prepare owns the workstation lease while it calls the allocator. The
+ledger persists the next generation before action rendering, so failed Prepare
+cannot reuse the token. A durable initialization marker distinguishes first use
+from lost state. Missing, corrupt, symlinked, or exhausted state fails Prepare
+instead of resetting the counter. Publication takes an explicit QGC
+`MavlinkActions` directory, accepts an existing byte-identical run file, and
+never overwrites a conflicting file or another user action file.
+
 [`gcs_bridge.py`](src/orchestration/gcs_bridge.py) forwards the dedicated SITL GCS
 MAVLink connection to native QGC, preserves wire frames, and inventories manual
 control commands under `logs/docker/`. It originates no mission commands and
@@ -111,6 +124,15 @@ transport readiness retain the separate startup budget. The admission digest is
 published in `RunState` from `RUNNING` onward so each runtime producer can reject
 a different or missing decision. Unattended mode retains the fixed-epoch startup
 path and publishes an empty admission digest.
+
+When operator preparation supplies an action factory, configuration resolution
+allocates the run ID first, then allocates and hashes the QGC action bytes before
+calculating `config_sha256`. `operator_control` binds commands 31020 and 31021,
+the token, request identities, MAVLink identities, relative bundle path, and
+digest. `write_resolved_config` checks that binding and writes the unchanged
+bytes to `configuration/qgc-actions.json`. Templates cannot provide this
+descriptor. Descriptor-absent operator and unattended configurations retain
+their historical serialization.
 
 An `autotune` run receives a host-generated `calibration_profile` in its resolved
 configuration before Compose starts. The version-2 profile binds the shared physics of `iris_flight`,

@@ -35,6 +35,7 @@
     "calibration_json": {"$ref": "#/$defs/calibration_json"},
     "calibration_profile": {"type": "object"},
     "calibration_validation": {"type": "boolean", "default": false},
+    "operator_control": {"$ref": "#/$defs/operator_control"},
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "allOf": [
@@ -91,6 +92,13 @@
       "else": {"not": {"required": ["calibration_profile"]}}
     },
     {
+      "if": {"required": ["operator_control"]},
+      "then": {
+        "required": ["launch_mode"],
+        "properties": {"launch_mode": {"const": "operator"}}
+      }
+    },
+    {
       "if": {"anyOf": [
         {"properties": {"world": {"enum": ["moving_pad_landing", "moving_pad_stationary"]}}},
         {"properties": {"vehicle": {"const": "iris_moving_pad"}}},
@@ -111,6 +119,45 @@
     }
   ],
   "$defs": {
+    "mavlink_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system_id", "component_id"],
+      "properties": {
+        "system_id": {"type": "integer", "minimum": 1, "maximum": 255},
+        "component_id": {"type": "integer", "minimum": 1, "maximum": 255}
+      }
+    },
+    "operator_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "start_command",
+        "abort_command",
+        "attempt_token",
+        "start_request_id",
+        "abort_request_id",
+        "qgc_source",
+        "companion",
+        "flight_controller",
+        "actions_path",
+        "actions_sha256"
+      ],
+      "properties": {
+        "kind": {"const": "qgc_actions_v1"},
+        "start_command": {"const": 31020},
+        "abort_command": {"const": 31021},
+        "attempt_token": {"type": "integer", "minimum": 1, "maximum": 16777215},
+        "start_request_id": {"type": "string", "format": "uuid"},
+        "abort_request_id": {"type": "string", "format": "uuid"},
+        "qgc_source": {"$ref": "#/$defs/mavlink_identity"},
+        "companion": {"$ref": "#/$defs/mavlink_identity"},
+        "flight_controller": {"$ref": "#/$defs/mavlink_identity"},
+        "actions_path": {"const": "configuration/qgc-actions.json"},
+        "actions_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "calibration_json": {
       "type": "object",
       "additionalProperties": false,
