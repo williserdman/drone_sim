@@ -6,8 +6,10 @@ import math
 import threading
 import time
 from collections import deque
+from contextlib import ExitStack
 from typing import Any
 
+from .flight_authority import ExpectedTransition, FlightAuthorityGate
 from .mission import Ack, CommandKind, Telemetry
 from .qgc_transport import VehicleFactObservation
 
@@ -65,6 +67,7 @@ class MavlinkAdapter:
         mavutil_module: Any,
         *,
         qgc_io: Any | None = None,
+        authority_gate: FlightAuthorityGate | None = None,
         wall_time_ns: Any = time.time_ns,
     ) -> None:
         self._connection = connection
@@ -73,6 +76,7 @@ class MavlinkAdapter:
         self._armed: bool | None = None
         self._landed: bool | None = None
         self._qgc_io = qgc_io
+        self._authority_gate = authority_gate
         self._wall_time_ns = wall_time_ns
         self._operator_observations: deque[VehicleFactObservation] = deque(maxlen=64)
         self._operator_observations_lock = threading.Lock()
@@ -107,14 +111,40 @@ class MavlinkAdapter:
                 == mavlink.MAV_LANDED_STATE_ON_GROUND
             }
         if values:
+            received_wall_time_ns = self._wall_time_ns()
             with self._operator_observations_lock:
                 self._operator_observations.append(
                     VehicleFactObservation(
-                        self._wall_time_ns(),
+                        received_wall_time_ns,
                         native_timestamp_ns=timestamp_ns,
                         **values,
                     )
                 )
+            if kind == "HEARTBEAT" and self._authority_gate is not None:
+                self._authority_gate.observe(
+                    Telemetry(
+                        received_wall_time_ns,
+                        heartbeat=True,
+                        mode=values["mode"],
+                        armed=values["armed"],
+                    )
+                )
+
+    def _send_guarded(
+        self,
+        output: Any,
+        *expected: ExpectedTransition,
+    ) -> None:
+        gate = self._authority_gate
+        if gate is None:
+            output()
+            return
+        with ExitStack() as transactions:
+            for transition in expected:
+                transactions.enter_context(gate.output_transaction(transition))
+            if not expected:
+                transactions.enter_context(gate.output_transaction())
+            output()
 
     def send(self, command: CommandKind, altitude_m: float | None) -> None:
         mavlink = self._mavutil.mavlink
@@ -135,12 +165,25 @@ class MavlinkAdapter:
             command_id = mavlink.MAV_CMD_NAV_LAND
         else:  # pragma: no cover - Enum exhaustiveness guard.
             raise ValueError(f"unsupported mission command {command!r}")
-        self._connection.mav.command_long_send(
-            FLIGHT_CONTROLLER_SYSTEM_ID,
-            FLIGHT_CONTROLLER_COMPONENT_ID,
-            command_id,
-            0,
-            *parameters,
+        expected: tuple[ExpectedTransition, ...] = ()
+        if command is CommandKind.SET_GUIDED:
+            expected = (ExpectedTransition(mode="GUIDED"),)
+        elif command is CommandKind.ARM:
+            expected = (ExpectedTransition(armed=True),)
+        elif command is CommandKind.LAND:
+            expected = (
+                ExpectedTransition(mode="LAND"),
+                ExpectedTransition(armed=False),
+            )
+        self._send_guarded(
+            lambda: self._connection.mav.command_long_send(
+                FLIGHT_CONTROLLER_SYSTEM_ID,
+                FLIGHT_CONTROLLER_COMPONENT_ID,
+                command_id,
+                0,
+                *parameters,
+            ),
+            *expected,
         )
 
     def send_waypoint(
@@ -179,23 +222,25 @@ class MavlinkAdapter:
         )
         if yaw_rad is None:
             type_mask |= mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
-        self._connection.mav.set_position_target_global_int_send(
-            0,
-            FLIGHT_CONTROLLER_SYSTEM_ID,
-            FLIGHT_CONTROLLER_COMPONENT_ID,
-            mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-            type_mask,
-            int(round(latitude_deg * 1e7)),
-            int(round(longitude_deg * 1e7)),
-            altitude_m,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0 if yaw_rad is None else float(yaw_rad),
-            0.0,
+        self._send_guarded(
+            lambda: self._connection.mav.set_position_target_global_int_send(
+                0,
+                FLIGHT_CONTROLLER_SYSTEM_ID,
+                FLIGHT_CONTROLLER_COMPONENT_ID,
+                mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                type_mask,
+                int(round(latitude_deg * 1e7)),
+                int(round(longitude_deg * 1e7)),
+                altitude_m,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0 if yaw_rad is None else float(yaw_rad),
+                0.0,
+            )
         )
 
     def send_landing_target(
@@ -212,21 +257,23 @@ class MavlinkAdapter:
         if down_m <= 0:
             raise ValueError("landing target down distance must be positive")
         distance = math.sqrt(forward_m**2 + right_m**2 + down_m**2)
-        self._connection.mav.landing_target_send(
-            exposure_timestamp_ns // 1_000,
-            0,
-            self._mavutil.mavlink.MAV_FRAME_BODY_FRD,
-            math.atan2(forward_m, down_m),
-            math.atan2(right_m, down_m),
-            distance,
-            0.0,
-            0.0,
-            float(forward_m),
-            float(right_m),
-            float(down_m),
-            (1.0, 0.0, 0.0, 0.0),
-            0,
-            1,
+        self._send_guarded(
+            lambda: self._connection.mav.landing_target_send(
+                exposure_timestamp_ns // 1_000,
+                0,
+                self._mavutil.mavlink.MAV_FRAME_BODY_FRD,
+                math.atan2(forward_m, down_m),
+                math.atan2(right_m, down_m),
+                distance,
+                0.0,
+                0.0,
+                float(forward_m),
+                float(right_m),
+                float(down_m),
+                (1.0, 0.0, 0.0, 0.0),
+                0,
+                1,
+            )
         )
 
     def request_parameters(self, names: tuple[str, ...]) -> None:

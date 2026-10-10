@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from drone_sim_companion.flight_authority import FlightAuthorityGate
 from drone_sim_companion.mission import Ack, CommandKind, Telemetry
 from drone_sim_companion.mission_plan import parse_mission_plan
 from drone_sim_companion.operations import DroneOperations
@@ -88,6 +89,25 @@ def test_operator_wait_is_passive_and_takeoff_never_arms_or_changes_mode():
     mission.tick(2_000_000_000)
     assert vehicle.commands == [(CommandKind.TAKEOFF, 2)]
     assert operations.armed_at_ns == 1_000_000_000
+
+
+def test_operator_wait_scopes_native_guided_and_arm_authority_to_active_step():
+    vehicle = Vehicle()
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode="STABILIZE", armed=False))
+    gate.admit("a" * 64)
+    operations = DroneOperations(vehicle, authority_gate=gate)
+    operation_id = operations.start(
+        "wait_for_state", {"armed": True, "mode": "GUIDED"}
+    )
+
+    operations.observe(Telemetry(2, heartbeat=True, mode="GUIDED", armed=False))
+    operations.observe(Telemetry(3, heartbeat=True, mode="GUIDED", armed=True))
+
+    assert operations.operation_status(operation_id).state == "succeeded"
+    assert gate.revoked is False
+    operations.observe(Telemetry(4, heartbeat=True, mode="LOITER", armed=True))
+    assert gate.revoked is True
 
 
 def test_takeoff_rejects_missing_arm_without_sending_commands():

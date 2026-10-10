@@ -13,6 +13,7 @@ import threading
 from artifacts.runtime_status import MissionExecutionReadyStatus, OperatorWaitStartedStatus, RuntimeFailureStatus
 
 from .configured_mission import ConfiguredMission
+from .flight_authority import FlightAuthorityGate
 from .lifecycle import CompanionLifecycle
 from .mavlink_adapter import MavlinkAdapter
 from .mission import MissionPhase, MissionState
@@ -53,6 +54,7 @@ class ConfiguredHost:
         calibration_parameters=None,
         moving_vision=None,
         publish_mission_event=None,
+        authority_gate: FlightAuthorityGate | None = None,
     ) -> None:
         self._moving_required = any(step.tool == "precision_land" for step in plan.steps)
         precision_step = next(
@@ -75,6 +77,7 @@ class ConfiguredHost:
             vehicle,
             lifecycle.emit,
             moving_precision=MovingPrecisionLanding() if self._moving_required else None,
+            authority_gate=authority_gate,
         )
         self.mission = ConfiguredMission(plan, self.operations)
         self.lifecycle = lifecycle
@@ -314,6 +317,9 @@ def run_configured(config) -> int:
     connection = None
     node = None
     host = None
+    authority_gate = (
+        FlightAuthorityGate() if qgc_descriptor is not None else None
+    )
     initialized = False
     latest_clock_ns = None
     mission_running = None
@@ -412,7 +418,12 @@ def run_configured(config) -> int:
             from .qgc_transport import PymavlinkQgcCommandIO
 
             qgc_io = PymavlinkQgcCommandIO(connection, mavutil.mavlink)
-        vehicle = MavlinkAdapter(connection, mavutil, qgc_io=qgc_io)
+        vehicle = MavlinkAdapter(
+            connection,
+            mavutil,
+            qgc_io=qgc_io,
+            authority_gate=authority_gate,
+        )
         lifecycle.mark_transport_ready()
         rclpy.init()
         initialized = True
@@ -474,6 +485,7 @@ def run_configured(config) -> int:
             calibration_parameters=_calibration_parameters(config),
             moving_vision=moving_vision,
             publish_mission_event=publish_event,
+            authority_gate=authority_gate,
         )
         operator_control = _compose_qgc_control(
             config,
@@ -500,6 +512,12 @@ def run_configured(config) -> int:
                 telemetry = vehicle.poll(latest_clock_ns if latest_clock_ns is not None else 0)
                 if telemetry is None:
                     break
+                fresh_qgc_facts = _observe_qgc_vehicle_facts(
+                    config,
+                    operator_control,
+                    vehicle,
+                    authority_gate=authority_gate,
+                )
                 if moving_required and telemetry.attitude_rpy_rad is not None:
                     assert telemetry.attitude_timestamp_ns is not None
                     with sensor_lock:
@@ -508,7 +526,7 @@ def run_configured(config) -> int:
                             telemetry.attitude_timestamp_ns,
                         )
                 host.observe(telemetry)
-                if not _observe_qgc_vehicle_facts(config, operator_control, vehicle):
+                if not fresh_qgc_facts:
                     operator_control.observe_vehicle(
                         native_timestamp_ns=telemetry.timestamp_ns,
                         heartbeat_live=True if telemetry.heartbeat else None,
@@ -541,6 +559,13 @@ def run_configured(config) -> int:
                 break
             stopping = requested_stop or finalizing or protocol.read_finalize_request() is not None
             start = operator_control.poll_start(run_state=mission_running)
+            if (
+                authority_gate is not None
+                and not authority_gate.admitted
+                and start.command_allowed
+                and start.admission_sha256 is not None
+            ):
+                authority_gate.admit(start.admission_sha256)
             operator_control.poll_abort(
                 finalizing=stopping,
                 begin_recovery=host.abort_flight,
@@ -553,6 +578,11 @@ def run_configured(config) -> int:
                         "configured mission interrupted before completion"
                     )
                 break
+            if authority_gate is not None and authority_gate.revoked:
+                host.fail(
+                    authority_gate.reason or "external flight authority change",
+                    attempt_recovery=False,
+                )
             if host.error is None and not stopping:
                 host.tick(latest_clock_ns, mission_running=start.command_allowed)
             elif latest_clock_ns is not None:

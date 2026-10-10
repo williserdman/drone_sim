@@ -143,6 +143,18 @@ not extend freshness or infer touchdown. The admitted request continues through
 Gazebo's existing request-scoped 50 ms epoch rendezvous, including configured
 operator-wait runs.
 
+Admission creates one irreversible flight-authority generation for raw and
+diagnostic hosts. Their final MAVLink writer serializes the authority check,
+enqueue, and registration of operation-owned mode or arm transitions. The
+leading Operator Wait temporarily owns only native GUIDED and arm transitions.
+A fresh exact-FC transition outside those permissions revokes future aircraft,
+payload, RC, and parameter output, and later GUIDED observations cannot create a
+new generation. ACK, heartbeat, and observation traffic remains available.
+Foreign senders and cached non-heartbeat state cannot create intervention
+evidence. This is sampled takeover detection at the requested heartbeat cadence,
+with no claim about the interval before the next frame reaches the existing
+reader.
+
 Flight abort has a distinct durable request and observed recovery history. It
 stops mission intent through the selected onboard host's guarded recovery path
 while keeping runtime observation available. Stop Simulation uses finalization
@@ -150,6 +162,12 @@ and teardown and can end a flight without a landing. QGC remains an active
 operator application; its manual commands and observed authority changes are
 evidence, not a promise of read-only operation. The Gazebo desktop excludes
 ungoverned world mutation controls.
+
+A valid Abort transfers authority that remains mission-owned into the existing
+recovery path. External revocation and finalization are never cleared to perform
+recovery. Comp2026 retains its imported RC/pilot/failsafe proof and recovery
+context; an outer shutdown admission now remains held through its actual shared
+dependency writer, including recovery, payload calls, and parameter restoration.
 
 ### Existing runtime contracts
 

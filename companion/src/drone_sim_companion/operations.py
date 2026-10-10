@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import math
-from typing import Protocol
+from typing import ContextManager, Protocol
 
+from .flight_authority import ExpectedTransition, FlightAuthorityGate
 from .mission import CommandKind, Telemetry
 from .mission_plan import positive_seconds, validate_arguments
 from .moving_precision import MovingObservation, MovingPrecisionLanding
@@ -60,6 +61,7 @@ class DroneOperations:
         emit=None,
         *,
         moving_precision: MovingPrecisionLanding | None = None,
+        authority_gate: FlightAuthorityGate | None = None,
     ) -> None:
         self._vehicle = vehicle
         self._emit = emit or (lambda _event, _stamp, _fields: None)
@@ -73,7 +75,14 @@ class DroneOperations:
         self._recovery_id: str | None = None
         self._moving_precision = moving_precision
         self._precision_hold_requested = False
+        self._authority_gate = authority_gate
+        self._operator_wait_scope: ContextManager[None] | None = None
+        self._expected_transitions: tuple[ExpectedTransition, ...] = ()
         self.armed_at_ns: int | None = None
+
+    @property
+    def expected_transitions(self) -> tuple[ExpectedTransition, ...]:
+        return self._expected_transitions
 
     @property
     def mission_ready(self) -> bool:
@@ -111,6 +120,10 @@ class DroneOperations:
             return
         status = replace(self._active.status, state=state, finished_at_ns=self._clock_ns, error=error)
         self._operations[status.operation_id] = status
+        if self._operator_wait_scope is not None:
+            self._operator_wait_scope.__exit__(None, None, None)
+            self._operator_wait_scope = None
+        self._expected_transitions = ()
         self._active = None
         if state != "succeeded":
             self._stopped_reason = error or state
@@ -144,6 +157,18 @@ class DroneOperations:
     def _dispatch(self, tool: str, args: dict) -> None:
         assert self._active is not None
         if tool == "wait_for_state":
+            expected_mode = "GUIDED" if args.get("mode") == "GUIDED" else None
+            expected_armed = True if args.get("armed") is True else None
+            if expected_mode is not None or expected_armed is not None:
+                expected = ExpectedTransition(
+                    mode=expected_mode,
+                    armed=expected_armed,
+                )
+                self._expected_transitions = (expected,)
+                if self._authority_gate is not None:
+                    scope = self._authority_gate.operator_wait(expected)
+                    scope.__enter__()
+                    self._operator_wait_scope = scope
             return
         if not self._fresh("heartbeat"):
             raise RuntimeError("fresh vehicle heartbeat required")
@@ -167,6 +192,7 @@ class DroneOperations:
             )
             return
         if tool == "goto_waypoint":
+            self._expected_transitions = ()
             self._vehicle.send_waypoint(
                 args["latitude_deg"],
                 args["longitude_deg"],
@@ -179,10 +205,21 @@ class DroneOperations:
             return
         command = {"set_mode": CommandKind.SET_GUIDED, "arm": CommandKind.ARM,
                    "takeoff": CommandKind.TAKEOFF, "land": CommandKind.LAND}[tool]
+        self._expected_transitions = {
+            CommandKind.SET_GUIDED: (ExpectedTransition(mode="GUIDED"),),
+            CommandKind.ARM: (ExpectedTransition(armed=True),),
+            CommandKind.TAKEOFF: (),
+            CommandKind.LAND: (
+                ExpectedTransition(mode="LAND"),
+                ExpectedTransition(armed=False),
+            ),
+        }[command]
         self._active.expected_ack = command
         self._vehicle.send(command, args.get("altitude_m"))
 
     def observe(self, telemetry: Telemetry) -> None:
+        if self._authority_gate is not None:
+            self._authority_gate.observe(telemetry)
         self.tick(telemetry.timestamp_ns, evaluate=False)
         self._sequence += 1
         if telemetry.heartbeat:
@@ -249,6 +286,13 @@ class DroneOperations:
                     "LAND": CommandKind.LAND,
                     "GUIDED": CommandKind.SET_GUIDED,
                 }[precision.requested_mode]
+                self._expected_transitions = (
+                    ExpectedTransition(mode=precision.requested_mode),
+                )
+                if command is CommandKind.LAND:
+                    self._expected_transitions += (
+                        ExpectedTransition(armed=False),
+                    )
                 self._vehicle.send(command, None)
                 if command is CommandKind.LAND:
                     active.expected_ack = command

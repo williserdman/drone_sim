@@ -46,6 +46,11 @@ from .hover import Observation as HoverObservation
 from .hover import Phase as HoverPhase
 from .hover import RollHoverDriver
 from .controller import MissionController, mission_policy_active, process_telemetry
+from .flight_authority import (
+    FlightAuthorityGate,
+    FlightAuthorityLost,
+    install_dronekit_authority,
+)
 from .lifecycle import CompanionLifecycle, INITIAL_COMMAND_WINDOW_NS
 from .mavlink_adapter import MavlinkAdapter
 from .mission import CommandKind, MissionPhase, MissionState, Telemetry
@@ -524,6 +529,21 @@ def _comp2026_initial_transport(clock, controller, native_transaction):
     return transaction
 
 
+def _comp2026_shutdown_dependency(admission, native_transaction):
+    """Hold irreversible runtime shutdown admission through every guarded output."""
+    def transaction(operation):
+        result = []
+
+        def run() -> None:
+            result.append(native_transaction(operation))
+
+        if not admission.run_if_active(run):
+            raise RuntimeError("competition runtime is finalizing")
+        return result[0]
+
+    return transaction
+
+
 def comp2026_start_gate_poll_required(
     *,
     mission_running: bool,
@@ -710,6 +730,8 @@ def _observe_qgc_vehicle_facts(
     config: RuntimeConfig,
     operator_control: Any,
     vehicle: Any,
+    *,
+    authority_gate: FlightAuthorityGate | None = None,
 ) -> bool:
     """Apply receipt-stamped facts on the host owner loop for QGC runs."""
     if getattr(config, "operator_control", None) is None:
@@ -727,7 +749,32 @@ def _observe_qgc_vehicle_facts(
             landed=observation.landed,
             mode=observation.mode,
         )
+        if (
+            authority_gate is not None
+            and 0
+            <= time.time_ns() - observation.received_wall_time_ns
+            <= 2_000_000_000
+            and (observation.mode is not None or observation.armed is not None)
+        ):
+            authority_gate.observe(
+                Telemetry(
+                    observation.received_wall_time_ns,
+                    heartbeat=True,
+                    mode=observation.mode,
+                    armed=observation.armed,
+                )
+            )
     return True
+
+
+def _admit_flight_authority(gate: FlightAuthorityGate | None, start: Any) -> None:
+    if (
+        gate is not None
+        and not gate.admitted
+        and start.command_allowed
+        and start.admission_sha256 is not None
+    ):
+        gate.admit(start.admission_sha256)
 
 
 def process_runtime_telemetry(
@@ -867,11 +914,19 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
         return 1
     lifecycle.mark_transport_ready()
     qgc_io = None
+    authority_gate = (
+        FlightAuthorityGate() if config.operator_control is not None else None
+    )
     if config.operator_control is not None:
         from .qgc_transport import PymavlinkQgcCommandIO
 
         qgc_io = PymavlinkQgcCommandIO(connection, mavutil.mavlink)
-    vehicle = MavlinkAdapter(connection, mavutil, qgc_io=qgc_io)
+    vehicle = MavlinkAdapter(
+        connection,
+        mavutil,
+        qgc_io=qgc_io,
+        authority_gate=authority_gate,
+    )
     calibration = _CalibrationReadiness(calibration_parameters(config))
     controller = MissionController(
         vehicle,
@@ -964,6 +1019,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
         while rclpy.ok() and not requested_stop and not finalizing:
             rclpy.spin_once(node, timeout_sec=0.02)
             start = operator_control.poll_start(run_state=mission_running)
+            _admit_flight_authority(authority_gate, start)
             operator_control.poll_abort(
                 finalizing=False,
                 begin_recovery=begin_operator_recovery,
@@ -1001,7 +1057,10 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                         if telemetry.landed is not None:
                             last_landed = telemetry.landed
                         if not _observe_qgc_vehicle_facts(
-                            config, operator_control, vehicle
+                            config,
+                            operator_control,
+                            vehicle,
+                            authority_gate=authority_gate,
                         ):
                             operator_control.observe_vehicle(
                                 native_timestamp_ns=telemetry.timestamp_ns,
@@ -1041,6 +1100,9 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                             ),
                             public_clock_observed=latest_clock_ns is not None,
                         )
+                        if authority_gate is not None and authority_gate.revoked:
+                            failure = authority_gate.reason
+                            break
                 except Exception as error:
                     failure = f"MAVLink processing failed: {error}"
             if (
@@ -1226,9 +1288,16 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
 
     lifecycle.mark_transport_ready()
     qgc_io = None
+    authority_gate = (
+        FlightAuthorityGate() if config.operator_control is not None else None
+    )
     if config.operator_control is not None:
         from .qgc_transport import DroneKitQgcCommandIO
 
+        assert authority_gate is not None
+        install_dronekit_authority(
+            vehicle, authority_gate, calibration_autotune.mavutil.mavlink
+        )
         qgc_io = DroneKitQgcCommandIO(vehicle, calibration_autotune.mavutil.mavlink)
     calibration = _CalibrationReadiness(calibration_parameters(config))
     hover_only = config.mission == "hover_roll"
@@ -1395,7 +1464,12 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 and math.isfinite(altitude)
                 and altitude <= 0.3
             )
-            if not _observe_qgc_vehicle_facts(config, operator_control, vehicle):
+            if not _observe_qgc_vehicle_facts(
+                config,
+                operator_control,
+                vehicle,
+                authority_gate=authority_gate,
+            ):
                 operator_control.observe_vehicle(
                     native_timestamp_ns=latest_clock_ns,
                     heartbeat_live=dronekit_heartbeat_is_fresh(
@@ -1407,6 +1481,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                     mode=mode,
                 )
             start = operator_control.poll_start(run_state=mission_running)
+            _admit_flight_authority(authority_gate, start)
             operator_control.poll_abort(
                 finalizing=False,
                 begin_recovery=begin_operator_recovery,
@@ -1415,6 +1490,8 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 heartbeat_observed=heartbeat,
                 prearm_checks_healthy=armable,
             )
+            if authority_gate is not None and authority_gate.revoked:
+                failure = authority_gate.reason
             if calibration.required and heartbeat and not parameters_requested:
                 vehicle._master.mav.param_request_list_send(
                     vehicle._master.target_system,
@@ -1701,7 +1778,10 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
             begin_recovery=begin_operator_recovery,
         )
         try:
-            vehicle.channels.overrides = {}
+            try:
+                vehicle.channels.overrides = {}
+            except FlightAuthorityLost:
+                pass
             for name, callback in listeners:
                 vehicle.remove_message_listener(name, callback)
             vehicle.close()
@@ -1771,9 +1851,16 @@ def _run_autotune(config: RuntimeConfig) -> int:
 
     lifecycle.mark_transport_ready()
     qgc_io = None
+    authority_gate = (
+        FlightAuthorityGate() if config.operator_control is not None else None
+    )
     if config.operator_control is not None:
         from .qgc_transport import DroneKitQgcCommandIO
 
+        assert authority_gate is not None
+        install_dronekit_authority(
+            vehicle, authority_gate, calibration_autotune.mavutil.mavlink
+        )
         qgc_io = DroneKitQgcCommandIO(vehicle, calibration_autotune.mavutil.mavlink)
     state = calibration_autotune.AllAxisState.initial(public_deadline_ns=config.public_duration_ns)
     status_texts: collections.deque[str] = collections.deque()
@@ -1905,7 +1992,12 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 and preflight_position is not None
                 and preflight_position[3] <= 0.3
             )
-            if not _observe_qgc_vehicle_facts(config, operator_control, vehicle):
+            if not _observe_qgc_vehicle_facts(
+                config,
+                operator_control,
+                vehicle,
+                authority_gate=authority_gate,
+            ):
                 operator_control.observe_vehicle(
                     native_timestamp_ns=latest_clock_ns,
                     heartbeat_live=dronekit_heartbeat_is_fresh(
@@ -1917,10 +2009,13 @@ def _run_autotune(config: RuntimeConfig) -> int:
                     mode=mode,
                 )
             start = operator_control.poll_start(run_state=mission_running)
+            _admit_flight_authority(authority_gate, start)
             operator_control.poll_abort(
                 finalizing=False,
                 begin_recovery=begin_operator_recovery,
             )
+            if authority_gate is not None and authority_gate.revoked:
+                failure = authority_gate.reason
             stamp = autotune_control_timestamp_ns(
                 mission_running=(
                     start.command_allowed and not operator_control.abort_observed
@@ -2065,7 +2160,10 @@ def _run_autotune(config: RuntimeConfig) -> int:
             begin_recovery=begin_operator_recovery,
         )
         try:
-            vehicle.channels.overrides = {}
+            try:
+                vehicle.channels.overrides = {}
+            except FlightAuthorityLost:
+                pass
             for name, callback in listeners: vehicle.remove_message_listener(name, callback)
             vehicle.close()
         finally:
@@ -2486,7 +2584,10 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             controller = competition_control.controller
             competition_control.prepare()
             controller.install_output_transactions(
-                dependency_transaction=competition_control.decoders.output_transaction,
+                dependency_transaction=_comp2026_shutdown_dependency(
+                    shutdown_admission,
+                    competition_control.decoders.output_transaction,
+                ),
                 supervisor_transaction=competition_control.supervisor.output_transaction,
                 transport_transaction=_comp2026_initial_transport(
                     clock, controller, controller._transport_output_transaction
@@ -2746,6 +2847,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 attempt_failure.fail("companion exceeded the overall run wall failsafe")
             time.sleep(0.02)
     finally:
+        shutdown_admission.begin_finalizing()
         recovery_clock.stop("runtime finalizing")
         operator_control.poll_abort(
             finalizing=True,

@@ -8,12 +8,15 @@ import importlib.util
 import json
 from io import StringIO
 from pathlib import Path
+import queue
 import sys
 import threading
 import time
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from dronekit.mavlink import MAVWriter
+from pymavlink.dialects.v20 import ardupilotmega as real_mavlink
 
 from artifacts.operator_protocol import OperatorProtocol, PreflightStatus
 from artifacts.qgc_operator import (
@@ -41,12 +44,119 @@ from drone_sim_companion.runtime_node import (
     quiesce_comp2026_runtime,
 )
 from drone_sim_companion.controller import MissionController
+from drone_sim_companion.flight_authority import (
+    FlightAuthorityGate,
+    FlightAuthorityLost,
+    install_dronekit_authority,
+)
 from drone_sim_companion.lifecycle import CompanionLifecycle
 from drone_sim_companion.mission import CommandKind, Telemetry
 from drone_sim_companion.qgc_transport import VehicleFactObservation
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def test_pre_enqueue_qgc_mode_change_revokes_pending_diagnostic_output() -> None:
+    class Mode:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class Channels:
+        def __init__(self, encoder: object) -> None:
+            self.encoder = encoder
+
+        @property
+        def overrides(self) -> dict[str, int]:
+            return {}
+
+        @overrides.setter
+        def overrides(self, values: dict[str, int]) -> None:
+            channels = [int(values.get(str(index), 65535)) for index in range(1, 19)]
+            self.encoder.rc_channels_override_send(1, 1, *channels)
+
+    class Vehicle:
+        def __init__(self) -> None:
+            writer = MAVWriter(queue.Queue())
+            encoder = real_mavlink.MAVLink(writer, srcSystem=1, srcComponent=191)
+            self._master = SimpleNamespace(
+                target_system=1,
+                target_component=1,
+                mav=encoder,
+            )
+            self.channels = Channels(encoder)
+            self._mode = Mode("STABILIZE")
+            self._armed = False
+
+        @property
+        def mode(self) -> Mode:
+            return self._mode
+
+        @mode.setter
+        def mode(self, value: Mode) -> None:
+            custom_mode = {"GUIDED": 4, "LOITER": 5, "LAND": 9}[value.name]
+            self._master.mav.set_mode_send(
+                1,
+                real_mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                custom_mode,
+            )
+            self._mode = value
+
+        @property
+        def armed(self) -> bool:
+            return self._armed
+
+        @armed.setter
+        def armed(self, value: bool) -> None:
+            self._master.mav.command_long_send(
+                1,
+                1,
+                real_mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0,
+                1.0 if value else 0.0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+            self._armed = value
+
+        def simple_takeoff(self, altitude_m: float) -> None:
+            self._master.mav.command_long_send(
+                1, 1, real_mavlink.MAV_CMD_NAV_TAKEOFF, 0,
+                0, 0, 0, 0, 0, 0, altitude_m,
+            )
+
+    vehicle = Vehicle()
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode="STABILIZE", armed=False))
+    gate.admit("a" * 64)
+    writer = install_dronekit_authority(vehicle, gate, real_mavlink)
+    selected = (
+        runtime_node.calibration_autotune.Action.mode("GUIDED"),
+        runtime_node.calibration_autotune.Action.arm(),
+        runtime_node.calibration_autotune.Action.waypoint(37.4, -122.08, 5.0),
+        runtime_node.calibration_autotune.Action.neutral_override(),
+        runtime_node.calibration_autotune.Action.aux_function(180, 2),
+        runtime_node.calibration_autotune.Action.parameter("PLND_ENABLED", 1.0),
+    )
+
+    gate.observe(Telemetry(2, heartbeat=True, mode="LOITER", armed=False))
+    gate.observe(Telemetry(3, heartbeat=True, mode="GUIDED", armed=False))
+    queued_before = writer.queue.qsize()
+
+    for action in selected:
+        with pytest.raises(FlightAuthorityLost, match="LOITER"):
+            runtime_node.calibration_autotune.execute_actions(
+                vehicle,
+                (action,),
+                mode_factory=Mode,
+                export=lambda: None,
+            )
+
+    assert writer.queue.qsize() == queued_before
 
 
 def test_all_axis_global_position_decoder_normalizes_return_telemetry() -> None:
@@ -407,9 +517,11 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
         ("autotune", "_run_autotune"),
     ),
 )
-def test_descriptor_autotune_loops_release_once_and_recover_once(
+@pytest.mark.parametrize("intervention", ("abort", "native_loiter"))
+def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
     mission: str,
     runner: str,
+    intervention: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -465,34 +577,44 @@ def test_descriptor_autotune_loops_release_once_and_recover_once(
         def __init__(self, name: str) -> None:
             self.name = name
 
-    class MasterMav:
-        def param_request_list_send(self, *_args: object) -> None:
-            pass
+    class Channels:
+        def __init__(self, encoder: object) -> None:
+            self._encoder = encoder
+            self._overrides: dict[str, int] = {}
 
-        def param_set_send(self, *_args: object) -> None:
-            pass
+        @property
+        def overrides(self) -> dict[str, int]:
+            return self._overrides
 
-        def command_long_send(self, *_args: object) -> None:
-            pass
+        @overrides.setter
+        def overrides(self, values: dict[str, int]) -> None:
+            self._overrides = dict(values)
+            pwm = [int(values.get(str(index), 65535)) for index in range(1, 19)]
+            self._encoder.rc_channels_override_send(1, 1, *pwm)
 
     class Vehicle:
         def __init__(self) -> None:
             self.last_heartbeat = 0.0
             self.is_armable = True
-            self.armed = False
+            self._armed = False
             self.location = SimpleNamespace(
                 global_relative_frame=SimpleNamespace(alt=0.0)
             )
             self.parameters = {}
-            self.channels = SimpleNamespace(overrides={})
             self._mode = Mode("STABILIZE")
             self.actions: list[tuple[str, str]] = []
             self.listeners: dict[str, object] = {}
+            writer = MAVWriter(queue.Queue())
+            encoder = real_mavlink.MAVLink(
+                writer, srcSystem=1, srcComponent=191
+            )
             self._master = SimpleNamespace(
                 target_system=1,
                 target_component=1,
-                mav=MasterMav(),
+                WIRE_PROTOCOL_VERSION="2.0",
+                mav=encoder,
             )
+            self.channels = Channels(encoder)
             self.observations = [VehicleFactObservation(
                 time.time_ns(),
                 heartbeat_live=True,
@@ -508,8 +630,42 @@ def test_descriptor_autotune_loops_release_once_and_recover_once(
 
         @mode.setter
         def mode(self, value) -> None:
+            custom_mode = {
+                "STABILIZE": 0,
+                "ALT_HOLD": 2,
+                "GUIDED": 4,
+                "LOITER": 5,
+                "LAND": 9,
+                "AUTOTUNE": 15,
+            }[value.name]
+            self._master.mav.set_mode_send(
+                1,
+                real_mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                custom_mode,
+            )
             self._mode = value
             self.actions.append(("mode", value.name))
+
+        @property
+        def armed(self) -> bool:
+            return self._armed
+
+        @armed.setter
+        def armed(self, value: bool) -> None:
+            self._master.mav.command_long_send(
+                1,
+                1,
+                real_mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0,
+                1.0 if value else 0.0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+            self._armed = value
 
         def add_message_listener(self, name: str, callback: object) -> None:
             self.listeners[name] = callback
@@ -523,13 +679,16 @@ def test_descriptor_autotune_loops_release_once_and_recover_once(
             return values
 
         def simple_takeoff(self, _altitude: float) -> None:
-            pass
+            self._master.mav.command_long_send(
+                1, 1, real_mavlink.MAV_CMD_NAV_TAKEOFF, 0,
+                0, 0, 0, 0, 0, 0, _altitude,
+            )
 
         def simple_goto(self, _location: object) -> None:
             pass
 
         def send_mavlink(self, _message: object) -> None:
-            pass
+            self._master.mav.send(_message)
 
         def close(self) -> None:
             pass
@@ -570,6 +729,8 @@ def test_descriptor_autotune_loops_release_once_and_recover_once(
 
     loop = [0]
     abort_sent = [False]
+    guided_observed = [False]
+    native_intervention = [False]
     admitted = [False]
 
     def stamp(value: int) -> object:
@@ -618,11 +779,23 @@ def test_descriptor_autotune_loops_release_once_and_recover_once(
                     callback(vehicle, name, message)
         if (
             ("mode", "GUIDED") in vehicle.actions
-            and not abort_sent[0]
+            and not guided_observed[0]
         ):
-            abort_sent[0] = True
-            vehicle.armed = True
+            guided_observed[0] = True
             vehicle._mode = Mode("GUIDED")
+            vehicle.observations.append(VehicleFactObservation(
+                time.time_ns(),
+                native_timestamp_ns=0,
+                heartbeat_live=True,
+                prearm_checks_healthy=True,
+                armed=False,
+                landed=True,
+                mode="GUIDED",
+            ))
+        elif guided_observed[0] and mission == "autotune" and not vehicle.armed:
+            vehicle.armed = True
+        elif guided_observed[0] and vehicle.armed and not abort_sent[0]:
+            abort_sent[0] = True
             vehicle.location.global_relative_frame.alt = 2.0
             vehicle.observations.append(VehicleFactObservation(
                 time.time_ns(),
@@ -633,16 +806,39 @@ def test_descriptor_autotune_loops_release_once_and_recover_once(
                 landed=False,
                 mode="GUIDED",
             ))
-            abort = QgcCommandEnvelope(
-                2,
-                descriptor.qgc_source,
-                descriptor.companion,
-                descriptor.abort_command,
-                (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                time.time_ns(),
-            )
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                tuple(pool.map(transport.receive, (abort,) * 8))
+            if intervention == "abort":
+                abort = QgcCommandEnvelope(
+                    2,
+                    descriptor.qgc_source,
+                    descriptor.companion,
+                    descriptor.abort_command,
+                    (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    time.time_ns(),
+                )
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    tuple(pool.map(transport.receive, (abort,) * 8))
+            else:
+                native_intervention[0] = True
+                vehicle._mode = Mode("LOITER")
+                vehicle.observations.append(VehicleFactObservation(
+                    time.time_ns(),
+                    native_timestamp_ns=0,
+                    heartbeat_live=True,
+                    prearm_checks_healthy=True,
+                    armed=True,
+                    landed=False,
+                    mode="LOITER",
+                ))
+                vehicle._mode = Mode("GUIDED")
+                vehicle.observations.append(VehicleFactObservation(
+                    time.time_ns() + 1,
+                    native_timestamp_ns=0,
+                    heartbeat_live=True,
+                    prearm_checks_healthy=True,
+                    armed=True,
+                    landed=False,
+                    mode="GUIDED",
+                ))
         loop[0] += 1
 
     def module(name: str, **members: object) -> None:
@@ -694,11 +890,17 @@ def test_descriptor_autotune_loops_release_once_and_recover_once(
     assert request is not None
     assert request.request_id == descriptor.start_request_id
     assert vehicle.actions.count(("mode", "GUIDED")) == 1
-    assert vehicle.actions.count(("mode", "LAND")) == 1
+    assert native_intervention[0] is (intervention == "native_loiter")
+    assert vehicle.actions.count(("mode", "LAND")) == (
+        1 if intervention == "abort" else 0
+    )
 
 
-def test_descriptor_controlled_descent_loop_releases_and_recovers_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("intervention", ("abort", "native_loiter"))
+def test_descriptor_controlled_descent_distinguishes_abort_and_native_intervention(
+    intervention: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from collections import deque
     from pymavlink import mavutil
@@ -830,6 +1032,7 @@ def test_descriptor_controlled_descent_loop_releases_and_recovers_once(
 
     loop = [0]
     abort_sent = [False]
+    guided_sent = [False]
     airborne_sent = [False]
     admitted = [False]
     stale_rejected = [False]
@@ -882,6 +1085,34 @@ def test_descriptor_controlled_descent_loop_releases_and_recovers_once(
             ))
         if (
             mavutil.mavlink.MAV_CMD_DO_SET_MODE in connection.mav.command_ids
+            and not guided_sent[0]
+        ):
+            guided_sent[0] = True
+            prearm = mavutil.mavlink.MAV_SYS_STATUS_PREARM_CHECK
+            connection.messages.extend([
+                mavutil.mavlink.MAVLink_command_ack_message(
+                    mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                    mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+                mavutil.mavlink.MAVLink_heartbeat_message(
+                    mavutil.mavlink.MAV_TYPE_QUADROTOR,
+                    mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    4,
+                    mavutil.mavlink.MAV_STATE_ACTIVE,
+                    3,
+                ),
+                mavutil.mavlink.MAVLink_sys_status_message(
+                    0, prearm, prearm, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ),
+            ])
+        elif (
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+            in connection.mav.command_ids
             and not airborne_sent[0]
         ):
             airborne_sent[0] = True
@@ -890,6 +1121,14 @@ def test_descriptor_controlled_descent_loop_releases_and_recovers_once(
                 | mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
             )
             connection.messages.extend([
+                mavutil.mavlink.MAVLink_command_ack_message(
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
                 mavutil.mavlink.MAVLink_heartbeat_message(
                     mavutil.mavlink.MAV_TYPE_QUADROTOR,
                     mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
@@ -904,14 +1143,38 @@ def test_descriptor_controlled_descent_loop_releases_and_recovers_once(
             ])
         elif airborne_sent[0] and not abort_sent[0]:
             abort_sent[0] = True
-            abort = QgcCommandEnvelope(
-                2, descriptor.qgc_source, descriptor.companion,
-                descriptor.abort_command,
-                (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                time.time_ns(),
-            )
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                tuple(pool.map(transport.receive, (abort,) * 8))
+            if intervention == "abort":
+                abort = QgcCommandEnvelope(
+                    2, descriptor.qgc_source, descriptor.companion,
+                    descriptor.abort_command,
+                    (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    time.time_ns(),
+                )
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    tuple(pool.map(transport.receive, (abort,) * 8))
+            else:
+                armed_mode = (
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+                    | mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+                )
+                connection.messages.extend([
+                    mavutil.mavlink.MAVLink_heartbeat_message(
+                        mavutil.mavlink.MAV_TYPE_QUADROTOR,
+                        mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+                        armed_mode,
+                        5,
+                        mavutil.mavlink.MAV_STATE_ACTIVE,
+                        3,
+                    ),
+                    mavutil.mavlink.MAVLink_heartbeat_message(
+                        mavutil.mavlink.MAV_TYPE_QUADROTOR,
+                        mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+                        armed_mode,
+                        4,
+                        mavutil.mavlink.MAV_STATE_ACTIVE,
+                        3,
+                    ),
+                ])
         loop[0] += 1
 
     def module(name: str, **members: object) -> None:
@@ -962,7 +1225,7 @@ def test_descriptor_controlled_descent_loop_releases_and_recovers_once(
     ) == 1
     assert connection.mav.command_ids.count(
         mavutil.mavlink.MAV_CMD_NAV_LAND
-    ) == 1
+    ) == (1 if intervention == "abort" else 0)
 
 
 def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() -> None:
@@ -1295,6 +1558,25 @@ def test_comp2026_concurrent_failure_prevents_guided_transaction() -> None:
     assert failures == ["competition image input failed: bad frame"]
 
 
+def test_comp2026_finalization_blocks_recovery_output_transaction_at_enqueue() -> None:
+    admission = runtime_node._Comp2026ShutdownAdmission()
+    calls: list[str] = []
+
+    def native_transaction(operation):
+        calls.append("native-check")
+        return operation()
+
+    transaction = runtime_node._comp2026_shutdown_dependency(
+        admission, native_transaction
+    )
+    admission.begin_finalizing()
+
+    with pytest.raises(RuntimeError, match="finalizing"):
+        transaction(lambda: calls.append("aircraft-output"))
+
+    assert calls == []
+
+
 def install_comp2026_runtime_fakes(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -1317,6 +1599,7 @@ def install_comp2026_runtime_fakes(
     attempt_release: threading.Event | None = None,
     attempt_entries: list[str] | None = None,
     recovery_calls: list[str] | None = None,
+    dependency_transactions: list[object] | None = None,
 ) -> tuple[list[object], InitialCommandVehicle]:
     statuses: list[object] = []
     terminal = threading.Event()
@@ -1569,9 +1852,15 @@ def install_comp2026_runtime_fakes(
             self.controller.mission_home = SimpleNamespace(lat=1.0, lon=2.0, amsl_m=0.19)
             self.controller._guided_output_delivery_reported = False
             self.controller._transport_output_transaction = lambda output, before: (before(), output())[-1]
-            self.controller.install_output_transactions = lambda **values: setattr(
-                self.controller, "_transport_output_transaction", values["transport_transaction"]
-            )
+
+            def install_output_transactions(**values: object) -> None:
+                self.controller._transport_output_transaction = values[
+                    "transport_transaction"
+                ]
+                if dependency_transactions is not None:
+                    dependency_transactions.append(values["dependency_transaction"])
+
+            self.controller.install_output_transactions = install_output_transactions
             self.decoders = SimpleNamespace(output_transaction=lambda operation: operation())
             self.supervisor = SimpleNamespace(output_transaction=lambda operation: operation())
             self.controller.set_guided_mode = self.set_guided_mode
@@ -2569,6 +2858,7 @@ def test_run_comp2026_rechecks_shutdown_after_outer_loop_admission(
     created_gates: list[runtime_node.Comp2026StartGate] = []
     allow_write = threading.Event()
     allow_write.set()
+    dependency_transactions: list[object] = []
     statuses, vehicle = install_comp2026_runtime_fakes(
         monkeypatch,
         timestamp_ns=50_000_000,
@@ -2577,6 +2867,7 @@ def test_run_comp2026_rechecks_shutdown_after_outer_loop_admission(
         mission_entered=mission_entered,
         runtime_callbacks=callbacks,
         installed_signal_handlers=handlers,
+        dependency_transactions=dependency_transactions,
     )
     original_poll = runtime_node.comp2026_start_gate_poll_required
     pause_once = True
@@ -2654,6 +2945,9 @@ def test_run_comp2026_rechecks_shutdown_after_outer_loop_admission(
     assert not mission_entered.is_set()
     assert created_gates[0].readiness["command_delivered"] is False
     assert not local_latch_marked.is_set()
+    assert len(dependency_transactions) == 1
+    with pytest.raises(RuntimeError, match="finalizing"):
+        dependency_transactions[0](lambda: pytest.fail("output reached enqueue"))
 
 
 def test_comp2026_polls_start_inputs_until_complete_gate_is_ready() -> None:

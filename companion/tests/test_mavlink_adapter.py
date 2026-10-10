@@ -9,8 +9,9 @@ import pytest
 
 from pymavlink.dialects.v20 import ardupilotmega as real_mavlink
 
+from drone_sim_companion.flight_authority import FlightAuthorityGate, FlightAuthorityLost
 from drone_sim_companion.mavlink_adapter import MavlinkAdapter
-from drone_sim_companion.mission import CommandKind
+from drone_sim_companion.mission import CommandKind, Telemetry
 
 
 class Message:
@@ -159,6 +160,45 @@ def test_commands_translate_to_exact_mavlink_long_commands() -> None:
     ]
 
 
+def test_revoked_gate_blocks_all_raw_aircraft_outputs_but_allows_observation_setup() -> None:
+    connection = FakeConnection()
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode="STABILIZE", armed=False))
+    gate.admit("a" * 64)
+    gate.revoke("QGC selected LOITER")
+    adapter = MavlinkAdapter(connection, mavutil(), authority_gate=gate)
+
+    with pytest.raises(FlightAuthorityLost):
+        adapter.send(CommandKind.SET_GUIDED, None)
+    with pytest.raises(FlightAuthorityLost):
+        adapter.send(CommandKind.ARM, None)
+    with pytest.raises(FlightAuthorityLost):
+        adapter.send_waypoint(37.0, -122.0, 5.0)
+    with pytest.raises(FlightAuthorityLost):
+        adapter.send_landing_target(0.0, 0.0, 1.0, exposure_timestamp_ns=1)
+
+    adapter.request_parameters(("PLND_ENABLED",))
+    adapter.request_telemetry()
+    assert connection.mav.global_position_target_calls == []
+    assert connection.mav.landing_target_calls == []
+    assert connection.mav.parameter_list_calls == [(1, 1)]
+    assert len(connection.mav.stream_calls) == 1
+
+
+def test_raw_land_enqueue_owns_land_entry_and_eventual_disarm_separately() -> None:
+    connection = FakeConnection()
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode="GUIDED", armed=True))
+    gate.admit("b" * 64)
+    adapter = MavlinkAdapter(connection, mavutil(), authority_gate=gate)
+
+    adapter.send(CommandKind.LAND, None)
+    gate.observe(Telemetry(2, heartbeat=True, mode="LAND", armed=True))
+    gate.observe(Telemetry(3, heartbeat=True, mode="LAND", armed=False))
+
+    assert gate.revoked is False
+
+
 def test_waypoint_translates_to_relative_home_global_position_target() -> None:
     connection = FakeConnection()
     adapter = MavlinkAdapter(connection, mavutil())
@@ -241,12 +281,16 @@ def test_foreign_and_gcs_heartbeats_cannot_change_vehicle_state() -> None:
             real_heartbeat(source_system=1, source_component=1, armed=False),
         ]
     )
-    adapter = MavlinkAdapter(connection, mavutil())
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode="GUIDED", armed=False))
+    gate.admit("a" * 64)
+    adapter = MavlinkAdapter(connection, mavutil(), authority_gate=gate)
 
     vehicle = adapter.poll(3)
 
     assert vehicle is not None
     assert (vehicle.mode, vehicle.armed) == ("GUIDED", False)
+    assert gate.revoked is False
 
 
 def test_qgc_dispatch_does_not_starve_following_fc_telemetry() -> None:

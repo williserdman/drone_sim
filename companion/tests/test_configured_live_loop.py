@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 
+import pytest
 from pymavlink import mavutil
 
 from artifacts.operator_protocol import OperatorProtocol, PreflightStatus
@@ -369,8 +370,9 @@ def test_operator_gate_blocks_configured_flight_commands_until_admission(monkeyp
     assert mavutil.mavlink.MAV_CMD_DO_SET_MODE in connection.mav.command_ids
 
 
-def test_descriptor_configured_loop_releases_one_operator_wait_and_one_recovery(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("intervention", ("abort", "native_loiter"))
+def test_descriptor_configured_loop_distinguishes_abort_and_native_intervention(
+    intervention, tmp_path, monkeypatch
 ):
     run_directory = tmp_path / RUN_ID
     for relative in (".control", ".status", "configuration"):
@@ -484,16 +486,22 @@ def test_descriptor_configured_loop_releases_one_operator_wait_and_one_recovery(
                         0, mavutil.mavlink.MAV_LANDED_STATE_IN_AIR
                     ),
                 ])
-                abort = QgcCommandEnvelope(
-                    2,
-                    descriptor.qgc_source,
-                    descriptor.companion,
-                    descriptor.abort_command,
-                    (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                    time.time_ns(),
-                )
-                with ThreadPoolExecutor(max_workers=4) as pool:
-                    tuple(pool.map(transport.receive, (abort,) * 8))
+                if intervention == "abort":
+                    abort = QgcCommandEnvelope(
+                        2,
+                        descriptor.qgc_source,
+                        descriptor.companion,
+                        descriptor.abort_command,
+                        (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                        time.time_ns(),
+                    )
+                    with ThreadPoolExecutor(max_workers=4) as pool:
+                        tuple(pool.map(transport.receive, (abort,) * 8))
+                else:
+                    connection.messages.extend([
+                        heartbeat(5, armed=True),
+                        heartbeat(4, armed=True),
+                    ])
             self.loop += 1
 
     fake_ros = DescriptorRos(None)
@@ -508,10 +516,13 @@ def test_descriptor_configured_loop_releases_one_operator_wait_and_one_recovery(
         preparation_wall_seconds=1800.0,
         mission_plan=parse_mission_plan({
             "schema_version": 1,
-            "steps": [{
-                "tool": "wait_for_state",
-                "args": {"armed": True, "mode": "GUIDED"},
-            }],
+            "steps": [
+                {
+                    "tool": "wait_for_state",
+                    "args": {"armed": True, "mode": "GUIDED"},
+                },
+                {"tool": "set_mode", "args": {"mode": "GUIDED"}},
+            ],
         }),
         mavlink_endpoint="tcp:ardupilot-sitl:5760",
         startup_timeout_seconds=1.0,
@@ -533,7 +544,10 @@ def test_descriptor_configured_loop_releases_one_operator_wait_and_one_recovery(
     assert waits[0].sim_timestamp_ns == 0
     assert connection.mav.command_ids.count(
         mavutil.mavlink.MAV_CMD_NAV_LAND
-    ) == 1
+    ) == (1 if intervention == "abort" else 0)
+    assert connection.mav.command_ids.count(
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE
+    ) == 0
 
 
 def test_live_loop_requests_frozen_calibration_and_baseline_before_first_command(monkeypatch):

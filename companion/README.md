@@ -90,6 +90,26 @@ evidence. QGC Start also reads fresh Gazebo private physics/camera preflight
 before public mission time exists, preserving Gazebo's request-scoped 50 ms
 epoch. Unattended and descriptor-absent runs retain their historical behavior.
 
+After Start admission, raw and diagnostic hosts hold an irreversible flight
+authority generation. An exact-FC mode or arm change is accepted only when it
+matches a transition registered by the operation at the final MAVLink enqueue.
+The leading operator wait may instead accept native GUIDED and arm transitions
+while that wait is active. Any other fresh mode or arm change cancels onboard
+mission intent; a later return to GUIDED cannot restore it. A valid QGC Abort
+may transfer authority that the mission still owns to its existing LAND recovery,
+but cannot clear an external revocation.
+
+The raw adapter guards each aircraft write, and the diagnostic hosts guard their
+shared DroneKit encoder queue. This covers mode, arm, waypoint, landing-target,
+RC override, auxiliary command, and parameter writes, including commands
+from dynamically constructed adapters. Heartbeats, command replies, and passive
+telemetry/parameter requests remain available after revocation. Detection occurs
+when the single existing reader processes a new exact-FC heartbeat; the software
+contract does not claim instantaneous takeover between samples. Comp2026 keeps
+its stronger RC/failsafe authority classification and adds an irreversible
+finalization check around its actual dependency-output transaction, including
+recovery, payload, and parameter output.
+
 ## Configured diagnostic missions
 
 `mission: configured` runs an ordered list of drone operations and stops on the
@@ -110,7 +130,7 @@ numbers fail before ROS or MAVLink resources open.
 
 | Tool | Arguments and observed completion |
 | --- | --- |
-| `wait_for_state` | Any of `armed`, `mode`, `landed`; waits for fresh matching telemetry. |
+| `wait_for_state` | Any of `armed`, `mode`, `landed`; waits for fresh matching telemetry. The leading operator wait grants native authority only for `mode: GUIDED` and `armed: true`. |
 | `set_mode` | `mode: GUIDED`; requires acceptance and observed mode. |
 | `arm` | Empty arguments; requires fresh GUIDED/prearm readiness and observed arming. |
 | `takeoff` | Positive `altitude_m`, optional `tolerance_m`; requires armed GUIDED and reaching the altitude threshold. |
