@@ -669,6 +669,49 @@ and arm transitions, then validates both recordings and provenance. Inspect
 `video/onboard.mp4`, `video/observer.mp4`, and `scoring/result.json` under the run
 directory. Report physical landing, score, and artifact validity separately.
 
+### Acceptance-only precision-target-loss stimulus
+
+Use this helper only for the Task 7 negative acceptance run prepared with the
+`stationary-pad` preset. Start that run from its generated action in native QGC.
+Wait until QGC shows the mission's own transition to LAND, then run:
+
+```bash
+RUN_ID=replace-with-run-uuid
+uv run --locked python scripts/induce_precision_target_loss.py "$PWD/runs/$RUN_ID"
+```
+
+The helper fails closed unless the immutable configuration and native-QGC Start
+admission match, the host lifecycle is still `RUNNING`, and the owned
+`gazebo-runtime` and `companion-runtime` containers are bound to the run. It
+reads the current configured `precision_land` operation from a bounded tail of
+the live companion container log because `logs/companion.jsonl` is published
+only during finalization. It also requires a latest live DataFlash `PL.TAcq=1`
+row no more than 0.5 native seconds old, latest Copter mode 9 (LAND) no more
+than 5 native seconds old, and downward clearance greater than 0.75 m. Both
+DataFlash facts must follow the operation start and cannot be ahead of the
+pre-command native odometry. `PL.LastMeasMS` must independently place the last
+target measurement within the same 0.5-second window. An active BIN file that
+has not flushed those rows within the bounds causes a refusal; do not infer
+readiness from an older row.
+
+One invocation reserves
+`logs/docker/precision-loss-stimulus.jsonl` without overwrite. It discovers
+`/world/moving_pad_stationary/set_pose` on the derived run partition and asks
+Gazebo's `gz.msgs.Pose` to move the physical `moving_pad` entity from x=35 m to
+x=55 m with y=z=0 and identity orientation. Success requires a true
+`gz.msgs.Boolean` reply plus native odometry showing the approximately 20 m
+displacement for at least 0.25 simulated seconds. A failed attempt remains in
+the log and blocks another invocation for that run; prepare a fresh run rather
+than hiding a rejected or transient mutation.
+
+This record establishes the bounded physical stimulus and its immediate native
+observations. The later `--expect precision-loss` inspection must still prove
+acquisition then loss in DataFlash, the policy-owned GUIDED request and exact
+failure reason, unchanged `PLND_ENABLED=1` and `PLND_STRICT=2`, the rendered
+marker's disappearance on video, matching public pad motion in the rosbag,
+native-state corroboration, manifest hashing, and cleanup. Do not click native
+QGC LAND or Pause before the policy failure and hold are established.
+
 ## Test without a full flight
 
 ```bash
