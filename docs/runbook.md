@@ -523,6 +523,21 @@ The records distinguish tracking, GUIDED hold, reacquisition, the single search
 hover retry, touchdown, and deadline failure. During a GUIDED interval there
 must be no accepted landing-target output.
 
+For Comp2026 ordinary landing, also inspect the durable parameter transaction:
+
+```bash
+rg -n 'landing_profile_transition' "runs/$RUN_ID"
+```
+
+The expected order is a requested and verified fresh read for every approved
+profile parameter, requested and verified `PLND_ENABLED=0`, LAND/touchdown
+evidence, then requested and verified `PLND_ENABLED=1`. A failed event must have
+`detail`. Its generation may be absent only when the request or write never
+reached the guarded enqueue boundary. Event timestamps are public
+mission-relative nanoseconds; add the admitted native epoch before correlating
+them with DataFlash. Keep the live PLND switching proof pending until the Task 7
+native QGC flight captures both lifecycle events and genuine FC evidence.
+
 Inspect the image-baked values recorded by the flight controller rather than
 assuming the host parameter file reached the container:
 

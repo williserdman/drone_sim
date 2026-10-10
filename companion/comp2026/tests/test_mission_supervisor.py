@@ -535,9 +535,9 @@ class RecoveryController:
         self._after("return")
         return self.results.get("return", 0)
 
-    def simple_land(self, *, timeout, mode_timeout):
+    def ordinary_land(self, *, timeout, mode_timeout, parameter_timeout=10.0):
         self._permit()
-        self.events.append(("land", timeout, mode_timeout))
+        self.events.append(("land", timeout, mode_timeout, parameter_timeout))
         self.mode = "LAND"
         self.landed_state = 1
         self._after("land")
@@ -700,26 +700,32 @@ def test_failed_land_is_unconfirmed_and_never_disarms():
     assert [event[0] for event in controller.events] == ["climb", "return", "land"]
 
 
-@pytest.mark.parametrize("operation", ["land", "confirm_land", "disarm"])
+@pytest.mark.parametrize("operation", ["land", "disarm"])
 def test_nonzero_landing_or_confirmation_result_remains_unconfirmed(operation):
     controller = RecoveryController()
     controller.results[operation] = False
-    if operation == "confirm_land":
-        controller.mode = "LAND"
-        controller.landed_state = 4
     mission = recovery_supervisor(controller)
 
     assert mission.recover(controller, MissionHome(41.0, -81.0, 100.0), 10.0) == "UNCONFIRMED"
 
 
-def test_recovery_preserves_landing_already_underway():
+def test_already_land_recovery_disables_precision_then_lands():
     controller = RecoveryController()
     controller.mode = "LAND"
     controller.landed_state = 4
-    mission = recovery_supervisor(controller)
+    approvals = []
+    mission = recovery_supervisor(
+        controller,
+        check=lambda operation, home, altitude: approvals.append(
+            (operation, home, altitude)
+        ),
+    )
 
     assert mission.recover(controller, MissionHome(41.0, -81.0, 100.0), 10.0) == "LOCAL_LANDED"
-    assert [event[0] for event in controller.events] == ["confirm_land", "disarm"]
+    assert [event[0] for event in controller.events] == ["land", "disarm"]
+    assert approvals == [
+        ("LOCAL_LAND", MissionHome(41.0, -81.0, 100.0), None),
+    ]
 
 
 def test_recovery_on_confirmed_ground_never_rearms_or_selects_land():
@@ -945,7 +951,7 @@ def test_recovery_rejects_mismatched_controller_datum_before_return_conversion()
     ("landed_state", "mode", "expected_events"),
     [
         (1, "GUIDED", ["disarm"]),
-        (4, "LAND", ["confirm_land", "disarm"]),
+        (4, "LAND", ["land", "disarm"]),
     ],
 )
 def test_return_policy_state_change_is_reassessed_before_navigation(

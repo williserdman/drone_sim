@@ -546,6 +546,31 @@ def _comp2026_shutdown_dependency(admission, native_transaction):
     return transaction
 
 
+def _comp2026_landing_profile_observer(lifecycle: CompanionLifecycle):
+    """Write imported landing-profile transitions to the parent event stream."""
+
+    def observe(transition: object) -> None:
+        generation = getattr(transition, "generation")
+        detail = getattr(transition, "detail")
+        fields = {
+            "parameter": getattr(transition, "parameter"),
+            "action": getattr(transition, "action"),
+            "stage": getattr(transition, "stage"),
+            "value": getattr(transition, "value"),
+        }
+        if generation is not None:
+            fields["generation"] = generation
+        if detail is not None:
+            fields["detail"] = detail
+        lifecycle.emit(
+            "landing_profile_transition",
+            round(float(getattr(transition, "timestamp")) * 1_000_000_000),
+            fields,
+        )
+
+    return observe
+
+
 def comp2026_start_gate_poll_required(
     *,
     mission_running: bool,
@@ -2639,6 +2664,9 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 endpoint=config.mavlink_endpoint,
                 heartbeat_timeout=config.startup_timeout_seconds,
                 guided_output_delivery_callback=guided_delivered,
+                landing_profile_observer=_comp2026_landing_profile_observer(
+                    lifecycle
+                ),
             )
             controller = competition_control.controller
             competition_control.prepare()

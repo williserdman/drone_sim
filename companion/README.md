@@ -119,6 +119,15 @@ is inside the controller's effective authority, supervisor, and shutdown check.
 Raw and diagnostic finalization closes the same writer before teardown, so it
 does not emit a final RC-clear packet.
 
+Comp2026 ordinary LAND is a verified parameter transaction. The controller
+freshly reads the full approved precision profile, writes and verifies
+`PLND_ENABLED=0`, confirms touchdown, and writes and verifies
+`PLND_ENABLED=1`. Every read and set emits a `landing_profile_transition` with
+`parameter`, `action`, `stage`, `value`, tracker `generation`, and public
+mission-relative time. Failed transitions include `detail`; `generation` is
+absent only when enqueue never occurred. These events prove enqueue and FC
+readback, not physical landing success.
+
 ## Configured diagnostic missions
 
 `mission: configured` runs an ordered list of drone operations and stops on the
@@ -393,7 +402,7 @@ completion, failure, and quiescence facts. It never publishes physical truth.
   rejects stale or inconsistent camera/range observations before MAVLink,
   holds the current position in GUIDED while reacquiring, and permits one
   return to the 4.572 m search hover before failing closed. It validates the
-  live flight-controller profile before the first LAND and never disarms or
+  fresh live flight-controller profile before every precision entry and never disarms or
   requests attachment without confirmed touchdown. Below the configured
   `PLND_ALT_MIN` of 0.75 m, LAND continues without requiring marker visibility;
   this avoids treating the marker's normal near-ground exit from the camera

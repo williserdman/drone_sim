@@ -111,7 +111,7 @@ def run_demo(controller, camera, lidar, dropper, mission_tracker):
         controller.goto_waypoint(A)
         dropper.drop()
         controller.goto_waypoint(original_gps)
-        controller.simple_land()
+        controller.ordinary_land()
         controller.disarm()
         mission_tracker.end_mission()
     except Exception as exc:

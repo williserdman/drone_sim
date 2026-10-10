@@ -281,7 +281,7 @@ def test_prearm_relaxation_produces_no_output(capsys):
     assert captured.err == ""
 
 
-@pytest.mark.parametrize("failed_operation", ["goto_waypoint", "simple_land"])
+@pytest.mark.parametrize("failed_operation", ["goto_waypoint", "ordinary_land"])
 def test_scenario_never_reports_success_when_checked_operation_fails(
     failed_operation, capsys
 ):
@@ -293,8 +293,8 @@ def test_scenario_never_reports_success_when_checked_operation_fails(
         def goto_waypoint(self, _waypoint):
             return -1 if failed_operation == "goto_waypoint" else 0
 
-        def simple_land(self):
-            return -1 if failed_operation == "simple_land" else 0
+        def ordinary_land(self):
+            return -1 if failed_operation == "ordinary_land" else 0
 
     with pytest.raises(simulation.ScenarioFailure, match=failed_operation):
         simulation.run_scenario(

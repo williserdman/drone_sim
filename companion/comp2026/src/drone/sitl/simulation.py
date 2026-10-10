@@ -103,7 +103,7 @@ def run_scenario(
     takeoff(controller.vehicle, target_altitude_m)
     sleep(hold_seconds)
     _require_controller_success("goto_waypoint", controller.goto_waypoint(waypoint))
-    _require_controller_success("simple_land", controller.simple_land())
+    _require_controller_success("ordinary_land", controller.ordinary_land())
     print("[SITL] Scenario passed all checked controller outcomes")
     return True
 

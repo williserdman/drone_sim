@@ -710,6 +710,16 @@ class MissionSupervisor:
         landed = self._fresh_value(snapshot, "landed_state")
         mode = self._fresh_value(snapshot, "mode")
 
+        if self._is_ground(landed) and getattr(
+            controller, "precision_landing_profile_dirty", False
+        ):
+            return self._land(
+                controller,
+                home,
+                policy,
+                deadline,
+                returned_home=False,
+            )
         if self._is_ground(landed):
             return self._confirm_recovery_ground(
                 controller, home, returned_home=False, deadline=deadline
@@ -717,8 +727,12 @@ class MissionSupervisor:
         if armed is not True:
             raise _RecoveryStop("UNCONFIRMED")
         if self._is_landing(landed) or str(mode).upper() == "LAND":
-            return self._preserve_landing(
-                controller, home, deadline, returned_home=False
+            return self._land(
+                controller,
+                home,
+                policy,
+                deadline,
+                returned_home=False,
             )
         if self._is_takeoff(landed):
             return self._local_land(controller, home, policy, deadline)
@@ -806,7 +820,7 @@ class MissionSupervisor:
                 return interrupted
             remaining = self._remaining(policy, deadline)
             self._require_zero(
-                controller.simple_land(
+                controller.ordinary_land(
                     timeout=remaining,
                     mode_timeout=min(remaining, policy.local_land_reserve_s),
                 ),
@@ -835,37 +849,6 @@ class MissionSupervisor:
             controller, home, policy, deadline, returned_home=False
         )
 
-    def _preserve_landing(
-        self,
-        controller,
-        home: MissionHome,
-        deadline: float,
-        *,
-        returned_home: bool,
-    ) -> str:
-        policy = self._recovery_policy
-        if policy is None:
-            return "UNCONFIRMED"
-        try:
-            self._recovery_snapshot(controller)
-            self._require_zero(
-                controller.confirm_landing(
-                    timeout=self._remaining(policy, deadline)
-                ),
-                "landing confirmation",
-            )
-            return self._confirm_recovery_ground(
-                controller, home, returned_home=returned_home, deadline=deadline
-            )
-        except _RecoveryStop:
-            raise
-        except AuthorityLost:
-            raise
-        except (TimeoutError, timebase.ClockError):
-            raise
-        except Exception:
-            return "UNCONFIRMED"
-
     def _stage_interruption(
         self,
         controller,
@@ -879,6 +862,22 @@ class MissionSupervisor:
         armed = self._fresh_value(snapshot, "armed")
         landed = self._fresh_value(snapshot, "landed_state")
         mode = self._fresh_value(snapshot, "mode")
+        dirty_profile = getattr(
+            controller, "precision_landing_profile_dirty", False
+        )
+        if self._is_ground(landed) and dirty_profile:
+            if landing_boundary:
+                return None
+            policy = self._recovery_policy
+            if policy is None:
+                raise _RecoveryStop("UNCONFIRMED")
+            return self._land(
+                controller,
+                home,
+                policy,
+                deadline,
+                returned_home=returned_home,
+            )
         if self._is_ground(landed):
             return self._confirm_recovery_ground(
                 controller,
@@ -887,9 +886,15 @@ class MissionSupervisor:
                 deadline=deadline,
             )
         if self._is_landing(landed) or str(mode).upper() == "LAND":
-            return self._preserve_landing(
+            if landing_boundary:
+                return None
+            policy = self._recovery_policy
+            if policy is None:
+                raise _RecoveryStop("UNCONFIRMED")
+            return self._land(
                 controller,
                 home,
+                policy,
                 deadline,
                 returned_home=returned_home,
             )

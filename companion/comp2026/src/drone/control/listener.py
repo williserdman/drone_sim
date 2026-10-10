@@ -1790,7 +1790,14 @@ def _default_live_factories() -> LiveComponentFactories:
     from ..sensors.lidar.lidar import Lidar
     from ..sensors.servo.servo import Dropper
 
-    def controller_factory(*, config, flight_state, permission_guard, decoders):
+    def controller_factory(
+        *,
+        config,
+        flight_state,
+        permission_guard,
+        decoders,
+        landing_profile_observer,
+    ):
         return DroneControl(
             config.connection.endpoint,
             source_identity=config.connection.source_identity,
@@ -1813,6 +1820,7 @@ def _default_live_factories() -> LiveComponentFactories:
             release_stability_config=config.release_stability,
             home_request_timeout_s=config.telemetry.home_request_timeout_s,
             telemetry_poll_interval_s=config.telemetry.poll_interval_s,
+            landing_profile_observer=landing_profile_observer,
         )
 
     def ack_transport_factory(*, controller, config):
@@ -2042,6 +2050,7 @@ def _build_live_listener_validated(
     monitoring_stop: threading.Event | None = None,
     startup_admission_check: Callable[[], None] | None = None,
     phase_observer: Callable[[str, str], None] | None = None,
+    landing_profile_observer: Callable[[object], None] | None = None,
     manage_signals: bool = True,
 ) -> LiveListenerRuntime:
     """Construct one guarded listener after all offline validation has passed."""
@@ -2066,6 +2075,10 @@ def _build_live_listener_validated(
         raise TypeError("startup_admission_check must be callable or None")
     if phase_observer is not None and not callable(phase_observer):
         raise TypeError("phase_observer must be callable or None")
+    if landing_profile_observer is not None and not callable(
+        landing_profile_observer
+    ):
+        raise TypeError("landing_profile_observer must be callable or None")
     if not isinstance(manage_signals, bool):
         raise TypeError("manage_signals must be a Boolean")
     if factories is None:
@@ -2205,6 +2218,7 @@ def _build_live_listener_validated(
         flight_state=flight_state,
         permission_guard=supervisor.check_permission,
         decoders=decoders,
+        landing_profile_observer=landing_profile_observer,
     )
     controller_ref[0] = controller
     install_output_transactions = getattr(controller, "install_output_transactions", None)
@@ -2403,7 +2417,7 @@ def _build_live_listener_validated(
         ) != 0:
             return False
         controller.check_permission()
-        if controller.simple_land() != 0:
+        if controller.ordinary_land() != 0:
             return False
         controller.check_permission()
         return controller.disarm() == 0
@@ -2463,6 +2477,7 @@ def start_repl(
     on_listener_ready: Callable[[LiveListenerRuntime], None] | None = None,
     manage_signals: bool = True,
     phase_observer: Callable[[str, str], None] | None = None,
+    landing_profile_observer: Callable[[object], None] | None = None,
 ) -> LiveRunResult:
     """Validate, construct, and synchronously own one QGC attempt."""
 
@@ -2478,6 +2493,7 @@ def start_repl(
             startup_admission_check=startup_admission_check,
             manage_signals=manage_signals,
             phase_observer=phase_observer,
+            landing_profile_observer=landing_profile_observer,
         )
 
     runtime = construct_after_full_validation(

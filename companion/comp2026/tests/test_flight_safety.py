@@ -84,6 +84,8 @@ class FakeMode:
 class FakeMav:
     def __init__(self):
         self.waypoints = []
+        self.parameter_requests = []
+        self.parameter_sets = []
         self.mission_result = mavutil.mavlink.MAV_MISSION_ACCEPTED
         self.mission_callback = lambda _result: None
 
@@ -91,6 +93,12 @@ class FakeMav:
         self.waypoints.append(fields)
         if self.mission_result is not None:
             self.mission_callback(self.mission_result)
+
+    def param_request_list_send(self, *fields):
+        self.parameter_requests.append(fields)
+
+    def param_set_send(self, *fields):
+        self.parameter_sets.append(fields)
 
 
 class FakeFactory:
@@ -229,9 +237,9 @@ class Harness:
         self.controller.install_output_transactions(
             dependency_transaction=lambda operation: operation(),
             supervisor_transaction=lambda operation: operation(),
-            transport_transaction=lambda operation, enqueue_check: (
-                enqueue_check(), operation()
-            )[1],
+            transport_transaction=lambda operation, enqueue_check: enqueue_check(
+                operation
+            ),
         )
         if install_complete_telemetry:
             self.controller.install_startup_telemetry_verifier(None, verified=True)
@@ -275,7 +283,10 @@ class Harness:
                 target_system=1,
                 target_component=191,
             )
-            self.vehicle.command_callback = self.observe_ack
+            self.vehicle.command_callback = lambda command, result: self.clock.after(
+                0.0,
+                lambda: self.observe_ack(command, result),
+            )
         self.controller._mission_ack_tracker = drone_control.MissionAckTracker(
             source_system=1,
             source_component=1,
@@ -284,7 +295,18 @@ class Harness:
             mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
         )
         self.controller._mission_ack_transaction_lock = threading.Lock()
-        self.vehicle._master.mav.mission_callback = self.observe_mission_ack
+        self.controller._parameter_value_tracker = drone_control.ParameterValueTracker(
+            source_system=1,
+            source_component=1,
+        )
+        self.controller._parameter_transaction_lock = threading.Lock()
+        self.controller.precision_landing_profile_dirty = False
+        self.controller._precision_landing_disable_verified_generation = None
+        self.controller._landing_profile_observer = None
+        self.vehicle._master.mav.mission_callback = lambda result: self.clock.after(
+            0.0,
+            lambda: self.observe_mission_ack(result),
+        )
         self.publish(
             heartbeat="alive",
             mode="GUIDED",
@@ -358,6 +380,63 @@ class Harness:
             get_srcComponent=lambda: component,
         )
         self.controller._mission_ack_tracker.observe_message(message)
+
+    def observe_parameter(self, name, value, *, system=1, component=1):
+        message = SimpleNamespace(
+            param_id=name,
+            param_value=value,
+            get_srcSystem=lambda: system,
+            get_srcComponent=lambda: component,
+        )
+        return self.controller._parameter_value_tracker.observe_message(message)
+
+    def observe_precision_profile(self, *, enabled=1.0):
+        for name, value in drone_control.PRECISION_LANDING_PARAMETERS.items():
+            self.observe_parameter(
+                name,
+                enabled if name == "PLND_ENABLED" else value,
+            )
+
+    def pilot_takeover(self):
+        self.sequence += 1
+        assert self.state.observe_rc_input(
+            channel=7,
+            pwm=1900,
+            signal_healthy=True,
+            received_at=self.clock.now(),
+            sequence=self.sequence,
+            source_system=1,
+            source_component=1,
+        )
+        self.sequence += 1
+        assert self.state.observe_mode(
+            "LOITER",
+            received_at=self.clock.now(),
+            sequence=self.sequence,
+            source_system=1,
+            source_component=1,
+        )
+
+    def refresh_companion_authority(self):
+        snapshot = self.state.snapshot()
+        self.publish(
+            heartbeat=snapshot.heartbeat.observation.value,
+            mode=snapshot.mode.observation.value,
+            location=snapshot.location.observation.value,
+            landed_state=snapshot.landed_state.observation.value,
+            armed=snapshot.armed.observation.value,
+            failsafe=snapshot.failsafe.observation.value,
+        )
+        self.sequence += 1
+        assert self.state.observe_rc_input(
+            channel=7,
+            pwm=1500,
+            signal_healthy=True,
+            received_at=self.clock.now(),
+            sequence=self.sequence,
+            source_system=1,
+            source_component=1,
+        )
 
     def establish_post_arm_home(self, amsl_mm=250000):
         self.controller._last_arm_boundary_sequence = self.sequence
@@ -590,7 +669,7 @@ def test_non_none_guard_result_fails_closed_before_output(monkeypatch, guard_res
         lambda controller: controller.guide_move_relative_frame(
             RelPosComplete(1.0, 0.0, 0.0)
         ),
-        lambda controller: controller.simple_land(),
+        lambda controller: controller.ordinary_land(),
         lambda controller: controller.takeoff(10.0),
         lambda controller: controller.arm(),
         lambda controller: controller.disarm(),
@@ -736,7 +815,7 @@ def test_rejected_mission_ack_fails_waypoint_before_motion_wait(monkeypatch):
         )
 
     assert len(harness.vehicle._master.mav.waypoints) == 1
-    assert harness.clock.now_value == pytest.approx(10.0)
+    assert harness.clock.now_value == pytest.approx(10.2)
 
 
 def test_mission_ack_transactions_serialize_until_each_terminal_ack(monkeypatch):
@@ -860,7 +939,12 @@ def test_in_progress_ack_waits_for_accepted_ack_and_state_confirmation(monkeypat
     harness = Harness(monkeypatch)
 
     def acknowledge_in_progress_then_accept(command, _result):
-        harness.observe_ack(command, mavutil.mavlink.MAV_RESULT_IN_PROGRESS)
+        harness.clock.after(
+            0.0,
+            lambda: harness.observe_ack(
+                command, mavutil.mavlink.MAV_RESULT_IN_PROGRESS
+            ),
+        )
         harness.clock.after(
             0.1,
             lambda: harness.observe_ack(command, mavutil.mavlink.MAV_RESULT_ACCEPTED),
@@ -968,7 +1052,7 @@ def test_recovery_waypoint_raises_target_to_fresh_enqueue_altitude(monkeypatch):
 
     harness.vehicle.command_callback = acknowledge
     harness.clock.after(
-        0.1,
+        0.3,
         lambda: harness.publish(
             location=(410000000, -810000000, 135000, 35000)
         ),
@@ -1564,7 +1648,10 @@ def test_low_relative_altitude_cannot_confirm_touchdown(monkeypatch):
     )
 
     with pytest.raises(FlightOperationError, match="touchdown"):
-        harness.controller.simple_land(timeout=1.0, mode_timeout=0.5)
+        harness.controller._land_until(
+            deadline=harness.clock.now() + 1.0,
+            mode_timeout=0.5,
+        )
 
     assert harness.vehicle.mode_requests == ["LAND"]
 
@@ -1574,7 +1661,10 @@ def test_denied_land_never_reports_touchdown(monkeypatch):
     harness.publish(mode="GUIDED", armed=True, landed_state=2)
 
     with pytest.raises(FlightOperationError, match="LAND"):
-        harness.controller.simple_land(timeout=1.0, mode_timeout=0.5)
+        harness.controller._land_until(
+            deadline=harness.clock.now() + 1.0,
+            mode_timeout=0.5,
+        )
 
     assert harness.vehicle.mode_requests == ["LAND"]
 
@@ -1585,7 +1675,335 @@ def test_land_requires_new_explicit_on_ground_evidence(monkeypatch):
     harness.clock.after(0.1, lambda: harness.observe_mode("LAND"))
     harness.clock.after(0.2, lambda: harness.publish(landed_state=1, armed=True))
 
-    assert harness.controller.simple_land(timeout=1.0, mode_timeout=0.5) == 0
+    assert harness.controller._land_until(
+        deadline=harness.clock.now() + 1.0,
+        mode_timeout=0.5,
+    ) is None
+
+
+def test_ordinary_land_disables_lands_and_restores_verified_profile(monkeypatch):
+    harness = Harness(monkeypatch)
+    transitions = []
+    harness.controller._landing_profile_observer = transitions.append
+    harness.publish(mode="GUIDED", armed=True, landed_state=2)
+    harness.clock.after(0.1, harness.observe_precision_profile)
+    harness.clock.after(
+        0.2,
+        lambda: harness.observe_parameter("PLND_ENABLED", 0.0),
+    )
+    harness.clock.after(0.3, lambda: harness.observe_mode("LAND"))
+    harness.clock.after(
+        0.4,
+        lambda: harness.publish(landed_state=1, armed=True),
+    )
+    harness.clock.after(
+        0.5,
+        lambda: harness.observe_parameter("PLND_ENABLED", 1.0),
+    )
+
+    assert harness.controller.ordinary_land(
+        timeout=1.0,
+        mode_timeout=0.3,
+        parameter_timeout=0.2,
+    ) == 0
+
+    assert harness.vehicle._master.mav.parameter_requests == [(1, 1)]
+    assert [fields[2:4] for fields in harness.vehicle._master.mav.parameter_sets] == [
+        (b"PLND_ENABLED", 0.0),
+        (b"PLND_ENABLED", 1.0),
+    ]
+    assert all(
+        fields[2] != b"PLND_STRICT"
+        for fields in harness.vehicle._master.mav.parameter_sets
+    )
+    assert harness.controller.precision_landing_profile_dirty is False
+    parameter_count = len(drone_control.PRECISION_LANDING_PARAMETERS)
+    read_events = [event for event in transitions if event.action == "read"]
+    assert [event.parameter for event in read_events[:parameter_count]] == list(
+        drone_control.PRECISION_LANDING_PARAMETERS
+    )
+    assert all(
+        event.stage == "requested" for event in read_events[:parameter_count]
+    )
+    assert {event.parameter for event in read_events[parameter_count:]} == set(
+        drone_control.PRECISION_LANDING_PARAMETERS
+    )
+    assert all(
+        event.stage == "verified" for event in read_events[parameter_count:]
+    )
+    assert all(
+        verified.generation > requested.generation
+        for requested in read_events[:parameter_count]
+        for verified in read_events[parameter_count:]
+        if requested.parameter == verified.parameter
+    )
+    assert [
+        (event.action, event.stage, event.parameter, event.value)
+        for event in transitions
+        if event.action == "set"
+    ] == [
+        ("set", "requested", "PLND_ENABLED", 0.0),
+        ("set", "verified", "PLND_ENABLED", 0.0),
+        ("set", "requested", "PLND_ENABLED", 1.0),
+        ("set", "verified", "PLND_ENABLED", 1.0),
+    ]
+
+
+def test_parameter_cache_before_actual_writer_enqueue_is_stale(monkeypatch):
+    harness = Harness(monkeypatch)
+    harness.observe_precision_profile()
+    outbound = queue.Queue()
+    guarded_writer = drone_control._OutputGuardedWriter(MAVWriter(outbound))
+    harness.vehicle._master.mav = mavlink2.MAVLink(
+        guarded_writer, srcSystem=1, srcComponent=191
+    )
+    harness.controller.install_output_transactions(
+        dependency_transaction=lambda operation: operation(),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=guarded_writer.transaction,
+    )
+
+    assert harness.controller.require_precision_landing_profile(timeout=0.2) is False
+
+    packet = outbound.get_nowait()
+    message = mavlink2.MAVLink(None).decode(bytearray(packet))
+    assert message.get_type() == "PARAM_REQUEST_LIST"
+    assert (message.target_system, message.target_component) == (1, 1)
+
+
+def test_ordinary_land_missing_restore_fails_and_retains_dirty_profile(monkeypatch):
+    harness = Harness(monkeypatch)
+    harness.publish(mode="GUIDED", armed=True, landed_state=2)
+    harness.clock.after(0.1, harness.observe_precision_profile)
+    harness.clock.after(
+        0.2,
+        lambda: harness.observe_parameter("PLND_ENABLED", 0.0),
+    )
+    harness.clock.after(0.3, lambda: harness.observe_mode("LAND"))
+    harness.clock.after(
+        0.4,
+        lambda: harness.publish(landed_state=1, armed=True),
+    )
+
+    with pytest.raises(FlightOperationError, match="PLND_ENABLED"):
+        harness.controller.ordinary_land(
+            timeout=0.7,
+            mode_timeout=0.3,
+            parameter_timeout=0.2,
+        )
+
+    assert harness.controller.precision_landing_profile_dirty is True
+    assert [fields[2] for fields in harness.vehicle._master.mav.parameter_sets] == [
+        b"PLND_ENABLED",
+        b"PLND_ENABLED",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("value", "source"),
+    [
+        (2.0, (1, 1)),
+        (0.0, (42, 1)),
+        (float("nan"), (1, 1)),
+    ],
+    ids=("mismatch", "wrong-source", "nonfinite"),
+)
+def test_parameter_disable_rejects_unverified_echo(monkeypatch, value, source):
+    harness = Harness(monkeypatch)
+    harness.clock.after(
+        0.1,
+        lambda: harness.observe_parameter(
+            "PLND_ENABLED", value, system=source[0], component=source[1]
+        ),
+    )
+
+    with pytest.raises(FlightOperationError):
+        harness.controller._set_parameter_verified(
+            "PLND_ENABLED", 0.0, timeout=0.2
+        )
+
+    assert harness.controller.precision_landing_profile_dirty is True
+    assert harness.controller.precision_landing_disable_verified is False
+
+
+def test_parameter_disable_failed_enqueue_never_marks_dirty(monkeypatch):
+    harness = Harness(monkeypatch)
+    harness.controller.install_output_transactions(
+        dependency_transaction=lambda operation: operation(),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=lambda _operation, _enqueue_check: (_ for _ in ()).throw(
+            OSError("writer unavailable")
+        ),
+    )
+
+    with pytest.raises(OSError, match="writer unavailable"):
+        harness.controller._set_parameter_verified(
+            "PLND_ENABLED", 0.0, timeout=0.2
+        )
+
+    assert harness.vehicle._master.mav.parameter_sets == []
+    assert harness.controller.precision_landing_profile_dirty is False
+
+
+def test_ordinary_land_clean_ground_requires_fresh_profile_without_writes(monkeypatch):
+    harness = Harness(monkeypatch)
+    harness.clock.after(0.1, harness.observe_precision_profile)
+
+    assert harness.controller.ordinary_land(
+        timeout=0.5,
+        mode_timeout=0.2,
+        parameter_timeout=0.2,
+    ) == 0
+
+    assert harness.vehicle._master.mav.parameter_requests == [(1, 1)]
+    assert harness.vehicle._master.mav.parameter_sets == []
+    assert harness.vehicle.mode_requests == []
+
+
+@pytest.mark.parametrize(
+    ("takeover_boundary", "expected_sets", "expected_modes", "verified_dirty"),
+    [
+        (2, [], [], False),
+        (3, [b"PLND_ENABLED"], [], True),
+        (4, [b"PLND_ENABLED"], ["LAND"], True),
+    ],
+    ids=("before-disable", "after-disable", "before-restore"),
+)
+def test_ordinary_land_takeover_sends_no_later_writes(
+    monkeypatch,
+    takeover_boundary,
+    expected_sets,
+    expected_modes,
+    verified_dirty,
+):
+    harness = Harness(monkeypatch)
+    harness.publish(mode="GUIDED", armed=True, landed_state=2)
+    harness.clock.after(0.1, harness.observe_precision_profile)
+    harness.clock.after(0.2, lambda: harness.observe_parameter("PLND_ENABLED", 0.0))
+    harness.clock.after(0.3, lambda: harness.observe_mode("LAND"))
+    harness.clock.after(0.4, lambda: harness.publish(landed_state=1, armed=True))
+    outputs = [0]
+
+    def transaction(operation, enqueue_check):
+        outputs[0] += 1
+        if outputs[0] == takeover_boundary:
+            harness.pilot_takeover()
+        return enqueue_check(operation)
+
+    harness.controller.install_output_transactions(
+        dependency_transaction=lambda operation: operation(),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=transaction,
+    )
+
+    with pytest.raises(AuthorityLost):
+        harness.controller.ordinary_land(
+            timeout=1.0,
+            mode_timeout=0.3,
+            parameter_timeout=0.2,
+        )
+
+    assert [
+        fields[2] for fields in harness.vehicle._master.mav.parameter_sets
+    ] == expected_sets
+    assert harness.vehicle.mode_requests == expected_modes
+    assert harness.controller.precision_landing_profile_dirty is verified_dirty
+
+
+def test_verified_dirty_landing_can_continue_and_restore(monkeypatch):
+    harness = Harness(monkeypatch)
+    harness.controller.precision_landing_profile_dirty = True
+    harness.controller._precision_landing_disable_verified_generation = 4
+    harness.publish(mode="LAND", armed=True, landed_state=4)
+    harness.clock.after(0.1, lambda: harness.publish(landed_state=1, armed=True))
+    harness.clock.after(0.2, lambda: harness.observe_parameter("PLND_ENABLED", 1.0))
+
+    assert harness.controller.ordinary_land(
+        timeout=0.5,
+        mode_timeout=0.2,
+        parameter_timeout=0.2,
+    ) == 0
+
+    assert harness.vehicle._master.mav.parameter_requests == []
+    assert [
+        fields[2:4] for fields in harness.vehicle._master.mav.parameter_sets
+    ] == [(b"PLND_ENABLED", 1.0)]
+    assert harness.controller.precision_landing_profile_dirty is False
+
+
+def test_unverified_dirty_landing_cannot_transfer_to_recovery(monkeypatch):
+    harness = Harness(monkeypatch)
+    harness.controller.precision_landing_profile_dirty = True
+    harness.publish(mode="LAND", armed=True, landed_state=4)
+
+    with pytest.raises(FlightOperationError, match="unverified"):
+        harness.controller.ordinary_land(
+            timeout=0.5,
+            mode_timeout=0.2,
+            parameter_timeout=0.2,
+        )
+
+    assert harness.vehicle._master.mav.parameter_requests == []
+    assert harness.vehicle._master.mav.parameter_sets == []
+    assert harness.vehicle.mode_requests == []
+
+
+def test_landing_timeout_attempts_one_verified_restore_with_retained_authority(
+    monkeypatch,
+):
+    harness = Harness(monkeypatch)
+    harness.publish(mode="GUIDED", armed=True, landed_state=2)
+    harness.clock.after(0.1, harness.observe_precision_profile)
+    harness.clock.after(0.2, lambda: harness.observe_parameter("PLND_ENABLED", 0.0))
+    harness.clock.after(0.3, lambda: harness.observe_mode("LAND"))
+    harness.clock.after(0.6, harness.refresh_companion_authority)
+    harness.clock.after(0.9, lambda: harness.observe_parameter("PLND_ENABLED", 1.0))
+
+    with pytest.raises(FlightOperationError, match="touchdown"):
+        harness.controller.ordinary_land(
+            timeout=1.0,
+            mode_timeout=0.3,
+            parameter_timeout=0.2,
+        )
+
+    assert [
+        fields[2:4] for fields in harness.vehicle._master.mav.parameter_sets
+    ] == [
+        (b"PLND_ENABLED", 0.0),
+        (b"PLND_ENABLED", 1.0),
+    ]
+    assert harness.controller.precision_landing_profile_dirty is False
+
+
+def test_finalization_blocks_landing_compensation_output(monkeypatch):
+    harness = Harness(monkeypatch)
+    admission = _Comp2026ShutdownAdmission()
+    harness.controller.install_output_transactions(
+        dependency_transaction=_comp2026_shutdown_dependency(
+            admission, lambda operation: operation()
+        ),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=lambda operation, enqueue_check: enqueue_check(
+            operation
+        ),
+    )
+    harness.publish(mode="GUIDED", armed=True, landed_state=2)
+    harness.clock.after(0.1, harness.observe_precision_profile)
+    harness.clock.after(0.2, lambda: harness.observe_parameter("PLND_ENABLED", 0.0))
+    harness.clock.after(0.3, lambda: harness.observe_mode("LAND"))
+    harness.clock.after(0.4, admission.begin_finalizing)
+
+    with pytest.raises(FlightOperationError, match="touchdown"):
+        harness.controller.ordinary_land(
+            timeout=0.7,
+            mode_timeout=0.3,
+            parameter_timeout=0.2,
+        )
+
+    assert [
+        fields[2:4] for fields in harness.vehicle._master.mav.parameter_sets
+    ] == [(b"PLND_ENABLED", 0.0)]
+    assert harness.controller.precision_landing_profile_dirty is True
 
 
 @pytest.mark.parametrize(
@@ -1613,7 +2031,10 @@ def test_land_final_guard_preserves_ground_or_descent_without_mode_output(
 
     harness.controller.permission_guard = transition_during_final_guard
 
-    assert harness.controller.simple_land(timeout=1.0, mode_timeout=0.5) == 0
+    assert harness.controller._land_until(
+        deadline=harness.clock.now() + 1.0,
+        mode_timeout=0.5,
+    ) is None
     assert harness.vehicle.mode_requests == []
 
 
@@ -1634,7 +2055,10 @@ def test_land_final_guard_preserves_fresh_land_mode_without_reassertion(
 
     harness.controller.permission_guard = accept_land_during_final_guard
 
-    assert harness.controller.simple_land(timeout=1.0, mode_timeout=0.5) == 0
+    assert harness.controller._land_until(
+        deadline=harness.clock.now() + 1.0,
+        mode_timeout=0.5,
+    ) is None
     assert harness.vehicle.mode_requests == []
 
 
@@ -1644,7 +2068,10 @@ def test_cached_ground_state_from_before_land_cannot_confirm_touchdown(monkeypat
     harness.clock.after(0.1, lambda: harness.observe_mode("LAND"))
 
     with pytest.raises(FlightOperationError, match="touchdown"):
-        harness.controller.simple_land(timeout=0.4, mode_timeout=0.2)
+        harness.controller._land_until(
+            deadline=harness.clock.now() + 0.4,
+            mode_timeout=0.2,
+        )
 
 
 def test_auto_disarm_after_land_confirms_touchdown_without_airborne_contradiction(
@@ -1661,7 +2088,10 @@ def test_auto_disarm_after_land_confirms_touchdown_without_airborne_contradictio
         ),
     )
 
-    assert harness.controller.simple_land(timeout=1.0, mode_timeout=0.5) == 0
+    assert harness.controller._land_until(
+        deadline=harness.clock.now() + 1.0,
+        mode_timeout=0.5,
+    ) is None
 
 
 def test_auto_disarm_before_confirmed_land_transition_cannot_confirm_touchdown(
@@ -1673,7 +2103,10 @@ def test_auto_disarm_before_confirmed_land_transition_cannot_confirm_touchdown(
     harness.clock.after(0.2, lambda: harness.observe_mode("LAND"))
 
     with pytest.raises(FlightOperationError, match="touchdown"):
-        harness.controller.simple_land(timeout=0.4, mode_timeout=0.3)
+        harness.controller._land_until(
+            deadline=harness.clock.now() + 0.4,
+            mode_timeout=0.3,
+        )
 
 
 def test_auto_disarm_cannot_override_postcommand_airborne_evidence(monkeypatch):
@@ -1683,7 +2116,10 @@ def test_auto_disarm_cannot_override_postcommand_airborne_evidence(monkeypatch):
     harness.clock.after(0.2, lambda: harness.publish(armed=False, landed_state=2))
 
     with pytest.raises(FlightOperationError, match="touchdown"):
-        harness.controller.simple_land(timeout=0.4, mode_timeout=0.2)
+        harness.controller._land_until(
+            deadline=harness.clock.now() + 0.4,
+            mode_timeout=0.2,
+        )
 
 
 def test_landing_state_contradicts_auto_disarm_touchdown(monkeypatch):
@@ -1693,7 +2129,10 @@ def test_landing_state_contradicts_auto_disarm_touchdown(monkeypatch):
     harness.clock.after(0.2, lambda: harness.publish(armed=False, landed_state=4))
 
     with pytest.raises(FlightOperationError, match="touchdown"):
-        harness.controller.simple_land(timeout=0.4, mode_timeout=0.2)
+        harness.controller._land_until(
+            deadline=harness.clock.now() + 0.4,
+            mode_timeout=0.2,
+        )
 
 
 def test_repeated_false_after_preland_disarm_is_not_auto_disarm_transition(monkeypatch):
@@ -1704,7 +2143,10 @@ def test_repeated_false_after_preland_disarm_is_not_auto_disarm_transition(monke
     harness.clock.after(0.3, lambda: harness.publish(armed=False))
 
     with pytest.raises(FlightOperationError, match="touchdown"):
-        harness.controller.simple_land(timeout=0.5, mode_timeout=0.3)
+        harness.controller._land_until(
+            deadline=harness.clock.now() + 0.5,
+            mode_timeout=0.3,
+        )
 
 
 def test_disarm_requires_touchdown_and_delayed_confirmation(monkeypatch):
@@ -1777,11 +2219,8 @@ def test_disarm_ack_boundary_takeover_prevents_actual_output(monkeypatch):
     """Break caught: takeover at the ACK boundary must precede disarm enqueue."""
     harness = Harness(monkeypatch)
     harness.publish(mode="LAND", armed=True, landed_state=1)
-    tracker = harness.controller._command_ack_tracker
-    original_boundary = tracker.boundary
 
-    def takeover_at_boundary():
-        boundary = original_boundary()
+    def takeover():
         harness.sequence += 1
         assert harness.state.observe_rc_input(
             channel=7,
@@ -1800,9 +2239,13 @@ def test_disarm_ack_boundary_takeover_prevents_actual_output(monkeypatch):
             source_system=1,
             source_component=1,
         )
-        return boundary
-
-    tracker.boundary = takeover_at_boundary
+    harness.controller.install_output_transactions(
+        dependency_transaction=lambda operation: operation(),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=lambda operation, enqueue_check: (
+            takeover(), enqueue_check(operation)
+        )[1],
+    )
 
     with pytest.raises(AuthorityLost):
         harness.controller.disarm(timeout=0.3)

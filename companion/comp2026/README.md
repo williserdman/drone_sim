@@ -341,6 +341,16 @@ to the 4.572 m acquisition hover before pickup fails. At or below the configured
 camera observation. Before the first LAND command it also checks the connected
 flight controller against `PRECISION_LANDING_PARAMETERS` in
 `drone/control/drone_control.py`.
+That check requests a fresh full profile immediately before every precision
+entry; a result cached by an earlier FM3 attempt is not sufficient.
+
+Ordinary landing uses the inverse transaction. It reads the same complete
+profile, disables only `PLND_ENABLED`, verifies a newer FC echo, commands and
+confirms LAND, then restores and verifies `PLND_ENABLED=1`. It never writes
+`PLND_STRICT`. A clean grounded and disarmed entry still requires the fresh
+profile read but sends no parameter write or LAND command. Once disable reaches
+the guarded writer, the controller retains dirty state until restoration is
+verified.
 
 For enabled FM3, live construction obtains one bounded real camera observation
 before installing QGC callbacks and leaves the latest-frame producer running.
@@ -381,7 +391,12 @@ budget. Recovery runs after the mission deadline scope unwinds, using the same
 clock; a clock failure records `UNCONFIRMED` and propagates rather than switching
 to wall time.
 
-The one recovery owner preserves an existing LAND or confirmed ground state. If
+The one recovery owner preserves an existing LAND or confirmed ground state. An
+owned, verified precision-disable can transfer into Abort recovery; recovery
+continues the ordinary landing transaction and restores the profile even when
+touchdown was already observed. An unverified disable cannot authorize recovery
+descent. Pilot takeover or finalization prevents all later landing and restore
+output and leaves the dirty state visible. If
 companion authority and fresh evidence remain, it checks the approved envelope,
 climbs only as needed, and returns to original H at
 `max(H AMSL + cruise height, current AMSL)`, then commands and confirms `LAND`.

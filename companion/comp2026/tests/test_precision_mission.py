@@ -406,7 +406,8 @@ def test_pickup_reacquires_once_after_hold_timeout(monkeypatch):
     ]
     assert retry_moves
     assert [event for event in controller.events if event[0] == "precision_profile"] == [
-        ("precision_profile",)
+        ("precision_profile",),
+        ("precision_profile",),
     ]
 
 

@@ -163,6 +163,48 @@ class InertMav:
             self.harness.after_waypoint_output = None
             callback()
 
+    def _observe_parameter(self, name, value):
+        self.harness.controller._parameter_value_tracker.observe_message(
+            SimpleNamespace(
+                param_id=name,
+                param_value=value,
+                get_srcSystem=lambda: 1,
+                get_srcComponent=lambda: 1,
+            )
+        )
+
+    def param_request_list_send(self, target_system, target_component):
+        assert (target_system, target_component) == (1, 1)
+        guarded_writer = getattr(self.harness, "guarded_writer", None)
+        if guarded_writer is not None:
+            guarded_writer.write(b"param-request-list")
+        self.harness.events.append(("parameter-request",))
+
+        def respond():
+            for name, value in self.harness.controller.vehicle.parameters.items():
+                self._observe_parameter(name, value)
+
+        self.harness.clock.later(respond)
+
+    def param_set_send(
+        self, target_system, target_component, parameter_id, value, parameter_type
+    ):
+        assert (target_system, target_component) == (1, 1)
+        assert parameter_type == mavutil.mavlink.MAV_PARAM_TYPE_REAL32
+        name = parameter_id.decode("ascii")
+        guarded_writer = getattr(self.harness, "guarded_writer", None)
+        if guarded_writer is not None:
+            guarded_writer.write(repr((name, value)).encode())
+        self.harness.events.append(("parameter-set", name, value))
+        self.harness.controller.vehicle.parameters[name] = float(value)
+        if (
+            name == "PLND_ENABLED"
+            and float(value) == 1.0
+            and not getattr(self.harness, "confirm_parameter_restore", True)
+        ):
+            return
+        self.harness.clock.later(lambda: self._observe_parameter(name, value))
+
 
 class InertMessageFactory:
     def __init__(self, harness):
@@ -455,24 +497,30 @@ class FactoryRig:
         )
 
     def ack(self, command):
-        self.controller._command_ack_tracker.observe(
-            command=command,
-            result=mavutil.mavlink.MAV_RESULT_ACCEPTED,
-            source_system=1,
-            source_component=1,
-            target_system=1,
-            target_component=191,
+        self.clock.later(
+            lambda: self.controller._command_ack_tracker.observe(
+                command=command,
+                result=mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                source_system=1,
+                source_component=1,
+                target_system=1,
+                target_component=191,
+            )
         )
 
     def mission_ack(self):
-        self.controller._mission_ack_tracker.observe_message(SimpleNamespace(
-            type=mavutil.mavlink.MAV_MISSION_ACCEPTED,
-            mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
-            target_system=1,
-            target_component=191,
-            get_srcSystem=lambda: 1,
-            get_srcComponent=lambda: 1,
-        ))
+        self.clock.later(
+            lambda: self.controller._mission_ack_tracker.observe_message(
+                SimpleNamespace(
+                    type=mavutil.mavlink.MAV_MISSION_ACCEPTED,
+                    mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+                    target_system=1,
+                    target_component=191,
+                    get_srcSystem=lambda: 1,
+                    get_srcComponent=lambda: 1,
+                )
+            )
+        )
 
     def refresh(self):
         self.publish_rc_health()
@@ -513,7 +561,13 @@ class FactoryRig:
         ))
 
     def controller_factory(
-        self, *, config, flight_state, permission_guard, decoders
+        self,
+        *,
+        config,
+        flight_state,
+        permission_guard,
+        decoders,
+        landing_profile_observer=None,
     ):
         self.state = flight_state
         self.decoders = decoders
@@ -553,6 +607,15 @@ class FactoryRig:
             mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
         )
         controller._mission_ack_transaction_lock = threading.Lock()
+        controller._parameter_value_tracker = (
+            drone_control_module.ParameterValueTracker(
+                source_system=1, source_component=1
+            )
+        )
+        controller._parameter_transaction_lock = threading.Lock()
+        controller.precision_landing_profile_dirty = False
+        controller._precision_landing_disable_verified_generation = None
+        controller._landing_profile_observer = landing_profile_observer
         controller._telemetry_transaction_lock = threading.Lock()
         controller._transport_output_transaction = self.guarded_writer.transaction
         original_release_evidence = controller._release_evidence
@@ -675,6 +738,7 @@ class FlightPathHarness:
         *,
         confirm_waypoint=True,
         confirm_touchdown=True,
+        confirm_parameter_restore=True,
         real_recovery=False,
     ):
         self.clock = AdvancingClock()
@@ -682,6 +746,7 @@ class FlightPathHarness:
         self.sequence = 0
         self.confirm_waypoint = confirm_waypoint
         self.confirm_touchdown = confirm_touchdown
+        self.confirm_parameter_restore = confirm_parameter_restore
         self.real_recovery = real_recovery
         self.after_waypoint_output = None
         self.state = FlightState(
@@ -739,6 +804,15 @@ class FlightPathHarness:
             mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
         )
         self.controller._mission_ack_transaction_lock = threading.Lock()
+        self.controller._parameter_value_tracker = (
+            drone_control_module.ParameterValueTracker(
+                source_system=1, source_component=1
+            )
+        )
+        self.controller._parameter_transaction_lock = threading.Lock()
+        self.controller.precision_landing_profile_dirty = False
+        self.controller._precision_landing_disable_verified_generation = None
+        self.controller._landing_profile_observer = None
         self.publish(
             heartbeat="fixture",
             mode="GUIDED",
@@ -773,9 +847,9 @@ class FlightPathHarness:
         self.controller.install_output_transactions(
             dependency_transaction=lambda operation: operation(),
             supervisor_transaction=self.supervisor.output_transaction,
-            transport_transaction=lambda operation, enqueue_check: (
-                enqueue_check(), operation()
-            )[1],
+            transport_transaction=lambda operation, enqueue_check: enqueue_check(
+                operation
+            ),
         )
         self.controller.install_startup_telemetry_verifier(None, verified=True)
         self.commands = queue.Queue()
@@ -815,6 +889,7 @@ class FlightPathHarness:
         self.tracker = tracker
         self.handler_errors = []
         self.recoveries = []
+        self.phase_events = []
         self.owner = CommandExecutionOwner(
             supervisor=self.supervisor,
             command_queue=self.commands,
@@ -828,6 +903,9 @@ class FlightPathHarness:
             attempt_timeout_s=600,
             idle_poll_s=0.01,
             clock=self.clock.monotonic,
+            phase_observer=lambda phase, stage: self.phase_events.append(
+                (phase, stage)
+            ),
         )
 
     def permission_check(self):
@@ -877,7 +955,10 @@ class FlightPathHarness:
             return None
         self.confirm_waypoint = True
         snapshot = self.state.snapshot()
-        if snapshot.authority.name == "COMPANION":
+        if (
+            snapshot.authority.name == "COMPANION"
+            and snapshot.mode.observation.value != "LAND"
+        ):
             self.publish(
                 heartbeat="fixture",
                 mode="GUIDED",
@@ -904,7 +985,7 @@ class FlightPathHarness:
         ) is not True:
             return False
         assert self.controller.goto_waypoint(GPSCoord(H.lat, H.lon, 10.0)) == 0
-        assert self.controller.simple_land() == 0
+        assert self.controller.ordinary_land() == 0
         assert self.controller.disarm() == 0
         return True
 
@@ -919,24 +1000,30 @@ class FlightPathHarness:
         )
 
     def ack(self, command):
-        self.controller._command_ack_tracker.observe(
-            command=command,
-            result=mavutil.mavlink.MAV_RESULT_ACCEPTED,
-            source_system=1,
-            source_component=1,
-            target_system=1,
-            target_component=191,
+        self.clock.later(
+            lambda: self.controller._command_ack_tracker.observe(
+                command=command,
+                result=mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                source_system=1,
+                source_component=1,
+                target_system=1,
+                target_component=191,
+            )
         )
 
     def mission_ack(self):
-        self.controller._mission_ack_tracker.observe_message(SimpleNamespace(
-            type=mavutil.mavlink.MAV_MISSION_ACCEPTED,
-            mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
-            target_system=1,
-            target_component=191,
-            get_srcSystem=lambda: 1,
-            get_srcComponent=lambda: 1,
-        ))
+        self.clock.later(
+            lambda: self.controller._mission_ack_tracker.observe_message(
+                SimpleNamespace(
+                    type=mavutil.mavlink.MAV_MISSION_ACCEPTED,
+                    mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+                    target_system=1,
+                    target_component=191,
+                    get_srcSystem=lambda: 1,
+                    get_srcComponent=lambda: 1,
+                )
+            )
+        )
 
 
 def test_fresh_qgc_fm1_uses_real_controller_observations_before_landing():
@@ -955,7 +1042,10 @@ def test_fresh_qgc_fm1_uses_real_controller_observations_before_landing():
         ("takeoff", 10.0),
         ("groundspeed", 10.0),
         ("waypoint", 410001000, -810001000, 260.0),
+        ("parameter-request",),
+        ("parameter-set", "PLND_ENABLED", 0.0),
         ("mode", "LAND"),
+        ("parameter-set", "PLND_ENABLED", 1.0),
         ("armed", False),
     ]
     assert harness.supervisor.status(FM1) == "TERMINAL"
@@ -990,7 +1080,74 @@ def test_qgc_fm1_land_ack_without_touchdown_fails_and_never_disarms():
     assert ("armed", False) not in harness.events
     assert harness.supervisor.terminal_result == "FAILED"
     assert harness.recoveries == ["recovery"]
-    assert [ack.result for ack in harness.transport.acks] == [ACK_IN_PROGRESS, ACK_FAILED]
+    assert [ack.result for ack in harness.transport.acks] == [
+        ACK_IN_PROGRESS,
+        ACK_FAILED,
+    ]
+
+
+def test_restore_failure_blocks_fm1_complete_and_fm2_start():
+    harness = FlightPathHarness(confirm_parameter_restore=False)
+
+    with timebase.configured(harness.clock):
+        harness.transport.deliver(Packet(FM1))
+        assert harness.owner.process_next(timeout_s=0) == "FAILED"
+        events_after_fm1 = tuple(harness.events)
+        harness.transport.deliver(Packet(FM2))
+        assert harness.owner.process_next(timeout_s=0) is None
+
+    assert harness.phase_events == [("FM1", "STARTED")]
+    assert harness.supervisor.status(FM1) == "TERMINAL"
+    assert harness.supervisor.status(FM2) is None
+    assert harness.events == list(events_after_fm1)
+    assert [ack.result for ack in harness.transport.acks] == [
+        ACK_IN_PROGRESS,
+        ACK_FAILED,
+        ACK_DENIED,
+    ]
+    assert harness.events[-2:] == [
+        ("mode", "LAND"),
+        ("parameter-set", "PLND_ENABLED", 1.0),
+    ]
+    assert ("armed", False) not in harness.events
+
+
+def test_qgc_abort_transfers_verified_disabled_landing_to_recovery():
+    harness = FlightPathHarness(real_recovery=True)
+    aborts = []
+
+    def abort_after_land_enqueue():
+        if harness.vehicle.mode.name == "LAND" and not aborts:
+            aborts.append("requested")
+            harness.clock.later(
+                lambda: harness.listener.request_abort(
+                    "test abort during owned landing"
+                )
+            )
+
+    harness.vehicle.after_mode_output = abort_after_land_enqueue
+    with timebase.configured(harness.clock):
+        harness.transport.deliver(Packet(FM1))
+        assert harness.owner.process_next(timeout_s=0) == "ABORTED"
+
+    assert aborts == ["requested"]
+    assert harness.supervisor.recovery_outcome == "LOCAL_LANDED"
+    assert harness.controller.precision_landing_profile_dirty is False
+    assert [
+        event for event in harness.events if event[0] == "parameter-set"
+    ] == [
+        ("parameter-set", "PLND_ENABLED", 0.0),
+        ("parameter-set", "PLND_ENABLED", 1.0),
+    ]
+    assert [event for event in harness.events if event == ("mode", "LAND")] == [
+        ("mode", "LAND")
+    ]
+    assert harness.supervisor.terminal_result == "ABORTED"
+    assert harness.recoveries == ["LOCAL_LANDED"]
+    assert [ack.result for ack in harness.transport.acks] == [
+        ACK_IN_PROGRESS,
+        ACK_CANCELLED,
+    ]
 
 
 def test_mission_failure_is_separate_from_single_real_home_land_recovery():
@@ -1054,7 +1211,12 @@ def test_fresh_qgc_fm3_attaches_after_touchdown_then_rearms_and_returns_original
     rearm = harness.events.index(("armed", True), attachment)
     assert harness.events[attachment - 1] == ("armed", False)
     assert attachment < rearm
-    assert harness.events[-2:] == [("mode", "LAND"), ("armed", False)]
+    assert harness.events[-4:] == [
+        ("parameter-set", "PLND_ENABLED", 0.0),
+        ("mode", "LAND"),
+        ("parameter-set", "PLND_ENABLED", 1.0),
+        ("armed", False),
+    ]
     home_waypoints = [
         event for event in harness.events
         if event[:3] == ("waypoint", 410000000, -810000000)
@@ -1552,7 +1714,10 @@ def test_abort_while_airborne_idle_after_fm2_runs_one_recovery_only():
     assert harness.events[len(before_abort):] == [
         ("groundspeed", 10.0),
         ("waypoint", 410000000, -810000000, 260.0),
+        ("parameter-request",),
+        ("parameter-set", "PLND_ENABLED", 0.0),
         ("mode", "LAND"),
+        ("parameter-set", "PLND_ENABLED", 1.0),
         ("armed", False),
     ]
     assert tuple(harness.events) == after_recovery
@@ -1583,8 +1748,8 @@ def test_attempt_deadline_includes_airborne_fm2_idle_time():
     assert harness.recoveries == ["recovery"]
 
 
-def test_phase_deadline_unwinds_before_real_original_home_recovery():
-    """Break caught: mission deadline context must not cancel later recovery."""
+def test_phase_deadline_after_waypoint_enqueue_uses_local_landing_recovery():
+    """An unacknowledged waypoint leaves recovery navigation ambiguous."""
     harness = FlightPathHarness(real_recovery=True)
 
     def expire_during_waypoint():
@@ -1597,16 +1762,13 @@ def test_phase_deadline_unwinds_before_real_original_home_recovery():
         assert harness.owner.process_next(timeout_s=0) == "ABORTED"
 
     assert harness.supervisor.terminal_result == "ABORTED"
-    assert harness.supervisor.recovery_outcome == "HOME_LANDED"
-    assert harness.recoveries == ["HOME_LANDED"]
+    assert harness.supervisor.recovery_outcome == "LOCAL_LANDED"
+    assert harness.recoveries == ["LOCAL_LANDED"]
     mission_waypoint = harness.events.index(
         ("waypoint", 410001000, -810001000, 260.0)
     )
-    recovery_waypoint = harness.events.index(
-        ("waypoint", 410000000, -810000000, 260.0)
-    )
-    assert mission_waypoint < recovery_waypoint
-    assert harness.events[recovery_waypoint + 1] == ("mode", "LAND")
+    assert ("waypoint", 410000000, -810000000, 260.0) not in harness.events
+    assert harness.events.index(("mode", "LAND")) > mission_waypoint
 
 
 def test_outer_clock_error_is_preserved_when_recovery_also_fails():
@@ -1827,9 +1989,12 @@ def test_public_live_factory_runs_complete_callback_fm1_fm2_fm3_trace(tmp_path):
         )
         assert previous_delivery < pickup_index < attachment_index < delivery_index
         previous_delivery = delivery_index
-    assert rig.events[-3:] == [
+    assert rig.events[-6:] == [
         ("waypoint", 410000000, -810000000, 260.0),
+        ("parameter-request",),
+        ("parameter-set", "PLND_ENABLED", 0.0),
         ("mode", "LAND"),
+        ("parameter-set", "PLND_ENABLED", 1.0),
         ("armed", False),
     ]
     assert [ack.result for ack in rig.transport.acks] == [

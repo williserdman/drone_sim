@@ -112,12 +112,13 @@ def policy():
     )
 
 
-def make_control(tmp_path, selected_policy=None):
+def make_control(tmp_path, selected_policy=None, landing_profile_observer=None):
     selected_policy = selected_policy or policy()
     control = SimulationCompetitionControl(
         selected_policy, run_id="run-1", run_directory=tmp_path,
         endpoint="udp:127.0.0.1:14550", heartbeat_timeout=3.0,
         guided_output_delivery_callback=lambda: None,
+        landing_profile_observer=landing_profile_observer,
         controller_factory=FakeController, telemetry_factory=FakeCollector,
     )
     return control, selected_policy
@@ -224,6 +225,17 @@ def test_composes_real_guards_and_staged_telemetry_from_same_policy(tmp_path):
     assert verified is False
     assert verifier() is None
     assert control.telemetry_collector.verified is True
+
+
+def test_composes_landing_profile_observer_into_controller(tmp_path):
+    transitions = []
+    observer = transitions.append
+
+    control, _selected = make_control(
+        tmp_path, landing_profile_observer=observer
+    )
+
+    assert control.controller.kwargs["landing_profile_observer"] is observer
 
 
 def test_first_mavlink2_packet_preserves_guarded_dronekit_queue(monkeypatch, tmp_path):

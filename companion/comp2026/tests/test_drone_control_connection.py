@@ -152,6 +152,45 @@ def test_mission_ack_tracker_filters_source_target_type_and_stale_packets():
     assert tracker.result_after(boundary=boundary) == mavlink2.MAV_MISSION_DENIED
 
 
+def _parameter_value(
+    name="PLND_ENABLED", value=1.0, *, source=(1, 1)
+):
+    return SimpleNamespace(
+        param_id=name,
+        param_value=value,
+        get_srcSystem=lambda: source[0],
+        get_srcComponent=lambda: source[1],
+    )
+
+
+def test_parameter_value_tracker_requires_fresh_finite_exact_fc_observation():
+    tracker = drone_control.ParameterValueTracker(
+        source_system=1,
+        source_component=1,
+    )
+    assert tracker.observe_message(_parameter_value()) is True
+    boundary = tracker.boundary()
+
+    assert tracker.value_after("PLND_ENABLED", boundary) is None
+    assert tracker.observe_message(
+        _parameter_value(source=(42, 1))
+    ) is False
+    assert tracker.observe_message(
+        _parameter_value(value=float("nan"))
+    ) is False
+    assert tracker.observe_message(_parameter_value(value=True)) is False
+    assert tracker.observe_message(_parameter_value(name="")) is False
+    assert tracker.observe_message(_parameter_value(name="PLND_\u2603")) is False
+
+    assert tracker.observe_message(_parameter_value(value=0.0)) is True
+    observation = tracker.value_after("PLND_ENABLED", boundary)
+
+    assert observation == drone_control.ParameterObservation(
+        value=0.0,
+        generation=boundary + 1,
+    )
+
+
 def _connection_identities():
     return {
         "source_identity": SourceIdentity(1, 191),
@@ -404,16 +443,83 @@ def test_nonblocking_guided_hold_uses_integer_coordinates_and_pinned_home():
     assert packet[-3:] == (411234568, -818765432, 104.5)
 
 
-def test_precision_landing_profile_requires_every_exact_runtime_parameter():
+def _parameter_controller(monkeypatch, *, replies):
+    now = [0.0]
+    pending = list(replies)
+    tracker = drone_control.ParameterValueTracker(
+        source_system=1,
+        source_component=1,
+    )
+    requests = []
+
+    def sleep(seconds):
+        now[0] += seconds
+        if pending:
+            for name, value, source in pending.pop(0):
+                tracker.observe_message(
+                    _parameter_value(name, value, source=source)
+                )
+
+    monkeypatch.setattr(drone_control.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(drone_control.time, "sleep", sleep)
     controller = object.__new__(drone_control.DroneControl)
     controller.vehicle = SimpleNamespace(
-        parameters=dict(drone_control.PRECISION_LANDING_PARAMETERS)
+        parameters=dict(drone_control.PRECISION_LANDING_PARAMETERS),
+        _master=SimpleNamespace(
+            mav=SimpleNamespace(
+                param_request_list_send=lambda *fields: requests.append(fields)
+            )
+        ),
     )
+    controller.flight_controller_target = SourceIdentity(1, 1)
+    controller._parameter_value_tracker = tracker
+    controller._parameter_transaction_lock = threading.Lock()
+    controller.check_permission = lambda: None
+    controller._send_guarded = (
+        lambda output, *, before_final=None, validate_snapshot=None: before_final(output)
+    )
+    controller._landing_profile_observer = None
+    return controller, requests
 
-    assert controller.require_precision_landing_profile() is True
 
-    controller.vehicle.parameters["PLND_OPTIONS"] = 0
-    assert controller.require_precision_landing_profile() is False
+def test_precision_landing_profile_rejects_matching_cache_without_fresh_replies(
+    monkeypatch,
+):
+    controller, requests = _parameter_controller(monkeypatch, replies=[])
+
+    assert controller.require_precision_landing_profile(timeout=0.2) is False
+    assert requests == [(1, 1)]
+
+
+def test_precision_landing_profile_requires_every_fresh_exact_fc_parameter(
+    monkeypatch,
+):
+    replies = [
+        [
+            (name, value, (1, 1))
+            for name, value in drone_control.PRECISION_LANDING_PARAMETERS.items()
+        ]
+    ]
+    controller, requests = _parameter_controller(monkeypatch, replies=replies)
+
+    assert controller.require_precision_landing_profile(timeout=0.2) is True
+    assert requests == [(1, 1)]
+
+
+def test_precision_landing_profile_rejects_wrong_source_fresh_reply(monkeypatch):
+    replies = [
+        [
+            (
+                name,
+                value,
+                (42, 1) if name == "PLND_OPTIONS" else (1, 1),
+            )
+            for name, value in drone_control.PRECISION_LANDING_PARAMETERS.items()
+        ]
+    ]
+    controller, _requests = _parameter_controller(monkeypatch, replies=replies)
+
+    assert controller.require_precision_landing_profile(timeout=0.2) is False
 
 
 def _flight_state(clock=lambda: 10.0):

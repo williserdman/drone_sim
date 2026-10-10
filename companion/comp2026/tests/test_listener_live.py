@@ -838,7 +838,7 @@ def test_final_fm2_preserves_real_recovery_timeout_after_failed_ack():
             output_events.append(("return", waypoint, timeout))
             raise cancellation
 
-        def simple_land(self, **_kwargs):
+        def ordinary_land(self, **_kwargs):
             output_events.append("land")
             pytest.fail("recovery attempted LAND after cancellation")
 
@@ -1545,11 +1545,13 @@ def test_start_repl_calls_ready_once_after_install_before_run_in_clock_scope(
     cleanup = LiveCleanupReport(True, True, True, True, True, True, ())
     clock = SimpleNamespace(now=lambda: 321.0, sleep=lambda _seconds: None)
     phase_observer = lambda _phase, _state: None
+    landing_profile_observer = lambda _transition: None
 
     def ready(runtime):
         assert isinstance(runtime, LiveListenerRuntime)
         assert callable(captured["transport"].callback)
         assert runtime.owner._phase_observer is phase_observer
+        assert captured["landing_profile_observer"] is landing_profile_observer
         assert timebase.monotonic() == 321.0
         events.append("ready")
 
@@ -1573,6 +1575,7 @@ def test_start_repl_calls_ready_once_after_install_before_run_in_clock_scope(
             factories=fake_factories(events, captured=captured),
             on_listener_ready=ready,
             phase_observer=phase_observer,
+            landing_profile_observer=landing_profile_observer,
         )
 
     assert events[-3:] == ["ready", "run", "close"]

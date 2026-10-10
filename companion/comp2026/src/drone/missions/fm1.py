@@ -41,7 +41,7 @@ def fm1(
     )
 
     controller.check_permission()
-    _require_legacy_success(controller.simple_land(), "landing")
+    _require_legacy_success(controller.ordinary_land(), "landing")
 
     controller.check_permission()
     _require_legacy_success(controller.disarm(), "disarm")

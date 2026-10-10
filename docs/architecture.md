@@ -272,8 +272,19 @@ sent during the GUIDED hold. Once LiDAR reports an AGL at or below the overlay's
 `PLND_ALT_MIN`, the companion keeps LAND active and no longer requires marker
 visibility; ArduPilot then owns the final descent and touchdown decision. The
 parameter overlay remains the durable source of flight-controller settings, and
-the companion reads those live settings before entering the first precision
-LAND.
+the companion reads those live settings before every precision LAND. Cached
+parameter observations never satisfy this gate.
+
+Ordinary Comp2026 landing temporarily disables precision landing through the
+same final-writer authority and shutdown boundary used by flight commands. A
+fresh full-profile read must precede the disable; a newer exact-FC echo must
+verify both `PLND_ENABLED=0` and its later restoration to `1`. Touchdown alone
+cannot clear the owned dirty state. Valid Abort recovery may continue an owned,
+verified disabled descent and restore it, including after touchdown. External
+takeover or finalization sends no later restore bytes. The lifecycle records
+each requested, verified, or failed read/set as `landing_profile_transition` at
+public mission-relative nanoseconds. The event establishes enqueue/readback
+ordering and makes no physical-success claim.
 
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and

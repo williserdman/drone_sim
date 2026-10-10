@@ -45,6 +45,7 @@ class SimulationCompetitionControl:
         endpoint: str,
         heartbeat_timeout: float,
         guided_output_delivery_callback: Callable[[], None],
+        landing_profile_observer: Callable[[object], None] | None = None,
         controller_factory=DroneControl,
         telemetry_factory=TelemetryStartupCollector,
     ) -> None:
@@ -141,6 +142,7 @@ class SimulationCompetitionControl:
             home_request_timeout_s=policy.startup_timeout_s,
             telemetry_poll_interval_s=policy.telemetry_poll_interval_s,
             guided_output_delivery_callback=guided_output_delivery_callback,
+            landing_profile_observer=landing_profile_observer,
             vehicle_class=SimulationVehicle,
         )
         self.controller.install_output_transactions(

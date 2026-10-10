@@ -69,7 +69,7 @@ class RecordingController:
         self.events.append(("goto", waypoint))
         return self._result("goto", self.goto_result)
 
-    def simple_land(self):
+    def ordinary_land(self):
         self.events.append(("land",))
         return self._result("land", self.land_result)
 

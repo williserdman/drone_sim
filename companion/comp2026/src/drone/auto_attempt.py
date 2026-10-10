@@ -165,7 +165,7 @@ def run_auto_attempt(
         ):
             raise RuntimeError("Home navigation failed")
         require_boundary()
-        if not _exact_zero(controller.simple_land()):
+        if not _exact_zero(controller.ordinary_land()):
             raise RuntimeError("Home landing was not confirmed")
         require_boundary()
         if not _exact_zero(controller.disarm()):

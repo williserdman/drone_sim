@@ -1574,6 +1574,64 @@ def test_comp2026_concurrent_failure_prevents_guided_transaction() -> None:
     assert failures == ["competition image input failed: bad frame"]
 
 
+def test_comp2026_landing_profile_observer_serializes_transition() -> None:
+    emissions = []
+    lifecycle = SimpleNamespace(
+        emit=lambda name, timestamp_ns, fields: emissions.append(
+            (name, timestamp_ns, fields)
+        )
+    )
+    observer = runtime_node._comp2026_landing_profile_observer(lifecycle)
+
+    observer(
+        SimpleNamespace(
+            parameter="PLND_ENABLED",
+            action="set",
+            stage="requested",
+            value=0.0,
+            generation=12,
+            timestamp=0.125,
+            detail=None,
+        )
+    )
+    observer(
+        SimpleNamespace(
+            parameter="PLND_TYPE",
+            action="read",
+            stage="failed",
+            value=1.0,
+            generation=None,
+            timestamp=0.25,
+            detail="parameter request was not enqueued",
+        )
+    )
+
+    assert emissions == [
+        (
+            "landing_profile_transition",
+            125_000_000,
+            {
+                "parameter": "PLND_ENABLED",
+                "action": "set",
+                "stage": "requested",
+                "value": 0.0,
+                "generation": 12,
+            },
+        ),
+        (
+            "landing_profile_transition",
+            250_000_000,
+            {
+                "parameter": "PLND_TYPE",
+                "action": "read",
+                "stage": "failed",
+                "value": 1.0,
+                "detail": "parameter request was not enqueued",
+            },
+        ),
+    ]
+
+
 def test_comp2026_finalization_blocks_recovery_output_transaction_at_enqueue() -> None:
     admission = runtime_node._Comp2026ShutdownAdmission()
     calls: list[str] = []
@@ -1933,7 +1991,7 @@ def install_comp2026_runtime_fakes(
         def rtl(self) -> None:
             pass
 
-        def simple_land(self) -> None:
+        def ordinary_land(self) -> None:
             pass
 
         def disarm(self) -> None:

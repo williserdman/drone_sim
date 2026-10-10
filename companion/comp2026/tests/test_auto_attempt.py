@@ -93,7 +93,7 @@ class FakeController:
         self.calls.append(("goto", waypoint))
         return self.goto_result
 
-    def simple_land(self):
+    def ordinary_land(self):
         self.calls.append(("land", "H"))
         return self.land_result
 
@@ -216,7 +216,7 @@ class UnconfirmedLDisarmController:
         self.calls.append(("goto", waypoint))
         return 0
 
-    def simple_land(self):
+    def ordinary_land(self):
         self.calls.append(("land", "L"))
         return 0
 

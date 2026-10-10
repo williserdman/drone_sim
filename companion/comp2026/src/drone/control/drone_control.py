@@ -1,7 +1,7 @@
 from ..common_types import *
 import os
 import time as wall_time
-from typing import Callable, Mapping, Optional
+from typing import Callable, Literal, Mapping, Optional
 import itertools
 import threading
 from dataclasses import dataclass
@@ -52,6 +52,7 @@ PRECISION_LANDING_PARAMETERS = {
     "PLND_OPTIONS": 4,
 }
 TIMEOUT_MODE = 10.0
+TIMEOUT_PARAMETER = 10.0
 TIMEOUT_ARM = 15.0
 TIMEOUT_ASCENT = 45.0
 TIMEOUT_LAND = 180.0
@@ -73,6 +74,100 @@ class CommandAck:
 class MissionAck:
     sequence: int
     result: int
+
+
+@dataclass(frozen=True)
+class ParameterObservation:
+    value: float
+    generation: int
+
+
+@dataclass(frozen=True)
+class LandingProfileTransition:
+    parameter: str
+    action: Literal["read", "set"]
+    stage: Literal["requested", "verified", "failed"]
+    value: float
+    generation: int | None
+    timestamp: float
+    detail: str | None = None
+
+
+class ParameterValueTracker:
+    """Retain source-filtered parameter values by receive generation."""
+
+    def __init__(self, *, source_system: int, source_component: int):
+        self._source_system = source_system
+        self._source_component = source_component
+        self._generation = 0
+        self._values: dict[str, ParameterObservation] = {}
+        self._lock = threading.Lock()
+
+    def boundary(self) -> int:
+        with self._lock:
+            return self._generation
+
+    @staticmethod
+    def _parameter_name(raw: object) -> str | None:
+        if isinstance(raw, bytes):
+            try:
+                name = raw.split(b"\x00", 1)[0].decode("ascii")
+            except UnicodeDecodeError:
+                return None
+        elif isinstance(raw, str):
+            name = raw.split("\x00", 1)[0]
+            try:
+                name.encode("ascii")
+            except UnicodeEncodeError:
+                return None
+        else:
+            return None
+        return name if name else None
+
+    def observe_message(self, message: object) -> bool:
+        try:
+            get_source_system = getattr(message, "get_srcSystem")
+            get_source_component = getattr(message, "get_srcComponent")
+            if not callable(get_source_system) or not callable(get_source_component):
+                return False
+            source_system = get_source_system()
+            source_component = get_source_component()
+        except Exception:
+            return False
+        name = self._parameter_name(getattr(message, "param_id", None))
+        value = getattr(message, "param_value", None)
+        if (
+            source_system != self._source_system
+            or source_component != self._source_component
+            or name is None
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            return False
+        with self._lock:
+            self._generation += 1
+            self._values[name] = ParameterObservation(
+                value=float(value),
+                generation=self._generation,
+            )
+        return True
+
+    def value_after(self, name: str, boundary: int) -> ParameterObservation | None:
+        with self._lock:
+            observation = self._values.get(name)
+            if observation is None or observation.generation <= boundary:
+                return None
+            return observation
+
+    def enqueue(self, output, *, boundary_callback=None) -> tuple[int, object]:
+        """Capture a boundary and enqueue while receive callbacks are excluded."""
+        with self._lock:
+            boundary = self._generation
+            result = output()
+            if boundary_callback is not None:
+                boundary_callback(boundary)
+            return boundary, result
 
 
 class _OutputGuardedWriter:
@@ -392,6 +487,8 @@ class DroneControl:
         home_request_timeout_s: float | None = None,
         telemetry_poll_interval_s: float | None = None,
         guided_output_delivery_callback: Callable[[], None] | None = None,
+        landing_profile_observer: Callable[[LandingProfileTransition], None]
+        | None = None,
         vehicle_class: type | None = None,
     ):
         if not isinstance(source_identity, SourceIdentity):
@@ -464,6 +561,10 @@ class DroneControl:
             and not callable(guided_output_delivery_callback)
         ):
             raise ValueError("guided_output_delivery_callback must be callable or None")
+        if landing_profile_observer is not None and not callable(
+            landing_profile_observer
+        ):
+            raise ValueError("landing_profile_observer must be callable or None")
         print(f"Connecting to {connection_port} …")
         connect_options = {
             "wait_ready": wait_ready,
@@ -519,6 +620,7 @@ class DroneControl:
         self.home_request_timeout_s = home_request_timeout_s
         self.telemetry_poll_interval_s = telemetry_poll_interval_s
         self.guided_output_delivery_callback = guided_output_delivery_callback
+        self._landing_profile_observer = landing_profile_observer
         self._guided_output_delivery_reported = False
         self._release_hold_confirmation: ReleaseHoldConfirmation | None = None
         self._mission_home: MissionHome | None = None
@@ -548,6 +650,13 @@ class DroneControl:
         self._mission_ack_transaction_lock = threading.Lock()
         self._mission_ack_failed = False
         self._command_ack_transaction_lock = threading.Lock()
+        self._parameter_value_tracker = ParameterValueTracker(
+            source_system=flight_controller_target.system_id,
+            source_component=flight_controller_target.component_id,
+        )
+        self._parameter_transaction_lock = threading.Lock()
+        self.precision_landing_profile_dirty = False
+        self._precision_landing_disable_verified_generation: int | None = None
         self._telemetry_transaction_lock = threading.Lock()
         self._dependency_output_transaction = None
         self._supervisor_output_transaction = None
@@ -641,6 +750,10 @@ class DroneControl:
             tracker = self._mission_ack_tracker
             if tracker is not None:
                 tracker.observe_message(message)
+
+        @self.vehicle.on_message("PARAM_VALUE")
+        def listener_parameter_value(vehicle, name, message):
+            self._parameter_value_tracker.observe_message(message)
 
         if self.flight_state is not None:
 
@@ -1746,30 +1859,280 @@ class DroneControl:
         )
         return 0
 
-    def require_precision_landing_profile(self) -> bool:
-        """Return true only when ArduPilot exposes the approved landing profile."""
-        parameters = getattr(self.vehicle, "parameters", None)
-        if parameters is None:
-            return False
-        for name, expected in PRECISION_LANDING_PARAMETERS.items():
-            try:
-                actual = parameters.get(name)
-            except (AttributeError, KeyError, TypeError, ValueError):
-                return False
-            if not _finite_number(actual):
-                return False
-            numeric = float(actual)
-            if isinstance(expected, int):
-                matches = numeric.is_integer() and int(numeric) == expected
-            else:
-                matches = math.isclose(
-                    numeric,
-                    expected,
-                    rel_tol=0.0,
-                    abs_tol=1e-3,
+    @staticmethod
+    def _parameter_matches(name: str, actual: float, expected: float) -> bool:
+        profile_expected = PRECISION_LANDING_PARAMETERS.get(name, expected)
+        if isinstance(profile_expected, int):
+            return actual.is_integer() and int(actual) == int(expected)
+        return math.isclose(actual, float(expected), rel_tol=0.0, abs_tol=1e-3)
+
+    def _observe_landing_profile_transition(
+        self,
+        *,
+        parameter: str,
+        action: Literal["read", "set"],
+        stage: Literal["requested", "verified", "failed"],
+        value: float,
+        generation: int | None,
+        detail: str | None = None,
+    ) -> None:
+        observer = getattr(self, "_landing_profile_observer", None)
+        if observer is None:
+            return
+        observer(
+            LandingProfileTransition(
+                parameter=parameter,
+                action=action,
+                stage=stage,
+                value=float(value),
+                generation=generation,
+                timestamp=float(time.monotonic()),
+                detail=detail,
+            )
+        )
+
+    def _read_verified_precision_landing_profile(
+        self, timeout: float
+    ) -> Mapping[str, ParameterObservation]:
+        self._validate_timeout(timeout)
+        tracker = getattr(self, "_parameter_value_tracker", None)
+        transaction_lock = getattr(self, "_parameter_transaction_lock", None)
+        if tracker is None or transaction_lock is None:
+            raise FlightOperationError("parameter observation is unavailable")
+        deadline = self._deadline(timeout)
+        with transaction_lock:
+            boundary: int | None = None
+
+            def requested(captured: int) -> None:
+                nonlocal boundary
+                boundary = captured
+                for name, expected in PRECISION_LANDING_PARAMETERS.items():
+                    self._observe_landing_profile_transition(
+                        parameter=name,
+                        action="read",
+                        stage="requested",
+                        value=float(expected),
+                        generation=captured,
+                    )
+
+            def capture_boundary(enqueue=None):
+                if enqueue is None:
+                    raise FlightOperationError(
+                        "parameter request did not reach the writer boundary"
+                    )
+                captured, result = tracker.enqueue(
+                    enqueue,
+                    boundary_callback=requested,
                 )
-            if not matches:
-                return False
+                if boundary is None or boundary != captured:
+                    raise FlightOperationError(
+                        "parameter request boundary was not captured"
+                    )
+                return result
+
+            try:
+                self._send_guarded(
+                    lambda: self.vehicle._master.mav.param_request_list_send(
+                        self.flight_controller_target.system_id,
+                        self.flight_controller_target.component_id,
+                    ),
+                    before_final=capture_boundary,
+                )
+            except BaseException as error:
+                if boundary is None:
+                    detail = f"parameter request enqueue failed: {error}"
+                    for name, expected in PRECISION_LANDING_PARAMETERS.items():
+                        self._observe_landing_profile_transition(
+                            parameter=name,
+                            action="read",
+                            stage="failed",
+                            value=float(expected),
+                            generation=None,
+                            detail=detail,
+                        )
+                raise
+            assert boundary is not None
+            accepted: dict[str, ParameterObservation] = {}
+            while time.monotonic() < deadline:
+                self.check_permission()
+                for name, expected in PRECISION_LANDING_PARAMETERS.items():
+                    if name in accepted:
+                        continue
+                    observation = tracker.value_after(name, boundary)
+                    if observation is None:
+                        continue
+                    if not self._parameter_matches(
+                        name, observation.value, float(expected)
+                    ):
+                        detail = (
+                            f"fresh {name} value {observation.value!r} does not "
+                            f"match {float(expected)!r}"
+                        )
+                        self._observe_landing_profile_transition(
+                            parameter=name,
+                            action="read",
+                            stage="failed",
+                            value=observation.value,
+                            generation=observation.generation,
+                            detail=detail,
+                        )
+                        raise FlightOperationError(detail)
+                    accepted[name] = observation
+                    self._observe_landing_profile_transition(
+                        parameter=name,
+                        action="read",
+                        stage="verified",
+                        value=observation.value,
+                        generation=observation.generation,
+                    )
+                if len(accepted) == len(PRECISION_LANDING_PARAMETERS):
+                    return accepted
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.1, remaining))
+            missing = [name for name in PRECISION_LANDING_PARAMETERS if name not in accepted]
+            detail = "fresh parameter readback timed out"
+            for name in missing:
+                self._observe_landing_profile_transition(
+                    parameter=name,
+                    action="read",
+                    stage="failed",
+                    value=float(PRECISION_LANDING_PARAMETERS[name]),
+                    generation=boundary,
+                    detail=detail,
+                )
+            raise FlightOperationError(detail)
+
+    def _set_parameter_verified(
+        self, name: str, value: float, timeout: float
+    ) -> ParameterObservation:
+        self._validate_timeout(timeout)
+        if ParameterValueTracker._parameter_name(name) != name:
+            raise ValueError("parameter name must be non-empty ASCII")
+        if isinstance(value, bool) or not _finite_number(value):
+            raise ValueError("parameter value must be finite and numeric")
+        tracker = getattr(self, "_parameter_value_tracker", None)
+        transaction_lock = getattr(self, "_parameter_transaction_lock", None)
+        if tracker is None or transaction_lock is None:
+            raise FlightOperationError("parameter observation is unavailable")
+        expected = float(value)
+        deadline = self._deadline(timeout)
+        with transaction_lock:
+            boundary: int | None = None
+
+            def requested(captured: int) -> None:
+                nonlocal boundary
+                boundary = captured
+                if name == "PLND_ENABLED" and expected == 0.0:
+                    self.precision_landing_profile_dirty = True
+                    self._precision_landing_disable_verified_generation = None
+                self._observe_landing_profile_transition(
+                    parameter=name,
+                    action="set",
+                    stage="requested",
+                    value=expected,
+                    generation=captured,
+                )
+
+            def capture_boundary(enqueue=None):
+                if enqueue is None:
+                    raise FlightOperationError(
+                        "parameter set did not reach the writer boundary"
+                    )
+                captured, result = tracker.enqueue(
+                    enqueue,
+                    boundary_callback=requested,
+                )
+                if boundary is None or boundary != captured:
+                    raise FlightOperationError("parameter set boundary was not captured")
+                return result
+
+            try:
+                self._send_guarded(
+                    lambda: self.vehicle._master.mav.param_set_send(
+                        self.flight_controller_target.system_id,
+                        self.flight_controller_target.component_id,
+                        name.encode("ascii"),
+                        expected,
+                        mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+                    ),
+                    before_final=capture_boundary,
+                )
+            except BaseException as error:
+                self._observe_landing_profile_transition(
+                    parameter=name,
+                    action="set",
+                    stage="failed",
+                    value=expected,
+                    generation=boundary,
+                    detail=f"parameter set enqueue failed: {error}",
+                )
+                raise
+            assert boundary is not None
+            while time.monotonic() < deadline:
+                self.check_permission()
+                observation = tracker.value_after(name, boundary)
+                if observation is not None:
+                    if not self._parameter_matches(name, observation.value, expected):
+                        detail = (
+                            f"fresh {name} value {observation.value!r} does not "
+                            f"match requested {expected!r}"
+                        )
+                        self._observe_landing_profile_transition(
+                            parameter=name,
+                            action="set",
+                            stage="failed",
+                            value=observation.value,
+                            generation=observation.generation,
+                            detail=detail,
+                        )
+                        raise FlightOperationError(detail)
+                    if name == "PLND_ENABLED" and expected == 0.0:
+                        self._precision_landing_disable_verified_generation = (
+                            observation.generation
+                        )
+                    elif name == "PLND_ENABLED" and expected == 1.0:
+                        self.precision_landing_profile_dirty = False
+                        self._precision_landing_disable_verified_generation = None
+                    self._observe_landing_profile_transition(
+                        parameter=name,
+                        action="set",
+                        stage="verified",
+                        value=observation.value,
+                        generation=observation.generation,
+                    )
+                    return observation
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.1, remaining))
+            detail = f"fresh {name} readback timed out"
+            self._observe_landing_profile_transition(
+                parameter=name,
+                action="set",
+                stage="failed",
+                value=expected,
+                generation=boundary,
+                detail=detail,
+            )
+            raise FlightOperationError(detail)
+
+    @property
+    def precision_landing_disable_verified(self) -> bool:
+        return bool(
+            self.precision_landing_profile_dirty
+            and self._precision_landing_disable_verified_generation is not None
+        )
+
+    def require_precision_landing_profile(
+        self, timeout: float = TIMEOUT_PARAMETER
+    ) -> bool:
+        """Require one fresh, complete approved precision-landing profile."""
+        try:
+            self._read_verified_precision_landing_profile(timeout)
+        except FlightOperationError:
+            return False
         return True
 
     def _goto_waypoint(
@@ -2067,24 +2430,113 @@ class DroneControl:
     def translate_relative(self, dir: RelativePosition) -> NEDMeters:
         raise NotImplementedError("relative translation is not implemented")
 
-    def simple_land(
-        self, timeout: float = TIMEOUT_LAND, mode_timeout: float = TIMEOUT_MODE
+    def ordinary_land(
+        self,
+        timeout: float = TIMEOUT_LAND,
+        mode_timeout: float = TIMEOUT_MODE,
+        parameter_timeout: float = TIMEOUT_PARAMETER,
     ) -> int:
-        """Select LAND and require new touchdown or safe auto-disarm evidence."""
+        """Disable precision landing, land, and verify profile restoration."""
         self._validate_timeout(timeout)
         self._validate_timeout(mode_timeout)
+        self._validate_timeout(parameter_timeout)
+        deadline = self._deadline(timeout)
+        self.check_permission()
+        before = self.flight_state.snapshot()
+        self._require_fresh(before, "mode", "armed", "landed_state")
+        landed_before = before.landed_state.observation.value
+        starts_grounded = self._is_on_ground_value(landed_before)
+        dirty_at_entry = bool(
+            getattr(self, "precision_landing_profile_dirty", False)
+        )
+        if (
+            starts_grounded
+            and before.armed.observation.value is not False
+            and not dirty_at_entry
+        ):
+            raise FlightOperationError(
+                "touchdown was not attributable to this landing operation"
+            )
+        if dirty_at_entry and not self.precision_landing_disable_verified:
+            raise FlightOperationError(
+                "unverified precision-landing disable cannot enter landing recovery"
+            )
+
+        restore_attempted = False
+
+        def remaining(*, reserve_restore: bool = False) -> float:
+            value = deadline - time.monotonic()
+            if reserve_restore:
+                value -= parameter_timeout
+            if not _finite_number(value) or value <= 0:
+                raise FlightOperationError("ordinary landing deadline expired")
+            return float(value)
+
+        def restore() -> None:
+            nonlocal restore_attempted
+            restore_attempted = True
+            self._set_parameter_verified(
+                "PLND_ENABLED",
+                1.0,
+                min(parameter_timeout, remaining()),
+            )
+
+        try:
+            if dirty_at_entry:
+                if starts_grounded:
+                    restore()
+                    return 0
+            else:
+                self._read_verified_precision_landing_profile(
+                    min(
+                        parameter_timeout,
+                        remaining(reserve_restore=not starts_grounded),
+                    )
+                )
+                if starts_grounded:
+                    return 0
+                self._set_parameter_verified(
+                    "PLND_ENABLED",
+                    0.0,
+                    min(parameter_timeout, remaining(reserve_restore=True)),
+                )
+
+            self._land_until(
+                deadline=deadline - parameter_timeout,
+                mode_timeout=min(
+                    mode_timeout,
+                    remaining(reserve_restore=True),
+                ),
+            )
+            restore()
+            return 0
+        except BaseException:
+            if (
+                getattr(self, "precision_landing_profile_dirty", False)
+                and not restore_attempted
+            ):
+                try:
+                    self.check_permission()
+                    restore()
+                except BaseException:
+                    pass
+            raise
+
+    def _land_until(self, *, deadline: float, mode_timeout: float) -> None:
+        """Select LAND and require new touchdown or safe auto-disarm evidence."""
         self.check_permission()
         before = self.flight_state.snapshot()
         self._require_fresh(before, "mode", "armed", "landed_state")
         landed_before = before.landed_state.observation.value
         if self._is_on_ground_value(landed_before):
             if before.armed.observation.value is False:
-                return 0
+                return
             raise FlightOperationError(
                 "touchdown was not attributable to this landing operation"
             )
         if self._is_landing_value(landed_before) or self._mode_name(before) == "LAND":
-            return self.confirm_landing(timeout=timeout)
+            self._confirm_landing_until(deadline)
+            return
 
         interrupted = [False]
 
@@ -2110,7 +2562,8 @@ class DroneControl:
         except FlightOperationError:
             if not interrupted[0]:
                 raise
-            return self.confirm_landing(timeout=timeout)
+            self._confirm_landing_until(deadline)
+            return
         landing_transition = self.flight_state.snapshot()
         landing_start_sequence = max(
             self._field_sequence(landing_transition.landed_state),
@@ -2143,18 +2596,21 @@ class DroneControl:
             )
             return auto_disarmed and not contradictory_flight
 
-        self._wait(timeout, touchdown, "touchdown was not confirmed")
-        return 0
+        self._wait_until(deadline, touchdown, "touchdown was not confirmed")
 
     def confirm_landing(self, timeout: float = TIMEOUT_LAND) -> int:
         """Confirm an accepted LAND descent without transmitting another mode."""
         self._validate_timeout(timeout)
+        self._confirm_landing_until(self._deadline(timeout))
+        return 0
+
+    def _confirm_landing_until(self, deadline: float) -> None:
         self.check_permission()
         before = self.flight_state.snapshot()
         self._require_fresh(before, "mode", "armed", "landed_state")
         landed_before = before.landed_state.observation.value
         if self._is_on_ground_value(landed_before):
-            return 0
+            return
         if (
             self._mode_name(before) != "LAND"
             and not self._is_landing_value(landed_before)
@@ -2187,8 +2643,7 @@ class DroneControl:
                 and not contradictory
             )
 
-        self._wait(timeout, touchdown, "touchdown was not confirmed")
-        return 0
+        self._wait_until(deadline, touchdown, "touchdown was not confirmed")
 
     def takeoff(self, alt: float, timeout: float = TIMEOUT_ASCENT) -> None:
         deadline = self._deadline(timeout)

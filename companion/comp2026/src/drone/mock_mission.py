@@ -937,7 +937,6 @@ def pickup_sequence(
     else:
         return False
 
-    profile_checked = False
     for retry_number in range(2):
         anchor = _acquire_target_anchor(
             controller,
@@ -950,11 +949,9 @@ def pickup_sequence(
         )
         if anchor is None:
             return False
-        if not profile_checked:
-            controller.check_permission()
-            if controller.require_precision_landing_profile() is not True:
-                return False
-            profile_checked = True
+        controller.check_permission()
+        if controller.require_precision_landing_profile() is not True:
+            return False
         result = aruco_land_precision(
             controller,
             camera,
