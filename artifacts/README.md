@@ -99,8 +99,10 @@ A descriptor-backed operator run also freezes `operator_control` in
 `configuration/run.json` and preserves the exact hashed QGC file as
 `configuration/qgc-actions.json`. The descriptor contains only public protocol
 values and the file digest. The action bytes remain outside `run.json` and are
-verified before persistence. Older operator snapshots without this descriptor
-and all unattended snapshots keep their existing meaning and checksums.
+verified before persistence. The protocol fixes the companion at MAVLink 1/191
+and the flight controller at 1/1 while leaving the QGC source injectable. Older
+operator snapshots without this descriptor and all unattended snapshots keep
+their existing meaning and checksums.
 
 Image provenance is launch-mode specific. Unattended bundles and their external
 digest expectations contain exactly the seven production Phase 3 images.

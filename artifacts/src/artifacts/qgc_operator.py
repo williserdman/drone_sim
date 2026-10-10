@@ -72,6 +72,10 @@ class MavlinkIdentity:
         _exact_integer(self.component_id, "component_id", 1, 255)
 
 
+QGC_COMPANION_IDENTITY = MavlinkIdentity(system_id=1, component_id=191)
+QGC_FLIGHT_CONTROLLER_IDENTITY = MavlinkIdentity(system_id=1, component_id=1)
+
+
 @dataclass(frozen=True)
 class QgcOperatorDescriptor:
     kind: str
@@ -103,6 +107,10 @@ class QgcOperatorDescriptor:
             raise ValueError("MAVLink identities must use MavlinkIdentity")
         if len(set(identities)) != len(identities):
             raise ValueError("QGC, companion, and flight-controller identities must be distinct")
+        if self.companion != QGC_COMPANION_IDENTITY:
+            raise ValueError("companion must use MAVLink identity 1/191")
+        if self.flight_controller != QGC_FLIGHT_CONTROLLER_IDENTITY:
+            raise ValueError("flight_controller must use MAVLink identity 1/1")
         _relative_path(self.actions_path)
         if not isinstance(self.actions_sha256, str) or _SHA256.fullmatch(
             self.actions_sha256
@@ -152,6 +160,8 @@ __all__ = [
     "QGC_ABORT_COMMAND",
     "QGC_ACTIONS_BUNDLE_PATH",
     "QGC_ACTIONS_KIND",
+    "QGC_COMPANION_IDENTITY",
+    "QGC_FLIGHT_CONTROLLER_IDENTITY",
     "QGC_START_COMMAND",
     "QgcOperatorDescriptor",
     "parse_qgc_operator_descriptor",

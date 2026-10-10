@@ -129,10 +129,12 @@ When operator preparation supplies an action factory, configuration resolution
 allocates the run ID first, then allocates and hashes the QGC action bytes before
 calculating `config_sha256`. `operator_control` binds commands 31020 and 31021,
 the token, request identities, MAVLink identities, relative bundle path, and
-digest. `write_resolved_config` checks that binding and writes the unchanged
-bytes to `configuration/qgc-actions.json`. Templates cannot provide this
-descriptor. Descriptor-absent operator and unattended configurations retain
-their historical serialization.
+digest. The nonserialized `operator_actions` field retains the complete host
+publication material, including the run ID, derived run-named filename, and
+exact bytes. `write_resolved_config` checks that material against the descriptor
+and writes the unchanged bytes to `configuration/qgc-actions.json`. Templates
+cannot provide either runtime value. Descriptor-absent operator and unattended
+configurations retain their historical serialization.
 
 An `autotune` run receives a host-generated `calibration_profile` in its resolved
 configuration before Compose starts. The version-2 profile binds the shared physics of `iris_flight`,

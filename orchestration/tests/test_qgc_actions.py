@@ -11,7 +11,7 @@ from pymavlink.dialects import v10, v20
 
 from artifacts.qgc_operator import MavlinkIdentity
 import orchestration.qgc_actions as qgc_actions_module
-from orchestration.qgc_actions import QgcActionStore
+from orchestration.qgc_actions import QgcActionMaterial, QgcActionStore
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -43,8 +43,19 @@ def test_actions_bind_exact_bytes_and_monotonic_tokens(tmp_path: Path) -> None:
     assert second.descriptor.attempt_token == 2
     assert first.descriptor.start_request_id != first.descriptor.abort_request_id
     assert hashlib.sha256(first.action_bytes).hexdigest() == first.descriptor.actions_sha256
+    assert first.run_id == RUN_ID
     assert first.published_name == f"drone-sim-{RUN_ID}.json"
     assert first.descriptor.actions_path == "configuration/qgc-actions.json"
+
+    with pytest.raises(TypeError, match="published_name"):
+        QgcActionMaterial(
+            run_id=RUN_ID,
+            descriptor=first.descriptor,
+            action_bytes=first.action_bytes,
+            published_name="custom.json",
+        )
+    with pytest.raises(ValueError, match="canonical UUID"):
+        replace(first, run_id="../custom")
 
 
 def test_reserved_commands_do_not_collide_with_shipped_or_legacy_registries() -> None:
@@ -165,7 +176,7 @@ def test_publish_preserves_existing_qgc_files(tmp_path: Path) -> None:
     different_run = QgcActionStore(tmp_path / "state", QGC_SOURCE).allocate(
         "22222222-2222-4222-8222-222222222222"
     )
-    forced_conflict = replace(different_run, published_name=material.published_name)
+    forced_conflict = replace(different_run, run_id=RUN_ID)
     with pytest.raises(FileExistsError):
         QgcActionStore(tmp_path / "state", QGC_SOURCE).publish(
             forced_conflict, save_directory

@@ -152,8 +152,24 @@
         "start_request_id": {"type": "string", "format": "uuid"},
         "abort_request_id": {"type": "string", "format": "uuid"},
         "qgc_source": {"$ref": "#/$defs/mavlink_identity"},
-        "companion": {"$ref": "#/$defs/mavlink_identity"},
-        "flight_controller": {"$ref": "#/$defs/mavlink_identity"},
+        "companion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["system_id", "component_id"],
+          "properties": {
+            "system_id": {"const": 1},
+            "component_id": {"const": 191}
+          }
+        },
+        "flight_controller": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["system_id", "component_id"],
+          "properties": {
+            "system_id": {"const": 1},
+            "component_id": {"const": 1}
+          }
+        },
         "actions_path": {"const": "configuration/qgc-actions.json"},
         "actions_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }

@@ -20,6 +20,8 @@ from artifacts.qgc_operator import (
     QGC_ABORT_COMMAND,
     QGC_ACTIONS_BUNDLE_PATH,
     QGC_ACTIONS_KIND,
+    QGC_COMPANION_IDENTITY,
+    QGC_FLIGHT_CONTROLLER_IDENTITY,
     QGC_START_COMMAND,
     QgcOperatorDescriptor,
 )
@@ -29,28 +31,25 @@ _LEDGER_NAME = "attempt-ledger.json"
 _MARKER_NAME = "initialized"
 _LOCK_NAME = "allocation.lock"
 _MARKER_BYTES = b"qgc_actions_v1\n"
-_COMPANION = MavlinkIdentity(1, 191)
-_FLIGHT_CONTROLLER = MavlinkIdentity(1, 1)
 _allocation_mutex = threading.Lock()
 
 
 @dataclass(frozen=True)
 class QgcActionMaterial:
+    run_id: str
     descriptor: QgcOperatorDescriptor
     action_bytes: bytes
-    published_name: str
 
     def __post_init__(self) -> None:
+        _canonical_run_id(self.run_id)
         if not isinstance(self.descriptor, QgcOperatorDescriptor):
             raise TypeError("descriptor must be a QgcOperatorDescriptor")
         if not isinstance(self.action_bytes, bytes) or not self.action_bytes:
             raise ValueError("action_bytes must be nonempty bytes")
-        if (
-            not isinstance(self.published_name, str)
-            or not self.published_name.endswith(".json")
-            or Path(self.published_name).name != self.published_name
-        ):
-            raise ValueError("published_name must be a JSON filename")
+
+    @property
+    def published_name(self) -> str:
+        return f"drone-sim-{self.run_id}.json"
 
 
 def _canonical_run_id(value: object) -> str:
@@ -94,7 +93,7 @@ def _render_actions(run_id: str, token: int) -> bytes:
             "label": label,
             "description": description,
             "mavCmd": command,
-            "compId": _COMPANION.component_id,
+            "compId": QGC_COMPANION_IDENTITY.component_id,
             "param1": token,
         }
         action.update({f"param{index}": 0 for index in range(2, 8)})
@@ -206,7 +205,10 @@ class QgcActionStore:
             raise TypeError("state_directory must be a Path")
         if not isinstance(qgc_source, MavlinkIdentity):
             raise TypeError("qgc_source must be a MavlinkIdentity")
-        if qgc_source in {_COMPANION, _FLIGHT_CONTROLLER}:
+        if qgc_source in {
+            QGC_COMPANION_IDENTITY,
+            QGC_FLIGHT_CONTROLLER_IDENTITY,
+        }:
             raise ValueError("QGC source must be distinct from companion and flight controller")
         self.state_directory = state_directory
         self.qgc_source = qgc_source
@@ -309,15 +311,15 @@ class QgcActionStore:
             start_request_id=start_request_id,
             abort_request_id=abort_request_id,
             qgc_source=self.qgc_source,
-            companion=_COMPANION,
-            flight_controller=_FLIGHT_CONTROLLER,
+            companion=QGC_COMPANION_IDENTITY,
+            flight_controller=QGC_FLIGHT_CONTROLLER_IDENTITY,
             actions_path=QGC_ACTIONS_BUNDLE_PATH,
             actions_sha256=hashlib.sha256(action_bytes).hexdigest(),
         )
         return QgcActionMaterial(
+            run_id=canonical_run_id,
             descriptor=descriptor,
             action_bytes=action_bytes,
-            published_name=f"drone-sim-{canonical_run_id}.json",
         )
 
     def publish(self, material: QgcActionMaterial, save_directory: Path) -> Path:

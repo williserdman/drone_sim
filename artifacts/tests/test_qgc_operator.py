@@ -67,6 +67,8 @@ def test_operator_descriptor_round_trip_preserves_protocol_values() -> None:
         ),
         (lambda value: value.update(qgc_source={"system_id": True, "component_id": 190}), "system_id"),
         (lambda value: value.update(companion={"system_id": 1, "component_id": 256}), "component_id"),
+        (lambda value: value.update(companion={"system_id": 1, "component_id": 190}), "companion"),
+        (lambda value: value.update(flight_controller={"system_id": 2, "component_id": 1}), "flight_controller"),
         (lambda value: value.update(flight_controller=value["companion"]), "distinct"),
         (lambda value: value.update(actions_path="/tmp/qgc-actions.json"), "actions_path"),
         (lambda value: value.update(actions_path="configuration/../qgc-actions.json"), "actions_path"),

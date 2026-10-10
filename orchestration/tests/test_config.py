@@ -33,6 +33,63 @@ CONFIGURED_DESCENT_TEMPLATE = CONFIG / "configured-descent-run.json"
 CONFIGURED_OPERATOR_TEMPLATE = CONFIG / "configured-operator-run.json"
 FIXED_RUN_ID = UUID("00000000-0000-4000-8000-000000000222")
 
+HISTORICAL_UNATTENDED_RUN = b'''{
+  "config_sha256": "d04e8ca2a65f0e27bcf58c3936f3d33ced8553e5116f587ab7d5c50873f842a7",
+  "finalization_wall_seconds": 120,
+  "launch_mode": "unattended",
+  "max_wall_seconds": 3600,
+  "mission": "controlled_descent",
+  "output_root": "/private/tmp/drone-sim-historical-runs",
+  "preparation_wall_seconds": 1800,
+  "recording": {
+    "encoding": "rgb8",
+    "fps": 20,
+    "height_px": 240,
+    "width_px": 320
+  },
+  "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "runtime_profile": "phase3",
+  "scenario": "descent_v1",
+  "simulation": {
+    "duration_sim_seconds": 60.0,
+    "public_epoch_native_sim_seconds": 90.0,
+    "seed": 1,
+    "target_real_time_factor": 0.1
+  },
+  "startup_wall_seconds": 120,
+  "vehicle": "iris_flight",
+  "world": "vertical_descent"
+}
+'''
+HISTORICAL_OPERATOR_RUN = b'''{
+  "config_sha256": "4e74ac33e0bdf95c8d320d7134e37f36aca443e22c876e64ccef8ed2e7f4b417",
+  "finalization_wall_seconds": 120,
+  "launch_mode": "operator",
+  "max_wall_seconds": 3600,
+  "mission": "controlled_descent",
+  "output_root": "/private/tmp/drone-sim-historical-runs",
+  "preparation_wall_seconds": 1800,
+  "recording": {
+    "encoding": "rgb8",
+    "fps": 20,
+    "height_px": 240,
+    "width_px": 320
+  },
+  "run_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "runtime_profile": "phase3",
+  "scenario": "descent_v1",
+  "simulation": {
+    "duration_sim_seconds": 60.0,
+    "public_epoch_native_sim_seconds": 90.0,
+    "seed": 1,
+    "target_real_time_factor": 0.1
+  },
+  "startup_wall_seconds": 120,
+  "vehicle": "iris_flight",
+  "world": "vertical_descent"
+}
+'''
+
 
 COURSE_DOCUMENT = {
     "schema_version": 1,
@@ -336,7 +393,7 @@ def test_operator_launch_overrides_are_frozen_serialized_and_hashed(tmp_path):
     assert loaded.config_sha256 == resolved.config_sha256
 
 
-def test_operator_descriptor_round_trip_preserves_historical_bytes(tmp_path):
+def test_operator_descriptor_round_trip_retains_publication_material(tmp_path):
     store = QgcActionStore(tmp_path / "qgc-state", MavlinkIdentity(255, 190))
     calls = []
 
@@ -353,20 +410,27 @@ def test_operator_descriptor_round_trip_preserves_historical_bytes(tmp_path):
 
     assert calls == [str(FIXED_RUN_ID)]
     assert resolved.operator_control is not None
+    assert resolved.operator_actions is not None
+    assert resolved.operator_actions.run_id == str(FIXED_RUN_ID)
+    assert resolved.operator_actions.descriptor == resolved.operator_control
     assert resolved.operator_control.attempt_token == 1
     written = write_resolved_config(tmp_path / "run", resolved)
     action_path = written.parent / "qgc-actions.json"
-    assert action_path.read_bytes() == resolved._operator_action_bytes
+    assert action_path.read_bytes() == resolved.operator_actions.action_bytes
     document = json.loads(written.read_text(encoding="utf-8"))
+    assert "operator_actions" not in document
     _load_validator("run.schema.json").validate(document)
     assert document["operator_control"]["actions_sha256"] == hashlib.sha256(
         action_path.read_bytes()
     ).hexdigest()
     loaded = load_run_config(written)
     assert loaded.operator_control == resolved.operator_control
-    assert loaded._operator_action_bytes == resolved._operator_action_bytes
+    assert loaded.operator_actions == resolved.operator_actions
 
-    corrupted = replace(resolved, _operator_action_bytes=b"changed\n")
+    corrupted = replace(
+        resolved,
+        operator_actions=replace(resolved.operator_actions, action_bytes=b"changed\n"),
+    )
     with pytest.raises(ValueError, match="action bytes"):
         write_resolved_config(tmp_path / "corrupted", corrupted)
     assert not (tmp_path / "corrupted/configuration/run.json").exists()
@@ -387,8 +451,79 @@ def test_operator_descriptor_round_trip_preserves_historical_bytes(tmp_path):
         before = template.read_bytes()
         compatible = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
         assert compatible.operator_control is None
-        assert compatible._operator_action_bytes is None
+        assert compatible.operator_actions is None
         assert template.read_bytes() == before
+
+
+def test_operator_factory_material_must_belong_to_resolved_run(tmp_path):
+    store = QgcActionStore(tmp_path / "qgc-state", MavlinkIdentity(255, 190))
+    foreign = store.allocate("22222222-2222-4222-8222-222222222222")
+
+    with pytest.raises(ValueError, match="run_id"):
+        resolve_run_config(
+            CONFIGURED_OPERATOR_TEMPLATE,
+            run_id_factory=lambda: FIXED_RUN_ID,
+            launch_mode="operator",
+            operator_control_factory=lambda _run_id: foreign,
+        )
+
+
+@pytest.mark.parametrize(
+    ("launch_mode", "historical_bytes", "checksum"),
+    [
+        (
+            "unattended",
+            HISTORICAL_UNATTENDED_RUN,
+            "d04e8ca2a65f0e27bcf58c3936f3d33ced8553e5116f587ab7d5c50873f842a7",
+        ),
+        (
+            "operator",
+            HISTORICAL_OPERATOR_RUN,
+            "4e74ac33e0bdf95c8d320d7134e37f36aca443e22c876e64ccef8ed2e7f4b417",
+        ),
+    ],
+)
+def test_operator_descriptor_round_trip_preserves_historical_bytes(
+    tmp_path, launch_mode, historical_bytes, checksum
+):
+    source = tmp_path / f"historical-{launch_mode}.json"
+    source.write_bytes(historical_bytes)
+
+    loaded = load_run_config(source)
+
+    assert loaded.launch_mode == launch_mode
+    assert loaded.config_sha256 == checksum
+    assert loaded.operator_control is None
+    assert loaded.operator_actions is None
+    assert source.read_bytes() == historical_bytes
+    rewritten = write_resolved_config(tmp_path / f"rewritten-{launch_mode}", loaded)
+    assert rewritten.read_bytes() == historical_bytes
+
+
+@pytest.mark.parametrize(
+    ("identity", "value"),
+    [
+        ("companion", {"system_id": 1, "component_id": 190}),
+        ("flight_controller", {"system_id": 2, "component_id": 1}),
+    ],
+)
+def test_resolved_schema_rejects_wrong_fixed_operator_identity(
+    tmp_path, identity, value
+):
+    store = QgcActionStore(tmp_path / "qgc-state", MavlinkIdentity(255, 190))
+    resolved = resolve_run_config(
+        CONFIGURED_OPERATOR_TEMPLATE,
+        run_id_factory=lambda: FIXED_RUN_ID,
+        launch_mode="operator",
+        operator_control_factory=store.allocate,
+    )
+    document = json.loads(
+        write_resolved_config(tmp_path / "run", resolved).read_text(encoding="utf-8")
+    )
+    document["operator_control"][identity] = value
+
+    with pytest.raises(ValidationError):
+        _load_validator("run.schema.json").validate(document)
 
 
 @pytest.mark.parametrize(

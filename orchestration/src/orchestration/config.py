@@ -188,7 +188,7 @@ class RunConfig:
     launch_mode: str = "unattended"
     preparation_wall_seconds: int = 1800
     operator_control: QgcOperatorDescriptor | None = None
-    _operator_action_bytes: bytes | None = field(default=None, repr=False)
+    operator_actions: QgcActionMaterial | None = field(default=None, repr=False)
 
     @property
     def expected_camera_frames(self) -> int:
@@ -798,6 +798,8 @@ def resolve_run_config(
         operator_material = operator_control_factory(str(generated))
         if not isinstance(operator_material, QgcActionMaterial):
             raise ValueError("operator_control_factory returned an invalid result")
+        if operator_material.run_id != str(generated):
+            raise ValueError("operator action material run_id does not match the resolved run")
         if operator_material.descriptor.actions_path != QGC_ACTIONS_BUNDLE_PATH:
             raise ValueError("operator action path does not match the bundle contract")
         if hashlib.sha256(operator_material.action_bytes).hexdigest() != (
@@ -841,9 +843,7 @@ def resolve_run_config(
         operator_control=(
             operator_material.descriptor if operator_material is not None else None
         ),
-        _operator_action_bytes=(
-            operator_material.action_bytes if operator_material is not None else None
-        ),
+        operator_actions=operator_material,
     )
     return replace(
         unresolved,
@@ -878,7 +878,7 @@ def load_run_config(path: str | Path) -> RunConfig:
         if "operator_control" in document
         else None
     )
-    operator_action_bytes: bytes | None = None
+    operator_actions: QgcActionMaterial | None = None
     if operator_control is not None:
         if document.get("launch_mode", "unattended") != "operator":
             raise ValueError("operator_control requires launch_mode operator")
@@ -895,6 +895,11 @@ def load_run_config(path: str | Path) -> RunConfig:
             operator_control.actions_sha256
         ):
             raise ValueError("operator action file does not match its descriptor digest")
+        operator_actions = QgcActionMaterial(
+            run_id=str(run_uuid),
+            descriptor=operator_control,
+            action_bytes=operator_action_bytes,
+        )
     return RunConfig(
         run_id=str(run_uuid),
         world=document["world"],
@@ -934,7 +939,7 @@ def load_run_config(path: str | Path) -> RunConfig:
         launch_mode=document.get("launch_mode", "unattended"),
         preparation_wall_seconds=document.get("preparation_wall_seconds", 1800),
         operator_control=operator_control,
-        _operator_action_bytes=operator_action_bytes,
+        operator_actions=operator_actions,
     )
 
 
@@ -968,13 +973,17 @@ def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
     persisted = {**document, "config_sha256": config.config_sha256}
     _validate_common(persisted, _RESOLVED_FIELDS)
 
-    if (config.operator_control is None) != (config._operator_action_bytes is None):
-        raise ValueError("operator descriptor and action bytes must be present together")
+    if (config.operator_control is None) != (config.operator_actions is None):
+        raise ValueError("operator descriptor and action material must be present together")
     if config.operator_control is not None:
+        assert config.operator_actions is not None
+        if config.operator_actions.run_id != config.run_id:
+            raise ValueError("operator action material run_id does not match the resolved run")
+        if config.operator_actions.descriptor != config.operator_control:
+            raise ValueError("operator action material does not match its descriptor")
         if config.operator_control.actions_path != QGC_ACTIONS_BUNDLE_PATH:
             raise ValueError("operator action path does not match the bundle contract")
-        assert config._operator_action_bytes is not None
-        if hashlib.sha256(config._operator_action_bytes).hexdigest() != (
+        if hashlib.sha256(config.operator_actions.action_bytes).hexdigest() != (
             config.operator_control.actions_sha256
         ):
             raise ValueError("operator action bytes do not match their descriptor digest")
@@ -1005,8 +1014,8 @@ def write_resolved_config(run_dir: str | Path, config: RunConfig) -> Path:
             (calibration_target, artifact),
             (calibration_manifest_target, manifest),
         )
-    if config._operator_action_bytes is not None:
-        source_payloads += ((action_target, config._operator_action_bytes),)
+    if config.operator_actions is not None:
+        source_payloads += ((action_target, config.operator_actions.action_bytes),)
 
     configuration_dir.mkdir(parents=True, exist_ok=True)
     for destination, payload in source_payloads:
