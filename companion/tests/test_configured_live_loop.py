@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import signal
 import sys
+import time
 
 from pymavlink import mavutil
 
+from artifacts.operator_protocol import OperatorProtocol, PreflightStatus
+from artifacts.qgc_operator import (
+    MavlinkIdentity,
+    QGC_ABORT_COMMAND,
+    QGC_ACTIONS_KIND,
+    QGC_START_COMMAND,
+    QgcCommandEnvelope,
+    QgcOperatorDescriptor,
+)
 from artifacts.runtime_status import RuntimeStatus, status_document, status_name
+from artifacts.runtime_status import OperatorWaitStartedStatus
 import drone_sim_companion.configured_runtime as configured_runtime
 import drone_sim_companion.runtime_node as runtime_node
 from drone_sim_companion.configured_runtime import run_configured
@@ -355,6 +367,173 @@ def test_operator_gate_blocks_configured_flight_commands_until_admission(monkeyp
     assert run_configured(config) == 0
     assert gate.admissions == 1
     assert mavutil.mavlink.MAV_CMD_DO_SET_MODE in connection.mav.command_ids
+
+
+def test_descriptor_configured_loop_releases_one_operator_wait_and_one_recovery(
+    tmp_path, monkeypatch
+):
+    run_directory = tmp_path / RUN_ID
+    for relative in (".control", ".status", "configuration"):
+        (run_directory / relative).mkdir(parents=True, exist_ok=True)
+    config_sha256 = "a" * 64
+    operator_protocol = OperatorProtocol(run_directory, RUN_ID, config_sha256)
+    operator_protocol.write_preflight(PreflightStatus(
+        RUN_ID,
+        config_sha256,
+        "gazebo",
+        0,
+        time.time_ns(),
+        native_timestamp_ns=90_000_000_000,
+        physics_advancing=True,
+        camera_native_timestamp_ns=90_000_000_000,
+        ready=True,
+        detail="private native producers ready",
+    ))
+
+    class DescriptorProtocol(Protocol):
+        def __init__(self):
+            super().__init__()
+            self.operator = operator_protocol
+            self.status_objects = []
+
+        def write_status(self, status):
+            self.status_objects.append(status)
+            super().write_status(status)
+
+    descriptor = QgcOperatorDescriptor(
+        QGC_ACTIONS_KIND,
+        QGC_START_COMMAND,
+        QGC_ABORT_COMMAND,
+        17,
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+        MavlinkIdentity(255, 190),
+        MavlinkIdentity(1, 191),
+        MavlinkIdentity(1, 1),
+        "configuration/qgc-actions.json",
+        "b" * 64,
+    )
+    protocol = DescriptorProtocol()
+    connection = FakeConnection()
+    transports = []
+
+    class FakeQgcIO:
+        def __init__(self, _connection, _mavlink):
+            self.receive = None
+            self.responses = []
+            transports.append(self)
+
+        def install(self, receive):
+            self.receive = receive
+
+        def observe_message(self, _message):
+            return False
+
+        def send_ack(self, response):
+            self.responses.append(response)
+
+    monkeypatch.setattr(
+        __import__(
+            "drone_sim_companion.qgc_transport", fromlist=["PymavlinkQgcCommandIO"]
+        ),
+        "PymavlinkQgcCommandIO",
+        FakeQgcIO,
+    )
+
+    class DescriptorRos(FakeRos):
+        abort_sent = False
+
+        def ok(self):
+            return self.loop < 20
+
+        def spin_once(self, node, *, timeout_sec):
+            assert timeout_sec == 0.02
+            transport = transports[0]
+            assert transport.receive is not None
+            if self.loop == 0:
+                start = QgcCommandEnvelope(
+                    2,
+                    descriptor.qgc_source,
+                    descriptor.companion,
+                    descriptor.start_command,
+                    (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    time.time_ns(),
+                )
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    tuple(pool.map(transport.receive, (start,) * 8))
+            request = operator_protocol.read_start_request()
+            if request is not None and self.loop == 1:
+                admission = operator_protocol.write_start_admission(
+                    request, native_epoch_ns=90_050_000_000
+                )
+                node.callbacks["/simulation/run_state"](SimpleNamespace(
+                    run_id=RUN_ID,
+                    state=self.run_state.RUNNING,
+                    config_sha256=config_sha256,
+                    admission_sha256=admission.sha256,
+                ))
+                node.callbacks["/clock"](SimpleNamespace(
+                    clock=SimpleNamespace(sec=0, nanosec=0)
+                ))
+            if any(isinstance(value, OperatorWaitStartedStatus)
+                   for value in protocol.status_objects) and not self.abort_sent:
+                self.abort_sent = True
+                connection.messages.extend([
+                    heartbeat(4, armed=True),
+                    mavutil.mavlink.MAVLink_extended_sys_state_message(
+                        0, mavutil.mavlink.MAV_LANDED_STATE_IN_AIR
+                    ),
+                ])
+                abort = QgcCommandEnvelope(
+                    2,
+                    descriptor.qgc_source,
+                    descriptor.companion,
+                    descriptor.abort_command,
+                    (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    time.time_ns(),
+                )
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    tuple(pool.map(transport.receive, (abort,) * 8))
+            self.loop += 1
+
+    fake_ros = DescriptorRos(None)
+    install_ros(monkeypatch, fake_ros)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", lambda _config: protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    config = SimpleNamespace(
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_sha256=config_sha256,
+        launch_mode="operator",
+        preparation_wall_seconds=1800.0,
+        mission_plan=parse_mission_plan({
+            "schema_version": 1,
+            "steps": [{
+                "tool": "wait_for_state",
+                "args": {"armed": True, "mode": "GUIDED"},
+            }],
+        }),
+        mavlink_endpoint="tcp:ardupilot-sitl:5760",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+        operator_control=descriptor,
+        calibration_json=None,
+        scenario="",
+    )
+
+    assert run_configured(config) == 1
+    request = operator_protocol.read_start_request()
+    assert request is not None
+    assert request.request_id == descriptor.start_request_id
+    assert len(list((run_directory / ".control").glob("mission-start-request*.json"))) == 1
+    waits = [value for value in protocol.status_objects
+             if isinstance(value, OperatorWaitStartedStatus)]
+    assert len(waits) == 1
+    assert waits[0].sim_timestamp_ns == 0
+    assert connection.mav.command_ids.count(
+        mavutil.mavlink.MAV_CMD_NAV_LAND
+    ) == 1
 
 
 def test_live_loop_requests_frozen_calibration_and_baseline_before_first_command(monkeypatch):

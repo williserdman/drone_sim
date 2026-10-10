@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 import hashlib
 import importlib.util
@@ -9,16 +10,19 @@ from io import StringIO
 from pathlib import Path
 import sys
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from artifacts.operator_protocol import OperatorProtocol, PreflightStatus
 from artifacts.qgc_operator import (
     MavlinkIdentity,
     QGC_ABORT_COMMAND,
     QGC_ACTIONS_KIND,
     QGC_START_COMMAND,
     QgcOperatorDescriptor,
+    QgcCommandEnvelope,
     qgc_operator_descriptor_document,
 )
 
@@ -39,6 +43,7 @@ from drone_sim_companion.runtime_node import (
 from drone_sim_companion.controller import MissionController
 from drone_sim_companion.lifecycle import CompanionLifecycle
 from drone_sim_companion.mission import CommandKind, Telemetry
+from drone_sim_companion.qgc_transport import VehicleFactObservation
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -394,6 +399,572 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
     assert message_listeners == {}
 
 
+@pytest.mark.parametrize(
+    ("mission", "runner"),
+    (
+        ("autotune_roll", "_run_autotune_roll"),
+        ("hover_roll", "_run_autotune_roll"),
+        ("autotune", "_run_autotune"),
+    ),
+)
+def test_descriptor_autotune_loops_release_once_and_recover_once(
+    mission: str,
+    runner: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_directory = tmp_path / mission / RUN_ID
+    for relative in (".control", ".status", "configuration"):
+        (run_directory / relative).mkdir(parents=True, exist_ok=True)
+    config_sha256 = "a" * 64
+    operator_protocol = OperatorProtocol(run_directory, RUN_ID, config_sha256)
+    operator_protocol.write_preflight(PreflightStatus(
+        RUN_ID,
+        config_sha256,
+        "gazebo",
+        0,
+        time.time_ns(),
+        native_timestamp_ns=90_000_000_000,
+        physics_advancing=True,
+        camera_native_timestamp_ns=90_000_000_000,
+        ready=True,
+        detail="private native producers ready",
+    ))
+    descriptor = QgcOperatorDescriptor(
+        QGC_ACTIONS_KIND,
+        QGC_START_COMMAND,
+        QGC_ABORT_COMMAND,
+        17,
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+        MavlinkIdentity(255, 190),
+        MavlinkIdentity(1, 191),
+        MavlinkIdentity(1, 1),
+        "configuration/qgc-actions.json",
+        "b" * 64,
+    )
+
+    class Protocol:
+        def __init__(self, _config: object) -> None:
+            self.operator = operator_protocol
+            self.statuses: list[object] = []
+
+        def write_status(self, status: object) -> None:
+            self.statuses.append(status)
+
+        def read_finalize_request(self) -> None:
+            return None
+
+        def write_quiescence(self, _module: str) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Mode:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class MasterMav:
+        def param_request_list_send(self, *_args: object) -> None:
+            pass
+
+        def param_set_send(self, *_args: object) -> None:
+            pass
+
+        def command_long_send(self, *_args: object) -> None:
+            pass
+
+    class Vehicle:
+        def __init__(self) -> None:
+            self.last_heartbeat = 0.0
+            self.is_armable = True
+            self.armed = False
+            self.location = SimpleNamespace(
+                global_relative_frame=SimpleNamespace(alt=0.0)
+            )
+            self.parameters = {}
+            self.channels = SimpleNamespace(overrides={})
+            self._mode = Mode("STABILIZE")
+            self.actions: list[tuple[str, str]] = []
+            self.listeners: dict[str, object] = {}
+            self._master = SimpleNamespace(
+                target_system=1,
+                target_component=1,
+                mav=MasterMav(),
+            )
+            self.observations = [VehicleFactObservation(
+                time.time_ns(),
+                heartbeat_live=True,
+                prearm_checks_healthy=True,
+                armed=False,
+                landed=True,
+                mode="STABILIZE",
+            )]
+
+        @property
+        def mode(self):
+            return self._mode
+
+        @mode.setter
+        def mode(self, value) -> None:
+            self._mode = value
+            self.actions.append(("mode", value.name))
+
+        def add_message_listener(self, name: str, callback: object) -> None:
+            self.listeners[name] = callback
+
+        def remove_message_listener(self, name: str, callback: object) -> None:
+            assert self.listeners.pop(name) is callback
+
+        def drain_operator_observations(self):
+            values = tuple(self.observations)
+            self.observations.clear()
+            return values
+
+        def simple_takeoff(self, _altitude: float) -> None:
+            pass
+
+        def simple_goto(self, _location: object) -> None:
+            pass
+
+        def send_mavlink(self, _message: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    vehicle = Vehicle()
+    transports = []
+
+    class FakeQgcIO:
+        def __init__(self, _vehicle: object, _mavlink: object) -> None:
+            self.receive = None
+            self.responses = []
+            transports.append(self)
+
+        def install(self, receive) -> None:
+            self.receive = receive
+
+        def send_ack(self, response) -> None:
+            self.responses.append(response)
+
+    callbacks: dict[str, object] = {}
+
+    class Node:
+        def __init__(self, _name: str) -> None:
+            pass
+
+        def create_subscription(
+            self, _type: object, topic: str, callback: object, *_args: object, **_kwargs: object
+        ) -> object:
+            callbacks[topic] = callback
+            return object()
+
+        def destroy_node(self) -> None:
+            pass
+
+    class RunState:
+        RUNNING = 1
+        FINALIZING = 2
+
+    loop = [0]
+    abort_sent = [False]
+    admitted = [False]
+
+    def stamp(value: int) -> object:
+        return SimpleNamespace(
+            sec=value // 1_000_000_000,
+            nanosec=value % 1_000_000_000,
+        )
+
+    def spin_once(_node: object, *, timeout_sec: float) -> None:
+        assert timeout_sec == 0.02
+        transport = transports[0]
+        assert transport.receive is not None
+        if loop[0] == 0:
+            start = QgcCommandEnvelope(
+                2,
+                descriptor.qgc_source,
+                descriptor.companion,
+                descriptor.start_command,
+                (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                time.time_ns(),
+            )
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                tuple(pool.map(transport.receive, (start,) * 8))
+        request = operator_protocol.read_start_request()
+        if request is not None and not admitted[0]:
+            admitted[0] = True
+            admission = operator_protocol.write_start_admission(
+                request, native_epoch_ns=90_050_000_000
+            )
+            callbacks["/simulation/run_state"](SimpleNamespace(
+                run_id=RUN_ID,
+                state=RunState.RUNNING,
+                config_sha256=config_sha256,
+                admission_sha256=admission.sha256,
+            ))
+            callbacks["/clock"](SimpleNamespace(clock=stamp(0)))
+            for name, message in (
+                ("GLOBAL_POSITION_INT", SimpleNamespace(
+                    vx=0, vy=0, vz=0, relative_alt=0,
+                    lat=374_000_000, lon=-1_220_800_000,
+                )),
+                ("ATTITUDE", SimpleNamespace(roll=0.0, pitch=0.0)),
+            ):
+                callback = vehicle.listeners.get(name)
+                if callback is not None:
+                    callback(vehicle, name, message)
+        if (
+            ("mode", "GUIDED") in vehicle.actions
+            and not abort_sent[0]
+        ):
+            abort_sent[0] = True
+            vehicle.armed = True
+            vehicle._mode = Mode("GUIDED")
+            vehicle.location.global_relative_frame.alt = 2.0
+            vehicle.observations.append(VehicleFactObservation(
+                time.time_ns(),
+                native_timestamp_ns=0,
+                heartbeat_live=True,
+                prearm_checks_healthy=True,
+                armed=True,
+                landed=False,
+                mode="GUIDED",
+            ))
+            abort = QgcCommandEnvelope(
+                2,
+                descriptor.qgc_source,
+                descriptor.companion,
+                descriptor.abort_command,
+                (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                time.time_ns(),
+            )
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                tuple(pool.map(transport.receive, (abort,) * 8))
+        loop[0] += 1
+
+    def module(name: str, **members: object) -> None:
+        value = ModuleType(name)
+        for member_name, member in members.items():
+            setattr(value, member_name, member)
+        monkeypatch.setitem(sys.modules, name, value)
+
+    module("dronekit", VehicleMode=Mode, connect=object())
+    module(
+        "rclpy",
+        init=lambda: None,
+        ok=lambda: loop[0] < 8,
+        spin_once=spin_once,
+        shutdown=lambda: None,
+    )
+    module("rclpy.node", Node=Node)
+    module(
+        "rclpy.qos",
+        DurabilityPolicy=SimpleNamespace(TRANSIENT_LOCAL=1),
+        QoSProfile=lambda **kwargs: kwargs,
+        ReliabilityPolicy=SimpleNamespace(RELIABLE=1),
+    )
+    module("rosgraph_msgs.msg", Clock=object)
+    module("simulation_interfaces.msg", RunState=RunState)
+    for package in ("rosgraph_msgs", "simulation_interfaces"):
+        module(package)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", Protocol)
+    monkeypatch.setattr(
+        runtime_node, "connect_autotune_vehicle", lambda *_args, **_kwargs: vehicle
+    )
+    monkeypatch.setattr(runtime_node.signal, "signal", lambda *_args: None)
+    qgc_module = importlib.import_module("drone_sim_companion.qgc_transport")
+    monkeypatch.setattr(qgc_module, "DroneKitQgcCommandIO", FakeQgcIO)
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_sha256=config_sha256,
+        launch_mode="operator",
+        mission=mission,
+        public_duration_ns=120_000_000_000,
+        operator_control=descriptor,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+    )
+
+    assert getattr(runtime_node, runner)(config) == 1
+    request = operator_protocol.read_start_request()
+    assert request is not None
+    assert request.request_id == descriptor.start_request_id
+    assert vehicle.actions.count(("mode", "GUIDED")) == 1
+    assert vehicle.actions.count(("mode", "LAND")) == 1
+
+
+def test_descriptor_controlled_descent_loop_releases_and_recovers_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from collections import deque
+    from pymavlink import mavutil
+
+    run_directory = tmp_path / RUN_ID
+    for relative in (".control", ".status", "configuration"):
+        (run_directory / relative).mkdir(parents=True, exist_ok=True)
+    config_sha256 = "a" * 64
+    operator_protocol = OperatorProtocol(run_directory, RUN_ID, config_sha256)
+    operator_protocol.write_preflight(PreflightStatus(
+        RUN_ID, config_sha256, "gazebo", 0, time.time_ns() - 10_000_000_000,
+        native_timestamp_ns=90_000_000_000,
+        physics_advancing=True,
+        camera_native_timestamp_ns=90_000_000_000,
+        ready=True,
+        detail="private native producers ready",
+    ))
+    descriptor = QgcOperatorDescriptor(
+        QGC_ACTIONS_KIND, QGC_START_COMMAND, QGC_ABORT_COMMAND, 17,
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+        MavlinkIdentity(255, 190), MavlinkIdentity(1, 191), MavlinkIdentity(1, 1),
+        "configuration/qgc-actions.json", "b" * 64,
+    )
+
+    class Protocol:
+        def __init__(self, _config: object) -> None:
+            self.operator = operator_protocol
+
+        def write_status(self, _status: object) -> None:
+            pass
+
+        def read_finalize_request(self) -> None:
+            return None
+
+        def write_quiescence(self, _module: str) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Mav:
+        def __init__(self) -> None:
+            self.command_ids: list[int] = []
+
+        def command_long_send(self, *_arguments: object) -> None:
+            self.command_ids.append(int(_arguments[2]))
+
+        def request_data_stream_send(self, *_arguments: object) -> None:
+            pass
+
+        def param_request_read_send(self, *_arguments: object) -> None:
+            pass
+
+    class Connection:
+        def __init__(self) -> None:
+            prearm = mavutil.mavlink.MAV_SYS_STATUS_PREARM_CHECK
+            self.encoder = mavutil.mavlink.MAVLink(
+                None, srcSystem=1, srcComponent=1
+            )
+            self.messages = deque([
+                mavutil.mavlink.MAVLink_heartbeat_message(
+                    mavutil.mavlink.MAV_TYPE_QUADROTOR,
+                    mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    0,
+                    mavutil.mavlink.MAV_STATE_ACTIVE,
+                    3,
+                ),
+                mavutil.mavlink.MAVLink_sys_status_message(
+                    0, prearm, prearm, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ),
+                mavutil.mavlink.MAVLink_extended_sys_state_message(
+                    0, mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND
+                ),
+            ])
+            self.target_system = 1
+            self.target_component = 1
+            self.mav = Mav()
+
+        def recv_match(self, *, blocking: bool):
+            assert blocking is False
+            if not self.messages:
+                return None
+            message = self.messages.popleft()
+            if message.get_srcSystem() == 0:
+                message.pack(self.encoder)
+            return message
+
+        def close(self) -> None:
+            pass
+
+    connection = Connection()
+    transports = []
+
+    class FakeQgcIO:
+        def __init__(self, _connection: object, _mavlink: object) -> None:
+            self.receive = None
+            self.responses = []
+            transports.append(self)
+
+        def install(self, receive) -> None:
+            self.receive = receive
+
+        def observe_message(self, _message: object) -> bool:
+            return False
+
+        def send_ack(self, response: object) -> None:
+            self.responses.append(response)
+
+    callbacks: dict[str, object] = {}
+
+    class Node:
+        def __init__(self, _name: str, **_kwargs: object) -> None:
+            pass
+
+        def create_subscription(
+            self, _type: object, topic: str, callback: object, *_args: object, **_kwargs: object
+        ) -> object:
+            callbacks[topic] = callback
+            return object()
+
+        def destroy_node(self) -> None:
+            pass
+
+    class RunState:
+        RUNNING = 1
+        FINALIZING = 2
+
+    loop = [0]
+    abort_sent = [False]
+    airborne_sent = [False]
+    admitted = [False]
+    stale_rejected = [False]
+
+    def spin_once(_node: object, *, timeout_sec: float) -> None:
+        assert timeout_sec == 0.02
+        transport = transports[0]
+        assert transport.receive is not None
+        if loop[0] == 2:
+            assert operator_protocol.read_start_request() is None
+            assert any(
+                "Gazebo native" in response.status_text
+                for response in transport.responses
+            )
+            stale_rejected[0] = True
+            operator_protocol.write_preflight(PreflightStatus(
+                RUN_ID,
+                config_sha256,
+                "gazebo",
+                1,
+                time.time_ns(),
+                native_timestamp_ns=90_000_000_000,
+                physics_advancing=True,
+                camera_native_timestamp_ns=90_000_000_000,
+                ready=True,
+                detail="private native producers ready",
+            ))
+        if operator_protocol.read_start_request() is None:
+            start = QgcCommandEnvelope(
+                2, descriptor.qgc_source, descriptor.companion,
+                descriptor.start_command,
+                (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                time.time_ns(),
+            )
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                tuple(pool.map(transport.receive, (start,) * 8))
+        request = operator_protocol.read_start_request()
+        if request is not None and not admitted[0]:
+            admitted[0] = True
+            admission = operator_protocol.write_start_admission(
+                request, native_epoch_ns=90_050_000_000
+            )
+            callbacks["/simulation/run_state"](SimpleNamespace(
+                run_id=RUN_ID, state=RunState.RUNNING,
+                config_sha256=config_sha256,
+                admission_sha256=admission.sha256,
+            ))
+            callbacks["/clock"](SimpleNamespace(
+                clock=SimpleNamespace(sec=0, nanosec=0)
+            ))
+        if (
+            mavutil.mavlink.MAV_CMD_DO_SET_MODE in connection.mav.command_ids
+            and not airborne_sent[0]
+        ):
+            airborne_sent[0] = True
+            armed_mode = (
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+                | mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+            )
+            connection.messages.extend([
+                mavutil.mavlink.MAVLink_heartbeat_message(
+                    mavutil.mavlink.MAV_TYPE_QUADROTOR,
+                    mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+                    armed_mode,
+                    4,
+                    mavutil.mavlink.MAV_STATE_ACTIVE,
+                    3,
+                ),
+                mavutil.mavlink.MAVLink_extended_sys_state_message(
+                    0, mavutil.mavlink.MAV_LANDED_STATE_IN_AIR
+                ),
+            ])
+        elif airborne_sent[0] and not abort_sent[0]:
+            abort_sent[0] = True
+            abort = QgcCommandEnvelope(
+                2, descriptor.qgc_source, descriptor.companion,
+                descriptor.abort_command,
+                (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                time.time_ns(),
+            )
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                tuple(pool.map(transport.receive, (abort,) * 8))
+        loop[0] += 1
+
+    def module(name: str, **members: object) -> None:
+        value = ModuleType(name)
+        for member_name, member in members.items():
+            setattr(value, member_name, member)
+        monkeypatch.setitem(sys.modules, name, value)
+
+    module(
+        "rclpy", init=lambda: None, ok=lambda: loop[0] < 8,
+        spin_once=spin_once, shutdown=lambda: None,
+    )
+    module("rclpy.node", Node=Node)
+    module(
+        "rclpy.qos",
+        DurabilityPolicy=SimpleNamespace(TRANSIENT_LOCAL=1),
+        QoSProfile=lambda **kwargs: kwargs,
+        ReliabilityPolicy=SimpleNamespace(RELIABLE=1),
+    )
+    module("rosgraph_msgs.msg", Clock=object)
+    module("simulation_interfaces.msg", RunState=RunState)
+    for package in ("rosgraph_msgs", "simulation_interfaces"):
+        module(package)
+    monkeypatch.setattr(runtime_node, "_ProductionProtocol", Protocol)
+    monkeypatch.setattr(runtime_node, "connect_mavlink", lambda *_args, **_kwargs: connection)
+    monkeypatch.setattr(runtime_node.signal, "signal", lambda *_args: None)
+    qgc_module = importlib.import_module("drone_sim_companion.qgc_transport")
+    monkeypatch.setattr(qgc_module, "PymavlinkQgcCommandIO", FakeQgcIO)
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_sha256=config_sha256,
+        launch_mode="operator",
+        mission="controlled_descent",
+        operator_control=descriptor,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+    )
+
+    result = runtime_node._run_controlled_descent(config)
+    request = operator_protocol.read_start_request()
+    assert request is not None, transports[0].responses
+    assert request.request_id == descriptor.start_request_id
+    assert result == 1
+    assert stale_rejected == [True]
+    assert connection.mav.command_ids.count(
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE
+    ) == 1
+    assert connection.mav.command_ids.count(
+        mavutil.mavlink.MAV_CMD_NAV_LAND
+    ) == 1
+
+
 def test_autotune_can_deliver_first_command_at_public_zero_before_clock_ticks() -> None:
     assert autotune_control_timestamp_ns(
         mission_running=True, latest_clock_ns=None, first_command_pending=True
@@ -740,6 +1311,12 @@ def install_comp2026_runtime_fakes(
     clock_allowed: threading.Event | None = None,
     running_delivered: threading.Event | None = None,
     prepare_delay_seconds: float = 0.0,
+    operator_protocol: OperatorProtocol | None = None,
+    qgc_descriptor: QgcOperatorDescriptor | None = None,
+    qgc_transports: list[object] | None = None,
+    attempt_release: threading.Event | None = None,
+    attempt_entries: list[str] | None = None,
+    recovery_calls: list[str] | None = None,
 ) -> tuple[list[object], InitialCommandVehicle]:
     statuses: list[object] = []
     terminal = threading.Event()
@@ -750,6 +1327,30 @@ def install_comp2026_runtime_fakes(
     vehicle.is_armable = True  # type: ignore[attr-defined]
     vehicle.close = lambda: None  # type: ignore[attr-defined]
     vehicle.guarded_bootstrap = []  # type: ignore[attr-defined]
+    if operator_protocol is not None:
+        vehicle.is_armable = True  # type: ignore[attr-defined]
+        vehicle.armed = False  # type: ignore[attr-defined]
+        vehicle.mode = InitialCommandMode("STABILIZE")  # type: ignore[attr-defined]
+        vehicle.location = SimpleNamespace(  # type: ignore[attr-defined]
+            global_relative_frame=SimpleNamespace(alt=0.0)
+        )
+        vehicle.parameters = {}  # type: ignore[attr-defined]
+        vehicle.channels = SimpleNamespace(overrides={})  # type: ignore[attr-defined]
+        vehicle.operator_observations = [VehicleFactObservation(  # type: ignore[attr-defined]
+            time.time_ns(),
+            heartbeat_live=True,
+            prearm_checks_healthy=True,
+            armed=False,
+            landed=True,
+            mode="STABILIZE",
+        )]
+
+        def drain_operator_observations():
+            values = tuple(vehicle.operator_observations)  # type: ignore[attr-defined]
+            vehicle.operator_observations.clear()  # type: ignore[attr-defined]
+            return values
+
+        vehicle.drain_operator_observations = drain_operator_observations  # type: ignore[attr-defined]
     mission_ready_written = threading.Event()
     runtime_config_sha256 = [""]
     if ground_ready is None:
@@ -765,6 +1366,8 @@ def install_comp2026_runtime_fakes(
     class Protocol:
         def __init__(self, config: RuntimeConfig) -> None:
             runtime_config_sha256[0] = config.config_sha256
+            if operator_protocol is not None:
+                self.operator = operator_protocol
 
         def write_status(self, status: object) -> None:
             statuses.append(status)
@@ -820,12 +1423,39 @@ def install_comp2026_runtime_fakes(
             while not mission_ready_written.wait(0.01):
                 if executor_stopped.is_set():
                     return
+            admission_sha256 = ""
+            if operator_protocol is not None:
+                assert qgc_descriptor is not None
+                assert qgc_transports is not None
+                transport = qgc_transports[0]
+                receive = transport.receive
+                assert receive is not None
+                start = QgcCommandEnvelope(
+                    2,
+                    qgc_descriptor.qgc_source,
+                    qgc_descriptor.companion,
+                    qgc_descriptor.start_command,
+                    (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    time.time_ns(),
+                )
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    tuple(pool.map(receive, (start,) * 8))
+                deadline = time.monotonic() + 1.0
+                request = operator_protocol.read_start_request()
+                while request is None and time.monotonic() < deadline:
+                    threading.Event().wait(0.005)
+                    request = operator_protocol.read_start_request()
+                assert request is not None
+                admission = operator_protocol.write_start_admission(
+                    request, native_epoch_ns=90_050_000_000
+                )
+                admission_sha256 = admission.sha256
             subscriptions["/simulation/run_state"](
                 SimpleNamespace(
                     run_id=RUN_ID,
                     state=RunState.RUNNING,
                     config_sha256=runtime_config_sha256[0],
-                    admission_sha256="",
+                    admission_sha256=admission_sha256,
                 )
             )
             if running_delivered is not None:
@@ -873,6 +1503,43 @@ def install_comp2026_runtime_fakes(
                     range_max=30.0,
                 )
             )
+            if operator_protocol is not None:
+                deadline = time.monotonic() + 1.0
+                while (
+                    not any(
+                        getattr(value, "name", None) == "GUIDED"
+                        for value in vehicle.assigned_modes
+                    )
+                    and time.monotonic() < deadline
+                ):
+                    threading.Event().wait(0.005)
+                vehicle.armed = True  # type: ignore[attr-defined]
+                vehicle.location.global_relative_frame.alt = 2.0  # type: ignore[attr-defined]
+                vehicle.operator_observations.append(VehicleFactObservation(  # type: ignore[attr-defined]
+                    time.time_ns(),
+                    native_timestamp_ns=timestamp_ns,
+                    heartbeat_live=True,
+                    prearm_checks_healthy=True,
+                    armed=True,
+                    landed=False,
+                    mode="GUIDED",
+                ))
+                abort = QgcCommandEnvelope(
+                    2,
+                    qgc_descriptor.qgc_source,
+                    qgc_descriptor.companion,
+                    qgc_descriptor.abort_command,
+                    (17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    time.time_ns(),
+                )
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    tuple(pool.map(receive, (abort,) * 8))
+                if recovery_calls is not None:
+                    deadline = time.monotonic() + 1.0
+                    while not recovery_calls and time.monotonic() < deadline:
+                        threading.Event().wait(0.005)
+                    assert recovery_calls == ["recover"]
+                    terminal.set()
             executor_stopped.wait()
 
         def shutdown(self, *, timeout_sec: float) -> bool:
@@ -939,10 +1606,13 @@ def install_comp2026_runtime_fakes(
             pass
 
         def abort(self, _reason):
-            pass
+            if attempt_release is not None:
+                attempt_release.set()
 
         def recover(self):
-            pass
+            if recovery_calls is not None:
+                recovery_calls.append("recover")
+            return "HOME_LANDED"
 
         def close(self):
             pass
@@ -969,13 +1639,15 @@ def install_comp2026_runtime_fakes(
     timebase = module("drone.timebase", configured=lambda _clock: nullcontext(), monotonic=lambda: 0.0)
     drone = module("drone", timebase=timebase)
     del drone
-    module(
-        "drone.auto_attempt",
-        run_auto_attempt=lambda **kwargs: (
-            mission_entered.set(),
-            kwargs["emit"]("HOME", "COMPLETE"),
-        ),
-    )
+    def run_auto_attempt(**kwargs):
+        mission_entered.set()
+        if attempt_entries is not None:
+            attempt_entries.append("entered")
+        if attempt_release is not None:
+            assert attempt_release.wait(1.0)
+        kwargs["emit"]("HOME", "COMPLETE")
+
+    module("drone.auto_attempt", run_auto_attempt=run_auto_attempt)
     module("drone.control.drone_control", DroneControl=DroneControl)
     module("drone.control.mission_info", MissonTracker=lambda _seconds: object())
     module("drone.sensors.camera._camera_manager", CameraManager=lambda **_kwargs: object())
@@ -1017,12 +1689,112 @@ def install_comp2026_runtime_fakes(
 
     monkeypatch.setattr(runtime_node, "_ProductionProtocol", Protocol)
     monkeypatch.setattr(runtime_node, "load_course_waypoints", lambda *_args: {})
+    if operator_protocol is not None:
+        assert qgc_transports is not None
+
+        class FakeQgcIO:
+            def __init__(self, _vehicle: object, _mavlink: object) -> None:
+                self.receive = None
+                self.responses = []
+                qgc_transports.append(self)
+
+            def install(self, receive) -> None:
+                self.receive = receive
+
+            def send_ack(self, response) -> None:
+                self.responses.append(response)
+
+        qgc_module = importlib.import_module("drone_sim_companion.qgc_transport")
+        monkeypatch.setattr(qgc_module, "DroneKitQgcCommandIO", FakeQgcIO)
     def install_signal_handler(signum: int, handler: object) -> None:
         if installed_signal_handlers is not None:
             installed_signal_handlers[signum] = handler
 
     monkeypatch.setattr(runtime_node.signal, "signal", install_signal_handler)
     return statuses, vehicle
+
+
+def test_descriptor_comp2026_uses_one_worker_and_meets_first_command_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_directory = tmp_path / RUN_ID
+    for relative in (".control", ".status", "configuration"):
+        (run_directory / relative).mkdir(parents=True, exist_ok=True)
+    config_sha256 = "a" * 64
+    operator_protocol = OperatorProtocol(run_directory, RUN_ID, config_sha256)
+    operator_protocol.write_preflight(PreflightStatus(
+        RUN_ID,
+        config_sha256,
+        "gazebo",
+        0,
+        time.time_ns(),
+        native_timestamp_ns=90_000_000_000,
+        physics_advancing=True,
+        camera_native_timestamp_ns=90_000_000_000,
+        ready=True,
+        detail="private native producers ready",
+    ))
+    descriptor = QgcOperatorDescriptor(
+        QGC_ACTIONS_KIND,
+        QGC_START_COMMAND,
+        QGC_ABORT_COMMAND,
+        17,
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+        MavlinkIdentity(255, 190),
+        MavlinkIdentity(1, 191),
+        MavlinkIdentity(1, 1),
+        "configuration/qgc-actions.json",
+        "b" * 64,
+    )
+    command_write_started = threading.Event()
+    allow_command_write = threading.Event()
+    allow_command_write.set()
+    mission_entered = threading.Event()
+    attempt_release = threading.Event()
+    attempt_entries: list[str] = []
+    recovery_calls: list[str] = []
+    qgc_transports: list[object] = []
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch,
+        timestamp_ns=50_000_000,
+        command_write_started=command_write_started,
+        allow_command_write=allow_command_write,
+        mission_entered=mission_entered,
+        operator_protocol=operator_protocol,
+        qgc_descriptor=descriptor,
+        qgc_transports=qgc_transports,
+        attempt_release=attempt_release,
+        attempt_entries=attempt_entries,
+        recovery_calls=recovery_calls,
+    )
+    config = RuntimeConfig(
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_sha256=config_sha256,
+        launch_mode="operator",
+        mission="comp2026_auto",
+        operator_control=descriptor,
+        course_path=tmp_path / "course.json",
+        scenario_path=tmp_path / "scenario.json",
+        startup_timeout_seconds=1.0,
+        max_wall_seconds=10.0,
+        finalization_wall_seconds=1.0,
+    )
+
+    assert runtime_node._run_comp2026(config) == 1
+    delivered = [
+        value for value in statuses
+        if isinstance(value, MissionCommandDeliveredStatus)
+    ]
+    assert len(delivered) == 1
+    assert delivered[0].sim_timestamp_ns == 50_000_000
+    request = operator_protocol.read_start_request()
+    assert request is not None
+    assert request.request_id == descriptor.start_request_id
+    assert attempt_entries == ["entered"]
+    assert [mode.name for mode in vehicle.assigned_modes].count("GUIDED") == 1
+    assert recovery_calls == ["recover"]
 
 
 def test_run_comp2026_keeps_worker_blocked_until_command_status_is_durable(

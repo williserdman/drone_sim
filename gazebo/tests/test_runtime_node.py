@@ -14,8 +14,22 @@ from artifacts.runtime_status import (
 from artifacts.operator_protocol import (
     MissionStartReadiness,
     MissionStartRequest,
+    OperatorProtocol,
     PreflightStatus,
 )
+from artifacts.qgc_operator import (
+    MAV_RESULT_DENIED,
+    MavlinkIdentity,
+    QGC_ABORT_COMMAND,
+    QGC_ACTIONS_KIND,
+    QGC_COMPANION_IDENTITY,
+    QGC_FLIGHT_CONTROLLER_IDENTITY,
+    QGC_START_COMMAND,
+    QgcCommandEnvelope,
+    QgcOperatorDescriptor,
+)
+from drone_sim_companion.operator_control import CompanionOperatorControl
+from drone_sim_companion.qgc_control import QgcMissionControl
 from drone_sim_gazebo.runtime.entrypoint import ActionExecutor, TransportError
 from drone_sim_gazebo.runtime.model import ChildExited, SetPaused
 from drone_sim_gazebo.runtime.runtime_node import (
@@ -32,6 +46,8 @@ from drone_sim_gazebo.runtime.runtime_node import (
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 CONFIG_SHA256 = "a" * 64
+START_REQUEST_ID = "33333333-3333-4333-8333-333333333333"
+ABORT_REQUEST_ID = "44444444-4444-4444-8444-444444444444"
 
 
 def _ready_preflight(component, *, observed_wall_time_ns=100):
@@ -126,59 +142,97 @@ def test_preflight_stays_ready_between_slower_camera_frames():
     assert reporter.observe(90_100_000_000, 90_100_000_000).ready
 
 
-def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
-    request = MissionStartRequest(
-        RUN_ID,
-        CONFIG_SHA256,
-        "33333333-3333-4333-8333-333333333333",
+def test_qgc_request_drives_one_request_scoped_epoch_on_next_native_50ms_grid(
+    tmp_path,
+):
+    run_directory = tmp_path / RUN_ID
+    for relative in (".control", ".status", "configuration"):
+        (run_directory / relative).mkdir(parents=True, exist_ok=True)
+    protocol = OperatorProtocol(run_directory, RUN_ID, CONFIG_SHA256)
+    descriptor = QgcOperatorDescriptor(
+        kind=QGC_ACTIONS_KIND,
+        start_command=QGC_START_COMMAND,
+        abort_command=QGC_ABORT_COMMAND,
+        attempt_token=17,
+        start_request_id=START_REQUEST_ID,
+        abort_request_id=ABORT_REQUEST_ID,
+        qgc_source=MavlinkIdentity(255, 190),
+        companion=QGC_COMPANION_IDENTITY,
+        flight_controller=QGC_FLIGHT_CONTROLLER_IDENTITY,
+        actions_path="configuration/qgc-actions.json",
+        actions_sha256="b" * 64,
     )
-    readiness = MissionStartReadiness(
-        RUN_ID,
-        CONFIG_SHA256,
-        request.request_id,
-        request.sha256,
-        100,
-        True,
-        True,
-        False,
-        True,
-        "ready",
-    )
+    wall_time_ns = 2_000_000_000
     calls = []
 
-    class RuntimeProtocol:
-        delivered = False
+    class CommandIO:
+        receive = None
 
-        def read_status(self, status_type):
-            return (
-                MissionCommandDeliveredStatus(RUN_ID, 0)
-                if self.delivered
-                else None
-            )
+        def __init__(self):
+            self.responses = []
 
-    class OperatorProtocol:
-        admission = None
+        def install(self, receive):
+            assert self.receive is None
+            self.receive = receive
 
-        def read_start_request(self):
-            return request
+        def send_ack(self, response):
+            self.responses.append(response)
 
-        def read_start_readiness(self):
-            return readiness
+    operator = CompanionOperatorControl(
+        protocol=protocol,
+        run_id=RUN_ID,
+        config_sha256=CONFIG_SHA256,
+        launch_mode="operator",
+        preparation_wall_seconds=1800,
+        mission_wall_seconds=120,
+        recovery_wall_seconds=10,
+        wall_time_ns=lambda: wall_time_ns,
+        monotonic_ns=lambda: wall_time_ns,
+    )
+    operator.observe_vehicle(
+        native_timestamp_ns=180_000_000_000,
+        heartbeat_live=True,
+        prearm_checks_healthy=True,
+        armed=False,
+        landed=True,
+        mode="STABILIZE",
+    )
+    reporter = GazeboPreflightReporter(
+        protocol=protocol,
+        run_id=RUN_ID,
+        config_sha256=CONFIG_SHA256,
+        minimum_native_epoch_ns=90_000_000_000,
+        wall_time_ns=lambda: wall_time_ns,
+    )
+    reporter.observe(179_950_000_000, 179_950_000_000)
+    assert reporter.observe(180_000_000_000, 180_000_000_000).ready
 
-        def read_preflight(self, component):
-            return _ready_preflight(component)
+    io = CommandIO()
+    owner = QgcMissionControl(
+        protocol,
+        operator,
+        descriptor,
+        io,
+        operator.qgc_readiness_reasons,
+        lambda: False,
+        wall_time_ns=lambda: wall_time_ns,
+    )
 
-        def read_start_admission(self):
-            return self.admission
+    class AdmissionCountingProtocol:
+        def __init__(self):
+            self.writes = 0
 
         def write_start_admission(self, persisted_request, *, native_epoch_ns):
-            assert persisted_request == request
-            calls.append(("admit", native_epoch_ns))
-            self.admission = object()
-            return self.admission
+            self.writes += 1
+            return protocol.write_start_admission(
+                persisted_request, native_epoch_ns=native_epoch_ns
+            )
+
+        def __getattr__(self, name):
+            return getattr(protocol, name)
 
     class Transport:
-        paused_times = [180_035_000_000, None]
+        paused_times = [180_035_000_000, 180_100_000_000]
 
         def set_paused(self, paused):
             calls.append(("paused", paused))
@@ -191,13 +245,13 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
         def run_to_sim_time(self, target_ns):
             calls.append(("run_to", target_ns))
 
-    operator = OperatorProtocol()
+    admission_protocol = AdmissionCountingProtocol()
     epoch_reached = [False]
     transport = Transport()
     rendezvous = OperatorEpochRendezvous(
         transport=transport,
-        protocol=RuntimeProtocol(),
-        operator_protocol=operator,
+        protocol=object(),
+        operator_protocol=admission_protocol,
         configure_output=lambda target: calls.append(("configure", target)),
         activate_output=lambda: calls.append(("activate",)),
         prepare_output=lambda: calls.append(("prepare",)),
@@ -205,8 +259,59 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
         latest_native_clock=lambda: 180_025_000_000,
         epoch_reached=lambda: epoch_reached[0],
         minimum_native_epoch_ns=90_000_000_000,
-        wall_time_ns=lambda: 200,
+        wall_time_ns=lambda: wall_time_ns,
     )
+
+    with pytest.raises(RuntimeError, match="cannot begin before admission"):
+        rendezvous.begin()
+    assert rendezvous.poll_admission() is None
+    assert protocol.read_start_request() is None
+    assert protocol.read_start_admission() is None
+
+    assert io.receive is not None
+    invalid_commands = (
+        (descriptor.qgc_source, 16),
+        (MavlinkIdentity(254, 190), 17),
+    )
+    for source, token in invalid_commands:
+        io.receive(
+            QgcCommandEnvelope(
+                2,
+                source,
+                descriptor.companion,
+                descriptor.start_command,
+                (token, 0, 0, 0, 0, 0, 0),
+                1_000_000_000,
+            )
+        )
+    assert owner.poll_start(run_state=None).command_allowed is False
+    assert [response.result for response in io.responses] == [
+        MAV_RESULT_DENIED,
+        MAV_RESULT_DENIED,
+    ]
+    assert protocol.read_start_request() is None
+    assert rendezvous.poll_admission() is None
+
+    start = QgcCommandEnvelope(
+        2,
+        descriptor.qgc_source,
+        descriptor.companion,
+        descriptor.start_command,
+        (17, 0, 0, 0, 0, 0, 0),
+        1_000_000_001,
+    )
+    io.receive(start)
+    io.receive(start)
+    assert owner.poll_start(run_state=None).command_allowed is False
+    request = protocol.read_start_request()
+    readiness = protocol.read_start_readiness()
+    assert request is not None
+    assert readiness is not None
+    assert request.request_id == descriptor.start_request_id
+    assert request.run_id == RUN_ID
+    assert request.config_sha256 == CONFIG_SHA256
+    assert readiness.request_id == request.request_id
+    assert readiness.request_sha256 == request.sha256
 
     executor = ActionExecutor(
         run_id=RUN_ID,
@@ -219,13 +324,24 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
     )
     executor.apply((SetPaused(False),))
     assert rendezvous.poll_admission() is None
-    assert not any(call[0] == "admit" for call in calls)
-    epoch_reached[0] = True
+    assert protocol.read_start_admission() is None
+    io.receive(start)
+    assert owner.poll_start(run_state=None).command_allowed is False
     assert rendezvous.poll_admission() is None
-    assert not any(call[0] == "admit" for call in calls)
+    epoch_reached[0] = True
     admission = rendezvous.poll_admission()
 
-    assert admission is operator.admission
+    assert admission == protocol.read_start_admission()
+    assert admission.request_id == descriptor.start_request_id
+    assert admission.request_sha256 == request.sha256
+    assert admission.run_id == RUN_ID
+    assert admission.config_sha256 == CONFIG_SHA256
+    assert admission.native_epoch_ns == 180_050_000_000
+    assert admission.public_epoch_ns == 0
+    assert rendezvous.poll_admission() == admission
+    assert admission_protocol.writes == 1
+    rendezvous.begin()
+    rendezvous.begin()
     assert calls[:7] == [
         ("preview",),
         ("paused", False),
@@ -233,8 +349,11 @@ def test_operator_epoch_is_chosen_after_request_on_next_native_50ms_grid():
         ("configure", 180_050_000_000),
         ("prepare",),
         ("run_to", 180_100_000_000),
-        ("admit", 180_050_000_000),
+        ("activate",),
     ]
+    assert calls.count(("configure", 180_050_000_000)) == 1
+    assert calls.count(("activate",)) == 1
+    protocol.close()
 
 
 def test_operator_epoch_preserves_configured_minimum_warmup_floor():
