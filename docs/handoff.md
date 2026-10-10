@@ -3,19 +3,45 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-## Local console work — 2026-10-08
+## Local console and QGC control work — 2026-10-10
 
-Implemented on `feature/local-simulation-console` in
-`/Users/williserdman/Documents/projects/drone_sim-console`, based on PR #3 head
-`646892f`. The original checkout and cloud evidence are preserved. The shared
-`upstream` remote points to `williserdman/drone_sim`.
+The local console work is implemented on `feature/local-simulation-console` in
+`/Users/williserdman/Documents/projects/drone_sim-console`. The original checkout
+and cloud evidence are preserved. The shared `upstream` remote points to
+`williserdman/drone_sim`.
 
 Start with `uv run --locked drone-sim console`, then use the
 [local Mac workflow](runbook.md#local-mac-console): select a world/preset,
-Prepare, inspect native QGC, interactive Gazebo and the separate camera, then
-Start Mission. Abort Flight requests guarded recovery; Stop Simulation finalizes
-the run separately. Presets retain their configured timing: Configured Descent
-needs about 15 wall minutes of warmup at 0.1 RTF, followed by a five-minute run.
+and select Prepare. Prepare allocates a run-bound action token, writes the
+immutable configuration and action bytes, publishes a run-named JSON file under
+QGC's active `savePath/MavlinkActions`, and then opens or focuses QGC before the
+simulator starts. The console shows the exact published path.
+
+In QGC 5.0.8, open **Application Settings > Fly View > MAVLink Actions > Fly
+View Actions**, reopen that page if the file list is stale, and select the exact
+run-named file shown by the console. Use **Start selected mission** and **Abort
+and recover** in QGC. For Operator Wait, use Start first, then select GUIDED and
+arm in QGC. Browser viewer focus, RFB connection, and camera-view freshness are
+observations; native vehicle, clock, calibration, and producer readiness govern
+admission. **Stop simulation** finalizes evidence and tears down infrastructure;
+it does not land the aircraft. Run Again remains unavailable until cleanup is
+complete and then creates a new run ID, action token, and action file. Presets
+retain their configured timing: Configured Descent needs about 15 wall minutes
+of warmup at 0.1 RTF, followed by a five-minute run.
+
+Task 6 software verification passed 46 focused tests locally and in the supported
+Linux harness, all 98 broader controller tests in Linux, configured mypy for all
+nine host files, and the browser check for QGC guidance, Prepare, Stop, Run Again,
+desktop reconnect, and disconnected view indicators. Tests used fake launchers,
+temporary settings, and temporary action directories. The active QGC selection
+remains `custom_missions.json`; its preserved SHA-256 is
+`5d7b983c72cb27a839a082621b867cd851da5170bc6f2b30889f9038ca315ea2`.
+Native selection of a generated run file, QGC-to-companion routing, physical
+flight, recovery, and final artifact acceptance remain pending Task 7 proof.
+
+The acceptance evidence below used the earlier browser Start/Abort workflow. It
+remains evidence for simulator behavior but does not establish the new native QGC
+selection or routing path.
 
 Actual configured-descent acceptance passed at clean `680345e`, run
 `1edbaa7f-88d8-42db-bd95-d6e21e009a00`: takeoff to 1.5 m, hold, LAND and disarm;
