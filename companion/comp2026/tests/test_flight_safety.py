@@ -19,6 +19,12 @@ from drone.control.listener import (
 )
 from drone.control.flight_state import FlightState, RCModeBand
 from drone.control.mission_supervisor import AuthorityLost, FlightOperationError, MissionAbort
+from drone_sim_companion.runtime_node import (
+    _Comp2026ShutdownAdmission,
+    _RosPayloadClient,
+    _comp2026_shutdown_dependency,
+)
+from drone_sim_companion.comp2026_host import PayloadRequest
 from drone.control.stability import ReleaseStabilityConfig
 from drone.sensors.lidar.clearance import ClearanceCalibration
 from drone.sensors.lidar.lidar import LidarSample
@@ -356,6 +362,187 @@ class Harness:
     def establish_post_arm_home(self, amsl_mm=250000):
         self.controller._last_arm_boundary_sequence = self.sequence
         self.publish(home=(410000000, -810000000, amsl_mm))
+
+
+def test_runtime_shutdown_dependency_supports_real_nested_output_transaction(monkeypatch):
+    harness = Harness(monkeypatch)
+    admission = _Comp2026ShutdownAdmission()
+    native_dependency = lambda operation: operation()
+    harness.controller.install_output_transactions(
+        dependency_transaction=_comp2026_shutdown_dependency(
+            admission, native_dependency
+        ),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=lambda output, before: (before(), output())[-1],
+    )
+    writes = []
+    result = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            harness.controller._execute_guarded_output(
+                lambda: writes.append("queued"),
+                require_transport_enqueue=True,
+            )
+        ),
+        daemon=True,
+    )
+
+    worker.start()
+    worker.join(timeout=0.2)
+
+    assert not worker.is_alive(), "nested shutdown transaction deadlocked"
+    assert len(result) == 1
+    assert writes == ["queued"]
+    admission.begin_finalizing()
+    with pytest.raises(RuntimeError, match="finalizing"):
+        harness.controller._execute_guarded_output(
+            lambda: writes.append("late"),
+            require_transport_enqueue=True,
+        )
+    assert writes == ["queued"]
+
+
+class _ImmediatePayloadFuture:
+    def add_done_callback(self, callback):
+        callback(self)
+
+    def result(self):
+        return "confirmed"
+
+    def cancel(self):
+        pass
+
+
+class _PayloadService:
+    class Request:
+        pass
+
+
+class _PayloadServiceClient:
+    def __init__(self):
+        self.requests = []
+
+    def service_is_ready(self):
+        return True
+
+    def call_async(self, request):
+        self.requests.append(request)
+        return _ImmediatePayloadFuture()
+
+
+def _payload_request():
+    return PayloadRequest("run", 3, 2, "run:3:release:1")
+
+
+def test_payload_enqueue_uses_real_effective_controller_authority(monkeypatch):
+    harness = Harness(monkeypatch)
+    selected = threading.Event()
+    resume = threading.Event()
+    harness.controller.install_output_transactions(
+        dependency_transaction=lambda operation: (
+            selected.set(), resume.wait(1.0), operation()
+        )[-1],
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=lambda output, before: (before(), output())[-1],
+    )
+    service = _PayloadServiceClient()
+    client = _RosPayloadClient(service, _PayloadService)
+    client.install_output_transaction(harness.controller._actuate_guarded)
+    failures = []
+
+    def call_payload():
+        try:
+            client.call(_payload_request())
+        except BaseException as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=call_payload)
+    worker.start()
+    assert selected.wait(1.0)
+
+    harness.sequence += 1
+    assert harness.state.observe_rc_input(
+        channel=7,
+        pwm=1900,
+        signal_healthy=True,
+        received_at=harness.clock.now(),
+        sequence=harness.sequence,
+        source_system=1,
+        source_component=1,
+    )
+    resume.set()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], AuthorityLost)
+    assert service.requests == []
+
+
+def test_payload_enqueue_uses_real_effective_shutdown_transaction(monkeypatch):
+    harness = Harness(monkeypatch)
+    admission = _Comp2026ShutdownAdmission()
+    harness.controller.install_output_transactions(
+        dependency_transaction=_comp2026_shutdown_dependency(
+            admission, lambda operation: operation()
+        ),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=lambda output, before: (before(), output())[-1],
+    )
+    service = _PayloadServiceClient()
+    client = _RosPayloadClient(service, _PayloadService)
+    client.install_output_transaction(harness.controller._actuate_guarded)
+    admission.begin_finalizing()
+
+    with pytest.raises(RuntimeError, match="finalizing"):
+        client.call(_payload_request())
+    assert service.requests == []
+
+
+def test_payload_enqueue_admitted_before_finalization_completes_first(monkeypatch):
+    harness = Harness(monkeypatch)
+    admission = _Comp2026ShutdownAdmission()
+    harness.controller.install_output_transactions(
+        dependency_transaction=_comp2026_shutdown_dependency(
+            admission, lambda operation: operation()
+        ),
+        supervisor_transaction=lambda operation: operation(),
+        transport_transaction=lambda output, before: (before(), output())[-1],
+    )
+    enqueue_entered = threading.Event()
+    release_enqueue = threading.Event()
+
+    class BlockingService(_PayloadServiceClient):
+        def call_async(self, request):
+            enqueue_entered.set()
+            assert release_enqueue.wait(1.0)
+            return super().call_async(request)
+
+    service = BlockingService()
+    client = _RosPayloadClient(service, _PayloadService)
+    client.install_output_transaction(harness.controller._actuate_guarded)
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(client.call(_payload_request()))
+    )
+    worker.start()
+    assert enqueue_entered.wait(1.0)
+    finalized = threading.Event()
+    finalizer = threading.Thread(
+        target=lambda: (admission.begin_finalizing(), finalized.set())
+    )
+    finalizer.start()
+    assert not finalized.wait(0.05)
+    release_enqueue.set()
+    worker.join(timeout=1.0)
+    finalizer.join(timeout=1.0)
+
+    assert results == ["confirmed"]
+    assert len(service.requests) == 1
+    assert finalized.is_set()
+    with pytest.raises(RuntimeError, match="finalizing"):
+        client.call(_payload_request())
+    assert len(service.requests) == 1
 
 
 def test_missing_altitude_cannot_confirm_arrival(monkeypatch):

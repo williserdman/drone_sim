@@ -44,6 +44,19 @@ def test_expected_mode_and_arm_changes_are_owned_only_after_enqueue() -> None:
     assert gate.revoked is False
 
 
+def test_back_to_back_mode_and_arm_expectations_survive_until_observed() -> None:
+    gate = admitted_gate()
+
+    with gate.output_transaction(ExpectedTransition(mode="GUIDED")):
+        pass
+    with gate.output_transaction(ExpectedTransition(armed=True)):
+        pass
+    gate.observe(heartbeat(2, mode="GUIDED", armed=False))
+    gate.observe(heartbeat(3, mode="GUIDED", armed=True))
+
+    assert gate.revoked is False
+
+
 @pytest.mark.parametrize("external_mode", ("LAND", "BRAKE", "LOITER"))
 def test_pre_enqueue_qgc_mode_change_revokes_pending_output(
     external_mode: str,
@@ -206,3 +219,47 @@ def test_dronekit_land_mode_owns_entry_and_eventual_disarm_separately() -> None:
     gate.observe(heartbeat(3, mode="LAND", armed=False))
 
     assert gate.revoked is False
+
+
+def test_dronekit_land_permission_survives_intervening_landing_target_writes() -> None:
+    gate = FlightAuthorityGate()
+    gate.observe(heartbeat(1, mode="GUIDED", armed=True))
+    gate.admit("a" * 64)
+    delegate = QueueWriter()
+    writer = DroneKitAuthorityWriter(delegate, gate, mavlink)
+    encoder = mavlink.MAVLink(writer, srcSystem=1, srcComponent=191)
+
+    encoder.set_mode_send(1, mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 9)
+    encoder.landing_target_send(0, 0, mavlink.MAV_FRAME_BODY_FRD, 0.0, 0.0, 0.0, 0.0, 0.0)
+    gate.observe(heartbeat(2, mode="LAND", armed=True))
+    encoder.landing_target_send(0, 0, mavlink.MAV_FRAME_BODY_FRD, 0.0, 0.0, 0.0, 0.0, 0.0)
+    gate.observe(heartbeat(3, mode="LAND", armed=False))
+
+    assert gate.revoked is False
+
+
+def test_clearing_operation_expectations_makes_late_transition_external() -> None:
+    gate = admitted_gate()
+    with gate.output_transaction(ExpectedTransition(mode="LAND")):
+        pass
+
+    gate.clear_expected()
+    gate.observe(heartbeat(2, mode="LAND", armed=False))
+
+    assert gate.reason == "unexpected flight-controller mode transition to LAND"
+
+
+def test_finalization_latch_blocks_selected_output_at_actual_queue_write() -> None:
+    gate = admitted_gate()
+    delegate = QueueWriter()
+    writer = DroneKitAuthorityWriter(delegate, gate, mavlink)
+    encoder = mavlink.MAVLink(writer, srcSystem=1, srcComponent=191)
+    selected = lambda: encoder.set_mode_send(
+        1, mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 4
+    )
+
+    gate.begin_finalizing()
+
+    with pytest.raises(FlightAuthorityLost, match="finalizing"):
+        selected()
+    assert delegate.queue.empty()

@@ -123,6 +123,8 @@ class DroneOperations:
         if self._operator_wait_scope is not None:
             self._operator_wait_scope.__exit__(None, None, None)
             self._operator_wait_scope = None
+        if self._authority_gate is not None:
+            self._authority_gate.clear_expected()
         self._expected_transitions = ()
         self._active = None
         if state != "succeeded":

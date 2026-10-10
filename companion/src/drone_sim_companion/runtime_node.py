@@ -432,9 +432,9 @@ class _CalibrationReadiness:
 
 class _Comp2026ShutdownAdmission:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._finalizing = False
-        self._stop_requested = False
+        self._stop_requested = threading.Event()
 
     @property
     def finalizing(self) -> bool:
@@ -443,23 +443,25 @@ class _Comp2026ShutdownAdmission:
 
     @property
     def stop_requested(self) -> bool:
-        return self._stop_requested
+        return self._stop_requested.is_set()
 
     @property
     def shutdown_requested(self) -> bool:
         with self._lock:
-            return self._finalizing or self._stop_requested
+            return self._finalizing or self._stop_requested.is_set()
 
     def begin_finalizing(self) -> None:
         with self._lock:
             self._finalizing = True
 
     def request_stop_from_signal(self) -> None:
-        self._stop_requested = True
+        self._stop_requested.set()
 
-    def run_if_active(self, operation: Callable[[], None]) -> bool:
+    def run_if_active(self, operation: Callable[[], object]) -> bool:
         with self._lock:
-            if self._finalizing or self._stop_requested:
+            if self._stop_requested.is_set():
+                self._finalizing = True
+            if self._finalizing:
                 return False
             operation()
             return True
@@ -850,6 +852,16 @@ class _RosPayloadClient:
         self._client = client
         self._service_type = service_type
         self._stopped = threading.Event()
+        self._output_transaction: Callable[[Callable[[], Any]], Any] | None = None
+
+    def install_output_transaction(
+        self, transaction: Callable[[Callable[[], Any]], Any]
+    ) -> None:
+        if not callable(transaction):
+            raise TypeError("payload output transaction must be callable")
+        if self._output_transaction is not None:
+            raise RuntimeError("payload output transaction is already installed")
+        self._output_transaction = transaction
 
     def service_is_ready(self) -> bool:
         return bool(self._client.service_is_ready())
@@ -862,7 +874,20 @@ class _RosPayloadClient:
         ros_request.aruco_id = request.aruco_id
         ros_request.action = request.action
         ros_request.command_id = request.command_id
-        future = self._client.call_async(ros_request)
+        transaction = self._output_transaction
+        if transaction is None:
+            raise RuntimeError("payload output transaction is not installed")
+        enqueued: list[Any] = []
+
+        def enqueue() -> Any:
+            future = self._client.call_async(ros_request)
+            enqueued.append(future)
+            return future
+
+        transaction(enqueue)
+        if not enqueued:
+            raise RuntimeError("payload output did not reach its guarded enqueue boundary")
+        future = enqueued[0]
         completed = threading.Event()
         future.add_done_callback(lambda _future: completed.set())
         while not completed.wait(0.05):
@@ -961,6 +986,8 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
         requested_stop = True
+        if authority_gate is not None:
+            authority_gate.request_stop_from_signal()
 
     def clock_callback(message: Any) -> None:
         nonlocal latest_clock_ns, failure
@@ -980,9 +1007,13 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
             )
         elif message.state == RunState.FINALIZING:
             finalizing = True
+            if authority_gate is not None:
+                authority_gate.begin_finalizing()
 
     def begin_operator_recovery(reason: str) -> bool:
         nonlocal exit_code, operator_abort_reported
+        if authority_gate is not None:
+            authority_gate.clear_expected()
         if not operator_abort_reported:
             lifecycle.emit("operator_flight_abort", latest_clock_ns, {"reason": reason})
             operator_abort_reported = True
@@ -1178,7 +1209,11 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                 break
             if protocol.read_finalize_request() is not None:
                 finalizing = True
+                if authority_gate is not None:
+                    authority_gate.begin_finalizing()
     finally:
+        if authority_gate is not None:
+            authority_gate.begin_finalizing()
         operator_control.poll_abort(
             finalizing=True,
             begin_recovery=begin_operator_recovery,
@@ -1225,10 +1260,13 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     roll_aux_ack = False
     roll_position_sample: tuple[int, float, float, float, float, float] | None = None
     roll_attitude_sample: tuple[int, float, float] | None = None
+    authority_gate: FlightAuthorityGate | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
         requested_stop = True
+        if authority_gate is not None:
+            authority_gate.request_stop_from_signal()
 
     def clock_callback(message: Any) -> None:
         nonlocal latest_clock_ns, failure
@@ -1250,6 +1288,8 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
             )
         elif message.state == RunState.FINALIZING:
             finalizing = True
+            if authority_gate is not None:
+                authority_gate.begin_finalizing()
 
     node.create_subscription(
         Clock,
@@ -1426,6 +1466,8 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
 
     def begin_operator_recovery(reason: str) -> bool:
         nonlocal exit_code, operator_abort_reported
+        if authority_gate is not None:
+            authority_gate.clear_expected()
         if not operator_abort_reported:
             lifecycle.emit("operator_flight_abort", latest_clock_ns, {"reason": reason})
             operator_abort_reported = True
@@ -1772,7 +1814,11 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 break
             if protocol.read_finalize_request() is not None:
                 finalizing = True
+                if authority_gate is not None:
+                    authority_gate.begin_finalizing()
     finally:
+        if authority_gate is not None:
+            authority_gate.begin_finalizing()
         operator_control.poll_abort(
             finalizing=True,
             begin_recovery=begin_operator_recovery,
@@ -1814,10 +1860,13 @@ def _run_autotune(config: RuntimeConfig) -> int:
     finalizing = False
     stopped = False
     failure: str | None = None
+    authority_gate: FlightAuthorityGate | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal stopped
         stopped = True
+        if authority_gate is not None:
+            authority_gate.request_stop_from_signal()
     def clock_callback(message: Any) -> None:
         nonlocal latest_clock_ns, failure
         if not mission_running: return
@@ -1832,7 +1881,10 @@ def _run_autotune(config: RuntimeConfig) -> int:
             mission_running = running_state_binding(
                 message, running_state=RunState.RUNNING
             )
-        elif message.state == RunState.FINALIZING: finalizing = True
+        elif message.state == RunState.FINALIZING:
+            finalizing = True
+            if authority_gate is not None:
+                authority_gate.begin_finalizing()
 
     node.create_subscription(Clock, "/clock", clock_callback, QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE))
     run_state_subscription = node.create_subscription(RunState, "/simulation/run_state", state_callback, QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -1956,6 +2008,8 @@ def _run_autotune(config: RuntimeConfig) -> int:
 
     def begin_operator_recovery(reason: str) -> bool:
         nonlocal exit_code, operator_abort_reported
+        if authority_gate is not None:
+            authority_gate.clear_expected()
         if not operator_abort_reported:
             lifecycle.emit("operator_flight_abort", latest_clock_ns, {"reason": reason})
             operator_abort_reported = True
@@ -2153,8 +2207,13 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 )
             )
             if heartbeat_failure: failure = heartbeat_failure
-            if protocol.read_finalize_request() is not None: finalizing = True
+            if protocol.read_finalize_request() is not None:
+                finalizing = True
+                if authority_gate is not None:
+                    authority_gate.begin_finalizing()
     finally:
+        if authority_gate is not None:
+            authority_gate.begin_finalizing()
         operator_control.poll_abort(
             finalizing=True,
             begin_recovery=begin_operator_recovery,
@@ -2593,6 +2652,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     clock, controller, controller._transport_output_transaction
                 ),
             )
+            payload_client.install_output_transaction(controller._actuate_guarded)
         except Exception as error:
             attempt_failure.fail(f"DroneKit connection failed: {error}")
         else:

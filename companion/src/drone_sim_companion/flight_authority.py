@@ -73,16 +73,20 @@ class FlightAuthorityGate:
         self._staged: list[_Permission] = []
         self._operator_wait: _Permission | None = None
         self._reason: str | None = None
+        self._finalizing = False
+        self._stop_requested = threading.Event()
 
     @property
     def revoked(self) -> bool:
         with self._lock:
-            return self._reason is not None
+            return self._reason is not None or self._finalizing
 
     @property
     def reason(self) -> str | None:
         with self._lock:
-            return self._reason
+            if self._reason is not None:
+                return self._reason
+            return "runtime finalizing" if self._finalizing else None
 
     @property
     def admitted(self) -> bool:
@@ -95,6 +99,7 @@ class FlightAuthorityGate:
         ) is None:
             raise ValueError("authority admission must be a lowercase SHA-256 digest")
         with self._lock:
+            self._require_not_finalizing()
             if self._reason is not None:
                 raise FlightAuthorityLost(self._reason)
             if self._mode is None or self._armed is None:
@@ -115,7 +120,31 @@ class FlightAuthorityGate:
                 self._pending.clear()
                 self._operator_wait = None
 
+    def request_stop_from_signal(self) -> None:
+        """Record a signal request without acquiring the writer lock."""
+        self._stop_requested.set()
+
+    def begin_finalizing(self) -> None:
+        """Irreversibly close output in writer-lock order."""
+        with self._lock:
+            self._finalizing = True
+            self._pending.clear()
+            self._operator_wait = None
+
+    def clear_expected(self) -> None:
+        """Release transition permission owned by the ending operation."""
+        with self._lock:
+            self._pending.clear()
+            self._staged.clear()
+
+    def _require_not_finalizing(self) -> None:
+        if self._stop_requested.is_set():
+            self._finalizing = True
+        if self._finalizing:
+            raise FlightAuthorityLost("runtime finalizing")
+
     def _require_output(self) -> None:
+        self._require_not_finalizing()
         if self._reason is not None:
             raise FlightAuthorityLost(self._reason)
         if self._admission_sha256 is None:
@@ -151,7 +180,16 @@ class FlightAuthorityGate:
             finally:
                 self._output_depth -= 1
             if outermost:
-                self._pending = self._staged
+                for staged in self._staged:
+                    for field in ("mode", "armed"):
+                        value = getattr(staged, field)
+                        if value is None:
+                            continue
+                        for pending in tuple(self._pending):
+                            setattr(pending, field, None)
+                            if pending.empty:
+                                self._pending.remove(pending)
+                    self._pending.append(staged)
                 self._staged = []
 
     @contextmanager
@@ -206,6 +244,8 @@ class FlightAuthorityGate:
         mode = telemetry.mode.strip().upper() if isinstance(telemetry.mode, str) else None
         armed = telemetry.armed if isinstance(telemetry.armed, bool) else None
         with self._lock:
+            if self._finalizing:
+                return
             if (
                 self._last_observation_ns is not None
                 and telemetry.timestamp_ns < self._last_observation_ns

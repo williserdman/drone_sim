@@ -110,6 +110,22 @@ def test_operator_wait_scopes_native_guided_and_arm_authority_to_active_step():
     assert gate.revoked is True
 
 
+def test_failed_operation_releases_unobserved_expected_transition():
+    vehicle = Vehicle()
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode="GUIDED", armed=True))
+    gate.admit("a" * 64)
+    operations = DroneOperations(vehicle, authority_gate=gate)
+    ready(operations, 2, armed=True, mode="GUIDED", landed=False)
+    operation_id = operations.start("land", {})
+
+    operations.tick(60_000_000_003)
+    assert operations.operation_status(operation_id).state == "failed"
+    operations.observe(Telemetry(60_000_000_004, heartbeat=True, mode="LAND", armed=True))
+
+    assert gate.reason == "unexpected flight-controller mode transition to LAND"
+
+
 def test_takeoff_rejects_missing_arm_without_sending_commands():
     vehicle = Vehicle()
     operations = DroneOperations(vehicle)

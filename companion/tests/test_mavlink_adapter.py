@@ -199,6 +199,21 @@ def test_raw_land_enqueue_owns_land_entry_and_eventual_disarm_separately() -> No
     assert gate.revoked is False
 
 
+def test_raw_finalization_after_action_selection_blocks_actual_adapter_write() -> None:
+    connection = FakeConnection()
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode="GUIDED", armed=True))
+    gate.admit("b" * 64)
+    adapter = MavlinkAdapter(connection, mavutil(), authority_gate=gate)
+    selected = lambda: adapter.send(CommandKind.LAND, None)
+
+    gate.begin_finalizing()
+
+    with pytest.raises(FlightAuthorityLost, match="finalizing"):
+        selected()
+    assert connection.mav.calls == []
+
+
 def test_waypoint_translates_to_relative_home_global_position_target() -> None:
     connection = FakeConnection()
     adapter = MavlinkAdapter(connection, mavutil())

@@ -146,7 +146,11 @@ operator-wait runs.
 Admission creates one irreversible flight-authority generation for raw and
 diagnostic hosts. Their final MAVLink writer serializes the authority check,
 enqueue, and registration of operation-owned mode or arm transitions. The
-leading Operator Wait temporarily owns only native GUIDED and arm transitions.
+permissions survive unrelated writes within that operation and are removed when
+the operation ends, including failure and Abort. This permits LAND entry and its
+eventual disarm to be observed around precision-target updates without leaving a
+permission for a later operation. The leading Operator Wait temporarily owns
+only native GUIDED and arm transitions.
 A fresh exact-FC transition outside those permissions revokes future aircraft,
 payload, RC, and parameter output, and later GUIDED observations cannot create a
 new generation. ACK, heartbeat, and observation traffic remains available.
@@ -168,6 +172,13 @@ recovery path. External revocation and finalization are never cleared to perform
 recovery. Comp2026 retains its imported RC/pilot/failsafe proof and recovery
 context; an outer shutdown admission now remains held through its actual shared
 dependency writer, including recovery, payload calls, and parameter restoration.
+The payload client holds that effective controller transaction only around the
+ROS `call_async` enqueue; service discovery and completion waits remain outside
+it so ROS callbacks can progress. Raw and diagnostic hosts latch finalization at
+their actual writer before teardown output. A signal handler only records a
+request. The owner or next writer admission takes the shared lock to establish
+irreversible order: a write already admitted under the lock may finish before
+finalization returns, and no write starts after the latch.
 
 ### Existing runtime contracts
 

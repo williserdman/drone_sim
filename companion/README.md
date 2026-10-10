@@ -93,6 +93,11 @@ epoch. Unattended and descriptor-absent runs retain their historical behavior.
 After Start admission, raw and diagnostic hosts hold an irreversible flight
 authority generation. An exact-FC mode or arm change is accepted only when it
 matches a transition registered by the operation at the final MAVLink enqueue.
+The permission remains with that operation across unrelated waypoint,
+landing-target, RC, payload, and parameter writes, then is cleared when the
+operation succeeds, fails, or aborts. Consecutive mode and arm commands may
+therefore await their separate fresh observations without authorizing a later
+transition after the operation ends.
 The leading operator wait may instead accept native GUIDED and arm transitions
 while that wait is active. Any other fresh mode or arm change cancels onboard
 mission intent; a later return to GUIDED cannot restore it. A valid QGC Abort
@@ -108,7 +113,11 @@ when the single existing reader processes a new exact-FC heartbeat; the software
 contract does not claim instantaneous takeover between samples. Comp2026 keeps
 its stronger RC/failsafe authority classification and adds an irreversible
 finalization check around its actual dependency-output transaction, including
-recovery, payload, and parameter output.
+recovery, payload, and parameter output. Payload service discovery and response
+waiting remain outside this transaction; only the mutating `call_async` enqueue
+is inside the controller's effective authority, supervisor, and shutdown check.
+Raw and diagnostic finalization closes the same writer before teardown, so it
+does not emit a final RC-clear packet.
 
 ## Configured diagnostic missions
 

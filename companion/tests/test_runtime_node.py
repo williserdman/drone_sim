@@ -517,7 +517,7 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
         ("autotune", "_run_autotune"),
     ),
 )
-@pytest.mark.parametrize("intervention", ("abort", "native_loiter"))
+@pytest.mark.parametrize("intervention", ("abort", "native_loiter", "finalizing"))
 def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
     mission: str,
     runner: str,
@@ -605,6 +605,7 @@ def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
             self.actions: list[tuple[str, str]] = []
             self.listeners: dict[str, object] = {}
             writer = MAVWriter(queue.Queue())
+            self.output_queue = writer.queue
             encoder = real_mavlink.MAVLink(
                 writer, srcSystem=1, srcComponent=191
             )
@@ -732,6 +733,7 @@ def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
     guided_observed = [False]
     native_intervention = [False]
     admitted = [False]
+    queued_at_finalization: list[int] = []
 
     def stamp(value: int) -> object:
         return SimpleNamespace(
@@ -817,7 +819,7 @@ def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
                 )
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     tuple(pool.map(transport.receive, (abort,) * 8))
-            else:
+            elif intervention == "native_loiter":
                 native_intervention[0] = True
                 vehicle._mode = Mode("LOITER")
                 vehicle.observations.append(VehicleFactObservation(
@@ -838,6 +840,12 @@ def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
                     armed=True,
                     landed=False,
                     mode="GUIDED",
+                ))
+            else:
+                queued_at_finalization.append(vehicle.output_queue.qsize())
+                callbacks["/simulation/run_state"](SimpleNamespace(
+                    run_id=RUN_ID,
+                    state=RunState.FINALIZING,
                 ))
         loop[0] += 1
 
@@ -885,7 +893,8 @@ def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
         finalization_wall_seconds=1.0,
     )
 
-    assert getattr(runtime_node, runner)(config) == 1
+    result = getattr(runtime_node, runner)(config)
+    assert result == 1
     request = operator_protocol.read_start_request()
     assert request is not None
     assert request.request_id == descriptor.start_request_id
@@ -894,9 +903,11 @@ def test_descriptor_autotune_loops_distinguish_abort_and_native_intervention(
     assert vehicle.actions.count(("mode", "LAND")) == (
         1 if intervention == "abort" else 0
     )
+    if intervention == "finalizing":
+        assert queued_at_finalization == [vehicle.output_queue.qsize()]
 
 
-@pytest.mark.parametrize("intervention", ("abort", "native_loiter"))
+@pytest.mark.parametrize("intervention", ("abort", "native_loiter", "finalizing"))
 def test_descriptor_controlled_descent_distinguishes_abort_and_native_intervention(
     intervention: str,
     tmp_path: Path,
@@ -1152,7 +1163,7 @@ def test_descriptor_controlled_descent_distinguishes_abort_and_native_interventi
                 )
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     tuple(pool.map(transport.receive, (abort,) * 8))
-            else:
+            elif intervention == "native_loiter":
                 armed_mode = (
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
                     | mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
@@ -1175,6 +1186,11 @@ def test_descriptor_controlled_descent_distinguishes_abort_and_native_interventi
                         3,
                     ),
                 ])
+            else:
+                callbacks["/simulation/run_state"](SimpleNamespace(
+                    run_id=RUN_ID,
+                    state=RunState.FINALIZING,
+                ))
         loop[0] += 1
 
     def module(name: str, **members: object) -> None:
@@ -1218,7 +1234,7 @@ def test_descriptor_controlled_descent_distinguishes_abort_and_native_interventi
     request = operator_protocol.read_start_request()
     assert request is not None, transports[0].responses
     assert request.request_id == descriptor.start_request_id
-    assert result == 1
+    assert result == (0 if intervention == "finalizing" else 1)
     assert stale_rejected == [True]
     assert connection.mav.command_ids.count(
         mavutil.mavlink.MAV_CMD_DO_SET_MODE
@@ -1577,6 +1593,83 @@ def test_comp2026_finalization_blocks_recovery_output_transaction_at_enqueue() -
     assert calls == []
 
 
+def test_comp2026_signal_request_before_nested_enqueue_latches_zero_output() -> None:
+    admission = runtime_node._Comp2026ShutdownAdmission()
+    outer_entered = threading.Event()
+    resume = threading.Event()
+    calls: list[str] = []
+    failures: list[BaseException] = []
+    depth = 0
+
+    def native_transaction(operation):
+        nonlocal depth
+        depth += 1
+        try:
+            if depth == 1:
+                outer_entered.set()
+                assert resume.wait(1.0)
+            return operation()
+        finally:
+            depth -= 1
+
+    transaction = runtime_node._comp2026_shutdown_dependency(
+        admission, native_transaction
+    )
+
+    def write() -> None:
+        try:
+            transaction(lambda: transaction(lambda: calls.append("queued")))
+        except BaseException as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=write)
+    worker.start()
+    assert outer_entered.wait(1.0)
+    admission.request_stop_from_signal()
+    resume.set()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert calls == []
+    assert len(failures) == 1
+    assert "finalizing" in str(failures[0])
+
+
+def test_comp2026_admitted_atomic_write_finishes_before_finalization_latches() -> None:
+    admission = runtime_node._Comp2026ShutdownAdmission()
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    finalization_returned = threading.Event()
+    calls: list[str] = []
+
+    def write() -> None:
+        def operation() -> None:
+            write_entered.set()
+            assert release_write.wait(1.0)
+            calls.append("queued")
+
+        assert admission.run_if_active(operation)
+
+    worker = threading.Thread(target=write)
+    worker.start()
+    assert write_entered.wait(1.0)
+    finalizer = threading.Thread(
+        target=lambda: (
+            admission.begin_finalizing(), finalization_returned.set()
+        )
+    )
+    finalizer.start()
+    assert not finalization_returned.wait(0.05)
+    release_write.set()
+    worker.join(timeout=1.0)
+    finalizer.join(timeout=1.0)
+
+    assert calls == ["queued"]
+    assert finalization_returned.is_set()
+    assert admission.run_if_active(lambda: calls.append("late")) is False
+    assert calls == ["queued"]
+
+
 def install_comp2026_runtime_fakes(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -1852,10 +1945,25 @@ def install_comp2026_runtime_fakes(
             self.controller.mission_home = SimpleNamespace(lat=1.0, lon=2.0, amsl_m=0.19)
             self.controller._guided_output_delivery_reported = False
             self.controller._transport_output_transaction = lambda output, before: (before(), output())[-1]
+            self.controller._dependency_output_transaction = lambda operation: operation()
+            self.controller._supervisor_output_transaction = lambda operation: operation()
+
+            def actuate_guarded(operation):
+                return self.controller._dependency_output_transaction(
+                    lambda: self.controller._supervisor_output_transaction(operation)
+                )
+
+            self.controller._actuate_guarded = actuate_guarded
 
             def install_output_transactions(**values: object) -> None:
                 self.controller._transport_output_transaction = values[
                     "transport_transaction"
+                ]
+                self.controller._dependency_output_transaction = values[
+                    "dependency_transaction"
+                ]
+                self.controller._supervisor_output_transaction = values[
+                    "supervisor_transaction"
                 ]
                 if dependency_transactions is not None:
                     dependency_transactions.append(values["dependency_transaction"])

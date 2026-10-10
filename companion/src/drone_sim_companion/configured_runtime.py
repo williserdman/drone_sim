@@ -338,6 +338,8 @@ def run_configured(config) -> int:
     def stop(_signum, _frame):
         nonlocal requested_stop
         requested_stop = True
+        if authority_gate is not None:
+            authority_gate.request_stop_from_signal()
 
     def clock_callback(message):
         nonlocal latest_clock_ns, callback_error
@@ -357,6 +359,8 @@ def run_configured(config) -> int:
             )
         elif message.state == RunState.FINALIZING:
             finalizing = True
+            if authority_gate is not None:
+                authority_gate.begin_finalizing()
 
     def publish_mission_event(record):
         assert mission_event_publisher is not None
@@ -558,6 +562,8 @@ def run_configured(config) -> int:
                 host.fail(callback_error or "configured mission wall deadline expired", attempt_recovery=False)
                 break
             stopping = requested_stop or finalizing or protocol.read_finalize_request() is not None
+            if stopping and authority_gate is not None:
+                authority_gate.begin_finalizing()
             start = operator_control.poll_start(run_state=mission_running)
             if (
                 authority_gate is not None
@@ -613,6 +619,8 @@ def run_configured(config) -> int:
                 )
             )
     finally:
+        if authority_gate is not None:
+            authority_gate.begin_finalizing()
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
         if frame_source is not None:
