@@ -10,7 +10,7 @@
 
 **Spec:** [Approved local simulation console specification](../specs/2026-10-08-local-simulation-console-spec.md).
 
-**Status:** Written after specification approval on 2026-10-09; awaiting plan review. No runtime changes or new flight acceptance are claimed. The completed browser-console plan is preserved in Git at `e546d3c:docs/superpowers/plans/2026-10-08-local-simulation-console.md`.
+**Status:** Approved for implementation by $implement on 2026-10-10. Execution is in progress; new flight acceptance remains pending. The completed browser-console plan is preserved in Git at `e546d3c:docs/superpowers/plans/2026-10-08-local-simulation-console.md`.
 
 ## Global constraints
 
