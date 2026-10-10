@@ -29,15 +29,48 @@ complete and then creates a new run ID, action token, and action file. Presets
 retain their configured timing: Configured Descent needs about 15 wall minutes
 of warmup at 0.1 RTF, followed by a five-minute run.
 
-Task 6 software verification passed 46 focused tests locally and in the supported
-Linux harness, all 98 broader controller tests in Linux, configured mypy for all
-nine host files, and the browser check for QGC guidance, Prepare, Stop, Run Again,
-desktop reconnect, and disconnected view indicators. Tests used fake launchers,
-temporary settings, and temporary action directories. The active QGC selection
-remains `custom_missions.json`; its preserved SHA-256 is
+The assembled QGC control revision `eae3377` passed **2,785 tests** in the
+supported Linux harness, with **41 explicit capability skips** for ROS/Jazzy,
+built Gazebo/plugin checks, image-specific FFmpeg checks, and nested Docker
+access. The separate imported competition suite passed **684 tests**. Browser
+Prepare, Stop, Run Again, QGC guidance, reconnect, and stale-view checks passed.
+Configured mypy passed nine files, and focused helper, inspector, and operation
+checks passed three files. The initial Linux failure was fixed by resolving
+`mavlogdump.py` from the active Python environment; the complete rerun passed.
+
+All eight runtime images were built and checked from clean `eae3377` on
+`linux/arm64` in Colima. Host prerequisite checks passed with 6 CPUs, 11.7 GiB
+RAM, free required ports, sufficient disk space, and no leftover simulation
+containers. The current source and image identities are recorded in
+`.local-runtime/build.json`; documentation commits require the supported rebuild
+and check before another Prepare.
+
+Ordinary competition landing now freshly verifies the full precision profile,
+verifies `PLND_ENABLED=0`, confirms touchdown, and verifies restoration to `1`
+before phase success. Existing disarm confirmation remains separate and
+`PLND_STRICT=2` stays unchanged. Native LAND/Pause revokes onboard control, and
+later GUIDED does not reopen it. These behaviors have software coverage; live
+parameter switching, physical descent, and precision-policy preservation still
+require native acceptance.
+
+**Standards review:** no documented violations. Repeated host lifecycle wiring
+is a nonblocking maintenance observation; a broader coordinator refactor is
+deferred. **Spec review:** the tool-discovery defect is fixed and re-reviewed.
+Native QGC selection, actual command routing/ACKs, configured descent and repeat,
+competition landing/progression, Abort, LAND/Pause takeover, Operator Wait, and
+acquired precision-target loss remain unrun. There are **zero new native flight
+runs** for this QGC workflow, so no new run IDs, physical outcomes, scores,
+artifact-validity results, full-competition pass, or catalog-flight pass are
+claimed. Task 7 remains open for that evidence.
+
+Native desktop control is blocked by macOS Accessibility permission; screen
+capture was also unavailable at the earlier check. The pending choice is to
+grant those permissions or perform the native QGC clicks manually. The active
+QGC selection remains `custom_missions.json`, with preserved SHA-256
 `5d7b983c72cb27a839a082621b867cd851da5170bc6f2b30889f9038ca315ea2`.
-Native selection of a generated run file, QGC-to-companion routing, physical
-flight, recovery, and final artifact acceptance remain pending Task 7 proof.
+The console can be used with manual QGC interaction. Use the
+[inspection procedure](runbook.md#inspect-qgc-control-evidence) to retain a
+genuine native tlog before final inventory when collecting acceptance evidence.
 
 The acceptance evidence below used the earlier browser Start/Abort workflow. It
 remains evidence for simulator behavior but does not establish the new native QGC
@@ -76,9 +109,9 @@ elapsed-time behavior. The named-volume recording spool supports Linux
 `O_TMPFILE`; verified closed media is published before the volume is removed.
 Failed publication preserves the volume and blocks another run.
 
-**Standards review:** no unresolved material findings; repeated companion host
-composition remains a maintenance observation. **Spec review:** no unresolved
-console implementation findings. The physical competition recovery limitation
+**Earlier browser-workflow review:** no unresolved material code or console
+specification findings; repeated companion host composition remained a
+maintenance observation. The physical competition recovery limitation
 above remains visible and is not a successful-flight claim.
 
 ## Cloud branch checkpoint
