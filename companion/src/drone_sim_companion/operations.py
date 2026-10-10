@@ -296,6 +296,14 @@ class DroneOperations:
                         ExpectedTransition(armed=False),
                     )
                 self._vehicle.send(command, None)
+                self._emit(
+                    "precision_mode_requested",
+                    self._clock_ns,
+                    {
+                        "operation_id": active.status.operation_id,
+                        "mode": precision.requested_mode,
+                    },
+                )
                 if command is CommandKind.LAND:
                     active.expected_ack = command
                 else:

@@ -163,6 +163,10 @@ Coordinates are WGS84 degrees; altitudes are metres above ArduPilot home.
 at a time, advancing on telemetry and simulation-clock ticks so observation and
 abort remain responsive. Deadlines use simulation time; the run wall deadline
 bounds stalled infrastructure. An ACK alone does not establish flight completion.
+When `precision_land` successfully enqueues a LAND or GUIDED mode command, the
+operation lifecycle emits `precision_mode_requested` with the operation ID and
+requested mode. This event proves which active mission requested the command; it
+does not claim flight-controller acknowledgement or an observed mode change.
 
 [configured_runtime.py](src/drone_sim_companion/configured_runtime.py) publishes
 execution readiness after passive readiness, matching RUNNING, and public clock.

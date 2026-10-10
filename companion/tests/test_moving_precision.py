@@ -199,8 +199,10 @@ def test_drone_operations_alone_applies_precision_target_and_mode_effects() -> N
             self.targets.append((forward_m, right_m, down_m, exposure_timestamp_ns))
 
     vehicle_adapter = Vehicle()
+    events = []
     operations = DroneOperations(
         vehicle_adapter,
+        emit=lambda event, stamp, fields: events.append((event, stamp, fields)),
         moving_precision=MovingPrecisionLanding(),
     )
     operations.observe(Telemetry(
@@ -225,7 +227,42 @@ def test_drone_operations_alone_applies_precision_target_and_mode_effects() -> N
 
     assert vehicle_adapter.targets[-1] == (0.2, -0.1, 5.0, 2_475_000_000)
     assert vehicle_adapter.commands == [(CommandKind.LAND, None)]
+    assert (
+        "precision_mode_requested",
+        2_500_000_000,
+        {"operation_id": operation_id, "mode": "LAND"},
+    ) in events
     assert operations.operation_status(operation_id).state == "running"
+
+
+def test_precision_mode_event_is_emitted_only_after_successful_vehicle_send() -> None:
+    class FailedPolicy:
+        def start(self, *_args): pass
+        def tick(self, *_args):
+            return PrecisionStatus("running", requested_mode="LAND")
+        def abort(self, _reason): pass
+
+    class Vehicle:
+        def send(self, _command, _altitude):
+            raise RuntimeError("enqueue failed")
+
+    events = []
+    operations = DroneOperations(
+        Vehicle(),
+        emit=lambda event, stamp, fields: events.append((event, stamp, fields)),
+        moving_precision=FailedPolicy(),
+    )
+    operations.observe(Telemetry(
+        0, heartbeat=True, mode="GUIDED", armed=True, landed=False,
+        horizontal_speed_m_s=0.0,
+    ))
+
+    operation_id = operations.start("precision_land", {
+        "marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60,
+    })
+
+    assert operations.operation_status(operation_id).state == "failed"
+    assert not any(event == "precision_mode_requested" for event, _stamp, _fields in events)
 
 
 def test_moving_profile_holds_north_yaw_during_eastbound_waypoint() -> None:
@@ -270,17 +307,27 @@ def test_guided_hold_failure_cannot_be_immediately_overwritten_by_recovery_land(
         def send(self, command, altitude): self.commands.append((command, altitude))
 
     vehicle_adapter = Vehicle()
-    operations = DroneOperations(vehicle_adapter, moving_precision=FailedPolicy())
+    events = []
+    operations = DroneOperations(
+        vehicle_adapter,
+        emit=lambda event, stamp, fields: events.append((event, stamp, fields)),
+        moving_precision=FailedPolicy(),
+    )
     operations.observe(Telemetry(
         0, heartbeat=True, mode="GUIDED", armed=True, landed=False,
         horizontal_speed_m_s=0.0,
     ))
-    operations.start("precision_land", {
+    operation_id = operations.start("precision_land", {
         "marker_id": 7, "settle_by_sim_s": 45, "acquire_by_sim_s": 60,
     })
 
     assert operations.recover_land() is None
     assert vehicle_adapter.commands == [(CommandKind.SET_GUIDED, None)]
+    assert (
+        "precision_mode_requested",
+        0,
+        {"operation_id": operation_id, "mode": "GUIDED"},
+    ) in events
 
 
 @pytest.mark.parametrize(

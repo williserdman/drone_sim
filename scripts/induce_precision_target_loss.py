@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from dataclasses import dataclass
 import csv
+import fcntl
 import hashlib
 import io
 import json
@@ -21,6 +22,7 @@ import time
 from typing import Any
 
 from artifacts.operator_protocol import OperatorProtocol, OperatorProtocolError
+from artifacts.protocol_files import open_directory
 from artifacts.qgc_operator import MAV_RESULT_ACCEPTED, QGC_START_COMMAND
 from orchestration.config import load_run_config
 from orchestration.status_store import ProtocolFileError, StatusStore
@@ -39,7 +41,7 @@ MINIMUM_CLEARANCE_M = 0.75
 PL_FRESHNESS_NS = 500_000_000
 LAND_FRESHNESS_NS = 5_000_000_000
 SENSOR_FRESHNESS_NS = 500_000_000
-PERSISTENCE_NS = 250_000_000
+PERSISTENCE_NS = 500_000_000
 MAX_PERSISTENCE_SAMPLES = 8
 POSITION_TOLERANCE_M = 0.25
 REQUEST_TEXT = (
@@ -269,6 +271,7 @@ def _reserve_record(run_directory: Path) -> tuple[int, int, Path]:
         os.O_WRONLY
         | os.O_CREAT
         | os.O_EXCL
+        | os.O_APPEND
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
@@ -285,7 +288,7 @@ def _reserve_record(run_directory: Path) -> tuple[int, int, Path]:
     return directory_fd, file_fd, log_directory / RECORD_NAME
 
 
-def _write_record(directory_fd: int, file_fd: int, document: Mapping[str, Any]) -> None:
+def _append_record(directory_fd: int, file_fd: int, document: Mapping[str, Any]) -> None:
     payload = (
         json.dumps(
             document,
@@ -315,11 +318,12 @@ def _assert_running(run_directory: Path, run_id: str) -> None:
     finalization = run_directory / ".control/finalize-request.json"
     if finalization.exists() or finalization.is_symlink():
         raise StimulusError("stimulus is unavailable after finalization was requested")
-    if (run_directory / "manifest.json").exists():
+    manifest = run_directory / "manifest.json"
+    if manifest.exists() or manifest.is_symlink():
         raise StimulusError("stimulus is unavailable for a finalized run")
 
 
-def _validate_start_admission(run_directory: Path, config: Any) -> Any:
+def _validate_start_admission(run_directory: Path, config: Any) -> tuple[Any, int]:
     descriptor = config.operator_control
     if config.launch_mode != "operator" or descriptor is None:
         raise StimulusError("stimulus requires a native QGC operator run")
@@ -335,21 +339,82 @@ def _validate_start_admission(run_directory: Path, config: Any) -> Any:
     if request is None or admission is None:
         raise StimulusError("native QGC Start admission is missing")
     expected_parameters = (descriptor.attempt_token, 0, 0, 0, 0, 0, 0)
-    accepted = any(
-        row.envelope.wire_version == 2
-        and row.envelope.source == descriptor.qgc_source
-        and row.envelope.target == descriptor.companion
-        and row.envelope.command == QGC_START_COMMAND
-        and row.envelope.parameters == expected_parameters
-        and row.request_id == request.request_id
-        and row.request_sha256 == request.sha256
-        and row.admission_sha256 == admission.sha256
-        and row.response.result == MAV_RESULT_ACCEPTED
+    accepted = [
+        row
         for row in statuses
-    )
+        if (
+            row.envelope.wire_version == 2
+            and row.envelope.source == descriptor.qgc_source
+            and row.envelope.target == descriptor.companion
+            and row.envelope.command == QGC_START_COMMAND
+            and row.envelope.parameters == expected_parameters
+            and row.request_id == request.request_id
+            and row.request_sha256 == request.sha256
+            and row.admission_sha256 == admission.sha256
+            and row.response.result == MAV_RESULT_ACCEPTED
+        )
+    ]
     if not accepted:
         raise StimulusError("native QGC Start admission has no matching accepted command")
-    return admission
+    return admission, accepted[-1].envelope.received_wall_time_ns
+
+
+def _qgc_intervention_evidence(
+    run_directory: Path,
+    descriptor: Any,
+    start_received_wall_time_ns: int,
+) -> dict[str, Any]:
+    path = run_directory / "logs/docker/qgc-interventions.jsonl"
+    if path.is_symlink() or not path.is_file():
+        raise StimulusError("native QGC intervention evidence is missing or unsafe")
+    rows: list[dict[str, Any]] = []
+    try:
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line:
+                continue
+            value = json.loads(line)
+            if not isinstance(value, dict):
+                raise ValueError(f"row {line_number} is not an object")
+            wall_time = value.get("wall_time_ns")
+            if type(wall_time) is not int or wall_time < 0:
+                raise ValueError(f"row {line_number} has an invalid wall time")
+            rows.append(value)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise StimulusError(f"native QGC intervention evidence is unreadable: {error}") from error
+
+    def bound_start(row: Mapping[str, Any]) -> bool:
+        fields = row.get("fields")
+        return (
+            row.get("event") == "qgc_manual_command"
+            and row.get("message_type") == "COMMAND_LONG"
+            and row.get("command") == QGC_START_COMMAND
+            and row.get("source_system") == descriptor.qgc_source.system_id
+            and row.get("source_component") == descriptor.qgc_source.component_id
+            and isinstance(fields, dict)
+            and fields.get("target_system") == descriptor.companion.system_id
+            and fields.get("target_component") == descriptor.companion.component_id
+            and fields.get("param1") == descriptor.attempt_token
+            and all(fields.get(f"param{index}") == 0 for index in range(2, 8))
+        )
+
+    starts = [
+        row
+        for row in rows
+        if bound_start(row) and row["wall_time_ns"] <= start_received_wall_time_ns
+    ]
+    if not starts:
+        raise StimulusError("native QGC Start has no matching bridge intervention evidence")
+    for row in rows:
+        if row["wall_time_ns"] > start_received_wall_time_ns and not bound_start(row):
+            raise StimulusError(
+                "native QGC takeover evidence follows the accepted mission Start"
+            )
+    return {
+        "path": "logs/docker/qgc-interventions.jsonl",
+        "start_wall_time_ns": starts[-1]["wall_time_ns"],
+        "accepted_start_received_wall_time_ns": start_received_wall_time_ns,
+        "rows_checked": len(rows),
+    }
 
 
 def _read_companion_events(
@@ -431,11 +496,38 @@ def _precision_operation(
         for event in events
     ):
         raise StimulusError("precision_land operation is no longer active")
+    requested_modes: list[tuple[float, str]] = []
+    for event in events:
+        if event.get("event") != "precision_mode_requested":
+            continue
+        mode_fields = event.get("fields")
+        mode_timestamp = event.get("sim_timestamp")
+        if not isinstance(mode_fields, dict) or mode_fields.get("operation_id") != operation_id:
+            continue
+        mode = mode_fields.get("mode")
+        if (
+            mode not in {"LAND", "GUIDED"}
+            or isinstance(mode_timestamp, bool)
+            or not isinstance(mode_timestamp, (int, float))
+            or not math.isfinite(mode_timestamp)
+            or float(mode_timestamp) < float(timestamp)
+        ):
+            raise StimulusError("precision mode-request evidence is malformed")
+        requested_modes.append((float(mode_timestamp), mode))
+    land_requests = [item for item in requested_modes if item[1] == "LAND"]
+    if not land_requests:
+        raise StimulusError("current precision operation has no mission-owned LAND request")
+    land_timestamp = land_requests[-1][0]
+    if requested_modes[-1][1] != "LAND":
+        raise StimulusError("mission-owned LAND is no longer the precision operation's latest request")
     native_start_ns = admission.native_epoch_ns + round(float(timestamp) * 1e9)
+    native_land_request_ns = admission.native_epoch_ns + round(land_timestamp * 1e9)
     return {
         "operation_id": operation_id,
         "sim_timestamp": float(timestamp),
         "native_start_ns": native_start_ns,
+        "land_request_sim_timestamp": land_timestamp,
+        "native_land_request_ns": native_land_request_ns,
         "marker_id": 7,
         "source": "live_companion_container_log",
         "source_container_id": container_id,
@@ -616,13 +708,16 @@ def _validate_flight_evidence(
     last_measurement_ns = latest_precision.last_measurement_ms * 1_000_000
     mode_ns = latest_mode.time_us * 1_000
     operation_start_ns = int(operation["native_start_ns"])
+    land_request_ns = int(operation["native_land_request_ns"])
     if not latest_precision.acquired:
         raise StimulusError("latest live DataFlash precision row is not TAcq=1")
     if latest_mode.mode != 9:
         raise StimulusError("latest live DataFlash mode is not mission-owned LAND")
+    if precision_ns < operation_start_ns:
+        raise StimulusError("live DataFlash TAcq=1 predates precision_land")
+    if mode_ns <= land_request_ns:
+        raise StimulusError("live DataFlash LAND does not follow the mission-owned LAND request")
     for label, timestamp_ns in (("TAcq=1", precision_ns), ("LAND", mode_ns)):
-        if timestamp_ns < operation_start_ns:
-            raise StimulusError(f"live DataFlash {label} predates precision_land")
         if timestamp_ns > native_now_ns:
             raise StimulusError(f"live DataFlash {label} is ahead of native odometry")
     if native_now_ns - precision_ns > PL_FRESHNESS_NS:
@@ -673,58 +768,99 @@ def induce_precision_target_loss(
 ) -> dict[str, Any]:
     """Apply one no-clobber physical target-loss stimulus to a live bound run."""
     directory = Path(run_directory).resolve()
-    record_directory_fd, record_fd, _record_path = _reserve_record(directory)
+    try:
+        config = load_run_config(directory / "configuration/run.json")
+    except (OSError, ValueError) as error:
+        raise StimulusError(f"immutable run configuration is invalid: {error}") from error
+    if directory.name != config.run_id or directory.parent != config.output_root:
+        raise StimulusError("run directory does not match immutable run binding")
+    if config.world != WORLD:
+        raise StimulusError(f"stimulus requires world {WORLD}")
+    if config.mission != "configured" or config.scenario != "moving_pad_v1":
+        raise StimulusError("stimulus requires the stationary precision mission")
+    _assert_running(directory, config.run_id)
+    admission, start_received_wall_time_ns = _validate_start_admission(
+        directory, config
+    )
+    record_path = directory / "logs/docker" / RECORD_NAME
+    if record_path.exists() or record_path.is_symlink():
+        raise FileExistsError(f"{record_path} already exists; prepare a fresh run")
+
+    partition = "drone_sim_" + config.run_id.replace("-", "_")
+    container_id, project = _discover_container(
+        runner, directory, config.run_id, "gazebo-runtime"
+    )
+    companion_container_id, companion_project = _discover_container(
+        runner, directory, config.run_id, "companion-runtime"
+    )
+    if companion_project != project:
+        raise StimulusError("owned runtime containers disagree on Compose project")
+    _precision_operation(runner, companion_container_id, config.run_id, admission)
+    _qgc_intervention_evidence(
+        directory, config.operator_control, start_received_wall_time_ns
+    )
+    services = set(
+        _docker_gz(
+            runner,
+            container_id,
+            partition,
+            ["service", "-l"],
+            timeout=5.0,
+            label="Gazebo service discovery",
+        ).splitlines()
+    )
+    if SERVICE not in services:
+        raise StimulusError(f"required Gazebo set_pose service is missing: {SERVICE}")
+    parse_dataflash_precision_csv(_dataflash_csv(runner, directory, "PL"))
+    parse_dataflash_mode_csv(_dataflash_csv(runner, directory, "MODE"))
+
     record: dict[str, Any] = {
         "schema_version": 1,
         "status": "failed",
         "detail": "stimulus did not complete",
-        "run_id": None,
-        "config_sha256": None,
-        "world": None,
+        "run_id": config.run_id,
+        "config_sha256": config.config_sha256,
+        "world": config.world,
         "entity": ENTITY,
-        "partition": None,
-        "container": None,
-        "pre_command": None,
-        "service": None,
-        "post_command": None,
-    }
-    try:
-        try:
-            config = load_run_config(directory / "configuration/run.json")
-        except (OSError, ValueError) as error:
-            raise StimulusError(f"immutable run configuration is invalid: {error}") from error
-        record.update(
-            run_id=config.run_id,
-            config_sha256=config.config_sha256,
-            world=config.world,
-            partition="drone_sim_" + config.run_id.replace("-", "_"),
-        )
-        if directory.name != config.run_id or directory.parent != config.output_root:
-            raise StimulusError("run directory does not match immutable run binding")
-        if config.world != WORLD:
-            raise StimulusError(f"stimulus requires world {WORLD}")
-        if config.mission != "configured" or config.scenario != "moving_pad_v1":
-            raise StimulusError("stimulus requires the stationary precision mission")
-        _assert_running(directory, config.run_id)
-        admission = _validate_start_admission(directory, config)
-        partition = str(record["partition"])
-        container_id, project = _discover_container(
-            runner, directory, config.run_id, "gazebo-runtime"
-        )
-        companion_container_id, companion_project = _discover_container(
-            runner, directory, config.run_id, "companion-runtime"
-        )
-        if companion_project != project:
-            raise StimulusError("owned runtime containers disagree on Compose project")
-        operation = _precision_operation(
-            runner, companion_container_id, config.run_id, admission
-        )
-        record["container"] = {
+        "partition": partition,
+        "container": {
             "id": container_id,
             "project": project,
             "service": "gazebo-runtime",
             "companion_id": companion_container_id,
-        }
+        },
+        "pre_command": None,
+        "service": None,
+        "post_command": None,
+    }
+    control_fd: int | None = None
+    record_directory_fd: int | None = None
+    record_fd: int | None = None
+    terminal_written = False
+    dispatched = False
+    try:
+        control_fd = open_directory(directory / ".control")
+        fcntl.flock(control_fd, fcntl.LOCK_EX)
+        _assert_running(directory, config.run_id)
+        current_container_id, current_project = _discover_container(
+            runner, directory, config.run_id, "gazebo-runtime"
+        )
+        current_companion_id, current_companion_project = _discover_container(
+            runner, directory, config.run_id, "companion-runtime"
+        )
+        if (
+            (current_container_id, current_project) != (container_id, project)
+            or (current_companion_id, current_companion_project)
+            != (companion_container_id, project)
+        ):
+            raise StimulusError("owned runtime containers changed before the stimulus")
+        record_directory_fd, record_fd, _record_path = _reserve_record(directory)
+        operation = _precision_operation(
+            runner, companion_container_id, config.run_id, admission
+        )
+        qgc_evidence = _qgc_intervention_evidence(
+            directory, config.operator_control, start_received_wall_time_ns
+        )
         services = set(
             _docker_gz(
                 runner,
@@ -767,36 +903,34 @@ def induce_precision_target_loss(
         record["pre_command"] = {
             "pad_odometry": _pose_document(pre_pose),
             "range": asdict(pre_range),
+            "native_horizon_ns": native_now_ns,
             "mission": operation,
+            "qgc_interventions": qgc_evidence,
             "dataflash": flight,
         }
         _assert_running(directory, config.run_id)
         requested_at_ns = wall_time_ns()
         if type(requested_at_ns) is not int or requested_at_ns < 0:
             raise StimulusError("request wall clock returned an invalid timestamp")
-        service_result = _run(
-            runner,
-            [
-                "docker",
-                "exec",
-                "--env",
-                f"GZ_PARTITION={partition}",
-                container_id,
-                "gz",
-                "service",
-                "-s",
-                SERVICE,
-                "--reqtype",
-                REQUEST_TYPE,
-                "--reptype",
-                RESPONSE_TYPE,
-                "--timeout",
-                "5000",
-                "--req",
-                REQUEST_TEXT,
-            ],
-            timeout=8.0,
-        )
+        service_command = [
+            "docker",
+            "exec",
+            "--env",
+            f"GZ_PARTITION={partition}",
+            container_id,
+            "gz",
+            "service",
+            "-s",
+            SERVICE,
+            "--reqtype",
+            REQUEST_TYPE,
+            "--reptype",
+            RESPONSE_TYPE,
+            "--timeout",
+            "5000",
+            "--req",
+            REQUEST_TEXT,
+        ]
         record["service"] = {
             "name": SERVICE,
             "request_type": REQUEST_TYPE,
@@ -807,10 +941,47 @@ def induce_precision_target_loss(
                 REQUEST_TEXT.encode("utf-8")
             ).hexdigest(),
             "requested_wall_time_ns": requested_at_ns,
-            "returncode": service_result.returncode,
-            "response": service_result.stdout,
-            "stderr": service_result.stderr,
+            "outcome": "pending",
+            "returncode": None,
+            "response": None,
+            "stderr": None,
         }
+        record["status"] = "attempted"
+        record["detail"] = "durable request recorded before Gazebo dispatch"
+        _append_record(record_directory_fd, record_fd, record)
+        dispatched = True
+        try:
+            service_result = runner(
+                service_command,
+                shell=False,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=8.0,
+            )
+            if not isinstance(service_result.returncode, int):
+                raise TypeError("Gazebo service returned an invalid status")
+        except BaseException as error:
+            record["status"] = "unknown"
+            record["detail"] = (
+                "Gazebo set_pose dispatch did not return; physical outcome is unknown: "
+                f"{type(error).__name__}: {error}"
+            )
+            record["service"]["outcome"] = "unknown"
+            _append_record(record_directory_fd, record_fd, record)
+            terminal_written = True
+            if isinstance(error, Exception):
+                raise StimulusError(record["detail"]) from error
+            raise
+        record["service"].update(
+            outcome="returned",
+            returncode=service_result.returncode,
+            response=service_result.stdout,
+            stderr=service_result.stderr,
+        )
+        record["status"] = "response_received"
+        record["detail"] = "Gazebo set_pose response durably recorded"
+        _append_record(record_directory_fd, record_fd, record)
         if service_result.returncode != 0:
             raise StimulusError(
                 "Gazebo set_pose command failed: "
@@ -822,6 +993,15 @@ def induce_precision_target_loss(
             _topic(runner, container_id, partition, ODOMETRY_TOPIC)
         )
         displacement = first_post.position[0] - pre_pose.position[0]
+        if first_post.native_timestamp_ns <= native_now_ns:
+            record["post_command"] = {
+                "first": _pose_document(first_post),
+                "persistence": [],
+                "displacement_m": displacement,
+            }
+            raise StimulusError(
+                "first post-command odometry must be strictly after the pre-command horizon"
+            )
         if not _at_expected_pose(first_post, TARGET_X_M) or not math.isclose(
             displacement, 20.0, abs_tol=0.5
         ):
@@ -832,11 +1012,22 @@ def induce_precision_target_loss(
             }
             raise StimulusError("moving_pad did not move approximately 20 m to x=55")
         persistence: list[PoseSample] = []
+        previous_timestamp_ns = first_post.native_timestamp_ns
         for _attempt in range(MAX_PERSISTENCE_SAMPLES):
             sample = parse_gz_odometry(
                 _topic(runner, container_id, partition, ODOMETRY_TOPIC)
             )
             persistence.append(sample)
+            if sample.native_timestamp_ns <= previous_timestamp_ns:
+                record["post_command"] = {
+                    "first": _pose_document(first_post),
+                    "persistence": [_pose_document(value) for value in persistence],
+                    "displacement_m": displacement,
+                }
+                raise StimulusError(
+                    "post-command odometry timestamps must strictly increase"
+                )
+            previous_timestamp_ns = sample.native_timestamp_ns
             if not _at_expected_pose(sample, TARGET_X_M):
                 record["post_command"] = {
                     "first": _pose_document(first_post),
@@ -844,37 +1035,69 @@ def induce_precision_target_loss(
                     "displacement_m": displacement,
                 }
                 raise StimulusError("moving_pad displacement did not persist")
-            if sample.native_timestamp_ns - first_post.native_timestamp_ns >= PERSISTENCE_NS:
+            if sample.native_timestamp_ns - first_post.native_timestamp_ns > PERSISTENCE_NS:
                 break
         if (
             not persistence
             or persistence[-1].native_timestamp_ns - first_post.native_timestamp_ns
-            < PERSISTENCE_NS
+            <= PERSISTENCE_NS
         ):
-            raise StimulusError("moving_pad persistence observation did not advance in time")
+            raise StimulusError(
+                "moving_pad did not persist strictly more than 0.5 simulated seconds"
+            )
         record["post_command"] = {
             "first": _pose_document(first_post),
             "persistence": [_pose_document(value) for value in persistence],
             "displacement_m": displacement,
             "minimum_persistence_ns": PERSISTENCE_NS,
+            "threshold_comparison": "strictly_greater_than",
         }
+        record["post_command"]["qgc_interventions"] = _qgc_intervention_evidence(
+            directory, config.operator_control, start_received_wall_time_ns
+        )
         record["status"] = "succeeded"
-        record["detail"] = "moving_pad remained at x=55 after an approximately 20 m displacement"
+        record["detail"] = (
+            "moving_pad remained at x=55 for more than 0.5 simulated seconds "
+            "after an approximately 20 m displacement"
+        )
+        _append_record(record_directory_fd, record_fd, record)
+        terminal_written = True
         return record
     except FileExistsError:
         raise
     except (ProtocolFileError, StimulusError) as error:
         record["detail"] = str(error)
+        if record_fd is not None and record_directory_fd is not None and not terminal_written:
+            record["status"] = "failed"
+            _append_record(record_directory_fd, record_fd, record)
+            terminal_written = True
         raise StimulusError(str(error)) from error
     except Exception as error:
         record["detail"] = f"unexpected stimulus failure: {type(error).__name__}: {error}"
+        if record_fd is not None and record_directory_fd is not None and not terminal_written:
+            record["status"] = "failed"
+            _append_record(record_directory_fd, record_fd, record)
+            terminal_written = True
         raise StimulusError(record["detail"]) from error
+    except BaseException as error:
+        if record_fd is not None and record_directory_fd is not None and not terminal_written:
+            record["status"] = "unknown" if dispatched else "failed"
+            record["detail"] = f"stimulus interrupted: {type(error).__name__}: {error}"
+            if isinstance(record.get("service"), dict) and dispatched:
+                record["service"]["outcome"] = "unknown"
+            _append_record(record_directory_fd, record_fd, record)
+            terminal_written = True
+        raise
     finally:
-        try:
-            _write_record(record_directory_fd, record_fd, record)
-        finally:
+        if record_fd is not None:
             os.close(record_fd)
+        if record_directory_fd is not None:
             os.close(record_directory_fd)
+        if control_fd is not None:
+            try:
+                fcntl.flock(control_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(control_fd)
 
 
 def main() -> int:

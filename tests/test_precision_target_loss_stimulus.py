@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 from uuid import UUID
 
 import pytest
@@ -76,8 +77,8 @@ ROOT = Path(__file__).parents[1]
 STATIONARY_TEMPLATE = ROOT / "tests/fixtures/configured-stationary-pad-run.json"
 
 
-def _companion_event() -> dict[str, object]:
-    return {
+def _companion_events() -> list[dict[str, object]]:
+    started = {
         "run_id": RUN_ID,
         "module": "companion",
         "severity": "INFO",
@@ -94,6 +95,53 @@ def _companion_event() -> dict[str, object]:
             },
             "timeout_sim_s": 90.0,
         },
+    }
+    land_requested = {
+        "run_id": RUN_ID,
+        "module": "companion",
+        "severity": "INFO",
+        "event": "precision_mode_requested",
+        "sim_timestamp": 5.0,
+        "wall_timestamp": "2026-10-10T22:00:05Z",
+        "fields": {"operation_id": "5", "mode": "LAND"},
+    }
+    return [started, land_requested]
+
+
+def _qgc_intervention(command: int, wall_time_ns: int, token: int) -> dict[str, object]:
+    return {
+        "event": "qgc_manual_command",
+        "wall_time_ns": wall_time_ns,
+        "message_type": "COMMAND_LONG",
+        "command": command,
+        "source_system": 255,
+        "source_component": 190,
+        "fields": {
+            "mavpackettype": "COMMAND_LONG",
+            "command": command,
+            "target_system": 1,
+            "target_component": 191,
+            "confirmation": 0,
+            "param1": float(token),
+            "param2": 0.0,
+            "param3": 0.0,
+            "param4": 0.0,
+            "param5": 0.0,
+            "param6": 0.0,
+            "param7": 0.0,
+        },
+    }
+
+
+def _records(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _snapshot(directory: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in directory.rglob("*")
+        if path.is_file()
     }
 
 
@@ -173,6 +221,14 @@ def _prepare_run(tmp_path: Path) -> RunFixture:
     StatusStore(output_root).write_operator_status(
         OperatorStatus(RUN_ID, "RUNNING", "", None)
     )
+    intervention = _qgc_intervention(
+        QGC_START_COMMAND,
+        1_760_147_999_900_000_000,
+        resolved.operator_control.attempt_token,
+    )
+    (run_directory / "logs/docker/qgc-interventions.jsonl").write_text(
+        json.dumps(intervention) + "\n", encoding="utf-8"
+    )
     (run_directory / "ardupilot_sitl/logs/00000001.BIN").write_bytes(b"live")
     project = "drone-sim-" + RUN_ID.replace("-", "")
     return RunFixture(
@@ -195,6 +251,8 @@ class FakeRunner:
             _odometry(55.0, 95_300_000_000),
             _odometry(55.0, 95_450_000_000),
             _odometry(55.0, 95_600_000_000),
+            _odometry(55.0, 95_750_000_000),
+            _odometry(55.0, 95_850_000_000),
         ]
         self.range_output = RANGE_AT_FIVE_METERS.replace(
             "sec: 94 nsec: 300000000", "sec: 95 nsec: 250000000"
@@ -205,7 +263,11 @@ class FakeRunner:
             "95150000", "95150000"
         )
         self.mode_csv = MODE_CSV.replace("93000000", "94000000")
-        self.companion_log = json.dumps(_companion_event()) + "\n"
+        self.companion_log = "".join(
+            json.dumps(event) + "\n" for event in _companion_events()
+        )
+        self.service_exception: BaseException | None = None
+        self.on_service = lambda: None
 
     def _inspect(self, container_id: str) -> str:
         config_path = self.run.directory / "configuration/run.json"
@@ -286,6 +348,9 @@ class FakeRunner:
             else:
                 raise AssertionError(f"unexpected topic: {topic}")
         elif "--reqtype" in command:
+            self.on_service()
+            if self.service_exception is not None:
+                raise self.service_exception
             return subprocess.CompletedProcess(
                 argv,
                 self.service_returncode,
@@ -358,9 +423,15 @@ def test_success_moves_only_the_bound_pad_and_records_persistent_physical_eviden
     )
 
     record_path = run.directory / "logs/docker/precision-loss-stimulus.jsonl"
+    records = _records(record_path)
     assert result["status"] == "succeeded"
     assert record_path.read_text(encoding="utf-8").endswith("\n")
-    assert json.loads(record_path.read_text(encoding="utf-8")) == result
+    assert [record["status"] for record in records] == [
+        "attempted",
+        "response_received",
+        "succeeded",
+    ]
+    assert records[-1] == result
     assert result["run_id"] == RUN_ID
     assert result["config_sha256"] == run.config_sha256
     assert result["world"] == "moving_pad_stationary"
@@ -379,7 +450,7 @@ def test_success_moves_only_the_bound_pad_and_records_persistent_physical_eviden
     assert result["pre_command"]["pad_odometry"]["position"] == [35.0, 0.0, 0.0]
     assert result["pre_command"]["mission"]["source_container_id"] == run.companion_container_id
     assert result["post_command"]["displacement_m"] == pytest.approx(20.0)
-    assert len(result["post_command"]["persistence"]) == 2
+    assert len(result["post_command"]["persistence"]) == 4
     assert all(row["position"] == [55.0, 0.0, 0.0]
                for row in result["post_command"]["persistence"])
 
@@ -429,7 +500,11 @@ def test_success_moves_only_the_bound_pad_and_records_persistent_physical_eviden
         ("stale_acquisition", "stale"),
         ("stale_measurement", "LastMeasMS"),
         ("stale_land", "stale"),
+        ("land_not_after_request", "mission-owned LAND request"),
         ("no_precision_operation", "precision_land"),
+        ("no_mission_land", "mission-owned LAND"),
+        ("mission_guided_after_land", "latest request"),
+        ("qgc_takeover", "QGC takeover"),
         ("foreign_container", "owned"),
         ("wrong_pre_pose", "x=35"),
         ("low_range", "0.75"),
@@ -474,15 +549,39 @@ def test_rejects_unsafe_or_unbound_inputs_before_set_pose(
     elif mutation == "stale_measurement":
         runner.precision_csv = runner.precision_csv.replace("95120,0", "94000,0")
     elif mutation == "stale_land":
-        event = _companion_event()
-        event["sim_timestamp"] = 0.0
-        runner.companion_log = json.dumps(event) + "\n"
+        events = _companion_events()
+        events[0]["sim_timestamp"] = 0.0
+        events[1]["sim_timestamp"] = 0.05
+        runner.companion_log = "".join(json.dumps(event) + "\n" for event in events)
         runner.mode_csv = (
             MODE_CSV.splitlines()[0]
             + "\n1760148001.00000000,90100000,9,9,3\n"
         )
+    elif mutation == "land_not_after_request":
+        runner.mode_csv = (
+            MODE_CSV.splitlines()[0]
+            + "\n1760148001.00000000,95000000,9,9,3\n"
+        )
     elif mutation == "no_precision_operation":
         runner.companion_log = ""
+    elif mutation == "no_mission_land":
+        runner.companion_log = json.dumps(_companion_events()[0]) + "\n"
+    elif mutation == "mission_guided_after_land":
+        events = _companion_events()
+        events.append(
+            {
+                **events[-1],
+                "fields": {"operation_id": "5", "mode": "GUIDED"},
+            }
+        )
+        runner.companion_log = "".join(json.dumps(event) + "\n" for event in events)
+    elif mutation == "qgc_takeover":
+        path = run.directory / "logs/docker/qgc-interventions.jsonl"
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(_qgc_intervention(21, 1_760_148_001_000_000_000, run.token))
+                + "\n"
+            )
     elif mutation == "foreign_container":
         original_inspect = runner._inspect
 
@@ -507,6 +606,109 @@ def test_rejects_unsafe_or_unbound_inputs_before_set_pose(
     assert not any("--reqtype" in command for command, _kwargs in runner.calls)
 
 
+@pytest.mark.parametrize("mutation", ("invalid", "finalized"))
+def test_invalid_or_finalized_run_is_rejected_without_modifying_bundle(
+    tmp_path: Path, mutation: str
+) -> None:
+    run = _prepare_run(tmp_path)
+    config_path = run.directory / "configuration/run.json"
+    if mutation == "invalid":
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        document["world"] = "moving_pad_landing"
+        without_checksum = {
+            key: value for key, value in document.items() if key != "config_sha256"
+        }
+        document["config_sha256"] = hashlib.sha256(
+            json.dumps(without_checksum, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        config_path.write_text(json.dumps(document), encoding="utf-8")
+    else:
+        StatusStore(run.directory.parent).write_operator_status(
+            OperatorStatus(RUN_ID, "COMPLETED", "mission_complete", None)
+        )
+        (run.directory / "manifest.json").write_text('{"finalized":true}\n')
+    before = _snapshot(run.directory)
+    runner = FakeRunner(run)
+
+    with pytest.raises(StimulusError):
+        induce_precision_target_loss(run.directory, runner=runner)
+
+    assert _snapshot(run.directory) == before
+    assert runner.calls == []
+
+
+def test_attempt_is_fsynced_before_dispatch_and_timeout_records_unknown_outcome(
+    tmp_path: Path,
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    record_path = run.directory / "logs/docker/precision-loss-stimulus.jsonl"
+
+    def observe_attempt() -> None:
+        records = _records(record_path)
+        assert len(records) == 1
+        assert records[0]["status"] == "attempted"
+        assert records[0]["service"]["outcome"] == "pending"
+
+    runner.on_service = observe_attempt
+    runner.service_exception = subprocess.TimeoutExpired(["gz", "service"], 8.0)
+
+    with pytest.raises(StimulusError, match="outcome is unknown"):
+        induce_precision_target_loss(run.directory, runner=runner)
+
+    records = _records(record_path)
+    assert [record["status"] for record in records] == ["attempted", "unknown"]
+    assert records[-1]["service"]["outcome"] == "unknown"
+    assert sum("--reqtype" in command for command, _kwargs in runner.calls) == 1
+
+
+def test_interruption_after_dispatch_preserves_unknown_outcome_without_retry(
+    tmp_path: Path,
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    runner.service_exception = KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        induce_precision_target_loss(run.directory, runner=runner)
+
+    records = _records(run.directory / "logs/docker/precision-loss-stimulus.jsonl")
+    assert [record["status"] for record in records] == ["attempted", "unknown"]
+    assert records[-1]["service"]["outcome"] == "unknown"
+    assert sum("--reqtype" in command for command, _kwargs in runner.calls) == 1
+
+
+def test_finalization_cannot_overlap_mutation_and_fsynced_evidence(
+    tmp_path: Path,
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    finalization_started = threading.Event()
+    finalization_finished = threading.Event()
+
+    def finalize() -> None:
+        finalization_started.set()
+        StatusStore(run.directory.parent).request_finalization(
+            RUN_ID, "ABORTED", "test_race"
+        )
+        finalization_finished.set()
+
+    thread = threading.Thread(target=finalize)
+
+    def begin_finalization() -> None:
+        thread.start()
+        assert finalization_started.wait(1)
+        assert not finalization_finished.wait(0.05)
+
+    runner.on_service = begin_finalization
+    result = induce_precision_target_loss(run.directory, runner=runner)
+    thread.join(timeout=1)
+
+    assert result["status"] == "succeeded"
+    assert finalization_finished.is_set()
+    assert _records(run.directory / "logs/docker/precision-loss-stimulus.jsonl")[-1] == result
+
+
 def test_rejected_service_is_recorded_and_never_accepted_from_return_code_alone(
     tmp_path: Path,
 ) -> None:
@@ -517,9 +719,9 @@ def test_rejected_service_is_recorded_and_never_accepted_from_return_code_alone(
     with pytest.raises(StimulusError, match="rejected"):
         induce_precision_target_loss(run.directory, runner=runner)
 
-    record = json.loads(
-        (run.directory / "logs/docker/precision-loss-stimulus.jsonl").read_text()
-    )
+    records = _records(run.directory / "logs/docker/precision-loss-stimulus.jsonl")
+    record = records[-1]
+    assert records[0]["status"] == "attempted"
     assert record["status"] == "failed"
     assert record["service"]["returncode"] == 0
     assert record["service"]["response"] == "data: false\n"
@@ -553,11 +755,60 @@ def test_true_service_response_requires_persistent_twenty_meter_displacement(
     with pytest.raises(StimulusError, match=detail):
         induce_precision_target_loss(run.directory, runner=runner)
 
-    record = json.loads(
-        (run.directory / "logs/docker/precision-loss-stimulus.jsonl").read_text()
-    )
+    records = _records(run.directory / "logs/docker/precision-loss-stimulus.jsonl")
+    record = records[-1]
+    assert records[0]["status"] == "attempted"
     assert record["status"] == "failed"
     assert record["service"]["response"] == "data: true\n"
+
+
+@pytest.mark.parametrize(
+    ("timestamps", "detail"),
+    (
+        ((95_200_000_000,), "strictly after"),
+        ((95_300_000_000, 95_450_000_000, 95_450_000_000), "strictly increase"),
+        ((95_300_000_000, 95_450_000_000, 95_400_000_000), "strictly increase"),
+    ),
+)
+def test_post_command_native_evidence_must_be_strictly_chronological(
+    tmp_path: Path, timestamps: tuple[int, ...], detail: str
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    runner.odometry = [
+        _odometry(35.0, 95_250_000_000),
+        *(_odometry(55.0, timestamp) for timestamp in timestamps),
+    ]
+
+    with pytest.raises(StimulusError, match=detail):
+        induce_precision_target_loss(run.directory, runner=runner)
+
+
+def test_exact_loss_threshold_is_insufficient_and_late_snapback_fails(
+    tmp_path: Path,
+) -> None:
+    run = _prepare_run(tmp_path)
+    runner = FakeRunner(run)
+    runner.odometry = [
+        _odometry(35.0, 95_250_000_000),
+        _odometry(55.0, 95_300_000_000),
+        _odometry(55.0, 95_450_000_000),
+        _odometry(55.0, 95_600_000_000),
+        _odometry(55.0, 95_750_000_000),
+        _odometry(55.0, 95_800_000_000),
+        _odometry(35.0, 95_800_000_001),
+    ]
+
+    with pytest.raises(StimulusError, match="did not persist"):
+        induce_precision_target_loss(run.directory, runner=runner)
+
+    record = _records(
+        run.directory / "logs/docker/precision-loss-stimulus.jsonl"
+    )[-1]
+    assert record["status"] == "failed"
+    assert record["post_command"]["persistence"][-2]["native_timestamp_ns"] == (
+        95_800_000_000
+    )
 
 
 def test_existing_stimulus_record_blocks_every_external_command(tmp_path: Path) -> None:

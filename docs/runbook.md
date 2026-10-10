@@ -685,32 +685,44 @@ admission match, the host lifecycle is still `RUNNING`, and the owned
 `gazebo-runtime` and `companion-runtime` containers are bound to the run. It
 reads the current configured `precision_land` operation from a bounded tail of
 the live companion container log because `logs/companion.jsonl` is published
-only during finalization. It also requires a latest live DataFlash `PL.TAcq=1`
-row no more than 0.5 native seconds old, latest Copter mode 9 (LAND) no more
-than 5 native seconds old, and downward clearance greater than 0.75 m. Both
-DataFlash facts must follow the operation start and cannot be ahead of the
-pre-command native odometry. `PL.LastMeasMS` must independently place the last
-target measurement within the same 0.5-second window. An active BIN file that
-has not flushed those rows within the bounds causes a refusal; do not infer
-readiness from an older row.
+only during finalization. The active operation must emit a
+`precision_mode_requested` LAND event after its command enqueue succeeds. This
+event attributes the request to that operation but does not claim an FC ACK.
+The latest live DataFlash mode must then show LAND strictly after the mission
+event and no more than 5 native seconds before the current odometry. The latest
+DataFlash `PL.TAcq=1` row and `PL.LastMeasMS` must place acquisition within 0.5
+native seconds of current odometry. The helper also requires downward clearance
+greater than 0.75 m. An active BIN file that has not flushed those rows within
+the bounds causes a refusal; do not infer readiness from an older row.
+
+The helper binds the accepted Start to its native QGC intervention row and
+rejects any later QGC takeover evidence before or during the stimulus. Do not
+click native QGC LAND, GUIDED, Pause, Abort, or another action while the helper
+runs. Invalid, finalizing, or finalized bundles are rejected without creating
+or changing any file.
 
 One invocation reserves
-`logs/docker/precision-loss-stimulus.jsonl` without overwrite. It discovers
+`logs/docker/precision-loss-stimulus.jsonl` without overwrite while holding the
+same `.control` directory lock used to request finalization. The lock covers the
+final eligibility and freshness checks, physical command, bounded native
+observations, and fsynced evidence appends. It discovers
 `/world/moving_pad_stationary/set_pose` on the derived run partition and asks
 Gazebo's `gz.msgs.Pose` to move the physical `moving_pad` entity from x=35 m to
-x=55 m with y=z=0 and identity orientation. Success requires a true
-`gz.msgs.Boolean` reply plus native odometry showing the approximately 20 m
-displacement for at least 0.25 simulated seconds. A failed attempt remains in
-the log and blocks another invocation for that run; prepare a fresh run rather
-than hiding a rejected or transient mutation.
+x=55 m with y=z=0 and identity orientation. Before dispatch it fsyncs an
+`attempted` JSONL row with the exact request. It then appends a returned response
+or an explicit `unknown` outcome for a timeout or interruption, followed by the
+terminal result when known. Success requires a true `gz.msgs.Boolean` reply and
+strictly increasing native odometry showing the approximately 20 m displacement
+for more than 0.5 simulated seconds. A failure or unknown outcome remains in the
+log and blocks another invocation for that run; prepare a fresh run rather than
+hiding or retrying a physical action.
 
 This record establishes the bounded physical stimulus and its immediate native
 observations. The later `--expect precision-loss` inspection must still prove
 acquisition then loss in DataFlash, the policy-owned GUIDED request and exact
 failure reason, unchanged `PLND_ENABLED=1` and `PLND_STRICT=2`, the rendered
 marker's disappearance on video, matching public pad motion in the rosbag,
-native-state corroboration, manifest hashing, and cleanup. Do not click native
-QGC LAND or Pause before the policy failure and hold are established.
+native-state corroboration, manifest hashing, and cleanup.
 
 ## Test without a full flight
 
