@@ -267,7 +267,56 @@ original mission plan. Ordinary `start` keeps manual operator behavior.
 
 ## Local developer workflow
 
-After editing `companion/comp2026` or simulator code, run from the repository root:
+### Develop Comp 2026 with QGC
+
+Use the [flight-code map](../companion/README.md#where-to-change-comp-2026-code)
+to choose the mission, shared controller, or simulation adapter to edit. These
+files are tracked in `drone_sim`; commit them on the same feature branch.
+The local console currently supports Apple Silicon macOS with Colima. The
+requested Linux and Windows-through-WSL2 console paths are not implemented yet.
+
+1. Edit the source and run tests that cover the changed behavior. For example,
+   these tests cover automatic sequencing and mission phase outcomes:
+
+   ```bash
+   PYTHONPATH=companion/comp2026/src:companion/comp2026/tests \
+     uv run --locked pytest companion/comp2026/tests/test_auto_attempt.py \
+       companion/comp2026/tests/test_mission_phase_results.py -q
+   ```
+
+   For shared controller or simulator adapter changes, also run the affected
+   tests under `companion/comp2026/tests` or `companion/tests`.
+
+2. After the previous simulation has stopped and cleanup is complete, build
+   matching images. From the repository root:
+
+   ```bash
+   ./scripts/local-build.sh --build
+   ./scripts/local-build.sh --check
+   uv run --locked drone-sim console
+   ```
+
+   If the console is already running, use its **Build matching images** button.
+   Source is copied into the companion image; editing a file does not update a
+   running simulation. Committing after a build changes the required revision,
+   so build again before the next run. If you add an imported mission module,
+   check the [Docker context allowlist](../.dockerignore).
+
+3. Select a competition preset that runs `comp2026_auto`, then click
+   **Prepare simulation**. Select its new action file in QGC and use
+   **Start selected mission** there, following the
+   [console workflow](#local-mac-console). Configured diagnostic presets invoke
+   a separate operation runner and do not exercise the Comp2026 mission phases.
+
+4. Inspect the run's flight outcome, score, and recorded evidence separately.
+   Use **Abort and recover** in QGC when flight recovery is needed. Use
+   **Stop simulation** for teardown, then wait for cleanup before rebuilding
+   and preparing another run. Each preparation creates a new run and action file.
+
+### Run an unattended development check
+
+For the existing unattended CLI, run from the repository root after editing
+`companion/comp2026` or simulator code:
 
 1. Prepare the host environment and rebuild images with the current source:
 

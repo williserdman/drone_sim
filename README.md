@@ -15,11 +15,23 @@ validated run bundle establish what actually happened.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
-**Verification scope:** the cloud branch has accepted calibration and reload
-runs; its complete eleven-case sweep remains unfinished. The local console
-passed an independently accepted configured descent with a 100/100 score and
-complete cleanup. See [current status](docs/handoff.md) for the exact revision,
-flight evidence, and remaining verification scope.
+**Verification scope:** the current QGC control implementation has automated
+test and matching image-build evidence. Native QGC command routing and flight
+acceptance remain pending. Earlier configured-descent, calibration, and reload
+results apply to their recorded revisions. See [current status](docs/handoff.md)
+for exact evidence and remaining checks.
+
+## Platform support
+
+The local console currently targets Apple Silicon macOS with Colima and native
+QGroundControl. The simulator services run in Linux containers, but the local
+launcher, QGC settings lookup, and image builds still contain Mac and ARM64
+assumptions. The existing Linux/cloud unattended workflow has separate
+[build and run instructions](docs/runbook.md#existing-unattended-image-build).
+
+The requested portability target is macOS, Linux, and Windows through WSL2,
+with native QGC and browser views of Gazebo and the camera. Linux and WSL2
+console support is not implemented or verified yet.
 
 ## Local Mac flight console
 
@@ -78,6 +90,14 @@ build images automatically. Do not start with a bare `docker compose up`.
 
 ## Contributing or adding a mission
 
+Develop Comp 2026 flight behavior in [`companion/comp2026`](companion/comp2026).
+It is tracked source in this repository, with its earlier Git history preserved.
+Commit those edits on your `drone_sim` feature branch. See the
+[flight-code map](companion/README.md#where-to-change-comp-2026-code) for the
+active FM1, FM2, and FM3 entry points, shared controls, and simulation adapters.
+Use the [QGC development loop](docs/runbook.md#develop-comp-2026-with-qgc) to test
+and rebuild before trying the change in a new run.
+
 For a fixed sequence, copy [configured-descent-run.json](config/configured-descent-run.json)
 and edit its `mission_plan.steps`. The [companion guide](companion/README.md#configured-diagnostic-missions)
 defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow)
@@ -110,6 +130,3 @@ belong under `companion/comp2026`; read its local documentation before editing.
 Update every affected module README and shared guide **in the same change**.
 Report documentation impact (or why none is needed), tests, and any unverified
 runtime behavior when handing off.
-
-The Comp2026 mission source and its prior Git history are included in this
-monorepo at `companion/comp2026`.

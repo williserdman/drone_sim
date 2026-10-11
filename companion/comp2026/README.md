@@ -23,10 +23,11 @@ The parent `comp2026_auto` entry in
 31020 Start and 31021 Abort owner and runs the selected automatic mission through
 `run_auto_attempt`. It uses the existing DroneKit reader and guarded output
 composition; the legacy 31000–31015 listener contract below remains a separate
-aircraft/runtime interface. The simulator host has source and offline test
-evidence only. No matching current image or integrated QGC/SITL result exists,
-and no verified aircraft configuration or supported aircraft shell invocation
-is available in this checkout.
+aircraft/runtime interface. The simulator host has automated test and matching
+image-build evidence; integrated native QGC flight acceptance remains pending.
+See the parent [current status](../../docs/handoff.md) for dated verification.
+No verified aircraft configuration or supported aircraft shell invocation is
+available in this checkout.
 
 The simulator's FM1/FM2/FM3 supervisor envelopes are internal phase bookkeeping
 with companion source and target 1/191. They are not received QGC commands and

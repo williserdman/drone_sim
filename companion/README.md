@@ -10,6 +10,37 @@ requests, mission events, and durable mission lifecycle evidence.
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
+## Where to change Comp 2026 code
+
+`comp2026/` is tracked in the parent `drone_sim` repository. Develop and commit
+competition flight behavior here so the simulator builds the same source you
+edit. Its imported Git history remains available. Maintaining a separate copy
+of a mission for simulation would let flight behavior diverge.
+
+| Change | Source |
+| --- | --- |
+| FM1 and FM2 mission behavior | [`comp2026/src/drone/missions/fm1.py`](comp2026/src/drone/missions/fm1.py), [`fm2.py`](comp2026/src/drone/missions/fm2.py) |
+| Active FM3 precision and payload mission | [`comp2026/src/drone/mock_mission.py`](comp2026/src/drone/mock_mission.py) |
+| Complete automatic attempt sequence | [`comp2026/src/drone/auto_attempt.py`](comp2026/src/drone/auto_attempt.py) |
+| Shared aircraft commands, authority, and recovery | [`comp2026/src/drone/control/`](comp2026/src/drone/control/) |
+| Camera, range, and payload interfaces | [`comp2026/src/drone/sensors/`](comp2026/src/drone/sensors/) |
+| Mission and control tests | [`comp2026/tests/`](comp2026/tests/) |
+| ROS inputs, simulation clock, and simulator control composition | [`src/drone_sim_companion/`](src/drone_sim_companion/) and [`tests/`](tests/) |
+| Course geometry and scenario inputs | [`config/course.yaml`](../config/course.yaml), [`config/scenario.yaml`](../config/scenario.yaml) |
+
+Despite its name, `mock_mission.py` supplies the active FM3 implementation.
+`drone/missions/fm3.py` is an inactive historical route and raises on invocation.
+The production selector is
+[`_original_mission_functions()`](comp2026/src/drone/auto_attempt.py).
+
+The `comp2026_auto` simulator host invokes these mission functions through
+`run_auto_attempt()` and supplies simulation adapters. Configured diagnostic
+missions use a separate operation runner, so a configured descent alone does
+not exercise changed FM1, FM2, or FM3 behavior. Read the
+[Comp2026 guide](comp2026/README.md) for aircraft deployment status and follow
+the [QGC development loop](../docs/runbook.md#develop-comp-2026-with-qgc) for local
+iteration. Simulator success does not establish a supported aircraft deployment.
+
 ## Local operator supervision
 
 Resolved runs select `launch_mode: unattended` (the existing default) or
