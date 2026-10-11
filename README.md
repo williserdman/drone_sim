@@ -33,7 +33,9 @@ The requested portability target is macOS, Linux, and Windows through WSL2,
 with native QGC and browser views of Gazebo and the camera. Linux and WSL2
 console support is not implemented or verified yet. The
 [portability design](docs/superpowers/specs/2026-10-10-portable-local-console-design.md)
-defines the proposed host integration and verification requirements.
+defines the approved host integration and verification requirements. The
+[implementation plan](docs/superpowers/plans/2026-10-10-portable-local-console.md)
+is ready for review.
 
 ## Local Mac flight console
 
