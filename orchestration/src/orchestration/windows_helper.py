@@ -462,7 +462,8 @@ class WindowsHelper:
 
     def _handle_frame(self, value: Mapping[str, object]) -> None:
         common = {"version", "kind", "session_id"}
-        if value.get("version") != PROTOCOL_VERSION:
+        version = value.get("version")
+        if type(version) is not int or version != PROTOCOL_VERSION:
             raise WindowsHelperError(
                 "helper_protocol_version", "Windows helper protocol version must be 1"
             )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -162,7 +163,7 @@ def test_inspection_preserves_native_windows_paths(tmp_path: Path) -> None:
     assert helper.closed is True
 
 
-def test_lease_keeps_one_wire_session_for_all_native_operations(tmp_path: Path) -> None:
+def test_lease_keeps_one_wire_session_for_run_operations(tmp_path: Path) -> None:
     helper = FakeHelper()
     host = _host(tmp_path, [helper])
     identity = ControllerIdentity(
@@ -173,7 +174,6 @@ def test_lease_keeps_one_wire_session_for_all_native_operations(tmp_path: Path) 
     with host.acquire_native_lease() as lease:
         lease.register_controller(identity, pristine=True)
         lease.begin_run(RUN_ID)
-        lease.verify_resume(RUN_ID, RECEIPT)
         lease.finish_run(RUN_ID, verified_cleanup=True)
         assert helper.closed is False
 
@@ -182,11 +182,85 @@ def test_lease_keeps_one_wire_session_for_all_native_operations(tmp_path: Path) 
         "acquire_lease",
         "register_controller",
         "begin_run",
-        "verify_resume",
         "finish_run",
         "release_lease",
     ]
     assert helper.closed is True
+
+
+def test_recovery_uses_replacement_helper_after_old_helper_exits(
+    tmp_path: Path,
+) -> None:
+    action_bytes = b'{"run":"recovery"}'
+    digest = hashlib.sha256(action_bytes).hexdigest()
+    receipt = PublicationReceipt(
+        native_path=rf"C:\recovery\drone-sim-{RUN_ID}.json",
+        filename=f"drone-sim-{RUN_ID}.json",
+        sha256=digest,
+    )
+    first = FakeHelper(
+        {
+            "publish_actions": {
+                "native_path": receipt.native_path,
+                "filename": receipt.filename,
+                "sha256": receipt.sha256,
+            }
+        }
+    )
+    replacement = FakeHelper()
+    host = _host(tmp_path, [first, replacement])
+    identity = ControllerIdentity(
+        UUID("22222222-2222-4222-8222-222222222222"),
+        UUID("33333333-3333-4333-8333-333333333333"),
+    )
+    material = SimpleNamespace(
+        published_name=receipt.filename,
+        action_bytes=action_bytes,
+    )
+
+    with host.acquire_native_lease() as lease:
+        lease.register_controller(identity, pristine=True)
+        lease.begin_run(RUN_ID)
+        assert host.publish_actions(material, INSTALLATION, lease) == receipt
+
+    assert first.closed is True
+    assert [operation for operation, _ in first.requests] == [
+        "acquire_lease",
+        "register_controller",
+        "begin_run",
+        "publish_actions",
+        "release_lease",
+    ]
+
+    with host.acquire_native_lease() as replacement_lease:
+        assert first.closed is True
+        replacement_lease.register_controller(identity, pristine=False)
+        replacement_lease.verify_resume(RUN_ID, receipt)
+
+    assert [operation for operation, _ in replacement.requests] == [
+        "acquire_lease",
+        "register_controller",
+        "verify_resume",
+        "release_lease",
+    ]
+    assert first.requests[1][1] == {
+        "installation_id": "22222222-2222-4222-8222-222222222222",
+        "ledger_id": "33333333-3333-4333-8333-333333333333",
+        "distro_name": "Ubuntu-24.04",
+        "pristine": True,
+    }
+    assert replacement.requests[1][1] == {
+        **first.requests[1][1],
+        "pristine": False,
+    }
+    assert replacement.requests[2][1] == {
+        "run_id": RUN_ID,
+        "publication": {
+            "native_path": receipt.native_path,
+            "filename": receipt.filename,
+            "sha256": receipt.sha256,
+        },
+    }
 
 
 def test_publication_uses_lease_helper_and_exact_material(tmp_path: Path) -> None:

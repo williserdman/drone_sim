@@ -122,6 +122,23 @@ def test_request_caps_serialized_utf8_bytes(
     ("frame", "message"),
     [
         (b"not-json\n", "JSON"),
+        *[
+            (
+                json.dumps(
+                    {
+                        "version": version,
+                        "kind": "status",
+                        "session_id": SESSION_ID,
+                        "state": "ready",
+                        "helper_version": "1",
+                        "source_sha256": SOURCE_DIGEST,
+                    }
+                ).encode()
+                + b"\n",
+                "version",
+            )
+            for version in (True, 1.0)
+        ],
         (
             json.dumps(
                 {
@@ -260,6 +277,47 @@ def test_unknown_mismatched_or_duplicate_response_ids_disconnect(
             time.sleep(0.05)
             with pytest.raises(WindowsHelperError, match="request ID"):
                 helper.request("probe", {})
+    finally:
+        helper.close()
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_response_version_must_be_an_integer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: object
+) -> None:
+    helper = _start(
+        tmp_path,
+        monkeypatch,
+        f"""
+        request = json.loads(sys.stdin.readline())
+        emit({{"version": {version!r}, "kind": "response", "session_id": session_id,
+              "request_id": request["request_id"], "ok": True, "result": {{}}}})
+        time.sleep(1)
+        """,
+    )
+    try:
+        with pytest.raises(WindowsHelperError, match="version"):
+            helper.request("probe", {}, timeout_s=0.5)
+    finally:
+        helper.close()
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_datagram_version_must_be_an_integer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: object
+) -> None:
+    helper = _start(
+        tmp_path,
+        monkeypatch,
+        f"""
+        emit({{"version": {version!r}, "kind": "datagram", "session_id": session_id,
+              "data_base64": "eA=="}})
+        time.sleep(1)
+        """,
+    )
+    try:
+        with pytest.raises(WindowsHelperError, match="version"):
+            helper.receive(0.5)
     finally:
         helper.close()
 
