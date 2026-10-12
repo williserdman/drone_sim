@@ -1,8 +1,8 @@
 # Portable local simulation console
 
 2026-10-10. The user approved this written specification. The
-[implementation plan](../plans/2026-10-10-portable-local-console.md) awaits review.
-Implementation has not started; this describes intended behavior, not verified
+[implementation plan](../plans/2026-10-10-portable-local-console.md) was approved
+for execution on 2026-10-12. Implementation is in progress; this describes intended behavior, not verified
 platform support.
 
 This extends the [QGC console specification](2026-10-08-local-simulation-console-spec.md)

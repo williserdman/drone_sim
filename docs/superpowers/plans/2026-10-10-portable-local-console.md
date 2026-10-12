@@ -10,7 +10,7 @@
 
 **Spec:** [Approved portable console design](../specs/2026-10-10-portable-local-console-design.md).
 
-**Status:** The user approved the specification on 2026-10-10. This plan awaits review; no portability implementation or native platform acceptance is claimed.
+**Status:** Approved for implementation by the user on 2026-10-12. Work is in progress. Native platform acceptance remains separate from software implementation.
 
 ## Global Constraints
 

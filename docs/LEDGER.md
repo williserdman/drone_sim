@@ -235,3 +235,10 @@
 - Self-review mapped every specification section and five failure cases to implementation tasks and concrete assertions. Corrected publication fixture field names, existing versus new test paths, WSL activation order, and transport creation after publication. Native Windows operations, actual ARM64/AMD64 builds, native QGC interaction, and flight outcomes remain separate proof gates.
 - Planning only: no runtime source, QGC preferences, token state, image tags, running simulation, or existing run evidence was changed. The previous eight-image build still identifies e3ccc53; the next simulation requires a supported matching build for its source revision. No platform support or native flight result is inferred from this plan.
 - Documentation verification passed: 31 local link targets, 87 existing-file references, 23 declared new files, all nine task contracts, and no unresolved placeholders. The staged whitespace check also passed. No runtime test suite or image build was needed for this documentation-only change.
+
+
+## 2026-10-12: Portable console implementation
+
+- The user authorized execution of the portability plan. Verified the existing feature worktree at 9247ca9; preserved an unrelated untracked .DS_Store. The original cooperative-lift checkout remains untouched.
+- Ruling: execute the software tasks and their reviews continuously, while recording unavailable native Windows/WSL, native AMD64, and QGC flight checks as pending acceptance. Unit tests and Mac execution cannot substitute for those results.
+- Preflight checked all nine task contracts and shared files/interfaces. Production WSL activation follows helper, ownership, and bridge integration. The Python build extraction and every lease caller migrate together. Task progress and review reports are retained in this plan's ignored execution workspace.
