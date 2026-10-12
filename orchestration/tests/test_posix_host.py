@@ -210,6 +210,38 @@ def test_linux_discovers_native_appdir_from_paired_appstream_metadata(
     assert installation.source == QGC_SOURCE
 
 
+def test_linux_rejects_newer_appstream_release_with_historical_5_0_8(
+    tmp_path: Path,
+) -> None:
+    executable = _linux_installation(tmp_path / "QGroundControl.AppDir")
+    metadata = (
+        executable.parents[1]
+        / "share/metainfo/org.mavlink.qgroundcontrol.metainfo.xml"
+    )
+    metadata.write_text(
+        "<component type='desktop-application'>"
+        "<id>org.mavlink.qgroundcontrol</id>"
+        "<releases>"
+        "<release version='5.1.0'/>"
+        "<release version='5.0.8'/>"
+        "</releases>"
+        "</component>",
+        encoding="utf-8",
+    )
+    settings_file = tmp_path / "QGroundControl.ini"
+    _settings(settings_file, tmp_path / "save")
+    host = PosixHost(
+        tmp_path,
+        HostConfig("linux", str(executable), str(settings_file)),
+        _facts(),
+        home=tmp_path,
+        environ={},
+    )
+
+    with pytest.raises(RuntimeError, match="version 5.0.8"):
+        host.inspect_qgc()
+
+
 def test_linux_rejects_wrong_native_elf_architecture(tmp_path: Path) -> None:
     executable = _linux_installation(tmp_path / "QGroundControl.AppDir", "arm64")
     settings_file = tmp_path / "QGroundControl.ini"
@@ -488,3 +520,102 @@ def test_posix_udp_ignores_unpinned_peer_and_close_is_idempotent(
         transport.send(b"late")
     pinned.close()
     unpinned.close()
+
+
+class _SocketFailureFixture:
+    def __init__(
+        self,
+        *,
+        bind_error: OSError | None = None,
+        timeout_error: OSError | None = None,
+    ) -> None:
+        self.bind_error = bind_error
+        self.timeout_error = timeout_error
+        self.closed = False
+
+    def bind(self, _address: tuple[str, int]) -> None:
+        if self.bind_error is not None:
+            raise self.bind_error
+
+    def settimeout(self, _timeout_s: float) -> None:
+        if self.timeout_error is not None:
+            raise self.timeout_error
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _transport_host(tmp_path: Path) -> PosixHost:
+    return PosixHost(
+        tmp_path,
+        HostConfig("linux", None, None),
+        _facts(),
+        home=tmp_path,
+        environ={},
+    )
+
+
+def _publication() -> SimpleNamespace:
+    return SimpleNamespace(
+        native_path="/save/action",
+        filename="action",
+        sha256="0" * 64,
+    )
+
+
+def test_posix_udp_translates_socket_initialization_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_socket(*_args: object, **_kwargs: object) -> None:
+        raise OSError("socket unavailable")
+
+    monkeypatch.setattr(posix_module.socket, "socket", fail_socket)
+    host = _transport_host(tmp_path)
+
+    with host.acquire_native_lease() as lease:
+        with pytest.raises(HostTransportError, match="creation failed") as caught:
+            host.open_datagrams(lease, RUN_ID, _publication())
+
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+def test_posix_udp_closes_socket_and_translates_bind_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_socket = _SocketFailureFixture(bind_error=OSError("bind denied"))
+    monkeypatch.setattr(
+        posix_module.socket,
+        "socket",
+        lambda *_args, **_kwargs: failed_socket,
+    )
+    host = _transport_host(tmp_path)
+
+    with host.acquire_native_lease() as lease:
+        with pytest.raises(HostTransportError, match="bind failed") as caught:
+            host.open_datagrams(lease, RUN_ID, _publication())
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert failed_socket.closed is True
+
+
+def test_posix_udp_translates_receive_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_socket = _SocketFailureFixture(
+        timeout_error=OSError("timeout setup failed")
+    )
+    monkeypatch.setattr(
+        posix_module.socket,
+        "socket",
+        lambda *_args, **_kwargs: failed_socket,
+    )
+    host = _transport_host(tmp_path)
+
+    with host.acquire_native_lease() as lease:
+        transport = host.open_datagrams(lease, RUN_ID, _publication())
+        with pytest.raises(HostTransportError, match="receive failed") as caught:
+            transport.receive(1)
+        transport.close()
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert failed_socket.closed is True

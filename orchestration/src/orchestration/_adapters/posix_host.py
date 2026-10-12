@@ -66,8 +66,25 @@ class _PosixLease:
 class _PosixDatagramTransport:
     def __init__(self, peer_port: int) -> None:
         self._peer = ("127.0.0.1", peer_port)
-        self._socket: socket.socket | None = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._socket.bind(("127.0.0.1", 0))
+        self._socket: socket.socket | None = None
+        try:
+            active = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError as error:
+            raise HostTransportError(
+                f"QGC datagram socket creation failed: {error}"
+            ) from error
+        try:
+            active.bind(("127.0.0.1", 0))
+        except OSError as error:
+            try:
+                active.close()
+            except OSError as close_error:
+                raise HostTransportError(
+                    "QGC datagram bind failed: "
+                    f"{error}; socket cleanup failed: {close_error}"
+                ) from error
+            raise HostTransportError(f"QGC datagram bind failed: {error}") from error
+        self._socket = active
 
     def _active_socket(self) -> socket.socket:
         if self._socket is None:
@@ -95,7 +112,12 @@ class _PosixDatagramTransport:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            active.settimeout(remaining)
+            try:
+                active.settimeout(remaining)
+            except OSError as error:
+                raise HostTransportError(
+                    f"QGC datagram receive failed: {error}"
+                ) from error
             try:
                 payload, peer = active.recvfrom(_MAX_DATAGRAM + 1)
             except socket.timeout:
@@ -111,7 +133,12 @@ class _PosixDatagramTransport:
     def close(self) -> None:
         active, self._socket = self._socket, None
         if active is not None:
-            active.close()
+            try:
+                active.close()
+            except OSError as error:
+                raise HostTransportError(
+                    f"QGC datagram close failed: {error}"
+                ) from error
 
 
 class PosixHost:
@@ -461,15 +488,24 @@ def _validate_appstream(path: Path) -> None:
         raise RuntimeError(f"QGroundControl AppStream metadata {path} is invalid") from error
     application_ids = [
         (element.text or "").strip()
-        for element in root.iter()
+        for element in root
         if element.tag.rsplit("}", 1)[-1] == "id"
     ]
-    versions = [
-        element.attrib.get("version")
-        for element in root.iter()
-        if element.tag.rsplit("}", 1)[-1] == "release"
+    release_groups = [
+        element
+        for element in root
+        if element.tag.rsplit("}", 1)[-1] == "releases"
     ]
-    if application_ids != ["org.mavlink.qgroundcontrol"] or _QGC_VERSION not in versions:
+    releases = list(release_groups[0]) if len(release_groups) == 1 else []
+    if (
+        root.tag.rsplit("}", 1)[-1] != "component"
+        or root.attrib.get("type") != "desktop-application"
+        or application_ids != ["org.mavlink.qgroundcontrol"]
+        or len(release_groups) != 1
+        or len(releases) != 1
+        or releases[0].tag.rsplit("}", 1)[-1] != "release"
+        or releases[0].attrib.get("version") != _QGC_VERSION
+    ):
         raise RuntimeError(
             f"QGroundControl AppStream metadata {path} does not identify version {_QGC_VERSION}"
         )
