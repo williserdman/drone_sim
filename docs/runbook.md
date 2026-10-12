@@ -330,7 +330,7 @@ from the payload issue note were an independent recording for that particular
 run, **not** an artifact guaranteed by ordinary launches.
 
 The [accepted VFS 2027 run](handoff.md#verified-behavior-and-limits) separately
-verified all three physical deliveries, 365/380, and the full 780-second bundle.
+verified all three physical deliveries, 366/380, and the full 780-second bundle.
 
 Three distinct questions must be answered: did the vehicle physically perform
 the mission, what points were awarded, and did the full evidence bundle validate?

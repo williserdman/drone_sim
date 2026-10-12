@@ -3,7 +3,39 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-08. Configured VFS templates now request 12 m/s transit,
+Audited 2026-10-09. Full VFS 2027 run
+`61d59d63-23b6-4323-a4e7-b0c2b95d2044` passed independent physical, scoring,
+artifact, and provenance acceptance at clean runtime revision
+`2ce013726d0e0b70463f9ba1f0173310ff0e093b`. All 107 operations succeeded:
+FM1 D/H landings, all three C drops, all three camera-guided retrievals and
+grounded L releases, and final H contact/disarm. The operation tools, arguments,
+and order match the previous full mission exactly after the new leading
+`configure_flight` step.
+
+The mission finished at 552.35 public seconds; FM3 was approved at 543.35
+active seconds. Active time fell by 31.55 seconds (5.49%) from the accepted
+baseline's 574.90 seconds.
+Horizontal transit totaled 208.90 versus 224.60 seconds; ordinary LAND totaled
+66.40 versus 81.70 seconds. Precision landings totaled 78.85 versus 77.35 seconds,
+so the short probe's 13.44% segment improvement is not a full-mission result.
+The canonical score and independent replay both gave 366/380, including one
+time-bonus point and zero deductions. The
+[timing comparison](../runs/verification/61d59d63-23b6-4323-a4e7-b0c2b95d2044/timing-comparison.json)
+decodes both bags with this run's pinned artifacts image; baseline decoding is
+a diagnostic comparison, not fresh acceptance of historical source provenance.
+
+The run finalized `COMPLETED` at `2026-10-09T00:40:36.192648Z`, after
+6,379.45 wall seconds. All 25 artifact entries were valid, with no incomplete
+paths. Both [observer](../runs/61d59d63-23b6-4323-a4e7-b0c2b95d2044/video/observer.mp4)
+and [onboard](../runs/61d59d63-23b6-4323-a4e7-b0c2b95d2044/video/onboard.mp4)
+videos contain 15,600 frames at 20 Hz over the complete 780-second window.
+Independent [acceptance](../runs/verification/61d59d63-23b6-4323-a4e7-b0c2b95d2044/acceptance.json)
+verified both clean source revisions, all seven
+[image pins](../runs/verification/61d59d63-23b6-4323-a4e7-b0c2b95d2044/image_ids.json),
+and removal of run containers. Manifest SHA-256:
+`cc64d612374f2a5a41cf4b1b6f64197df4b6e26ff5f09cea1cbd64c103213a97`.
+
+The speed tuning verified on 2026-10-08 requests 12 m/s transit,
 3 m/s² horizontal acceleration, 2 m/s³ jerk, and 1.5 m/s LAND descent above
 2 m, retaining 0.5 m/s touchdown speed. The new `configure_flight` operation
 requires landed/disarmed state and matching live parameter readback before
@@ -33,7 +65,7 @@ sets; both judge approvals precede that boundary. Evidence remains unmodified.
 [Artifact verification](../runs/verification/08fcdf54-bfac-4021-8324-c2d5395a8528/artifact-check.json)
 records manifest SHA-256
 `044274e83157289d80501760ff34f78cfd88cae4108aac7944a2aa0e496f972c`.
-This change has no new full-mission acceptance result. Full timing tuning,
+The probe established no full-mission acceptance result. Further timing tuning,
 simulation-rate changes, and coordinated early diagnostic completion are deferred.
 
 VFS 2027 implementation adds configurable A/B/C targets
@@ -43,7 +75,7 @@ with three rigid marked payloads in S. The ground mission, liquid/breakage, and
 physical removal of failed drops remain deferred. Operator commands and current
 contracts live in the [runbook](runbook.md) and module guides.
 
-Latest accepted VFS run `42588d99-a262-4b5b-bfa0-e45bf6cd1827` used runtime
+Previous accepted VFS baseline `42588d99-a262-4b5b-bfa0-e45bf6cd1827` used runtime
 revision `a6b9c8d47ebf7ebb16a15364a73d24520ef9ef40` with both source revisions
 clean and all seven image IDs independently checked against external build pins.
 It completed three C drops, three camera-guided retrievals and grounded L
@@ -375,6 +407,7 @@ score alone is not a pass.
 
 | Evidence | Physical mission | Score | Terminal artifacts | Limits |
 | --- | --- | --- | --- | --- |
+| Accepted tuned VFS 2027 all-C run `61d59d63-23b6-4323-a4e7-b0c2b95d2044` | All 107 operations; three C drops; three grounded L deliveries; H contact/disarm; FM3 approved at 543.35 active seconds | 366/380; independently replayed | `COMPLETED`; accepted full 780-second bundle; both videos 15,600 frames | Runtime `2ce0137`; complete original mission retained after added flight configuration; active time 5.49% lower than previous baseline |
 | Accepted VFS 2027 all-C run `42588d99-a262-4b5b-bfa0-e45bf6cd1827` | Three C drops; three grounded L deliveries; H contact/disarm; FM3 approved at 574.90 active seconds | 365/380; independently replayed | `COMPLETED`; accepted full 780-second bundle; both videos 15,600 frames | Runtime `a6b9c8d`; source and all seven image pins verified; machine-local proof linked above |
 | VFS startup failure, run `44f7cc92-511d-4899-b182-35a6fb5185e5` | No simulation or flight started | Null | `FAILED`; manifest preserved | Runtime `a6b9c8d`; Docker address pools exhausted before startup |
 | VFS frame-expiry failure, run `08ee1b09-78ae-4950-8919-adea7a2a0c33` | Three C drops; first retrieval failed before attachment or L delivery | 215/380 standalone | `FAILED`; all 15 artifact paths invalid; manifest score null | Runtime `a916537`; delayed-pose association worked; processing expiry terminated vision |
