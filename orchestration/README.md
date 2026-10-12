@@ -117,6 +117,33 @@ selected `flyViewActionsFile` and all other preferences unchanged. macOS uses
 uses `${XDG_CONFIG_HOME:-~/.config}/QGroundControl/QGroundControl.ini`. The
 bundled action bytes remain a separate manifest configuration record.
 
+The packaged Windows modules under [`windows/`](src/orchestration/windows/) are
+the native half of the WSL2 host boundary. `HostFilesystem.psm1` validates the
+official QGroundControl 5.0.8 Windows version resources, reads one UTF-8 INI
+snapshot, publishes to local NTFS with locked no-follow path handles, and opens
+or focuses only the validated executable. Publication holds every validated
+path component without delete sharing, flushes a same-directory exclusive
+temporary file with `FileStream.Flush(true)`, performs a write-through
+no-replace `MoveFileExW`, and hashes the destination through the final native
+handle. It leaves the INI bytes and selected action unchanged.
+
+`HostLease.psm1` acquires a Windows-user-SID named mutex on the helper event-loop
+thread and keeps a versioned registration under `%LOCALAPPDATA%\drone-sim`.
+`Enter-ControllerLease -SessionId` consumes the helper's already-established
+canonical wire-session UUID. Registration binds the Windows Lxss distribution
+GUID, installation UUID, and Linux ledger UUID; `Register-Controller` also
+requires the caller's pristine-ledger fact. Active ownership records the actual
+Windows helper PID, process creation time, and wire session. Releasing or
+abandoning the mutex does not clear it. Recovery accepts the Python controller's
+run-bound immutable publication receipt, verifies the old Windows process
+identity is gone and the run-named native bytes still match, then rebinds the
+held helper session. Only verified cleanup clears active ownership.
+
+These modules are package data for the later bounded helper. The production
+host resolver still keeps WSL2 disabled until that helper protocol, transport,
+and lifecycle composition are connected. Native Windows 11 and Windows
+PowerShell 5.1 verification remains a required acceptance gate.
+
 The QGC baseline is 5.0.8 with system ID 255 and component ID 190. macOS discovery checks
 the selected application bundle's full version metadata. Linux accepts the
 pinned official x86-64 AppImage by size and SHA-256. It also accepts a native
@@ -168,7 +195,8 @@ semantics: WSL checkouts, run evidence, session state, and token state must
 resolve onto the distribution's ext4 filesystem. Windows mounts exposed as
 `drvfs` or `9p`, other filesystems, and symlinks into those mounts are rejected.
 The production resolver currently rejects WSL2 with a specific unavailable
-integration error. Task 8 enables it after the Windows helper exists.
+integration error. Task 8 enables it after the packaged Windows modules are
+connected through the bounded helper protocol and shared lifecycle.
 
 The CLI consumes templates such as [`config/default-run.json`](../config/default-run.json).
 The resolved configuration selects one immutable service ownership topology; the

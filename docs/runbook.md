@@ -164,6 +164,48 @@ crashes, the next console identifies the orphaned session and blocks another
 preparation until cleanup. Its interrupted evidence does not acquire a fabricated
 landing or artifact-validity claim.
 
+### Windows QGroundControl prerequisites for WSL2
+
+WSL2 console activation is still pending the helper and lifecycle integration.
+Before its native acceptance run, use Windows 11 x86-64 with Ubuntu 24.04 in
+WSL2. Keep the checkout, run evidence, session receipts, and token ledger on the
+distribution's Linux ext4 filesystem. Do not use `/mnt/c`, another `drvfs` or
+`9p` mount, or a symlink into one of those mounts for simulator state.
+
+Install the official QGroundControl 5.0.8 Windows build. The native defaults are:
+
+```text
+%ProgramFiles%\QGroundControl\bin\QGroundControl.exe
+%APPDATA%\QGroundControl\QGroundControl.ini
+```
+
+The settings file must contain an absolute `[General] savePath`. The helper
+publishes only to its `MavlinkActions` child on local NTFS. It reads the actual
+settings and effective 255/190 MAVLink identity, validates the executable's
+5.0.8 version resources, and checks any running QGroundControl process against
+that executable before focus. It does not write preferences, select an action,
+terminate QGroundControl, or invoke an undocumented version command.
+
+The logged-in Windows user's `powershell.exe` must be able to run the
+repository-owned helper script through WSL interoperability. Review policy with
+`Get-ExecutionPolicy -List`. Do not add `-ExecutionPolicy Bypass`, change policy,
+request elevation, or install a service. A repository on the WSL Linux
+filesystem is normally exposed to Windows through a UNC path; Windows policy
+can impose additional UNC restrictions. If policy blocks the script, ask the
+workstation administrator to permit the repository script and record that
+prerequisite. Do not copy simulator state to a Windows mount as a workaround.
+
+The native acceptance command requires policy already permitting the script:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -File tests/windows/test_host_helper.ps1
+```
+
+Run it from the Windows view of the repository. The test uses a temporary local
+NTFS directory, child Windows PowerShell processes, and an isolated HKCU test
+key. Retain its raw output with Windows, Windows PowerShell, filesystem, and WSL
+versions. A non-Windows parse or mocked Win32 call is not a passing result.
+
 ### Inspect QGC control evidence
 
 After finalization, inspect one bounded QGC claim with the read-only evidence
