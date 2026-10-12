@@ -70,7 +70,7 @@ Run commands from the worktree root. Each task's GREEN gate reruns its RED comma
 - Produces immutable `HostFacts(kind: Literal["macos", "linux", "wsl2"], machine: Literal["arm64", "amd64"], image_platform: Literal["linux/arm64", "linux/amd64"], provider: str)`.
 - Produces `load_host_config(project_directory: Path, config_path: Path | None = None) -> HostConfig`, `detect_host(config: HostConfig) -> HostFacts`, and `validate_state_paths(facts: HostFacts, paths: Sequence[Path]) -> None`; invalid external inputs raise `HostConfigurationError` with the path/field and remediation.
 
-- [ ] **Write RED tests** for default/explicit config, absent optional default versus absent explicitly selected file, unknown keys at both levels, wrong scalar types, incompatible overrides, WSL-before-Linux detection, unsupported CPU/host, and resolved paths on Windows-mounted storage. Preserve native QGC strings:
+- [x] **Write RED tests** for default/explicit config, absent optional default versus absent explicitly selected file, unknown keys at both levels, wrong scalar types, incompatible overrides, WSL-before-Linux detection, unsupported CPU/host, and resolved paths on Windows-mounted storage. Preserve native QGC strings:
 
   ```python
   # test_windows_paths_remain_native_strings
@@ -84,10 +84,10 @@ Run commands from the worktree root. Each task's GREEN gate reruns its RED comma
   assert token_writes == []
   ```
 
-- [ ] **Run RED:** `uv run --locked pytest orchestration/tests/test_host_config.py -q`. Require failures for the missing new behavior; resolve unrelated collection failures first.
-- [ ] **Implement the three functions** in `host_config.py`. Parse schema version 1, use `.local-runtime/host.json` by default, normalize architecture aliases once, and reject an incompatible explicit platform. QGC path strings remain opaque to POSIX path handling. For WSL storage, resolve symlinks and inspect the containing mount; reject drvfs/9p Windows mounts and unsupported filesystems for every supplied state path, including nearest existing parents.
-- [ ] **Run GREEN and typecheck:** rerun RED and `uv run --locked mypy`. Add the new typed modules to the configured gate as they are introduced in subsequent tasks.
-- [ ] **Document configuration** with one version-1 example and platform-specific path semantics; record current implementation scope in LEDGER. Commit: `Add strict host configuration and platform resolution`.
+- [x] **Run RED:** `uv run --locked pytest orchestration/tests/test_host_config.py -q`. Require failures for the missing new behavior; resolve unrelated collection failures first.
+- [x] **Implement the three functions** in `host_config.py`. Parse schema version 1, use `.local-runtime/host.json` by default, normalize architecture aliases once, and reject an incompatible explicit platform. QGC path strings remain opaque to POSIX path handling. For WSL storage, resolve symlinks and inspect the containing mount; reject drvfs/9p Windows mounts and unsupported filesystems for every supplied state path, including nearest existing parents.
+- [x] **Run GREEN and typecheck:** rerun RED and `uv run --locked mypy`. Add the new typed modules to the configured gate as they are introduced in subsequent tasks.
+- [x] **Document configuration** with one version-1 example and platform-specific path semantics; record current implementation scope in LEDGER. Commit: `Add strict host configuration and platform resolution`.
 
 ### Task 2: Extract host publication and preserve native Mac/Linux behavior
 
