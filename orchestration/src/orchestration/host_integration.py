@@ -42,6 +42,26 @@ class HostIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class HostHelperInfo:
+    version: str
+    source_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.version, str) or not self.version:
+            raise ValueError("helper version must be nonempty")
+        if (
+            not isinstance(self.source_sha256, str)
+            or len(self.source_sha256) != 64
+            or self.source_sha256.lower() != self.source_sha256
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.source_sha256
+            )
+        ):
+            raise ValueError("helper source digest must be lowercase SHA-256 text")
+
+
+@dataclass(frozen=True, slots=True)
 class LaunchResult:
     opened: bool
     detail: str
@@ -87,6 +107,8 @@ class HostIntegration(Protocol):
 
     def preflight(self, paths: Sequence[Path]) -> tuple[HostIssue, ...]: ...
 
+    def helper_info(self) -> HostHelperInfo | None: ...
+
     def inspect_qgc(self) -> QgcInstallation: ...
 
     def acquire_native_lease(self) -> AbstractContextManager[HostLease]: ...
@@ -131,6 +153,7 @@ __all__ = [
     "ControllerIdentity",
     "DatagramTransport",
     "HostIntegration",
+    "HostHelperInfo",
     "HostIssue",
     "HostLease",
     "HostTransportError",

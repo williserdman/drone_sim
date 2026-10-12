@@ -23,6 +23,7 @@ from artifacts.qgc_operator import MavlinkIdentity
 from ..host_config import HostConfig, HostConfigurationError, HostFacts, validate_state_paths
 from ..host_integration import (
     ControllerIdentity,
+    HostHelperInfo,
     HostIssue,
     HostLease,
     HostTransportError,
@@ -194,6 +195,9 @@ class PosixHost:
         except HostConfigurationError as error:
             return (HostIssue("unsupported-state-path", str(error)),)
         return ()
+
+    def helper_info(self) -> HostHelperInfo | None:
+        return None
 
     def inspect_qgc(self) -> QgcInstallation:
         executable, version = (

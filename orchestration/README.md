@@ -117,7 +117,7 @@ selected `flyViewActionsFile` and all other preferences unchanged. macOS uses
 uses `${XDG_CONFIG_HOME:-~/.config}/QGroundControl/QGroundControl.ini`. The
 bundled action bytes remain a separate manifest configuration record.
 
-The packaged Windows modules under [`windows/`](src/orchestration/windows/) are
+The packaged Windows files under [`windows/`](src/orchestration/windows/) are
 the native half of the WSL2 host boundary. `HostFilesystem.psm1` validates the
 official QGroundControl 5.0.8 Windows version resources, reads one UTF-8 INI
 snapshot, publishes to local NTFS with locked no-follow path handles, and opens
@@ -139,10 +139,28 @@ run-bound immutable publication receipt, verifies the old Windows process
 identity is gone and the run-named native bytes still match, then rebinds the
 held helper session. Only verified cleanup clears active ownership.
 
-These modules are package data for the later bounded helper. The production
-host resolver still keeps WSL2 disabled until that helper protocol, transport,
-and lifecycle composition are connected. Native Windows 11 and Windows
-PowerShell 5.1 verification remains a required acceptance gate.
+[`host.ps1`](src/orchestration/windows/host.ps1) is the fixed Windows PowerShell
+5.1 entry point. [`windows_helper.py`](src/orchestration/windows_helper.py)
+launches it through WSL interoperability with no policy override. The version-1
+UTF-8 JSON-lines protocol accepts only its fixed operation set, caps each line
+at 128 KiB and decoded UDP at 65,507 bytes, and correlates every response to one
+request UUID. The Python side limits each datagram direction to 256 queued
+packets and outstanding control requests to 32. Any overflow, unknown envelope,
+invalid base64, mismatched or duplicate response, partial line, or unexpected
+EOF closes the connection; stderr remains diagnostic-only. Startup and request
+deadlines are 10 seconds and graceful shutdown is bounded to five seconds.
+
+[`_adapters/wsl_host.py`](src/orchestration/_adapters/wsl_host.py) implements the
+complete host contract for direct tests. Probe and launch helpers are
+short-lived. One lease helper owns native registration, publication, and UDP;
+closing its datagram transport leaves its control pipe and mutex alive for
+finalization and verified cleanup. `HostHelperInfo` exposes the active helper's
+validated version and packaged-source digest, or a harmless short-lived probe
+when no lease is held. Recovery never replays datagrams or resumes a mission.
+The production host resolver still keeps WSL2 disabled until Task 8 connects
+shared leases and lifecycle persistence. Native Windows 11, Windows PowerShell
+5.1, and WSL2 NAT and mirrored-network verification remain required acceptance
+gates.
 
 The QGC baseline is 5.0.8 with system ID 255 and component ID 190. macOS discovery checks
 the selected application bundle's full version metadata. Linux accepts the

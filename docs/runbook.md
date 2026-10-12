@@ -166,7 +166,9 @@ landing or artifact-validity claim.
 
 ### Windows QGroundControl prerequisites for WSL2
 
-WSL2 console activation is still pending the helper and lifecycle integration.
+WSL2 console activation is still pending shared lease and lifecycle integration.
+The packaged helper and direct WSL adapter exist, but the production resolver
+deliberately continues to reject WSL2 until that later integration is complete.
 Before its native acceptance run, use Windows 11 x86-64 with Ubuntu 24.04 in
 WSL2. Keep the checkout, run evidence, session receipts, and token ledger on the
 distribution's Linux ext4 filesystem. Do not use `/mnt/c`, another `drvfs` or
@@ -202,9 +204,17 @@ powershell.exe -NoLogo -NoProfile -NonInteractive -File tests/windows/test_host_
 ```
 
 Run it from the Windows view of the repository. The test uses a temporary local
-NTFS directory, child Windows PowerShell processes, and an isolated HKCU test
-key. Retain its raw output with Windows, Windows PowerShell, filesystem, and WSL
-versions. A non-Windows parse or mocked Win32 call is not a passing result.
+NTFS directory, child Windows PowerShell processes, an isolated HKCU test key,
+the actual helper pipes, and Windows loopback UDP. It sends arbitrary binary
+datagrams in both directions and verifies that only `127.0.0.1:14550` is
+accepted. Retain its raw output with Windows, Windows PowerShell, filesystem,
+WSL, and network-mode versions. Run the WSL integration test once under default
+NAT and once under mirrored networking. A non-Windows parse, macOS PowerShell
+run, fixture process, or mocked Win32 call is not a passing native result.
+
+```bash
+uv run --locked pytest tests/integration/test_wsl_host.py -q
+```
 
 ### Inspect QGC control evidence
 

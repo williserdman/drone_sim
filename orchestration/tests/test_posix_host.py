@@ -142,6 +142,9 @@ def test_posix_state_and_settings_paths_follow_host_conventions(
     assert linux_xdg.settings_file == (
         tmp_path / "config/QGroundControl/QGroundControl.ini"
     )
+    assert mac.helper_info() is None
+    assert linux_default.helper_info() is None
+    assert linux_xdg.helper_info() is None
 
 
 def test_mac_upgrade_preserves_existing_counter(tmp_path: Path) -> None:

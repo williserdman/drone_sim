@@ -21,6 +21,7 @@ if ($env:OS -ne 'Windows_NT') {
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $filesystemPath = Join-Path $repositoryRoot 'orchestration\src\orchestration\windows\HostFilesystem.psm1'
 $leasePath = Join-Path $repositoryRoot 'orchestration\src\orchestration\windows\HostLease.psm1'
+$helperPath = Join-Path $repositoryRoot 'orchestration\src\orchestration\windows\host.ps1'
 
 function Assert-Equal {
     param($Actual, $Expected, [string] $Message = '')
@@ -103,6 +104,51 @@ function Start-TestChild {
         $argumentList += [string] $Arguments[$key]
     }
     return Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList -PassThru -WindowStyle Hidden
+}
+
+function Start-ProtocolHelper {
+    param([string] $WireSessionId)
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = 'powershell.exe'
+    $escapedPath = $helperPath.Replace('"', '\"')
+    $start.Arguments = "-NoLogo -NoProfile -NonInteractive -File `"$escapedPath`" -SessionId $WireSessionId"
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    return [Diagnostics.Process]::Start($start)
+}
+
+function Read-ProtocolLine {
+    param([Diagnostics.Process] $Process, [int] $TimeoutMilliseconds = 10000)
+    $task = $Process.StandardOutput.ReadLineAsync()
+    if (-not $task.Wait($TimeoutMilliseconds)) {
+        throw 'Timed out reading helper protocol output'
+    }
+    if ($null -eq $task.Result) {
+        throw 'Helper protocol reached EOF before a complete frame'
+    }
+    return ConvertFrom-Json $task.Result
+}
+
+function Invoke-ProtocolRequest {
+    param([Diagnostics.Process] $Process, [string] $WireSessionId, [string] $Operation, [object] $Payload)
+    $request = [ordered] @{
+        version = 1
+        kind = 'request'
+        session_id = $WireSessionId
+        request_id = [Guid]::NewGuid().ToString()
+        operation = $Operation
+        payload = $Payload
+    }
+    $Process.StandardInput.WriteLine((ConvertTo-Json $request -Compress -Depth 8))
+    $Process.StandardInput.Flush()
+    $response = Read-ProtocolLine $Process
+    Assert-Equal $response.kind 'response'
+    Assert-Equal $response.request_id $request.request_id
+    Assert-True ([bool] $response.ok) "helper operation $Operation failed: $($response.error.code) $($response.error.message)"
+    return $response.result
 }
 
 if ($ChildCase) {
@@ -550,6 +596,89 @@ try {
             Complete-ActiveRun -RunId $registration.active_run_id -VerifiedCleanup $true | Out-Null
         }
         finally { Exit-ControllerLease }
+    }
+
+    Invoke-Test 'Test-BoundedHelperProtocolAndNativeUdpRoundTrip' {
+        $wireSession = [Guid]::NewGuid().ToString()
+        $helper = Start-ProtocolHelper $wireSession
+        $startedProcesses.Add($helper)
+        $peer = $null
+        $otherPeer = $null
+        try {
+            $status = Read-ProtocolLine $helper
+            Assert-Equal $status.kind 'status'
+            Assert-Equal $status.state 'ready'
+            Assert-Equal $status.session_id $wireSession
+            Assert-Equal $status.helper_version '1'
+            Assert-Equal $status.source_sha256 ((Get-FileHash -LiteralPath $helperPath -Algorithm SHA256).Hash.ToLowerInvariant())
+            $probe = Invoke-ProtocolRequest $helper $wireSession 'probe' ([pscustomobject] @{})
+            Assert-Equal $probe.source_sha256 $status.source_sha256
+
+            Invoke-ProtocolRequest $helper $wireSession 'acquire_lease' ([pscustomobject] @{}) | Out-Null
+            Invoke-ProtocolRequest $helper $wireSession 'register_controller' ([pscustomobject] @{
+                installation_id = $installationGuid.ToString()
+                ledger_id = $ledgerGuid.ToString()
+                distro_name = $distroA
+                pristine = $false
+            }) | Out-Null
+            $protocolRun = [Guid]::NewGuid().ToString()
+            Invoke-ProtocolRequest $helper $wireSession 'begin_run' ([pscustomobject] @{ run_id = $protocolRun }) | Out-Null
+            $protocolBytes = [byte[]] @(0, 253, 254, 10, 13, 255, 77, 65, 86)
+            $protocolReceipt = Invoke-ProtocolRequest $helper $wireSession 'publish_actions' ([pscustomobject] @{
+                directory = $actionsDirectory
+                filename = "drone-sim-$protocolRun.json"
+                data_base64 = [Convert]::ToBase64String($protocolBytes)
+                sha256 = Get-Sha256 $protocolBytes
+            })
+            $transport = Invoke-ProtocolRequest $helper $wireSession 'open_transport' ([pscustomobject] @{
+                run_id = $protocolRun
+                publication = [pscustomobject] @{
+                    native_path = $protocolReceipt.native_path
+                    filename = $protocolReceipt.filename
+                    sha256 = $protocolReceipt.sha256
+                }
+            })
+            Assert-Equal $transport.peer '127.0.0.1:14550'
+
+            $peer = New-Object Net.Sockets.UdpClient((New-Object Net.IPEndPoint([Net.IPAddress]::Loopback, 14550)))
+            $peer.Client.ReceiveTimeout = 5000
+            $binary = [byte[]] @(0, 253, 254, 10, 13, 255, 77, 65, 86)
+            $helper.StandardInput.WriteLine((ConvertTo-Json ([ordered] @{
+                version = 1
+                kind = 'datagram'
+                session_id = $wireSession
+                data_base64 = [Convert]::ToBase64String($binary)
+            }) -Compress))
+            $helper.StandardInput.Flush()
+            $sender = New-Object Net.IPEndPoint([Net.IPAddress]::Any, 0)
+            $received = $peer.Receive([ref] $sender)
+            Assert-Equal ($received -join ',') ($binary -join ',')
+            Assert-Equal $sender.Address.ToString() '127.0.0.1'
+            Assert-Equal $sender.Port $transport.local_port
+
+            $pendingDatagram = $helper.StandardOutput.ReadLineAsync()
+            $otherPeer = New-Object Net.Sockets.UdpClient((New-Object Net.IPEndPoint([Net.IPAddress]::Loopback, 0)))
+            $otherPeer.Send($binary, $binary.Length, '127.0.0.1', [int] $transport.local_port) | Out-Null
+            Assert-True (-not $pendingDatagram.Wait(150)) 'helper must reject datagrams from a peer other than 127.0.0.1:14550'
+            $peer.Send($binary, $binary.Length, '127.0.0.1', [int] $transport.local_port) | Out-Null
+            Assert-True ($pendingDatagram.Wait(5000)) 'helper did not relay the pinned peer datagram'
+            $relayed = ConvertFrom-Json $pendingDatagram.Result
+            Assert-Equal $relayed.kind 'datagram'
+            Assert-Equal ([Convert]::FromBase64String([string] $relayed.data_base64) -join ',') ($binary -join ',')
+
+            Invoke-ProtocolRequest $helper $wireSession 'close_transport' ([pscustomobject] @{}) | Out-Null
+            Invoke-ProtocolRequest $helper $wireSession 'finish_run' ([pscustomobject] @{ run_id = $protocolRun; verified_cleanup = $true }) | Out-Null
+            Invoke-ProtocolRequest $helper $wireSession 'release_lease' ([pscustomobject] @{}) | Out-Null
+            Invoke-ProtocolRequest $helper $wireSession 'shutdown' ([pscustomobject] @{}) | Out-Null
+            Assert-True ($helper.WaitForExit(5000)) 'helper did not exit within its shutdown grace'
+            Assert-Equal $helper.ExitCode 0
+        }
+        finally {
+            if ($null -ne $otherPeer) { $otherPeer.Dispose() }
+            if ($null -ne $peer) { $peer.Dispose() }
+            if (-not $helper.HasExited) { $helper.Kill(); $helper.WaitForExit() }
+            $helper.Dispose()
+        }
     }
 
     Write-Output "RESULT: $passed native Windows host helper tests passed"
