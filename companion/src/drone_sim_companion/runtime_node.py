@@ -161,14 +161,18 @@ class RuntimeConfig:
             raise ValueError("mission_plan is only valid for configured missions")
         course_path: Path | None = None
         scenario_path: Path | None = None
-        if mission == "comp2026_auto":
+        if mission == "comp2026_auto" or (
+            mission == "configured"
+            and mission_plan is not None
+            and mission_plan.schema_version == 2
+        ):
             competition = document.get("competition")
             if (
                 not isinstance(competition, dict)
                 or competition.get("course") != "course.yaml"
                 or competition.get("scenario") != "scenario.yaml"
             ):
-                raise ValueError("comp2026_auto requires resolved competition sources")
+                raise ValueError("competition mission requires resolved competition sources")
             course_digest = _validate_sha256_digest(
                 competition.get("course_sha256"), "course_sha256"
             )
@@ -179,6 +183,17 @@ class RuntimeConfig:
             scenario_path = config_path.parent / "scenario.yaml"
             _verify_competition_source(course_path, course_digest, "course")
             _verify_competition_source(scenario_path, scenario_digest, "scenario")
+            if mission == "configured":
+                from artifacts.vfs_contract import (
+                    load_vfs_course,
+                    load_vfs_scenario,
+                    validate_vfs_configuration,
+                )
+
+                validate_vfs_configuration(
+                    load_vfs_course(course_path),
+                    load_vfs_scenario(scenario_path),
+                )
         timeout = override if timeout_override is not None else float(startup_wall_seconds)
         endpoint = environment.get("SIM_MAVLINK_ENDPOINT", "tcp:ardupilot-sitl:5760")
         if endpoint != "tcp:ardupilot-sitl:5760":

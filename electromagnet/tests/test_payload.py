@@ -120,6 +120,32 @@ def test_authority_revalidates_reused_command_without_retaining_history() -> Non
     )
 
 
+def test_vfs_payload_can_attach_in_s_release_and_attach_again_in_d() -> None:
+    policy = PayloadAuthority(
+        run_id=RUN_ID,
+        pickup_zones={
+            "S": PickupZone(0.0, 0.0, 15.24, 19.812),
+            "D": PickupZone(-91.44, 0.0, 15.24, 19.812),
+        },
+        payload_zones={2: frozenset({"S", "D"})},
+        payload_capacity=1,
+        max_center_error_m=0.075,
+    )
+    in_s = PayloadWorld((-3.0, -3.0), True, (-3.0, -3.0), True, None)
+    attached = replace(in_s, attached_id=2, payload_grounded=False)
+    in_d = PayloadWorld((-86.106, -3.048), True, (-86.106, -3.048), True, None)
+
+    assert policy.decide(
+        in_s, PayloadRequest(RUN_ID, 2, "attach", "vfs:attach:s")
+    ).accepted
+    assert policy.decide(
+        attached, PayloadRequest(RUN_ID, 2, "release", "vfs:release:d")
+    ).accepted
+    assert policy.decide(
+        in_d, PayloadRequest(RUN_ID, 2, "attach", "vfs:attach:d")
+    ).accepted
+
+
 @pytest.mark.parametrize("command_id", ["", "bad/id", "x" * 129])
 def test_invalid_command_identity_never_reaches_the_coordinator(command_id: str) -> None:
     assert authority().decide(

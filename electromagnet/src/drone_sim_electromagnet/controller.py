@@ -469,7 +469,8 @@ class ScenarioController:
                 None,
                 {
                     "scenario": self._scenario,
-                    "physical_force": self._scenario == "competition_v1",
+                    "physical_force": self._scenario
+                    in {"competition_v1", "competition_2027_v1"},
                 },
             )
             self._ready = True

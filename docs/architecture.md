@@ -15,7 +15,8 @@ flowchart LR
     M -->|payload request| EM[Electromagnet: payload coordination]
     EM <-->|request / physical confirmation| GZ
     GZ -->|clock / physical truth| SC[Scorekeeper: evaluation]
-    M -->|mission events| SC
+    M -->|mission events / observed flight status| SC
+    SC -->|VFS judge decisions / active clock| M
     EM -->|payload events| SC
     GZ -->|images / truth / native state| REC
     SC -->|score evidence| REC
@@ -50,6 +51,26 @@ to exercise lifecycle and recording infrastructure.
 Gazebo owns simulation time. Wall-clock deadlines detect infrastructure stalls;
 they do not advance the mission. The public camera/state grid is 50 ms (20 Hz).
 Slow rendering can make a short simulated mission take a long time in reality.
+Configured camera acquisition waits for frames on its worker with a bounded
+wall-time wait; exposure freshness remains a simulation-time guarantee. Precision
+reacquisition advances on fresh observations rather than telemetry/clock ticks.
+The configured camera adapter consumes the newest image no later than the
+accepted public clock and within the 500 ms simulation-time age limit. Images
+ahead of that clock remain queued; clock acceptance wakes waiting acquisition.
+Superseded or stale queued images are discarded before
+camera acquisition; the adapter waits for fresh input within the existing
+operation and infrastructure deadlines. The camera's own freshness check remains
+enforced. A typed camera `FrameExpiredError` distinguishes rejected expired
+input from integrity failures. The producer continues after an expired
+candidate; the configured worker skips an observation that expires during
+processing and waits after its sequence. It forwards no expired geometry.
+Target-health and operation deadlines still bound unavailable camera input;
+future timestamps and other integrity errors remain fatal. Recording consumers
+retain their complete public frame grids.
+The configured downward-range adapter likewise retains a clock-current sample
+while a newer scan awaits its public timestamp, keeping the 500 ms freshness
+limit. Fresh range below the precision-landing floor refreshes target health;
+a brief scan gap does not immediately interrupt LAND.
 
 ## Where to read or change code
 
@@ -73,6 +94,65 @@ The plan is frozen under the run configuration checksum. Each operation waits
 for observed success before the next starts; failure ends the sequence. Final
 success requires landing and disarm. Any local LAND recovery remains separate
 from mission success; scoring and artifact validity remain independent.
+An optional first `configure_flight` step applies only the five documented flight
+settings while landed and disarmed, then verifies the reported ArduPilot values.
+The companion [tool contract](../companion/README.md#configured-diagnostic-missions)
+is authoritative; the SITL image overlay supplies defaults.
+
+The configured [VFS 2027 template](../config/configured-vfs-2027-run.json) extends
+that runner with camera acquisition, guarded precision landing, physically
+confirmed payload actions, and automatic phase checks. Version-2 groups read a
+correlated, frozen FM-2 eligibility decision; every branch is validated before
+flight. The companion receives eligibility and timing, while camera observations
+provide retrieval positions. Public payload truth is reserved for the payload
+authority, judge, recordings, and independent validation.
+Course ENU navigation freezes the first complete observed flight-controller
+home latitude/longitude. Rearming away from H can update live home telemetry,
+but cannot change the course origin or resolved payload targets.
+During precision recovery, the command owner preserves the selected GUIDED hold
+or search goal across telemetry updates; only the explicit retry replaces it.
+The retry starts its five-second camera reacquisition window after fresh telemetry
+confirms arrival at the search goal. The entire climb and landing remain bounded
+by the original 60-second precision deadline. Marker geometry uses buffered GPS
+and attitude samples associated with exposure within 200 ms, rather than the
+latest pose at processing time; camera exposure still expires after 500 ms.
+
+The [shared VFS configuration](../artifacts/src/artifacts/vfs_contract.py) contains
+immutable course, payload, target, and timing values. It contains no flight or
+scoring policy. The [judge](../scorekeeper/src/drone_sim_scorekeeper/vfs.py)
+combines Gazebo contact/poses with observed
+[`VehicleStatus`](../ros_ws/src/simulation_interfaces/msg/VehicleStatus.msg),
+then publishes correlated
+[`JudgeDecision`](../ros_ws/src/simulation_interfaces/msg/JudgeDecision.msg) and
+continuous [`AttemptStatus`](../ros_ws/src/simulation_interfaces/msg/AttemptStatus.msg).
+The scorekeeper canonically joins each exact 20 Hz ground-truth and three-payload
+epoch with the matching 10 Hz vehicle-status sample when due, applying truth,
+payloads, then status before publishing `AttemptStatus`. A check request remains
+immutable while it waits for its exact epoch. The judge uses only facts at or
+before that request timestamp and emits one correlated decision; an incomplete
+epoch fails closed after 500 ms of observed simulation time. This removes DDS
+callback-order dependence without widening any evidence-freshness bound.
+The companion queues phase checks until disarm has been published for one full
+vehicle-status interval, then emits the request with its current simulation
+timestamp. Judge rejection remains terminal.
+First physical takeoff starts the 600-second active clock; inspection after
+FM-2 home landing/disarm pauses it; FM-3 takeoff resumes it. Public simulation
+and recording time continue throughout. An FM-2 pause requires airborne evidence
+from that phase; inherited FM-1 home contact cannot pause the clock.
+The companion uses these timing facts
+to cancel expired payload work and attempt bounded home recovery through its
+existing command owner. A recovered landing cannot turn failure into success.
+
+Gazebo's vehicle contact includes support through an attached, grounded payload
+from the same physical epoch. A later odometry epoch closes an earlier interval
+with no leg contact event; all payload support samples remain required at each
+20 Hz epoch. The bounded join holds odometry until matching support is complete
+before publishing vehicle truth. The judge checks actual support footprints for
+circle eligibility and landed delivery. The independent artifact evaluator
+reconstructs the outcome and score from recorded evidence; command intent,
+eligibility, points, and full-mission acceptance are separate facts.
+Scoring aggregates evidence paths once in first-use order; per-rule results may
+share the same evidence reference.
 
 After passive readiness, matching RUNNING, and accepted public clock, the
 companion publishes typed `MissionExecutionReadyStatus`. Gazebo selects this
@@ -134,8 +214,9 @@ the search hover. ArduPilot owns stabilization and descent execution, but only
 accepted observations reach its `LANDING_TARGET` input. No target messages are
 sent during the GUIDED hold. Once LiDAR reports an AGL at or below the overlay's
 `PLND_ALT_MIN`, the companion keeps LAND active and no longer requires marker
-visibility; ArduPilot then owns the final descent and touchdown decision. The
-parameter overlay remains the durable source of flight-controller settings, and
+visibility; ArduPilot then owns the final descent and touchdown decision.
+The configured operation checks that fresh range guard before polling the camera.
+The parameter overlay remains the durable source of flight-controller settings, and
 the companion reads those live settings before entering the first precision
 LAND.
 

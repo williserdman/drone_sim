@@ -12,7 +12,7 @@ import signal
 import subprocess
 import time
 
-from ..ros_adapter.topics import camera_topics_for_world
+from ..ros_adapter.topics import COMPETITION_WORLDS, camera_topics_for_world
 
 
 class ChildProcessError(RuntimeError):
@@ -45,7 +45,7 @@ def gazebo_child_specs(
                 environment,
             ),
         )
-        if world_name == "competition_mission"
+        if world_name in COMPETITION_WORLDS
         else ()
     )
     bridge = ChildSpec(

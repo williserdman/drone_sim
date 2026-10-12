@@ -15,10 +15,14 @@ validated run bundle establish what actually happened.
 3. [Human handoff / current status](docs/handoff.md): known failures, evidence,
    unfinished work, and the next useful tasks.
 
-**Current caveat:** a physical three-payload flight and return home have been
-verified, but the latest documented verification run failed later in the
-recording window. A score of 150/150 alone does not mean the run passed.
-See the [evidence and limitations](docs/handoff.md#verified-behavior-and-limits).
+**Current status:** VFS 2027 all-C run
+`61d59d63-23b6-4323-a4e7-b0c2b95d2044` completed three C drops, three grounded
+L deliveries, and Home landing/disarm in 543.35 active seconds, 5.49% faster
+than the previous accepted run. It scored 366/380; the full 780-second bundle
+finished `COMPLETED` and passed independent
+physical, scoring, artifact, and provenance acceptance. Runtime revision:
+`2ce013726d0e0b70463f9ba1f0173310ff0e093b`. See the
+[evidence and limits](docs/handoff.md#verified-behavior-and-limits).
 
 ## First local check
 
@@ -54,9 +58,16 @@ build images automatically. Do not start with a bare `docker compose up`.
 
 ## Contributing or adding a mission
 
+For VFS 2027, run [configured-vfs-2027-run.json](config/configured-vfs-2027-run.json).
+It uses the configured tool runner, automatic phase checks, and ArUco IDs 2/3/4.
+All targets default to C; change `mission.targets` in
+[scenario-2027.yaml](config/scenario-2027.yaml) to select A/B/C per payload.
+The [runbook](docs/runbook.md#independent-competition-acceptance) defines physical,
+score, and evidence acceptance.
+
 For a fixed sequence, copy [configured-descent-run.json](config/configured-descent-run.json)
 and edit its `mission_plan.steps`. The [companion guide](companion/README.md#configured-diagnostic-missions)
-defines the seven tools; the [local workflow](docs/runbook.md#local-developer-workflow)
+defines the tools; the [local workflow](docs/runbook.md#local-developer-workflow)
 covers rebuilding changed code, running one template, and running the automatic set.
 
 Read [AGENTS.md](AGENTS.md) for contribution rules, then the affected module

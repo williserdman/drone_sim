@@ -13,6 +13,13 @@ from uuid import UUID, uuid4
 
 import yaml
 
+from artifacts.vfs_contract import (
+    VFS_PROFILE,
+    load_vfs_course,
+    load_vfs_scenario,
+    validate_vfs_configuration,
+)
+
 
 _TEMPLATE_FIELDS = {
     "world",
@@ -175,7 +182,7 @@ def _read_document(path: str | Path) -> dict[str, Any]:
     return document
 
 
-def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
+def _validate_recording(document: Any, *, mission: str, scenario: str) -> RecordingConfig:
     if not isinstance(document, dict) or set(document) != _RECORDING_FIELDS:
         raise ValueError("recording configuration has missing or unknown keys")
     width = document["width_px"]
@@ -188,7 +195,7 @@ def _validate_recording(document: Any, *, mission: str) -> RecordingConfig:
         raise ValueError("recording dimensions must be 320x240 or 640x480")
     required_dimensions = (
         (640, 480)
-        if mission == "comp2026_auto"
+        if mission == "comp2026_auto" or scenario == VFS_PROFILE
         else (320, 240)
     )
     if (width, height) != required_dimensions:
@@ -275,37 +282,65 @@ def _validate_simulation(document: Any) -> SimulationConfig:
 def _validate_mission_plan(document: Any) -> str:
     if not isinstance(document, dict) or set(document) != {"schema_version", "steps"}:
         raise ValueError("mission_plan must contain exactly schema_version and steps")
-    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
-        raise ValueError("mission_plan schema_version must be 1")
+    version = document["schema_version"]
+    if type(version) is not int or version not in {1, 2}:
+        raise ValueError("mission_plan schema_version must be 1 or 2")
     steps = document["steps"]
     if not isinstance(steps, list) or not steps:
         raise ValueError("mission_plan steps must be a nonempty array")
-    normalized_steps: list[dict[str, Any]] = []
-    for step in steps:
-        if (
-            not isinstance(step, dict)
-            or not set(step) <= {"tool", "args", "timeout_sim_s"}
-            or not {"tool", "args"} <= set(step)
-        ):
-            raise ValueError("mission_plan step has missing or unknown keys")
-        tool = step["tool"]
-        if not isinstance(tool, str) or not tool:
-            raise ValueError("mission_plan step tool must be a nonempty string")
-        args = step["args"]
-        if not isinstance(args, dict):
-            raise ValueError("mission_plan step args must be an object")
-        timeout = step.get("timeout_sim_s", 60)
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout)
-            or timeout <= 0
-        ):
-            raise ValueError("mission_plan step timeout_sim_s must be positive and finite")
-        normalized_steps.append({"tool": tool, "args": args, "timeout_sim_s": timeout})
+
+    def normalize(items: list[Any], depth: int) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for step in items:
+            if version == 2 and isinstance(step, dict) and set(step) == {"when", "steps"}:
+                if depth >= 2:
+                    raise ValueError("mission_plan conditional groups may be nested only once")
+                when = step["when"]
+                if depth == 0:
+                    valid_when = when == {"any_payload_eligible": True}
+                else:
+                    valid_when = (
+                        isinstance(when, dict)
+                        and set(when) == {"payload_eligible"}
+                        and type(when["payload_eligible"]) is int
+                        and when["payload_eligible"] in {2, 3, 4}
+                    )
+                if not valid_when:
+                    raise ValueError("mission_plan conditional predicate is invalid at this depth")
+                children = step["steps"]
+                if not isinstance(children, list) or not children:
+                    raise ValueError("mission_plan conditional steps must be a nonempty array")
+                normalized.append({"when": when, "steps": normalize(children, depth + 1)})
+                continue
+            if (
+                not isinstance(step, dict)
+                or not set(step) <= {"tool", "args", "timeout_sim_s"}
+                or not {"tool", "args"} <= set(step)
+            ):
+                raise ValueError("mission_plan step has missing or unknown keys")
+            tool = step["tool"]
+            if not isinstance(tool, str) or not tool:
+                raise ValueError("mission_plan step tool must be a nonempty string")
+            args = step["args"]
+            if not isinstance(args, dict):
+                raise ValueError("mission_plan step args must be an object")
+            timeout = step.get("timeout_sim_s", 60)
+            if (
+                isinstance(timeout, bool)
+                or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout)
+                or timeout <= 0
+            ):
+                raise ValueError("mission_plan step timeout_sim_s must be positive and finite")
+            normalized.append({"tool": tool, "args": args, "timeout_sim_s": timeout})
+        return normalized
+
+    if version == 1 and any(isinstance(step, dict) and "when" in step for step in steps):
+        raise ValueError("mission_plan conditional groups require schema_version 2")
+    normalized_steps = normalize(steps, 0)
     try:
         return json.dumps(
-            {"schema_version": 1, "steps": normalized_steps},
+            {"schema_version": version, "steps": normalized_steps},
             allow_nan=False,
             ensure_ascii=False,
             sort_keys=True,
@@ -356,8 +391,23 @@ def _validate_common(
         if "simulation" in document:
             raise ValueError("simulation configuration requires runtime_profile phase3")
         simulation = None
+    if document["scenario"] == VFS_PROFILE:
+        expected = ("competition_2027", "iris_competition_2027", "configured")
+        actual = (document["world"], document["vehicle"], document["mission"])
+        if actual != expected or runtime_profile != "phase3":
+            raise ValueError("competition_2027_v1 requires its configured phase3 world and vehicle")
+        if "competition" not in document:
+            raise ValueError("competition_2027_v1 requires competition source configuration")
+        if document["mission_plan"]["schema_version"] != 2:
+            raise ValueError("competition_2027_v1 requires mission_plan schema_version 2")
+        if simulation is None or simulation.duration_ns < 780_000_000_000:
+            raise ValueError("competition_2027_v1 requires at least 780 public simulation seconds")
     return (
-        _validate_recording(document["recording"], mission=document["mission"]),
+        _validate_recording(
+            document["recording"],
+            mission=document["mission"],
+            scenario=document["scenario"],
+        ),
         runtime_profile,
         simulation,
     )
@@ -461,7 +511,7 @@ def _template_source(template_dir: Path, value: Any, name: str) -> Path:
 
 
 def _competition_from_template(
-    document: Any, template_dir: Path
+    document: Any, template_dir: Path, scenario_name: str
 ) -> CompetitionSources | None:
     if document is None:
         return None
@@ -471,10 +521,17 @@ def _competition_from_template(
     scenario = _template_source(template_dir, document["scenario"], "scenario")
     _require_source_file(course)
     _require_source_file(scenario)
-    course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
-    scenario_payload = _read_validated_source(
-        scenario, _EXPECTED_SCENARIO, "scenario"
-    )
+    if scenario_name == VFS_PROFILE:
+        vfs_course = load_vfs_course(course)
+        vfs_scenario = load_vfs_scenario(scenario)
+        validate_vfs_configuration(vfs_course, vfs_scenario)
+        course_payload = course.read_bytes()
+        scenario_payload = scenario.read_bytes()
+    else:
+        course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
+        scenario_payload = _read_validated_source(
+            scenario, _EXPECTED_SCENARIO, "scenario"
+        )
     return CompetitionSources(
         course,
         scenario,
@@ -484,7 +541,7 @@ def _competition_from_template(
 
 
 def _competition_from_resolved(
-    document: Any, configuration_dir: Path
+    document: Any, configuration_dir: Path, scenario_name: str
 ) -> CompetitionSources | None:
     if document is None:
         return None
@@ -504,10 +561,17 @@ def _competition_from_resolved(
     scenario = configuration_dir / "scenario.yaml"
     _require_source_file(course)
     _require_source_file(scenario)
-    course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
-    scenario_payload = _read_validated_source(
-        scenario, _EXPECTED_SCENARIO, "scenario"
-    )
+    if scenario_name == VFS_PROFILE:
+        vfs_course = load_vfs_course(course)
+        vfs_scenario = load_vfs_scenario(scenario)
+        validate_vfs_configuration(vfs_course, vfs_scenario)
+        course_payload = course.read_bytes()
+        scenario_payload = scenario.read_bytes()
+    else:
+        course_payload = _read_validated_source(course, _EXPECTED_COURSE, "course")
+        scenario_payload = _read_validated_source(
+            scenario, _EXPECTED_SCENARIO, "scenario"
+        )
     if hashlib.sha256(course_payload).hexdigest() != document["course_sha256"]:
         raise ValueError("course_sha256 does not match the copied configuration")
     if hashlib.sha256(scenario_payload).hexdigest() != document["scenario_sha256"]:
@@ -536,7 +600,9 @@ def _template_from_document(document: dict[str, Any], template_dir: Path) -> Run
         recording=recording,
         runtime_profile=runtime_profile,
         simulation=simulation,
-        competition=_competition_from_template(document.get("competition"), template_dir),
+        competition=_competition_from_template(
+            document.get("competition"), template_dir, document["scenario"]
+        ),
         mission_plan_json=(
             _validate_mission_plan(document["mission_plan"])
             if "mission_plan" in document
@@ -645,7 +711,9 @@ def load_run_config(path: str | Path) -> RunConfig:
     without_checksum = {key: value for key, value in document.items() if key != "config_sha256"}
     if _checksum(without_checksum) != checksum:
         raise ValueError("config_sha256 does not match the resolved configuration")
-    competition = _competition_from_resolved(document.get("competition"), source.parent)
+    competition = _competition_from_resolved(
+        document.get("competition"), source.parent, document["scenario"]
+    )
     if document["mission"] == "comp2026_auto" and competition is None:
         raise ValueError("comp2026_auto requires competition source configuration")
     return RunConfig(

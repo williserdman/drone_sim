@@ -33,7 +33,14 @@ def _load(name: str):
     return module
 
 
+def _configuration(run_directory, scenario="competition_v1"):
+    configuration = run_directory / "configuration"
+    configuration.mkdir()
+    (configuration / "run.json").write_text(json.dumps({"scenario": scenario}))
+
+
 def test_competition_inspector_uses_current_parent_nested_and_image_provenance(tmp_path):
+    _configuration(tmp_path)
     module = _load("inspect_competition_run")
     commands = []
 
@@ -73,6 +80,7 @@ def test_competition_inspector_uses_current_parent_nested_and_image_provenance(t
 
 
 def test_competition_inspector_accepts_external_remote_image_provenance(tmp_path):
+    _configuration(tmp_path)
     module = _load("inspect_competition_run")
     expected_images = {image: f"{index + 1:064x}" for index, image in enumerate(IMAGES)}
     commands = []
@@ -100,6 +108,27 @@ def test_competition_inspector_accepts_external_remote_image_provenance(tmp_path
 
     assert captured["expected_image_digests"] == expected_images
     assert not any(command[:3] == ("docker", "image", "inspect") for command in commands)
+
+
+def test_competition_inspector_selects_vfs_rules_without_requiring_time_bonus_maximum(tmp_path):
+    module = _load("inspect_competition_run")
+    _configuration(tmp_path, "competition_2027_v1")
+    captured = {}
+
+    def runner(command, **kwargs):
+        output = "a" * 40 if command[-2:] == ["rev-parse", "HEAD"] else ""
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    def inspector(run_directory, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(to_dict=lambda: {"accepted": True})
+
+    module.inspect_competition_run(
+        tmp_path, runner=runner, bundle_inspector=inspector,
+        expected_image_digests={image: "b" * 64 for image in IMAGES},
+    )
+    assert captured["rules_path"] == ROOT / "scorekeeper/rules/competition_2027_v1.json"
+    assert captured["require_maximum_score"] is False
 
 
 def _accepted_documents(run_directory: Path, *, complete=True, achieved=150.0):

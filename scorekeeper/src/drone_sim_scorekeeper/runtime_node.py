@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,9 +25,21 @@ from .competition_runtime import CompetitionScorekeeperRuntime
 from .descent import DescentScorer, GroundTruthSample, load_descent_rules
 from .models import ScoreEvent, ScoreResult
 from .runtime import ScenarioSample, ScorekeeperRuntime
+from .vfs import (
+    AttemptStatus,
+    JudgeDecision,
+    VehicleStatusSample,
+    VfsJudge,
+    VfsScorer,
+    load_vfs_rules,
+)
+from .vfs_runtime import VfsScorekeeperRuntime
 
 
 _FRAME_INTERVAL_NS = 50_000_000
+_SCORING_SCENARIOS = frozenset(
+    {"descent_v1", "competition_v1", "competition_2027_v1"}
+)
 
 
 @dataclass(frozen=True)
@@ -45,8 +58,8 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
     if not isinstance(document, dict) or document.get("run_id") != canonical:
         raise ValueError("resolved scorekeeper configuration has the wrong run_id")
     scenario = document.get("scenario")
-    if scenario not in {"descent_v1", "competition_v1"}:
-        raise ValueError("scorekeeper scenario must be descent_v1 or competition_v1")
+    if scenario not in _SCORING_SCENARIOS:
+        raise ValueError("scorekeeper scenario is unsupported")
     recording = document.get("recording")
     simulation = document.get("simulation")
     if (
@@ -76,7 +89,7 @@ def load_runtime_settings(path: Path | str, run_id: str) -> RuntimeSettings:
 
 def rules_path_for_scenario(path: Path | str, scenario: str) -> Path:
     """Resolve the selected ruleset beside either a rules directory or old file path."""
-    if scenario not in {"descent_v1", "competition_v1"}:
+    if scenario not in _SCORING_SCENARIOS:
         raise ValueError("unsupported scoring scenario")
     configured = Path(path)
     directory = configured.parent if configured.suffix == ".json" else configured
@@ -197,6 +210,52 @@ def score_event_message(event: ScoreEvent, message_type: Callable[[], Any]) -> A
     return message
 
 
+def vehicle_status_from_message(message: Any) -> VehicleStatusSample:
+    return VehicleStatusSample(
+        message.run_id,
+        _timestamp_ns(message.sim_timestamp),
+        message.sequence_id,
+        message.vehicle_id,
+        message.armed,
+        message.mode,
+        message.failsafe_active,
+        message.failsafe_reason,
+    )
+
+
+def judge_decision_message(
+    decision: JudgeDecision, message_type: Callable[[], Any]
+) -> Any:
+    message = message_type()
+    message.run_id = decision.run_id
+    _assign_stamp(message.sim_timestamp, decision.sim_timestamp_ns)
+    message.decision_id = decision.decision_id
+    message.request_id = decision.request_id
+    message.request_event_id = decision.request_event_id
+    message.phase = decision.phase
+    message.checkpoint = decision.checkpoint
+    message.outcome = int(decision.outcome)
+    message.eligible_aruco_ids = list(decision.eligible_aruco_ids)
+    message.active_elapsed_ns = decision.active_elapsed_ns
+    message.reason_code = decision.reason_code
+    message.evidence_refs = list(decision.evidence_refs)
+    return message
+
+
+def attempt_status_message(
+    status: AttemptStatus, message_type: Callable[[], Any]
+) -> Any:
+    message = message_type()
+    message.run_id = status.run_id
+    _assign_stamp(message.sim_timestamp, status.sim_timestamp_ns)
+    message.sequence_id = status.sequence_id
+    message.state = int(status.state)
+    message.active_elapsed_ns = status.active_elapsed_ns
+    message.approval_timestamp_ns = status.approval_timestamp_ns
+    message.started = status.started
+    return message
+
+
 class DriverProtocol(Protocol):
     def read_status(
         self, status_type: type[SourceFinishedStatus]
@@ -303,6 +362,8 @@ class _RosBoundary:
     node: Any
     publisher: Any
     errors: list[BaseException]
+    judge_publisher: Any | None = None
+    attempt_publisher: Any | None = None
 
     def publish(self, event: ScoreEvent) -> None:
         from simulation_interfaces.msg import ScoreEvent as ScoreEventMessage
@@ -312,13 +373,34 @@ class _RosBoundary:
     def flush(self) -> None:
         from rclpy.duration import Duration
 
-        if self.publisher.wait_for_all_acked(timeout=Duration(seconds=5.0)) is not True:
-            raise TimeoutError("score event acknowledgement deadline expired")
+        for publisher in (self.publisher, self.judge_publisher, self.attempt_publisher):
+            if publisher is not None and publisher.wait_for_all_acked(
+                timeout=Duration(seconds=5.0)
+            ) is not True:
+                raise TimeoutError("scorekeeper publisher acknowledgement deadline expired")
+
+    def publish_judge(self, decision: JudgeDecision) -> None:
+        if self.judge_publisher is None:
+            raise RuntimeError("judge publisher is unavailable")
+        from simulation_interfaces.msg import JudgeDecision as JudgeDecisionMessage
+
+        self.judge_publisher.publish(
+            judge_decision_message(decision, JudgeDecisionMessage)
+        )
+
+    def publish_attempt(self, status: AttemptStatus) -> None:
+        if self.attempt_publisher is None:
+            raise RuntimeError("attempt publisher is unavailable")
+        from simulation_interfaces.msg import AttemptStatus as AttemptStatusMessage
+
+        self.attempt_publisher.publish(
+            attempt_status_message(status, AttemptStatusMessage)
+        )
 
 
 def _create_ros_boundary(
     run_id: str,
-    runtime_ref: list[ScoreRuntimeProtocol],
+    runtime_ref: list[Any],
     logger: _StructuredLogger,
     *,
     scenario: str = "descent_v1",
@@ -336,7 +418,7 @@ def _create_ros_boundary(
         ScoreEvent,
     )
 
-    if scenario not in {"descent_v1", "competition_v1"}:
+    if scenario not in _SCORING_SCENARIOS:
         raise ValueError("unsupported scoring scenario")
 
     node = Node("drone_sim_scorekeeper")
@@ -345,6 +427,28 @@ def _create_ros_boundary(
         "/simulation/score_events",
         QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
     )
+    judge_publisher = None
+    attempt_publisher = None
+    if scenario == "competition_2027_v1":
+        from simulation_interfaces.msg import (
+            AttemptStatus as AttemptStatusMessage,
+            JudgeDecision as JudgeDecisionMessage,
+            VehicleStatus,
+        )
+
+        durable_qos = QoSProfile(
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        judge_publisher = node.create_publisher(
+            JudgeDecisionMessage, "/simulation/judge_decisions", durable_qos
+        )
+        attempt_publisher = node.create_publisher(
+            AttemptStatusMessage,
+            "/simulation/attempt_status",
+            QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
+        )
     errors: list[BaseException] = []
 
     def accept_ground_truth(message: Any) -> None:
@@ -435,6 +539,15 @@ def _create_ros_boundary(
     def accept_run_state(_message: Any) -> None:
         return
 
+    def accept_vehicle_status(message: Any) -> None:
+        try:
+            if message.run_id != run_id:
+                return
+            runtime_ref[0].accept_vehicle_status(vehicle_status_from_message(message))
+        except BaseException as error:
+            runtime_ref[0].fail("ros_evidence_invalid")
+            errors.append(error)
+
     node.create_subscription(
         GroundTruth,
         "/simulation/ground_truth",
@@ -443,12 +556,12 @@ def _create_ros_boundary(
             depth=10,
             reliability=(
                 ReliabilityPolicy.RELIABLE
-                if scenario == "competition_v1"
+                if scenario in {"competition_v1", "competition_2027_v1"}
                 else ReliabilityPolicy.BEST_EFFORT
             ),
         ),
     )
-    if scenario == "competition_v1":
+    if scenario in {"competition_v1", "competition_2027_v1"}:
         node.create_subscription(
             PayloadState,
             "/simulation/payload_state",
@@ -472,6 +585,15 @@ def _create_ros_boundary(
             accept_mission_event,
             event_qos,
         )
+        if scenario == "competition_2027_v1":
+            from simulation_interfaces.msg import VehicleStatus
+
+            node.create_subscription(
+                VehicleStatus,
+                "/simulation/vehicle_status",
+                accept_vehicle_status,
+                QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE),
+            )
     else:
         node.create_subscription(
             ScenarioEvent,
@@ -499,7 +621,7 @@ def _create_ros_boundary(
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         ),
     )
-    return _RosBoundary(node, publisher, errors)
+    return _RosBoundary(node, publisher, errors, judge_publisher, attempt_publisher)
 
 
 def main() -> int:
@@ -523,7 +645,7 @@ def main() -> int:
     )
     protocol = RuntimeProtocol(run_directory, run_id)
     logger = _StructuredLogger(run_id)
-    runtime_ref: list[ScoreRuntimeProtocol] = []
+    runtime_ref: list[Any] = []
     rclpy.init()
     boundary = _create_ros_boundary(
         run_id,
@@ -531,9 +653,59 @@ def main() -> int:
         logger,
         scenario=settings.scenario,
     )
-    if settings.scenario == "competition_v1":
+    if settings.scenario == "competition_2027_v1":
+        from artifacts.vfs_contract import (
+            load_vfs_course,
+            load_vfs_scenario,
+            validate_vfs_configuration,
+        )
+
+        resolved_document = json.loads(config_path.read_text(encoding="utf-8"))
+        competition = resolved_document.get("competition")
+        if not isinstance(competition, dict):
+            raise ValueError("2027 scorekeeper requires resolved competition configuration")
+        if (competition.get("course"), competition.get("scenario")) != (
+            "course.yaml",
+            "scenario.yaml",
+        ):
+            raise ValueError("2027 scorekeeper configuration paths are invalid")
+        course_path = config_path.parent / competition.get("course", "")
+        scenario_path = config_path.parent / competition.get("scenario", "")
+        if (
+            hashlib.sha256(course_path.read_bytes()).hexdigest()
+            != competition.get("course_sha256")
+            or hashlib.sha256(scenario_path.read_bytes()).hexdigest()
+            != competition.get("scenario_sha256")
+        ):
+            raise ValueError("2027 scorekeeper configuration checksum mismatch")
+        course = load_vfs_course(course_path)
+        scenario = load_vfs_scenario(scenario_path)
+        validate_vfs_configuration(course, scenario)
+        vehicle_mass_kg = scenario.aircraft_empty_mass_kg
+        unloaded_weight_lb = (
+            vehicle_mass_kg + scenario.payload_geometry.tare_mass_kg
+        ) * 2.2046226218487757
+        rules = load_vfs_rules(rules_path)
+        runtime = VfsScorekeeperRuntime(
+            run_id,
+            VfsJudge(run_id, course, scenario),
+            VfsScorer(
+                run_id,
+                rules,
+                course,
+                scenario,
+                unloaded_weight_lb=unloaded_weight_lb,
+            ),
+            publish_decision=boundary.publish_judge,
+            publish_attempt=boundary.publish_attempt,
+            run_directory=run_directory,
+            protocol=protocol,
+            publish_score=boundary.publish,
+            flush=boundary.flush,
+        )
+    elif settings.scenario == "competition_v1":
         rules = load_competition_rules(rules_path)
-        runtime: ScoreRuntimeProtocol = CompetitionScorekeeperRuntime(
+        runtime = CompetitionScorekeeperRuntime(
             run_id,
             CompetitionScorer(run_id, rules),
             run_directory=run_directory,
@@ -621,4 +793,7 @@ __all__ = [
     "rules_path_for_scenario",
     "scenario_from_message",
     "score_event_message",
+    "vehicle_status_from_message",
+    "judge_decision_message",
+    "attempt_status_message",
 ]

@@ -58,7 +58,7 @@ class PayloadAuthority:
         *,
         run_id: str,
         pickup_zones: Mapping[str, PickupZone],
-        payload_zones: Mapping[int, str | None],
+        payload_zones: Mapping[int, str | frozenset[str] | None],
         payload_capacity: int,
         max_center_error_m: float,
     ) -> None:
@@ -68,7 +68,22 @@ class PayloadAuthority:
             raise ValueError("max center error must be positive and finite")
         self.run_id = run_id
         self._pickup_zones = dict(pickup_zones)
-        self._payload_zones = dict(payload_zones)
+        self._payload_zones = {
+            marker: (
+                frozenset()
+                if zones is None
+                else frozenset({zones})
+                if isinstance(zones, str)
+                else frozenset(zones)
+            )
+            for marker, zones in payload_zones.items()
+        }
+        if any(
+            zone not in self._pickup_zones
+            for zones in self._payload_zones.values()
+            for zone in zones
+        ):
+            raise ValueError("payload pickup zones must identify configured regions")
         self._max_center_error_m = max_center_error_m
 
     def decide(self, world: PayloadWorld, request: PayloadRequest) -> PayloadDecision:
@@ -91,15 +106,24 @@ class PayloadAuthority:
                 f"payload-command-v1|{request.command_id}|detach",
             )
 
-        zone_name = self._payload_zones[request.aruco_id]
-        if zone_name is None or zone_name not in self._pickup_zones:
+        allowed_zones = self._payload_zones[request.aruco_id]
+        if not allowed_zones:
             return PayloadDecision(False, "WRONG_PICKUP_ZONE", None)
-        zone = self._pickup_zones[zone_name]
         if not world.vehicle_grounded:
             return PayloadDecision(False, "NOT_LANDED", None)
-        if not zone.contains(world.vehicle_xy):
+        vehicle_zones = {
+            name
+            for name in allowed_zones
+            if self._pickup_zones[name].contains(world.vehicle_xy)
+        }
+        if not vehicle_zones:
             return PayloadDecision(False, "OUTSIDE_PICKUP_ZONE", None)
-        if not zone.contains(world.payload_xy):
+        payload_zones = {
+            name
+            for name in allowed_zones
+            if self._pickup_zones[name].contains(world.payload_xy)
+        }
+        if not vehicle_zones.intersection(payload_zones):
             return PayloadDecision(False, "WRONG_PICKUP_ZONE", None)
         if not world.payload_grounded:
             return PayloadDecision(False, "PAYLOAD_NOT_GROUNDED", None)

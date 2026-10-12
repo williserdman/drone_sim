@@ -69,6 +69,10 @@ that SITL exited, and it always attempts to close the protocol.
   replace them with force-arm behavior.
 - Copter 4.7 uses `LAND_SPD_MS`, not legacy `LAND_SPEED`. Parameter edits require
   rebuilding the image because the overlay is copied at build time.
+- Configured missions may apply the five-field, checksum-bound flight override
+  defined by the companion's [`configure_flight` contract](../companion/README.md#configured-diagnostic-missions).
+  The image overlay remains the fallback; its `LAND_SPD_MS 0.50` and precision
+  landing settings remain unchanged. No general runtime parameter API exists.
 - The overlay is also the single source for the fast, guarded precision-landing
   profile. `PLND_OPTIONS` retains the normal final descent speed while the
   companion filters measurements and owns hold/reacquire policy. Do not tune a

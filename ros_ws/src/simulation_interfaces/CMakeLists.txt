@@ -16,6 +16,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PayloadState.msg"
   "msg/PayloadEvent.msg"
   "msg/MissionEvent.msg"
+  "msg/VehicleStatus.msg"
+  "msg/JudgeDecision.msg"
+  "msg/AttemptStatus.msg"
   "srv/PayloadCommand.srv"
   DEPENDENCIES builtin_interfaces geometry_msgs
 )

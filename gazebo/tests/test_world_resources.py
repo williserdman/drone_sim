@@ -21,6 +21,8 @@ WORLD = RESOURCES / "worlds/phase3_foundation.sdf"
 EXPECTED_RESOURCE_PATHS = (
     "models/iris_competition/model.config",
     "models/iris_competition/model.sdf",
+    "models/iris_competition_2027/model.config",
+    "models/iris_competition_2027/model.sdf",
     "models/iris_flight/model.config",
     "models/iris_flight/model.sdf",
     "models/iris_phase3/meshes/iris.dae",
@@ -32,12 +34,22 @@ EXPECTED_RESOURCE_PATHS = (
     "models/payload_2/materials/textures/marker_2.png",
     "models/payload_2/model.config",
     "models/payload_2/model.sdf",
+    "models/payload_2027_2/materials/textures/marker_2.png",
+    "models/payload_2027_2/model.config",
+    "models/payload_2027_2/model.sdf",
+    "models/payload_2027_3/materials/textures/marker_3.png",
+    "models/payload_2027_3/model.config",
+    "models/payload_2027_3/model.sdf",
+    "models/payload_2027_4/materials/textures/marker_4.png",
+    "models/payload_2027_4/model.config",
+    "models/payload_2027_4/model.sdf",
     "models/payload_3/materials/textures/marker_3.png",
     "models/payload_3/model.config",
     "models/payload_3/model.sdf",
     "models/payload_4/materials/textures/marker_4.png",
     "models/payload_4/model.config",
     "models/payload_4/model.sdf",
+    "worlds/competition_2027.sdf",
     "worlds/competition_mission.sdf",
     "worlds/competition_mission_1x.sdf",
     "worlds/phase3_foundation.sdf",
@@ -102,6 +114,16 @@ def test_resolve_competition_world_uses_the_committed_vehicle_and_world():
     assert resolved.world_name == "competition_mission"
     assert resolved.vehicle_id == "iris_competition"
     assert resolved.path == (RESOURCES / "worlds/competition_mission.sdf").resolve()
+
+
+def test_resolve_vfs_2027_world_uses_its_distinct_vehicle_and_world():
+    from drone_sim_gazebo.worlds import WorldConfig, resolve_world
+
+    resolved = resolve_world(WorldConfig("competition_2027", "iris_competition_2027"))
+
+    assert resolved.world_name == "competition_2027"
+    assert resolved.vehicle_id == "iris_competition_2027"
+    assert resolved.path == (RESOURCES / "worlds/competition_2027.sdf").resolve()
 
 
 @pytest.mark.parametrize(

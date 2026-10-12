@@ -95,9 +95,33 @@ After editing `companion/comp2026` or simulator code, run from the repository ro
    ```
 
    Use `config/default-run.json` for the existing Comp2026 competition path.
+   Use `config/configured-vfs-2027-run.json` for the new VFS 2027 mission with
+   automatic judging and all three payloads targeting C. Set each payload's
+   A/B/C choice under `mission.targets` in
+   [scenario-2027.yaml](../config/scenario-2027.yaml); the template's `competition`
+   paths select the exact source files copied into each run. Target changes
+   alone do not require regenerating the world. Geometry or sensor changes do:
+   regenerate assets and rebuild before flight.
    Configured diagnostics exercise the new operation runner, not Comp2026's
    mission classes. To add a fixed sequence, copy the configured template and
    edit `mission_plan.steps` using the [tool contract](../companion/README.md#configured-diagnostic-missions).
+
+   The marker-2 speed probe uses 12 m/s transit, 3 m/s² horizontal acceleration,
+   2 m/s³ horizontal jerk, 1.5 m/s high landing speed, and a 2 m transition:
+
+   ```bash
+   uv run --locked drone-sim start --config config/configured-vfs-2027-speed-probe.json
+   ```
+
+   After `runs/RUN_ID/.status/mission-finished.json` appears, preserve the short
+   diagnostic recording with `uv run --locked drone-sim abort RUN_ID`. Keep the
+   foreground `start` process alive through finalization. The resulting bundle is
+   intentionally `ABORTED`; it does not replace the full 780-second acceptance
+   run, though finalization preserves its bag, videos, and logs.
+   Check the manifest separately: an early stop can leave a payload epoch beyond
+   the final truth epoch, failing the complete bag-grid contract even when the
+   videos decode and the requested flight finished. The verified probe and its
+   exact evidence limits are recorded in [handoff](handoff.md).
 
 3. Copy the UUID from the `run_starting` JSON line and follow [monitoring](#run-and-monitor).
    The final `run_result` reports the terminal state. Results and recordings live
@@ -112,7 +136,7 @@ cover the wait and flight, and targets 25 wall minutes including warmup.
 
 ### Run all automatic templates
 
-There is no `run-all` command. This Bash sequence attempts all six automatic
+There is no `run-all` command. This Bash sequence attempts all seven automatic
 templates, stops on the first failure or abort, and retains each normal run bundle:
 
 ```bash
@@ -124,6 +148,7 @@ templates, stops on the first failure or abort, and retains each normal run bund
     config/hover-roll-run.json \
     config/autotune-roll-run.json \
     config/default-run.json \
+    config/configured-vfs-2027-run.json \
     config/realtime-run.json
   do
     uv run --locked drone-sim start --config "$mission_config"
@@ -168,6 +193,58 @@ status until terminal. Avoid killing containers or deleting the run directory;
 recorders need finalization to publish their files. `start` exits 0 for
 `COMPLETED`, 1 for `FAILED`, 130 for `ABORTED`; CLI/config errors use exit 2.
 
+### Remove one unused run network after startup failure
+
+If Compose reports `all predefined address pools have been fully subnetted`,
+first let `drone-sim start` finish with terminal `FAILED`. Inspect one network
+owned by a failed run and remove it only when it has no containers:
+
+```bash
+RUN_ID=replace-with-failed-run-uuid
+COMPOSE_PROJECT="drone-sim-${RUN_ID//-/}"
+NETWORK="${COMPOSE_PROJECT}_default"
+INSPECT_BACKUP="/tmp/${RUN_ID}-network-inspect.json"
+MANIFEST="runs/${RUN_ID}/manifest.json"
+
+if ! docker network inspect "$NETWORK" > "$INSPECT_BACKUP"; then
+  echo "network inspection failed; nothing removed" >&2
+  exit 1
+fi
+
+if python3 - "$MANIFEST" "$INSPECT_BACKUP" "$COMPOSE_PROJECT" "$NETWORK" <<'PY'
+import json
+import sys
+
+manifest_path, inspect_path, expected_project, expected_network = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as stream:
+    manifest = json.load(stream)
+with open(inspect_path, encoding="utf-8") as stream:
+    inspected = json.load(stream)
+
+valid = (
+    manifest.get("terminal_status") == "FAILED"
+    and len(inspected) == 1
+    and inspected[0].get("Name") == expected_network
+    and inspected[0].get("Labels", {}).get("com.docker.compose.project")
+    == expected_project
+    and inspected[0].get("Containers") == {}
+)
+if not valid:
+    raise SystemExit("refusing removal: failed-run ownership or emptiness check failed")
+PY
+then
+  docker network rm "$NETWORK"
+else
+  echo "network checks failed; inspection retained at $INSPECT_BACKUP" >&2
+  exit 1
+fi
+```
+
+Keep the inspection JSON with the failure diagnostics. Do not use
+`docker network prune`, `docker system prune`, or change Docker address-pool
+configuration for this recovery. Automatic cleanup of terminal run networks is
+deferred.
+
 ### Why it can take so long
 
 The default has a 90-second **native simulation** warmup followed by a
@@ -182,6 +259,7 @@ mission logs alone as a stopped process.
 | [configured-descent-run.json](../config/configured-descent-run.json) | Fixed automatic takeoff/hold/land | 30 s / 90 s / 0.1 |
 | [configured-operator-run.json](../config/configured-operator-run.json) | Operator arms/selects GUIDED, then takeoff/hold/land | 60 s / 90 s / 0.1 |
 | [default-run.json](../config/default-run.json) | Full three-payload competition | 600 s / 90 s / 0.25 |
+| [configured-vfs-2027-run.json](../config/configured-vfs-2027-run.json) | VFS 2027, automatic checks, configurable A/B/C | 780 s / 90 s / 0.25 |
 | [vertical-descent-run.json](../config/vertical-descent-run.json) | Controlled descent, not the payload mission | 60 s / 90 s / 0.1 |
 | [hover-roll-run.json](../config/hover-roll-run.json) | Short roll/hover diagnostic | 45 s / 15 s / 0.1 |
 | [autotune-roll-run.json](../config/autotune-roll-run.json) | Roll AutoTune experiment | 120 s / 15 s / 0.1 |
@@ -191,6 +269,22 @@ Short diagnostic missions do not prove competition success. AutoTune promotion
 is a separate, explicit source change using
 [promote_roll_autotune.py](../scripts/promote_roll_autotune.py); it is not part of
 normal launch. Inspect the saved gains and resulting parameter diff before reuse.
+
+### Regenerate VFS 2027 geometry
+
+After changing course geometry, payload dimensions, or camera settings, regenerate
+tracked resources, run the Gazebo asset tests, commit, then rebuild images:
+
+```bash
+uv run --locked python gazebo/scripts/prepare_competition_assets.py \
+  --source-root gazebo/resources --output-root gazebo/resources \
+  --course config/course-2027.yaml --scenario config/scenario-2027.yaml \
+  --profile competition_2027_v1
+uv run --locked pytest gazebo/tests/test_competition_assets.py -q
+```
+
+The generation profile validates the shared configuration and empty aircraft
+mass. Changing only target assignments leaves geometry unchanged.
 
 ### Optional NVIDIA path
 
@@ -235,10 +329,13 @@ may not have final names until recorders close. The `review_video/` files linked
 from the payload issue note were an independent recording for that particular
 run, **not** an artifact guaranteed by ordinary launches.
 
+The [accepted VFS 2027 run](handoff.md#verified-behavior-and-limits) separately
+verified all three physical deliveries, 366/380, and the full 780-second bundle.
+
 Three distinct questions must be answered: did the vehicle physically perform
 the mission, what points were awarded, and did the full evidence bundle validate?
-Use [the latest documented failure](payload-timestamp-fix.md) as an example of
-150 points coexisting with a failed run.
+Use the [documented payload timestamp failure](payload-timestamp-fix.md) as an
+example of 150 points coexisting with a failed run.
 
 Precision-landing recovery records one compact JSON object per rejected
 observation and state transition. Inspect it without changing the bundle:
@@ -291,7 +388,16 @@ This is read-only and requires the Python environment to provide ROS Jazzy
 [acceptance implementation](../artifacts/src/artifacts/acceptance.py) and
 [inspector](../scripts/inspect_competition_run.py).
 
-It requires 150/150, valid evidence, and matching **current** parent/nested
+It checks the scenario-specific physical mission and score: Comp2026 requires
+150/150; VFS 2027 requires three valid configured-target drops, three landed L
+deliveries, timely home/disarm, and independently verified arithmetic. With all
+targets C and the default empty weight, flight points are `365 + T`, out of 380.
+GM-1 is not simulated or awarded. The VFS active clock is 600 seconds;
+inspection pauses that clock while the 780-second public recording continues.
+The rigid-container model does not simulate liquid, breakage, or judge removal
+of failed drops; see the [physical contract](../gazebo/README.md).
+
+Acceptance also requires valid evidence and matching **current** parent/nested
 revisions, dirty flags, and image digests. Running it after changing source or
 retagging images can reject an old bundle on provenance alone. Preserve its
 original checkout/images when establishing a baseline; never edit historical

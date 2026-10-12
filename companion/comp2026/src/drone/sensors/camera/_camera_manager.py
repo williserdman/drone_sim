@@ -14,6 +14,14 @@ import threading
 one_over_root_2 = 1 / np.sqrt(2)
 
 
+class FrameExpiredError(TimeoutError):
+    """A rejected exposure expired; a later frame may still be usable."""
+
+    def __init__(self, message: str, *, sequence: int | None = None) -> None:
+        super().__init__(message)
+        self.sequence = sequence
+
+
 @dataclass(frozen=True)
 class FrameMetadata:
     sequence: int
@@ -394,14 +402,14 @@ class CameraManager:
                     raise RuntimeError("Frame exposure timestamp is in the future")
                 if self.max_exposure_age_ns is not None:
                     if exposure_age_ns > self.max_exposure_age_ns:
-                        raise RuntimeError(
+                        raise FrameExpiredError(
                             "Frame exposure is older than the configured acquisition limit"
                         )
                     handover_age_ns = handover_timestamp_ns - exposure_timestamp_ns
                     if handover_age_ns < 0:
                         raise RuntimeError("Frame exposure timestamp is in the future")
                     if handover_age_ns > self.max_exposure_age_ns:
-                        raise RuntimeError(
+                        raise FrameExpiredError(
                             "Frame exposure is older than the configured acquisition limit"
                         )
                     exposure_age_bounded = True
@@ -445,7 +453,10 @@ class CameraManager:
                     candidate = self._capture_candidate(self._acquisition_quality)
                     if self._acquisition_stop.is_set():
                         break
-                    self._accept_candidate(candidate, cancel_if_stopped=True)
+                    try:
+                        self._accept_candidate(candidate, cancel_if_stopped=True)
+                    except FrameExpiredError:
+                        continue
         except Exception as error:
             with self._state_condition:
                 self._acquisition_error = error
@@ -480,7 +491,10 @@ class CameraManager:
         if age < 0:
             raise RuntimeError("Frame exposure timestamp is in the future")
         if age > self.max_exposure_age_ns:
-            raise RuntimeError("Frame exposure is older than the acquisition limit")
+            raise FrameExpiredError(
+                "Frame exposure is older than the acquisition limit",
+                sequence=observation.metadata.sequence,
+            )
 
     def ensure_observation_fresh(self, observation: FrameObservation) -> None:
         self._ensure_handover_fresh(observation)
@@ -569,13 +583,10 @@ class CameraManager:
         else:
             try:
                 self._ensure_handover_fresh(observation)
+            except FrameExpiredError:
+                reasons.append("latest frame exposure is older than the acquisition limit")
             except RuntimeError as error:
-                if "older than" in str(error):
-                    reasons.append(
-                        "latest frame exposure is older than the acquisition limit"
-                    )
-                else:
-                    reasons.append(str(error))
+                reasons.append(str(error))
         return tuple(reasons)
 
     def precision_readiness_reasons(self) -> tuple[str, ...]:

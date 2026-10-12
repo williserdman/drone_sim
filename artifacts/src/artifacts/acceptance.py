@@ -31,6 +31,7 @@ from .manifest import (
 )
 from .runtime_configuration import resolve_recording_runtime_config
 from .score_validation import ScoreValidationError, validate_score_outputs
+from .vfs_contract import load_vfs_course, load_vfs_scenario
 from .validation import (
     ValidationStatus,
     read_regular_file_bytes,
@@ -558,6 +559,43 @@ def _production_semantic_check(
     return bag.physical_evidence
 
 
+def _validate_vfs_physical_acceptance(
+    run_directory: Path, evidence: PhysicalBagEvidence
+) -> None:
+    """Require the configured MVP flight independently of score maximization."""
+    course = load_vfs_course(run_directory / "configuration/course.yaml")
+    scenario = load_vfs_scenario(run_directory / "configuration/scenario.yaml")
+    decisions = {row.decision_id: row for row in evidence.judge_decisions}
+    fm2 = next((row for row in decisions.values() if row.phase == "FM2" and row.outcome == 1), None)
+    fm3 = next((row for row in decisions.values() if row.phase == "FM3" and row.outcome == 1), None)
+    if fm2 is None or fm3 is None or fm2.eligible_aruco_ids != (2, 3, 4):
+        raise BundleAcceptanceError("VFS acceptance requires three successful configured drops")
+    final_payloads = {}
+    for sample in evidence.payload_states:
+        final_payloads[sample.aruco_id] = sample
+    landing = course.waypoints["L"]
+    if any(
+        marker not in final_payloads
+        or not final_payloads[marker].grounded
+        or abs(final_payloads[marker].position_xyz[0] - landing.x) > landing.width / 2
+        or abs(final_payloads[marker].position_xyz[1] - landing.y) > landing.height / 2
+        for marker in (2, 3, 4)
+    ):
+        raise BundleAcceptanceError("VFS acceptance requires three landed L deliveries")
+    if not evidence.ground_truth or not evidence.vehicle_statuses or not evidence.attempt_statuses:
+        raise BundleAcceptanceError("VFS acceptance is missing home/disarm timing evidence")
+    final_truth = evidence.ground_truth[-1]
+    home = course.waypoints["H"]
+    if (
+        not final_truth.in_contact
+        or math.hypot(final_truth.position_xyz[0] - home.x, final_truth.position_xyz[1] - home.y) > home.radius
+        or evidence.vehicle_statuses[-1].armed
+        or fm3.active_elapsed_ns > int(course.attempt.duration_seconds * 1e9)
+        or evidence.attempt_statuses[-1].state != 4
+    ):
+        raise BundleAcceptanceError("VFS acceptance requires timely final home landing and disarm")
+
+
 def semantic_container_command(
     run_directory: Path | str,
     *,
@@ -768,11 +806,8 @@ def inspect_phase3_semantics(
     ]:
         raise BundleAcceptanceError("manifest configuration provenance is invalid")
     _validate_manifest_inventory(directory, manifest)
-    ruleset_id = (
-        "competition_v1"
-        if configuration.get("scenario") == "competition_v1"
-        else "descent_v1"
-    )
+    scenario = configuration.get("scenario")
+    ruleset_id = scenario if scenario in {"competition_v1", "competition_2027_v1"} else "descent_v1"
     _validate_module_logs(directory, run_id, ruleset_id=ruleset_id)
     physical_evidence = semantic_check(
         directory,
@@ -782,6 +817,8 @@ def inspect_phase3_semantics(
     )
     if not isinstance(physical_evidence, PhysicalBagEvidence):
         raise BundleAcceptanceError("semantic inspection returned no physical evidence")
+    if ruleset_id == "competition_2027_v1":
+        _validate_vfs_physical_acceptance(directory, physical_evidence)
 
     try:
         score = validate_score_outputs(
@@ -803,7 +840,11 @@ def inspect_phase3_semantics(
     if require_maximum_score and not math.isclose(
         score.achieved_score, score.maximum_available_score
     ):
-        required = "150/150" if ruleset_id == "competition_v1" else "100/100"
+        required = (
+            "150/150" if ruleset_id == "competition_v1"
+            else "380/380" if ruleset_id == "competition_2027_v1"
+            else "100/100"
+        )
         raise BundleAcceptanceError(
             f"bundle did not achieve the required {required} score"
         )

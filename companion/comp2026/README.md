@@ -307,6 +307,14 @@ geometry and is not vertical AGL. Precision and release consumers require
 distinct fresh samples, bounded source age, receipt latency and cross-stream
 skew, plus continuous stability evidence before payload output.
 
+The camera manager rejects an exposure older than its configured limit with
+`FrameExpiredError`, a `TimeoutError` carrying the sequence when available.
+Its producer discards expired candidates and continues acquiring. The
+configured mission worker also discards observations that expire during marker
+processing and waits for a later sequence. Expired geometry is never forwarded;
+future timestamps and other integrity failures still terminate acquisition.
+Precision target-health and operation deadlines are unchanged.
+
 FM3 builds an earth-fixed target anchor from five fresh centered camera
 observations. During LAND it stops forwarding rejected target measurements. If
 the target stays unhealthy for 0.50 simulated seconds, FM3 confirms GUIDED and

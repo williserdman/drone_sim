@@ -32,7 +32,8 @@ required evidence is missing or invalid.
   adapter over the strict, descriptor-safe persistence mechanics in
   [`protocol_files.py`](src/artifacts/protocol_files.py).
 - [`acceptance.py`](src/artifacts/acceptance.py) and
-  [`competition_score_validation.py`](src/artifacts/competition_score_validation.py)
+  [`competition_score_validation.py`](src/artifacts/competition_score_validation.py),
+  plus [`vfs_score_validation.py`](src/artifacts/vfs_score_validation.py),
   implement independent semantic acceptance for completed physical runs.
 
 The shared status contract includes `MissionExecutionReadyStatus`, published by
@@ -54,6 +55,12 @@ timestamps, not raw image pixels. Pixel recordings are `video/onboard.mp4` and
 `video/observer.mp4`; losing an MP4 cannot be repaired from the bag. Competition
 runs extend the base bag with their physical/scoring evidence as selected by
 [`RecordingRuntimeConfig.topics`](src/artifacts/runtime_configuration.py).
+The `competition_2027_v1` profile records the complete configured public window
+(at least 780 seconds; 780 by default)
+at 640×480 and 20 Hz. Its inventory adds observed vehicle status at 10 Hz,
+authoritative attempt status at 20 Hz, and durable correlated judge decisions.
+Validation requires continuous physical and payload truth, exact stream cadence,
+request correlation, and identical-only judge replay.
 
 The deployed private rosbag QoS overrides are
 [`recording-qos.yaml`](recording-qos.yaml), copied into the runtime image by the
@@ -84,6 +91,18 @@ the [`manifest.json` schema](schemas/manifest.schema.json).
 - Completed runs require every required artifact; failed and aborted runs retain
   explicit missing/invalid records. Finalization is no-clobber and scoped to the
   current run directory.
+- VFS 2027 scoring is replayed locally from the bag and copied course/scenario
+  configuration; the artifacts image does not import scorekeeper code. A valid
+  partial score remains recordable, while acceptance requires all three configured
+  drops, three grounded L deliveries, and timely home landing/disarm. The default
+  all-C mission earns `365 + T` without penalties; acceptance does not require the
+  maximum time bonus. Replay independently checks settled physical target contact,
+  observed armed-mode autonomy, and active time reconstructed from takeoff and
+  home/disarm transitions rather than trusting judge summary fields.
+  Replay requires ordered-unique aggregate evidence paths while preserving each
+  component's evidence reference, including references shared by multiple rules.
+  An FM-2 pause requires airborne evidence from that phase, so the replay does
+  not reinterpret inherited FM-1 home contact as an inspection pause.
 - The shared protocol helper operates within the cooperative trust boundary
   defined in the [architecture guide](../docs/architecture.md#shared-communication-guarantees).
   Its advisory lock is not a security boundary against a hostile process with
@@ -103,5 +122,5 @@ uv run pytest artifacts/tests/test_protocol_files.py \
   artifacts/tests/test_runtime_protocol.py artifacts/tests/test_runtime_configuration.py -q
 uv run pytest artifacts/tests/test_runtime_node.py artifacts/tests/test_rosbag_adapter.py -q
 uv run pytest artifacts/tests/test_manifest.py artifacts/tests/test_session.py \
-  artifacts/tests/test_acceptance.py -q
+  artifacts/tests/test_acceptance.py artifacts/tests/test_vfs_score_validation.py -q
 ```

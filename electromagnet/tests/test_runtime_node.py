@@ -169,10 +169,13 @@ def write_config(run_directory: Path, scenario: str) -> Path:
     configuration = run_directory / "configuration"
     configuration.mkdir(parents=True)
     document: dict[str, object] = {"run_id": RUN_ID, "scenario": scenario}
-    if scenario == "competition_v1":
-        (configuration / "course.yaml").write_bytes((ROOT / "config/course.yaml").read_bytes())
+    if scenario in {"competition_v1", "competition_2027_v1"}:
+        suffix = "-2027" if scenario == "competition_2027_v1" else ""
+        (configuration / "course.yaml").write_bytes(
+            (ROOT / f"config/course{suffix}.yaml").read_bytes()
+        )
         (configuration / "scenario.yaml").write_bytes(
-            (ROOT / "config/scenario.yaml").read_bytes()
+            (ROOT / f"config/scenario{suffix}.yaml").read_bytes()
         )
         document["competition"] = {
             "course": "course.yaml",
@@ -202,6 +205,76 @@ def test_runtime_config_loads_authority_from_current_resolved_competition(
     assert config.max_center_error_m == 0.075
     assert config.payload_zones == {2: None, 3: "WA", 4: "WM"}
     assert config.pickup_zones["WA"].contains((-45.72, -9.144))
+
+
+def test_runtime_config_loads_vfs_pickup_regions_from_shared_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from types import ModuleType, SimpleNamespace
+
+    run_directory = tmp_path / RUN_ID
+    configuration = run_directory / "configuration"
+    configuration.mkdir(parents=True)
+    (configuration / "course.yaml").write_text("{}", encoding="utf-8")
+    (configuration / "scenario.yaml").write_text("{}", encoding="utf-8")
+    config_path = configuration / "run.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "run_id": RUN_ID,
+                "scenario": "competition_2027_v1",
+                "competition": {"course": "course.yaml", "scenario": "scenario.yaml"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    contract = ModuleType("artifacts.vfs_contract")
+    contract.load_vfs_course = lambda _path: SimpleNamespace(
+        waypoints={
+            "S": SimpleNamespace(center_xy_m=(0.0, 0.0), width=15.24, height=19.812),
+            "D": SimpleNamespace(center_xy_m=(-91.44, 0.0), width=15.24, height=19.812),
+        }
+    )
+    contract.load_vfs_scenario = lambda _path: SimpleNamespace(
+        payloads=tuple(SimpleNamespace(aruco_id=marker) for marker in (2, 3, 4)),
+        payload_interaction=SimpleNamespace(pickup_max_center_error_m=0.075),
+        payload_capacity=1,
+    )
+    monkeypatch.setitem(sys.modules, "artifacts.vfs_contract", contract)
+
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+
+    assert config.scenario == "competition_2027_v1"
+    assert config.payload_zones == {
+        marker: frozenset({"S", "D"}) for marker in (2, 3, 4)
+    }
+    assert config.pickup_zones["S"].contains((-3.0, -3.0))
+    assert config.pickup_zones["D"].contains((-86.106, -3.048))
+
+
+def test_runtime_config_loads_committed_vfs_configuration(tmp_path: Path) -> None:
+    run_directory = tmp_path / RUN_ID
+    config_path = write_config(run_directory, "competition_2027_v1")
+
+    config = RuntimeConfig.from_environment(
+        {
+            "SIM_RUN_ID": RUN_ID,
+            "SIM_RUN_DIRECTORY": str(run_directory),
+            "SIM_CONFIG_PATH": str(config_path),
+        }
+    )
+
+    assert config.payload_capacity == 1
+    assert config.max_center_error_m == 0.075
+    assert config.payload_zones == {
+        marker: frozenset({"S", "D"}) for marker in (2, 3, 4)
+    }
 
 
 def test_runtime_config_keeps_descent_without_competition_sources(tmp_path: Path) -> None:

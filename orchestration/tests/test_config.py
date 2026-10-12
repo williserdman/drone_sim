@@ -27,6 +27,7 @@ VERTICAL_DESCENT_TEMPLATE = CONFIG / "vertical-descent-run.json"
 ROLL_AUTOTUNE_TEMPLATE = CONFIG / "autotune-roll-run.json"
 CONFIGURED_DESCENT_TEMPLATE = CONFIG / "configured-descent-run.json"
 CONFIGURED_OPERATOR_TEMPLATE = CONFIG / "configured-operator-run.json"
+CONFIGURED_VFS_2027_TEMPLATE = CONFIG / "configured-vfs-2027-run.json"
 FIXED_RUN_ID = UUID("00000000-0000-4000-8000-000000000222")
 
 
@@ -173,6 +174,43 @@ def _competition_document() -> dict:
     return document
 
 
+def _vfs_document() -> dict:
+    document = _configured_document()
+    document.update(
+        world="competition_2027",
+        vehicle="iris_competition_2027",
+        scenario="competition_2027_v1",
+        max_wall_seconds=14400,
+        recording={
+            "width_px": 640,
+            "height_px": 480,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+        simulation={
+            "seed": 2027,
+            "duration_sim_seconds": 780.0,
+            "public_epoch_native_sim_seconds": 90.0,
+            "target_real_time_factor": 0.25,
+        },
+        competition={"course": "course-2027.yaml", "scenario": "scenario-2027.yaml"},
+        mission_plan={
+            "schema_version": 2,
+            "steps": [
+                {"tool": "begin_phase", "args": {"phase": "FM3"}},
+                {
+                    "when": {"any_payload_eligible": True},
+                    "steps": [{
+                        "when": {"payload_eligible": 2},
+                        "steps": [{"tool": "find_marker", "args": {"aruco_id": 2}}],
+                    }],
+                },
+            ],
+        },
+    )
+    return document
+
+
 def _write_competition_template(
     tmp_path: Path,
     *,
@@ -188,6 +226,149 @@ def _write_template(tmp_path: Path, document: dict, name: str = "run.json") -> P
     path = tmp_path / name
     path.write_text(json.dumps(document), encoding="utf-8")
     return path
+
+
+def _write_vfs_template(tmp_path: Path, document: dict | None = None) -> Path:
+    (tmp_path / "course-2027.yaml").write_bytes((CONFIG / "course-2027.yaml").read_bytes())
+    (tmp_path / "scenario-2027.yaml").write_bytes((CONFIG / "scenario-2027.yaml").read_bytes())
+    return _write_template(tmp_path, document or _vfs_document())
+
+
+def test_vfs_2027_template_resolves_v2_groups_and_frozen_sources(tmp_path):
+    document = _vfs_document()
+    template = _write_vfs_template(tmp_path, document)
+
+    resolved = resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
+    written = write_resolved_config(tmp_path / "run", resolved)
+    frozen = json.loads(written.read_text(encoding="utf-8"))
+
+    assert (resolved.world, resolved.vehicle, resolved.mission, resolved.scenario) == (
+        "competition_2027",
+        "iris_competition_2027",
+        "configured",
+        "competition_2027_v1",
+    )
+    assert resolved.recording == RecordingConfig(640, 480, 20, "rgb8")
+    assert resolved.simulation is not None
+    assert resolved.simulation.duration_ns == 780_000_000_000
+    assert frozen["mission_plan"]["steps"][1]["steps"][0]["steps"][0]["timeout_sim_s"] == 60
+    assert (written.parent / "course.yaml").read_bytes() == (CONFIG / "course-2027.yaml").read_bytes()
+    assert (written.parent / "scenario.yaml").read_bytes() == (CONFIG / "scenario-2027.yaml").read_bytes()
+    assert load_run_config(written) == replace(
+        resolved,
+        competition=replace(
+            resolved.competition,
+            course_source=written.parent / "course.yaml",
+            scenario_source=written.parent / "scenario.yaml",
+        ),
+    )
+
+
+@pytest.mark.parametrize("schema_name", ["run-template.schema.json", "run.schema.json"])
+def test_vfs_2027_configuration_matches_public_schema(tmp_path, schema_name):
+    document = _vfs_document()
+    if schema_name == "run.schema.json":
+        resolved = resolve_run_config(
+            _write_vfs_template(tmp_path, document),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+        document = json.loads(
+            write_resolved_config(tmp_path / "run", resolved).read_text(encoding="utf-8")
+        )
+
+    _load_validator(schema_name).validate(document)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda value: value.update(world="competition_mission"), id="wrong-world"),
+        pytest.param(lambda value: value.update(vehicle="iris_competition"), id="wrong-vehicle"),
+        pytest.param(lambda value: value.update(mission="comp2026_auto"), id="wrong-mission"),
+        pytest.param(lambda value: value.pop("competition"), id="missing-sources"),
+        pytest.param(
+            lambda value: value["simulation"].update(duration_sim_seconds=779.95),
+            id="short-public-duration",
+        ),
+        pytest.param(
+            lambda value: value["recording"].update(width_px=320, height_px=240),
+            id="low-resolution-recording",
+        ),
+        pytest.param(
+            lambda value: value.update(mission_plan={
+                "schema_version": 1,
+                "steps": [{"tool": "arm", "args": {}}],
+            }),
+            id="version-1-plan",
+        ),
+    ],
+)
+def test_vfs_2027_rejects_mismatched_runtime_envelope(tmp_path, mutate):
+    document = _vfs_document()
+    mutate(document)
+
+    with pytest.raises(ValueError):
+        resolve_run_config(
+            _write_vfs_template(tmp_path, document),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(document)
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        pytest.param(
+            {"schema_version": 3, "steps": [{"tool": "arm", "args": {}}]},
+            id="version-3",
+        ),
+        pytest.param(
+            {"schema_version": 2, "steps": [{"when": {"any_payload_eligible": False}, "steps": [{"tool": "arm", "args": {}}]}]},
+            id="false-outer-predicate",
+        ),
+        pytest.param(
+            {"schema_version": 2, "steps": [{"when": {"payload_eligible": 2}, "steps": [{"tool": "arm", "args": {}}]}]},
+            id="payload-group-without-outer-group",
+        ),
+        pytest.param(
+            {"schema_version": 2, "steps": [{"when": {"any_payload_eligible": True}, "steps": []}]},
+            id="empty-group",
+        ),
+        pytest.param(
+            {"schema_version": 2, "steps": [{"when": {"any_payload_eligible": True}, "steps": [{"when": {"payload_eligible": 5}, "steps": [{"tool": "arm", "args": {}}]}]}]},
+            id="unknown-payload",
+        ),
+        pytest.param(
+            {"schema_version": 2, "steps": [{"when": {"any_payload_eligible": True}, "steps": [{"when": {"payload_eligible": 2}, "steps": [{"tool": "arm", "args": []}]}]}]},
+            id="invalid-skipped-branch-args",
+        ),
+        pytest.param(
+            {"schema_version": 2, "steps": [{"when": {"any_payload_eligible": True}, "steps": [{"when": {"payload_eligible": 2}, "steps": [{"tool": "arm", "args": {}, "timeout_sim_s": 0}]}]}]},
+            id="invalid-skipped-branch-timeout",
+        ),
+    ],
+)
+def test_vfs_2027_rejects_invalid_conditional_plan_before_resolution(tmp_path, plan):
+    document = _vfs_document()
+    document["mission_plan"] = plan
+
+    with pytest.raises(ValueError):
+        resolve_run_config(
+            _write_vfs_template(tmp_path, document),
+            run_id_factory=lambda: FIXED_RUN_ID,
+        )
+    with pytest.raises(ValidationError):
+        _load_validator("run-template.schema.json").validate(document)
+
+
+def test_vfs_2027_rejects_legacy_competition_sources(tmp_path):
+    template = _write_vfs_template(tmp_path)
+    (tmp_path / "course-2027.yaml").write_bytes((CONFIG / "course.yaml").read_bytes())
+    (tmp_path / "scenario-2027.yaml").write_bytes((CONFIG / "scenario.yaml").read_bytes())
+
+    with pytest.raises(ValueError, match="course|VFS|profile"):
+        resolve_run_config(template, run_id_factory=lambda: FIXED_RUN_ID)
 
 
 def test_default_template_resolves_complete_competition_attempt(tmp_path):
@@ -944,6 +1125,24 @@ def test_configured_plan_resolves_canonically_and_round_trips_in_run_snapshot(tm
     assert load_run_config(written).mission_plan_json == resolved.mission_plan_json
 
 
+def test_resolved_vfs_snapshot_selects_artifact_recording_contract(tmp_path):
+    from artifacts.runtime_configuration import resolve_recording_runtime_config
+
+    resolved = resolve_run_config(
+        CONFIGURED_VFS_2027_TEMPLATE,
+        run_id_factory=lambda: FIXED_RUN_ID,
+    )
+    written = write_resolved_config(tmp_path, resolved)
+    document = json.loads(written.read_text(encoding="utf-8"))
+
+    contract = resolve_recording_runtime_config(document)
+
+    assert document.get("schema_version") is None
+    assert document["mission_plan"]["schema_version"] == 2
+    assert contract.ruleset_id == "competition_2027_v1"
+    assert contract.expected_camera_frames == 15_600
+
+
 def test_configured_operator_plan_keeps_manual_state_wait_as_first_step():
     resolved = resolve_run_config(CONFIGURED_OPERATOR_TEMPLATE, run_id_factory=lambda: FIXED_RUN_ID)
     assert json.loads(resolved.mission_plan_json)["steps"][0] == {
@@ -968,7 +1167,7 @@ def test_configured_plan_matches_public_config_schemas(tmp_path, schema_name):
     [
         (lambda value: value.pop("mission_plan"), "configured.*mission_plan"),
         (lambda value: value.update(runtime_profile="phase2") or value.pop("simulation"), "configured.*phase3"),
-        (lambda value: value["mission_plan"].update(schema_version=2), "schema_version"),
+        (lambda value: value["mission_plan"].update(schema_version=3), "schema_version"),
         (lambda value: value["mission_plan"].update(steps=[]), "steps"),
         (lambda value: value["mission_plan"]["steps"][0].update(tool=""), "tool"),
         (lambda value: value["mission_plan"]["steps"][0].update(args=[]), "args"),

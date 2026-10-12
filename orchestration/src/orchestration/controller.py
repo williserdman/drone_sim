@@ -1080,7 +1080,7 @@ class RunController:
                     if (
                         requested == "COMPLETED"
                         and config.runtime_profile == "phase3"
-                        and config.scenario != "competition_v1"
+                        and config.scenario not in {"competition_v1", "competition_2027_v1"}
                     ):
                         score = validate_descent_score_outputs(
                             run_directory,

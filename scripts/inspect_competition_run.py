@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 from typing import Any, Callable
 
-from artifacts.acceptance import inspect_phase3_bundle
+from artifacts.acceptance import BundleAcceptanceError, inspect_phase3_bundle
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -85,13 +85,22 @@ def inspect_competition_run(
     expected_image_digests: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Return the canonical accepted report without modifying run evidence."""
+    directory = Path(run_directory).resolve()
+    try:
+        configuration = json.loads((directory / "configuration/run.json").read_text())
+        scenario = configuration["scenario"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise BundleAcceptanceError("competition configuration is missing or invalid") from error
+    if scenario not in {"competition_v1", "competition_2027_v1"}:
+        raise BundleAcceptanceError("unsupported competition scenario")
+    rules_path = PROJECT_ROOT / "scorekeeper/rules" / f"{scenario}.json"
     sources = (
         _source(runner, "drone_sim", PROJECT_ROOT),
         _source(runner, "comp2026", COMP2026_ROOT),
     )
     report = bundle_inspector(
-        Path(run_directory).resolve(),
-        rules_path=RULES_PATH,
+        directory,
+        rules_path=rules_path,
         expected_source_revisions={name: revision for name, revision, _dirty in sources},
         expected_source_dirty={name: dirty for name, _revision, dirty in sources},
         expected_image_digests=(
@@ -99,7 +108,7 @@ def inspect_competition_run(
             if expected_image_digests is not None
             else {image: _image_digest(runner, image) for image in PHASE3_IMAGES}
         ),
-        require_maximum_score=True,
+        require_maximum_score=scenario == "competition_v1",
     )
     return report.to_dict()
 

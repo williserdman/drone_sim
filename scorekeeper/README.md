@@ -3,7 +3,8 @@
 [Project README](../README.md) · [Architecture](../docs/architecture.md) · [Runbook](../docs/runbook.md)
 
 This module owns deterministic, run-scoped evaluation of authoritative physical
-evidence for the frozen `descent_v1` and three-payload `competition_v1` policies,
+evidence for the frozen `descent_v1`, `competition_v1`, and
+`competition_2027_v1` policies,
 then persists and publishes their score results.
 
 It is read-only with respect to the simulated system: it does **not** command the
@@ -19,6 +20,10 @@ whether the evidence bundle is complete and valid.
   driver.
 - [competition.py](src/drone_sim_scorekeeper/competition.py) is the pure competition
   evidence model and scorer.
+- [vfs.py](src/drone_sim_scorekeeper/vfs.py) is the pure 2027 automatic judge,
+  active-attempt clock, footprint evaluator, and scorer;
+  [vfs_runtime.py](src/drone_sim_scorekeeper/vfs_runtime.py) routes its public
+  evidence and decisions.
 - [descent.py](src/drone_sim_scorekeeper/descent.py) is the pure descent scorer.
 - [competition_runtime.py](src/drone_sim_scorekeeper/competition_runtime.py) and
   [runtime.py](src/drone_sim_scorekeeper/runtime.py) bind scorers to persistence,
@@ -39,13 +44,28 @@ The runtime consumes `/clock`, [GroundTruth](../ros_ws/src/simulation_interfaces
 [ScenarioEvent](../ros_ws/src/simulation_interfaces/msg/ScenarioEvent.msg),
 [PayloadState](../ros_ws/src/simulation_interfaces/msg/PayloadState.msg),
 [PayloadEvent](../ros_ws/src/simulation_interfaces/msg/PayloadEvent.msg), and
-[MissionEvent](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg). It only
-publishes [ScoreEvent](../ros_ws/src/simulation_interfaces/msg/ScoreEvent.msg).
+[MissionEvent](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg). The 2027
+profile also consumes observed
+[VehicleStatus](../ros_ws/src/simulation_interfaces/msg/VehicleStatus.msg) and
+publishes correlated
+[JudgeDecision](../ros_ws/src/simulation_interfaces/msg/JudgeDecision.msg),
+continuous [AttemptStatus](../ros_ws/src/simulation_interfaces/msg/AttemptStatus.msg),
+and [ScoreEvent](../ros_ws/src/simulation_interfaces/msg/ScoreEvent.msg). Judge
+and attempt messages contain timing and evidence references, never exact payload
+positions.
 Topic selection and QoS live in
 [runtime_node.py](src/drone_sim_scorekeeper/runtime_node.py), not this guide.
+The VFS runtime joins each exact 20 Hz ground-truth and three-payload epoch with
+the matching 10 Hz vehicle status when due. It applies truth, payload, then
+status before publishing that epoch's attempt state. A phase check waits for its
+exact physical epoch, retains its original timestamp and correlation, and fails
+closed if the epoch remains incomplete for 500 ms of observed simulation time.
+FM-2 can pause the active clock at H only after that phase has observed an
+airborne leg; inherited grounded state from FM-1 cannot pause it.
 
 The exact scoring data authorities are
 [competition_v1.json](rules/competition_v1.json) and
+[competition_2027_v1.json](rules/competition_2027_v1.json), plus
 [descent_v1.json](rules/descent_v1.json), enforced by their loaders and scorers.
 Do not duplicate point allocations, timing windows, or physical thresholds in
 documentation. The persisted schema is defined by
@@ -56,17 +76,26 @@ documentation. The persisted schema is defined by
 
 ## Constraints worth preserving
 
-- Score derives from ordered Gazebo truth plus confirmed payload and mission
-  events, never from the flight controller's estimate or success text.
+- Score derives from ordered Gazebo truth, observed arming/mode/failsafe status,
+  and confirmed payload and mission events. Estimated positions and success text
+  do not establish physical placement.
 - Competition vehicle and payload streams must remain contiguous on the ruleset's
   simulation-time grid after mission start. A gap, duplicate, regression,
   conflicting physical order, or missing terminal evidence makes scoring
   incomplete; a later suffix cannot repair it.
+- Judge freshness remains an as-of rule: deferred checks use only evidence at or
+  before the original request timestamp. Callback arrival order cannot substitute
+  later physical facts or change the request's active-clock value.
 - Payload release is evidence, not points by itself. Delivery requires physical
-  detachment and settled geometry; Home completion requires physical landing
-  truth through distinct ordered `HOME/DISARMED` and `HOME/COMPLETE` events.
+  detachment and settled geometry. Comp2026 Home completion requires physical
+  landing truth through ordered `HOME/DISARMED` and `HOME/COMPLETE` events.
+  VFS completion uses correlated phase checks against contact, complete landing
+  footprint, altitude transitions, and observed disarm. Eligibility uses actual
+  container ground contact, including tilted corner/edge support.
 - Missing point components may yield an honest finalized partial score when the
   evidence grammar and terminal conditions remain valid.
+- Aggregate `evidence_paths` retain each referenced path once in first-use order.
+  Individual rule results keep their own reference even when two rules share it.
 - Evidence is persisted before reliable score-event publication is flushed and
   before `score-finished` is created. Existing score evidence is never replaced.
   Finalization then writes quiescence and produces no further output.

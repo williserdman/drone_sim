@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import json
 import math
 import os
 from pathlib import Path
@@ -54,6 +55,19 @@ COMPETITION_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
         "/simulation/payload_events": "simulation_interfaces/msg/PayloadEvent",
         "/simulation/mission_events": "simulation_interfaces/msg/MissionEvent",
         "/competition/range/downward": "sensor_msgs/msg/LaserScan",
+    }
+)
+VFS_2027_TOPICS = COMPETITION_TOPICS + (
+    "/simulation/vehicle_status",
+    "/simulation/judge_decisions",
+    "/simulation/attempt_status",
+)
+VFS_2027_TOPIC_TYPES: Mapping[str, str] = MappingProxyType(
+    {
+        **COMPETITION_TOPIC_TYPES,
+        "/simulation/vehicle_status": "simulation_interfaces/msg/VehicleStatus",
+        "/simulation/judge_decisions": "simulation_interfaces/msg/JudgeDecision",
+        "/simulation/attempt_status": "simulation_interfaces/msg/AttemptStatus",
     }
 )
 
@@ -181,6 +195,42 @@ class DownwardRangeEvidence:
 
 
 @dataclass(frozen=True)
+class VehicleStatusEvidence:
+    sim_timestamp_ns: int
+    sequence_id: int
+    vehicle_id: str
+    armed: bool
+    mode: str
+    failsafe_active: bool
+    failsafe_reason: str
+
+
+@dataclass(frozen=True)
+class JudgeDecisionEvidence:
+    sim_timestamp_ns: int
+    decision_id: int
+    request_id: str
+    request_event_id: int
+    phase: str
+    checkpoint: str
+    outcome: int
+    eligible_aruco_ids: tuple[int, ...]
+    active_elapsed_ns: int
+    reason_code: str
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AttemptStatusEvidence:
+    sim_timestamp_ns: int
+    sequence_id: int
+    state: int
+    active_elapsed_ns: int
+    approval_timestamp_ns: int
+    started: bool
+
+
+@dataclass(frozen=True)
 class PhysicalBagEvidence:
     bag_sha256: str
     config_sha256: str
@@ -191,6 +241,9 @@ class PhysicalBagEvidence:
     payload_events: tuple[PayloadEventEvidence, ...] = ()
     mission_events: tuple[MissionEventEvidence, ...] = ()
     downward_ranges: tuple[DownwardRangeEvidence, ...] = ()
+    vehicle_statuses: tuple[VehicleStatusEvidence, ...] = ()
+    judge_decisions: tuple[JudgeDecisionEvidence, ...] = ()
+    attempt_statuses: tuple[AttemptStatusEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -312,6 +365,8 @@ class RosbagRecorder:
             self.topic_types = BASE_TOPIC_TYPES
         elif self.topics == COMPETITION_TOPICS:
             self.topic_types = COMPETITION_TOPIC_TYPES
+        elif self.topics == VFS_2027_TOPICS:
+            self.topic_types = VFS_2027_TOPIC_TYPES
         else:
             raise ValueError("rosbag topics must equal a supported evidence inventory")
         self.node_name = f"rosbag2_recorder_{uuid_factory().hex}"
@@ -753,6 +808,45 @@ def _downward_range_evidence(message: Any, timestamp_ns: int) -> DownwardRangeEv
     return DownwardRangeEvidence(timestamp_ns, float(measured))
 
 
+def _vehicle_status_evidence(message: Any, timestamp_ns: int) -> VehicleStatusEvidence:
+    if type(message.sequence_id) is not int or message.sequence_id < 0:
+        raise ValueError("vehicle status sequence ID is invalid")
+    if not isinstance(message.vehicle_id, str) or not message.vehicle_id or not isinstance(message.mode, str) or not message.mode:
+        raise ValueError("vehicle status identity or mode is invalid")
+    if type(message.armed) is not bool or type(message.failsafe_active) is not bool:
+        raise ValueError("vehicle status flags are invalid")
+    if not isinstance(message.failsafe_reason, str) or bool(message.failsafe_reason) != message.failsafe_active:
+        raise ValueError("vehicle status failsafe reason is invalid")
+    return VehicleStatusEvidence(timestamp_ns, message.sequence_id, message.vehicle_id, message.armed, message.mode, message.failsafe_active, message.failsafe_reason)
+
+
+def _judge_decision_evidence(message: Any, timestamp_ns: int) -> JudgeDecisionEvidence:
+    integers = (message.decision_id, message.request_event_id, message.active_elapsed_ns)
+    if any(type(value) is not int or value < 0 for value in integers):
+        raise ValueError("judge decision numeric fields are invalid")
+    if message.outcome not in (1, 2, 3):
+        raise ValueError("judge decision outcome is invalid")
+    eligible = tuple(message.eligible_aruco_ids)
+    if tuple(sorted(set(eligible))) != eligible or any(type(marker) is not int or marker not in (2, 3, 4) for marker in eligible):
+        raise ValueError("judge decision eligibility is invalid")
+    strings = (message.request_id, message.phase, message.reason_code)
+    if any(not isinstance(value, str) or not value for value in strings) or not isinstance(message.checkpoint, str):
+        raise ValueError("judge decision correlation is invalid")
+    refs = tuple(message.evidence_refs)
+    if not refs or any(not isinstance(value, str) or not value for value in refs):
+        raise ValueError("judge decision evidence references are invalid")
+    return JudgeDecisionEvidence(timestamp_ns, message.decision_id, message.request_id, message.request_event_id, message.phase, message.checkpoint, message.outcome, eligible, message.active_elapsed_ns, message.reason_code, refs)
+
+
+def _attempt_status_evidence(message: Any, timestamp_ns: int) -> AttemptStatusEvidence:
+    integers = (message.sequence_id, message.active_elapsed_ns, message.approval_timestamp_ns)
+    if any(type(value) is not int or value < 0 for value in integers):
+        raise ValueError("attempt status numeric fields are invalid")
+    if message.state not in (0, 1, 2, 3, 4) or type(message.started) is not bool:
+        raise ValueError("attempt status state is invalid")
+    return AttemptStatusEvidence(timestamp_ns, message.sequence_id, message.state, message.active_elapsed_ns, message.approval_timestamp_ns, message.started)
+
+
 class RosbagValidator:
     """Validate a quiescent MCAP bag without changing it."""
 
@@ -784,7 +878,7 @@ class RosbagValidator:
             or any(character not in "0123456789abcdef" for character in config_sha256)
         ):
             raise ValueError("physical_run requires a lowercase config SHA-256")
-        if ruleset_id not in {"descent_v1", "competition_v1"}:
+        if ruleset_id not in {"descent_v1", "competition_v1", "competition_2027_v1"}:
             raise ValueError("ruleset_id is unsupported")
         if (
             type(width_px) is not int
@@ -802,7 +896,10 @@ class RosbagValidator:
         self.height_px = height_px
         self.step_bytes = width_px * 3
         self.image_payload_bytes = width_px * height_px * 3
-        if ruleset_id == "competition_v1":
+        if ruleset_id == "competition_2027_v1":
+            self.topics = VFS_2027_TOPICS
+            self.topic_types = VFS_2027_TOPIC_TYPES
+        elif ruleset_id == "competition_v1":
             self.topics = COMPETITION_TOPICS
             self.topic_types = COMPETITION_TOPIC_TYPES
         else:
@@ -900,7 +997,7 @@ class RosbagValidator:
                     f"rosbag topic {topic} has wrong type {topic_metadata.message_type!r}",
                 )
             if topic_metadata.message_count <= 0 and not (
-                self.ruleset_id == "competition_v1"
+                self.ruleset_id in {"competition_v1", "competition_2027_v1"}
                 and topic == "/simulation/scenario_events"
             ):
                 return self._result(
@@ -922,6 +1019,9 @@ class RosbagValidator:
         payload_events: list[PayloadEventEvidence] = []
         mission_events: list[MissionEventEvidence] = []
         downward_ranges: list[DownwardRangeEvidence] = []
+        vehicle_statuses: list[VehicleStatusEvidence] = []
+        judge_decisions: list[JudgeDecisionEvidence] = []
+        attempt_statuses: list[AttemptStatusEvidence] = []
         first_clock_index: int | None = None
         try:
             for record_index, record in enumerate(
@@ -1014,6 +1114,18 @@ class RosbagValidator:
                     elif record.topic == "/simulation/mission_events":
                         mission_events.append(
                             _mission_event_evidence(message, sim_timestamp_ns)
+                        )
+                    elif record.topic == "/simulation/vehicle_status":
+                        vehicle_statuses.append(
+                            _vehicle_status_evidence(message, sim_timestamp_ns)
+                        )
+                    elif record.topic == "/simulation/judge_decisions":
+                        judge_decisions.append(
+                            _judge_decision_evidence(message, sim_timestamp_ns)
+                        )
+                    elif record.topic == "/simulation/attempt_status":
+                        attempt_statuses.append(
+                            _attempt_status_evidence(message, sim_timestamp_ns)
                         )
                 timestamps[record.topic].append(sim_timestamp_ns)
         except Exception as error:
@@ -1145,7 +1257,7 @@ class RosbagValidator:
                     "descent.stable_contact",
                     "score.finalized",
                 )
-            else:
+            elif self.ruleset_id == "competition_v1":
                 expected_event_types = (
                     "competition.fm1_landing",
                     "competition.fm1_autonomy",
@@ -1156,10 +1268,30 @@ class RosbagValidator:
                     "competition.payload_4",
                     "score.finalized",
                 )
+            else:
+                fixed = [
+                    "competition_2027.A", "competition_2027.BP",
+                    "competition_2027.CP", "competition_2027.R",
+                    "competition_2027.BA", "competition_2027.CA",
+                    "competition_2027.T", "competition_2027.deductions",
+                ]
+                actual_types = [event.event_type for event in score_events]
+                penalty_end = len(actual_types) - 2
+                if (
+                    len(actual_types) < 10
+                    or actual_types[:8] != fixed
+                    or any(not event_type.startswith("competition_2027.penalty.") for event_type in actual_types[8:penalty_end])
+                    or actual_types[-2:] != ["competition_2027.unloaded_weight_lb", "score.finalized"]
+                ):
+                    return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS score event types are invalid")
+                expected_event_types = tuple(actual_types)
+            require_persisted_ref = self.ruleset_id != "competition_2027_v1"
             if len(score_events) != len(expected_event_types) or any(
                 event.event_id != index
                 or event.event_type != event_type
-                or event.evidence_ref != f"scoring/events.jsonl#event-{index}"
+                or (require_persisted_ref and event.evidence_ref != f"scoring/events.jsonl#event-{index}")
+                or not isinstance(event.evidence_ref, str)
+                or not event.evidence_ref
                 or isinstance(event.value, bool)
                 or not isinstance(event.value, (int, float))
                 or not math.isfinite(event.value)
@@ -1216,6 +1348,70 @@ class RosbagValidator:
                             ValidationStatus.INVALID,
                             f"rosbag competition {label} events are not contiguous and monotonic",
                         )
+
+            if self.ruleset_id == "competition_2027_v1":
+                payload_by_timestamp: dict[int, list[int]] = {}
+                for sample in payload_states:
+                    payload_by_timestamp.setdefault(sample.sim_timestamp_ns, []).append(sample.aruco_id)
+                expected_grid = timestamps["/simulation/ground_truth"]
+                if sorted(payload_by_timestamp) != expected_grid or any(
+                    sorted(markers) != [2, 3, 4] for markers in payload_by_timestamp.values()
+                ):
+                    return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS payload grid must contain IDs 2, 3, and 4")
+                if timestamps["/competition/range/downward"] != expected_grid:
+                    return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS downward range is not aligned to physical truth")
+                if timestamps["/simulation/attempt_status"] != expected_grid or any(
+                    current.sequence_id != previous.sequence_id + 1
+                    for previous, current in zip(attempt_statuses, attempt_statuses[1:])
+                ) or any(
+                    current.active_elapsed_ns < previous.active_elapsed_ns
+                    or current.active_elapsed_ns > 600_000_000_000
+                    for previous, current in zip(attempt_statuses, attempt_statuses[1:])
+                ):
+                    return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS attempt status must be contiguous on the 20 Hz truth grid")
+                vehicle_grid = timestamps["/simulation/vehicle_status"]
+                if (
+                    self.expected_camera_frames is not None
+                    and len(vehicle_grid) != (self.expected_camera_frames + 1) // 2
+                ) or not vehicle_grid or vehicle_grid[0] not in (50_000_000, 100_000_000) or any(current - previous != 100_000_000 for previous, current in zip(vehicle_grid, vehicle_grid[1:])) or any(
+                    current.sequence_id != previous.sequence_id + 1
+                    for previous, current in zip(vehicle_statuses, vehicle_statuses[1:])
+                ):
+                    return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS vehicle status must be contiguous at 10 Hz")
+                for label, events in (("payload", payload_events), ("mission", mission_events)):
+                    if not events or any(
+                        event.event_id != index
+                        or (index > 0 and event.sim_timestamp_ns < events[index - 1].sim_timestamp_ns)
+                        for index, event in enumerate(events)
+                    ):
+                        return self._result(filesystem, ValidationStatus.INVALID, f"rosbag VFS {label} events are not contiguous and monotonic")
+                unique_decisions: dict[int, JudgeDecisionEvidence] = {}
+                for decision in judge_decisions:
+                    previous = unique_decisions.setdefault(decision.decision_id, decision)
+                    if previous != decision:
+                        return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS judge decision replay conflicts")
+                if not unique_decisions or sorted(unique_decisions) != list(range(len(unique_decisions))):
+                    return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS judge decision IDs are not contiguous")
+                requests: dict[int, tuple[str, str, str]] = {}
+                for event in mission_events:
+                    if event.state != "CHECK_REQUESTED":
+                        continue
+                    try:
+                        detail = json.loads(event.detail)
+                    except (TypeError, ValueError):
+                        return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS check request detail is invalid")
+                    if not isinstance(detail, dict) or set(detail) != {"request_id", "checkpoint"}:
+                        return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS check request detail is invalid")
+                    requests[event.event_id] = (event.phase, detail["checkpoint"], detail["request_id"])
+                if any(
+                    requests.get(decision.request_event_id) != (decision.phase, decision.checkpoint, decision.request_id)
+                    for decision in unique_decisions.values()
+                ):
+                    return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS judge decision is not correlated to its request")
+                for decision in unique_decisions.values():
+                    status = next((row for row in reversed(vehicle_statuses) if row.sim_timestamp_ns <= decision.sim_timestamp_ns), None)
+                    if status is None or decision.sim_timestamp_ns - status.sim_timestamp_ns > 500_000_000:
+                        return self._result(filesystem, ValidationStatus.INVALID, "rosbag VFS judge decision lacks fresh vehicle status")
 
         if self.expected_camera_frames is not None:
             exact_topics = (
@@ -1314,6 +1510,9 @@ class RosbagValidator:
                 tuple(payload_events),
                 tuple(mission_events),
                 tuple(downward_ranges),
+                tuple(vehicle_statuses),
+                tuple(judge_decisions),
+                tuple(attempt_statuses),
             )
         return self._result(
             filesystem,
@@ -1335,7 +1534,9 @@ __all__ = [
     "BagMessage",
     "BagMetadata",
     "BagTopicMetadata",
+    "AttemptStatusEvidence",
     "GroundTruthEvidence",
+    "JudgeDecisionEvidence",
     "DownwardRangeEvidence",
     "MissionEventEvidence",
     "PayloadEventEvidence",
@@ -1347,4 +1548,7 @@ __all__ = [
     "RosbagValidationResult",
     "RosbagValidator",
     "ScoreEventEvidence",
+    "VehicleStatusEvidence",
+    "VFS_2027_TOPIC_TYPES",
+    "VFS_2027_TOPICS",
 ]

@@ -203,6 +203,30 @@ def test_competition_runtime_routes_private_topics_to_the_selected_world():
     )
 
 
+def test_vfs_2027_runtime_reuses_the_competition_transport_profile():
+    from drone_sim_gazebo.ros_adapter.topics import (
+        camera_topics_for_world,
+        contact_topic_for_world,
+        private_command_topics_for_world,
+        recorder_topics_for_world,
+    )
+    from drone_sim_gazebo.runtime.paths import bridge_config_for_world
+
+    world = "competition_2027"
+    assert contact_topic_for_world(world) == "/gazebo/private/iris/contact"
+    assert camera_topics_for_world(world) == (
+        "/gazebo/private/camera/competition_onboard/image",
+        "/gazebo/private/camera/observer/image",
+    )
+    assert bridge_config_for_world(world) == Path(
+        "/etc/drone_sim/gazebo-bridge-competition.yaml"
+    )
+    assert len(private_command_topics_for_world(world)) == 3
+    assert "/simulation/payload_state" in recorder_topics_for_world(
+        world, competition_evidence=True
+    )
+
+
 def test_flight_clock_bridge_has_a_bounded_reliable_delivery_queue():
     bridge = (ROOT / "gazebo/config/bridge-flight.yaml").read_text(encoding="utf-8")
     clock = bridge.split(

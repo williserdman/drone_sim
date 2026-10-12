@@ -24,12 +24,19 @@ external arming. Each `mission_plan` has `schema_version: 1` and nonempty `steps
 A step has `tool`, `args`, and an optional `timeout_sim_s`, default 60. The
 normalized plan is frozen in checksum-bound `configuration/run.json`.
 
+The VFS 2027 template uses schema version 2. It retains ordinary calls and adds
+bounded `when` groups for the frozen FM-2 eligibility decision. The runner
+supports the outer `any_payload_eligible` group and one nested
+`payload_eligible` group. It validates skipped calls before opening ROS or
+MAVLink resources and records why each skipped group did not run.
+
 [mission_plan.py](src/drone_sim_companion/mission_plan.py) validates tools and
 exports `tool_definitions()` for future callers. Invalid tools, arguments, or
 numbers fail before ROS or MAVLink resources open.
 
 | Tool | Arguments and observed completion |
 | --- | --- |
+| `configure_flight` | `transit_speed_m_s`, `horizontal_acceleration_m_s2`, `horizontal_jerk_m_s3`, `landing_high_speed_m_s`, and `landing_transition_altitude_m`; requires fresh landed/disarmed state. Place before arming. It clears cached values, waits for every requested parameter's readback to match within `1e-3`, logs confirmed values, and fails on its simulation-time deadline. |
 | `wait_for_state` | Any of `armed`, `mode`, `landed`; waits for fresh matching telemetry. |
 | `set_mode` | `mode: GUIDED`; requires acceptance and observed mode. |
 | `arm` | Empty arguments; requires fresh GUIDED/prearm readiness and observed arming. |
@@ -37,13 +44,30 @@ numbers fail before ROS or MAVLink resources open.
 | `goto_waypoint` | `latitude_deg`, `longitude_deg`, positive `altitude_m`, optional `tolerance_m`; waits for position within tolerance. |
 | `hold` | Positive `duration_sim_s` shorter than its timeout; maintains the current GUIDED target. |
 | `land` | Empty arguments; waits for touchdown and disarm. Already landed/disarmed succeeds. |
+| `goto_course_waypoint` | Exactly one named waypoint or payload target, altitude, and optional tolerance; waits for position plus horizontal speed below 0.10 m/s for one second. |
+| `find_marker` | Payload ID 2, 3, or 4; requires five fresh, consistent observations while stationary. |
+| `precision_land` | Payload ID; uses the acquired anchor, live landing profile, bounded hold/reacquire policy, and completes on observed touchdown/disarm. |
+| `attach_payload` | Payload ID; requires the matching aligned touchdown and physical attachment confirmation. |
+| `release_payload` | Payload ID and `airborne` or `grounded`; checks flight prerequisites and waits for physical detachment confirmation. |
+| `begin_phase` | FM1, FM2, or FM3; publishes ordered mission intent. |
+| `check_phase` | Phase and the FM1 D/H checkpoint where required; waits for published disarm evidence, then the exactly correlated automatic judge decision. |
 
 Coordinates are WGS84 degrees; altitudes are metres above ArduPilot home.
+VFS course coordinates use the first complete observed home latitude/longitude
+as their fixed ENU origin. Later home updates after rearming remain visible in
+telemetry and cannot move named waypoints or payload targets.
+VFS checks wait one complete public status interval after the first disarmed
+snapshot. The runtime publishes status before advancing queued checks and stamps
+each request at emission time. This lets the judge observe disarm before a check;
+a rejected decision still ends the operation.
 [operations.py](src/drone_sim_companion/operations.py) exposes `start()`,
 `operation_status()`, and `read_vehicle_state()`. One operation owns flight output
 at a time, advancing on telemetry and simulation-clock ticks so observation and
 abort remain responsive. Deadlines use simulation time; the run wall deadline
 bounds stalled infrastructure. An ACK alone does not establish flight completion.
+`configure_flight` is the only runtime parameter override. The checksum-bound
+mission plan maps its five SI values to fixed ArduPilot parameters; it does not
+expose an arbitrary parameter API. Image-overlay defaults remain the fallback.
 
 [configured_runtime.py](src/drone_sim_companion/configured_runtime.py) publishes
 execution readiness after passive readiness, matching RUNNING, and public clock.
@@ -53,10 +77,51 @@ Failure or interruption may attempt one local LAND with fresh armed GUIDED/LAND
 state; recovery is bounded by the finalization/overall wall deadlines and retains
 the failed result. Another observed mode prevents that recovery command.
 
-These templates exercise the parent operation runner, not Comp2026's mission
-classes. Existing competition missions retain their own execution path.
-Precision landing, payload tools, agent transport, sensor-read tools, branching,
-and retries are deferred. For local commands, see the
+Configured missions never launch the Comp2026 automatic worker. The VFS profile
+reuses its calibrated ArUco transform and guarded precision-policy values through
+tick-driven operations, preserving one flight-output owner and responsive
+simulation-time aborts. Marker processing runs on a worker that cannot issue
+flight commands. Its bounded wall-time frame wait accommodates slowed rendering;
+observation freshness and mission deadlines remain measured in simulation time.
+Each marker request begins after the current camera sequence, so a frame cached
+before the request cannot satisfy acquisition after travel.
+The configured VFS ROS adapter consumes the newest queued image and discards
+images already older than the 500 ms simulation-time exposure limit. It
+rechecks age after copying pixels and waits for a newer image when the queue is
+stale. An image ahead of the accepted public clock remains queued until that
+clock timestamp arrives. The camera manager retains the same final 500 ms
+handoff guard. Exposure expiry uses the typed `FrameExpiredError`: the camera
+producer discards expired candidates, and the configured worker skips a frame
+that expires during processing before waiting after its sequence. Expired
+vectors never reach flight operations. Future timestamps, regressions, and
+other camera errors remain fatal; target-health and operation deadlines remain
+unchanged.
+Precision reacquisition counts fresh camera observations; intervening telemetry
+or clock ticks preserve the count, while a fresh invalid observation resets it.
+During LAND tracking, fresh range at or below 0.75 m takes precedence over camera
+polling and refreshes target health until touchdown/disarm. A brief range gap
+retains the existing 500 ms health timeout. The configured range adapter keeps
+clock-current and pending scans separately: a scan ahead of the public clock
+cannot hide a still-fresh prior scan or satisfy a decision before its timestamp.
+Each camera request owns its result queue, so a
+cancelled request cannot fail a later acquisition. Camera failures above that
+range retain their underlying exception details in the terminal diagnostic.
+Marker geometry uses the closest buffered GPS and attitude samples to the frame
+exposure, each within the existing 200 ms association bound. Each pose field
+retains up to 32 distinct simulation timestamps. This lets a frame delivered
+250–450 ms late use its exposure-associated pose; the 500 ms exposure limit and
+fresh flight-state guards still apply.
+GUIDED reacquisition holds the waypoint captured when tracking stops. Its
+200 ms refreshes preserve that goal despite later telemetry drift. The single
+search retry replaces the goal with the acquired anchor at the configured
+acquisition height; refreshes retain that search goal while climbing. The retry
+waits for fresh position and altitude within 0.25 m of that goal before starting
+its five-second reacquisition window. The original 60-second operation deadline
+also bounds the climb. Five fresh consistent observations are still required
+before LAND resumes. Structured `precision_observation` logs record frame and
+telemetry timestamps, range, rejection reason, and the preceding reacquisition
+count; `precision_recovery` records search arrival. Search remains bounded to the configured acquisition hover;
+course-wide search is not implemented. For local commands, see the
 [runbook](../docs/runbook.md#local-developer-workflow).
 
 ## Entry points and implementation seams
@@ -88,12 +153,20 @@ downward range, and ArduPilot MAVLink telemetry. Production MAVLink is fixed to
 For the exact ROS payloads, read
 [RunState.msg](../ros_ws/src/simulation_interfaces/msg/RunState.msg),
 [PayloadCommand.srv](../ros_ws/src/simulation_interfaces/srv/PayloadCommand.srv),
-and [MissionEvent.msg](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg).
+[MissionEvent.msg](../ros_ws/src/simulation_interfaces/msg/MissionEvent.msg), and
+[VehicleStatus.msg](../ros_ws/src/simulation_interfaces/msg/VehicleStatus.msg).
+VFS vehicle status starts at 100 ms and publishes once per 100 ms public-clock
+grid point through public finalization, using the latest complete observed
+HEARTBEAT state; queued MAVLink packets cannot create duplicate samples.
 Camera identity is recorded through
 [FrameMetadata.msg](../ros_ws/src/simulation_interfaces/msg/FrameMetadata.msg),
 although autonomy consumes the image itself rather than subscribing to the
 redundant metadata stream. The ownership, ordering, timing, and durable-status
 contracts are centralized in the [architecture guide](../docs/architecture.md).
+The [Gazebo calibration](src/drone_sim_companion/gazebo_camera_calibration.json)
+declares verified image dimensions matching the simulated camera. Precision
+observations require matching captured dimensions, bounded exposure age, and
+the verified [mounting](src/drone_sim_companion/gazebo_camera_mounting.json).
 
 The companion provides MAVLink commands, correlated payload service requests,
 ordered mission events, structured diagnostics, and its own readiness,
@@ -103,6 +176,11 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 
 - Mission decisions use accepted simulation time. Loss of `/clock` prevents new
   simulated decisions; wall time only bounds infrastructure and computation.
+- VFS startup waits for pinned home and all live precision-landing parameters.
+  Attempt status supplies active elapsed time. Expiry cancels payload work and,
+  only with fresh GUIDED/LAND authority and no failsafe, gives the same operation
+  owner a bounded return-to-H and landing recovery. Recovery never replaces the
+  failed outcome.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.

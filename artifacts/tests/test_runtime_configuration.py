@@ -68,6 +68,67 @@ def test_competition_profile_preserves_resolved_640x480_geometry_and_topics():
     assert contract.topics == COMPETITION_TOPICS
 
 
+@pytest.mark.parametrize("duration", [780, 900])
+def test_vfs_2027_profile_records_full_public_window_and_judge_streams(duration):
+    from artifacts._adapters.rosbag import VFS_2027_TOPICS
+
+    contract = resolve_recording_runtime_config(
+        {
+            "runtime_profile": "phase3",
+            "mission": "configured",
+            "mission_plan": {
+                "schema_version": 2,
+                "steps": [{"tool": "begin_phase", "args": {"phase": "FM1"}}],
+            },
+            "scenario": "competition_2027_v1",
+            "recording": {
+                "width_px": 640,
+                "height_px": 480,
+                "fps": 20,
+                "encoding": "rgb8",
+            },
+            "simulation": {"duration_sim_seconds": duration},
+        }
+    )
+
+    assert contract.expected_camera_frames == duration * 20
+    assert contract.ruleset_id == "competition_2027_v1"
+    assert contract.topics == VFS_2027_TOPICS
+
+
+def test_vfs_2027_profile_rejects_wrong_geometry_or_public_window():
+    base = {
+        "runtime_profile": "phase3",
+        "mission": "configured",
+        "mission_plan": {
+            "schema_version": 2,
+            "steps": [{"tool": "begin_phase", "args": {"phase": "FM1"}}],
+        },
+        "scenario": "competition_2027_v1",
+        "recording": {
+            "width_px": 640,
+            "height_px": 480,
+            "fps": 20,
+            "encoding": "rgb8",
+        },
+        "simulation": {"duration_sim_seconds": 780},
+    }
+    for mutation in (
+        {"recording": {**base["recording"], "width_px": 320}},
+        {"simulation": {"duration_sim_seconds": 600}},
+        {"mission_plan": {"schema_version": 1, "steps": []}},
+        {"mission_plan": None},
+        {"mission": "comp2026_auto"},
+    ):
+        with pytest.raises(ValueError, match="competition_2027_v1"):
+            resolve_recording_runtime_config({**base, **mutation})
+
+    missing_plan = dict(base)
+    missing_plan.pop("mission_plan")
+    with pytest.raises(ValueError, match="competition_2027_v1"):
+        resolve_recording_runtime_config(missing_plan)
+
+
 @pytest.mark.parametrize("duration", [0, 0.075, True, float("nan")])
 def test_physical_profile_rejects_nonpositive_or_off_grid_duration(duration):
     """Rounding an invalid duration could certify the wrong camera inventory."""

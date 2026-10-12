@@ -54,6 +54,14 @@ validated by the companion. Examples are
 [automatic descent](../config/configured-descent-run.json) and
 [operator waiting](../config/configured-operator-run.json).
 
+[VFS 2027](../config/configured-vfs-2027-run.json) uses version 2 eligibility
+groups around the same tool calls. Resolution validates every branch, limits
+nesting, and requires the matching world, vehicle, and competition profile.
+The frozen [VFS configuration contract](../artifacts/src/artifacts/vfs_contract.py)
+validates the separate course and scenario sources before their bytes and hashes
+are copied into the run bundle. Changing a payload's target in the scenario
+changes navigation and independent judging without changing the mission runner.
+
 At runtime, orchestration publishes `/simulation/run_state` using the actual
 [`RunState` schema](../ros_ws/src/simulation_interfaces/msg/RunState.msg), consumes
 aggregate [`ArtifactStatus`](../ros_ws/src/simulation_interfaces/msg/ArtifactStatus.msg),

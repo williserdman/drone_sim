@@ -1,0 +1,30 @@
+schema_version: 1
+profile: competition_2027_v1
+units: meters
+origin: H
+waypoints:
+  H: {x: 0.0, y: 0.0, radius: 2.286, role: home}
+  S: {x: 0.0, y: 0.0, width: 15.24, height: 19.812, role: source}
+  D: {x: -91.44, y: 0.0, width: 15.24, height: 19.812, role: drop}
+  L: {x: -30.48, y: 0.0, width: 15.24, height: 19.812, role: landing}
+  A: {x: -86.106, y: 3.048, radius: 1.0668, role: drop_target}
+  B: {x: -86.106, y: 0.0, radius: 0.762, role: drop_target}
+  C: {x: -86.106, y: -3.048, radius: 0.4572, role: drop_target}
+  P2: {x: -3.0, y: -3.0, role: payload_initial}
+  P3: {x: -3.0, y: 0.0, role: payload_initial}
+  P4: {x: -3.0, y: 3.0, role: payload_initial}
+  L2: {x: -30.48, y: -3.0, role: payload_delivery}
+  L3: {x: -30.48, y: 0.0, role: payload_delivery}
+  L4: {x: -30.48, y: 3.0, role: payload_delivery}
+attempt:
+  duration_seconds: 600
+  acquisition_agl_m: 4.572
+  transit_agl_m: 10.0
+  release_agl_m: 10.0
+  minimum_agl_m: 9.144
+  inspection_timeout_s: 30.0
+  approval_timeout_s: 60.0
+  initial_wait_timeout_s: 30.0
+  recovery_timeout_s: 60.0
+  ground_contact_epsilon_m: 0.002
+  aircraft_radius_m: 0.45
