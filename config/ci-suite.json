@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"name": "calibration", "template": "config/autotune-run.json", "acceptance": "calibration"},
+    {"name": "reload-validation", "template": "config/calibration-validation-run.json", "acceptance": "reload_validation"},
+    {"name": "configured-descent", "template": "config/configured-descent-run.json", "acceptance": "configured_descent"},
+    {"name": "operator-wait", "template": "config/configured-operator-run.json", "acceptance": "operator_wait"},
+    {"name": "controlled-descent", "template": "config/vertical-descent-run.json", "acceptance": "controlled_descent"},
+    {"name": "hover-roll", "template": "config/hover-roll-run.json", "acceptance": "hover_roll"},
+    {"name": "autotune-roll", "template": "config/autotune-roll-run.json", "acceptance": "autotune_roll"},
+    {"name": "moving-pad", "template": "config/configured-moving-pad-run.json", "acceptance": "moving_pad"},
+    {"name": "stationary-pad", "template": "tests/fixtures/configured-stationary-pad-run.json", "acceptance": "moving_pad"},
+    {"name": "competition-slow", "template": "config/default-run.json", "acceptance": "competition"},
+    {"name": "competition-realtime", "template": "config/realtime-run.json", "acceptance": "competition"}
+  ]
+}

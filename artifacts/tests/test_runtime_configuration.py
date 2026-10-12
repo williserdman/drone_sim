@@ -104,7 +104,7 @@ def test_real_autotune_config_selects_320_calibration_recorder_contract(tmp_path
 
     assert contract.ruleset_id == "calibration_v1"
     assert (contract.width_px, contract.height_px) == (320, 240)
-    assert contract.expected_camera_frames == 12_000
+    assert contract.expected_camera_frames == 18_000
     assert contract.topics == BASE_TOPICS
     assert recorder.topics == BASE_TOPICS
 

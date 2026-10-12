@@ -165,3 +165,16 @@ def test_main_dispatches_configured_runtime_with_validated_plan(
     assert len(dispatched) == 1
     assert dispatched[0].mission == "configured"
     assert isinstance(dispatched[0].mission_plan, MissionPlan)
+
+
+def test_configured_uses_effective_overlay_baseline():
+    import json
+    from types import SimpleNamespace
+    from drone_sim_companion.configured_runtime import _calibration_parameters
+    config = SimpleNamespace(calibration_json=json.dumps({
+        "gains": {"ATC_RAT_RLL_P": 0.1},
+        "profile": {"schema_version": 2,
+                    "baseline_parameters": {"PLND_LAG": 0.08},
+                    "effective_baseline_parameters": {"PLND_LAG": 0.04}},
+    }))
+    assert _calibration_parameters(config) == {"ATC_RAT_RLL_P": 0.1, "PLND_LAG": 0.04}

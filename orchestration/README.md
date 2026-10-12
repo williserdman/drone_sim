@@ -17,7 +17,7 @@ validates; it does not infer physical success from a command or log message.
 
 - The installed `drone-sim` command maps to [`cli.main`](src/orchestration/cli.py)
   through [`pyproject.toml`](pyproject.toml). Its operator commands are `start`,
-  `status`, `abort`, and `collect-results`.
+  `status`, `abort`, `collect-results`, and `suite`.
 - [`RunController`](src/orchestration/controller.py) owns run allocation, Compose
   supervision, deadlines, terminal-cause selection, log capture, and manifest
   commit.
@@ -37,6 +37,20 @@ validates; it does not infer physical success from a command or log message.
   [`artifacts.manifest.is_manifest_relative_path`](../artifacts/src/artifacts/manifest.py);
   the [`manifest.json` schema](../artifacts/schemas/manifest.schema.json) is the wire authority.
 
+[`suite.py`](src/orchestration/suite.py) owns the complete catalog, temporary
+input snapshots, sequential cases and reports. [`_adapters/suite.py`](src/orchestration/_adapters/suite.py)
+owns the account-wide workstation lock, bounded one-time build, frozen
+provenance and independent acceptance. Calibration and reload are prerequisites;
+remaining failures continue unless source/image identity or teardown is uncertain.
+Template preparation errors fail the affected case before run allocation. A failed
+calibration or reload preparation still blocks dependents; other preparation
+failures leave later independent cases eligible to run.
+The report records each allocated run immediately with transient `running`
+status, then its terminal result after finalization. Unknown physical evidence
+stays null when the independent inspector cannot establish acceptance.
+The executable catalog is [`ci-suite.json`](../config/ci-suite.json). Reports and
+recordings follow the [full-suite workflow](../docs/runbook.md#run-the-full-mission-suite).
+
 ## Consumer and producer seams
 
 The CLI consumes templates such as [`config/default-run.json`](../config/default-run.json).
@@ -55,9 +69,10 @@ validated by the companion. Examples are
 [operator waiting](../config/configured-operator-run.json).
 
 An `autotune` run receives a host-generated `calibration_profile` in its resolved
-configuration before Compose starts. The profile binds the unloaded
-`iris_flight` model, base parameter file, ArduPilot revision, and immutable
-Gazebo/SITL image IDs. A configured validation template may declare
+configuration before Compose starts. The version-2 profile binds the shared physics of `iris_flight`,
+`iris_moving_pad`, and `iris_competition`, each exact model digest, the base
+parameter file, ArduPilot revision and immutable Gazebo/SITL image IDs. The
+configured, descent, hover, roll and competition consumers may declare
 `calibration.source_run_directory`; relative paths resolve from the template.
 Before allocating the new run, orchestration independently accepts the source at
 maximum score, checks that profile against the current runtime, and freezes the
@@ -66,6 +81,15 @@ to `configuration/calibration.parm` and
 `configuration/calibration-manifest.json`. See the
 [calibration validation template](../config/calibration-validation-run.json);
 replace `SOURCE_RUN_ID` with an accepted `autotune` run ID before launch.
+The explicit `calibration_validation: true` role selects reload hover checks;
+ordinary calibrated missions retain their own contracts. Imported profiles bind
+the consumer model, ordered scenario overlays and effective baseline. The
+competition consumer includes the native RC mode-channel and SITL rangefinder
+overlay from
+[`competition.parm`](../ardupilot_sitl/params/competition.parm) in that identity
+and preflight readback. The common Gazebo range subscription remains identical
+across all three vehicle variants, preserving the shared airframe fingerprint.
+The original unloaded version-1 profile remains valid only for `iris_flight`.
 
 The [moving-pad template](../config/configured-moving-pad-run.json) binds
 `configured`, `iris_moving_pad`, and `moving_pad_v1` to the moving-pad world,
@@ -75,6 +99,12 @@ with `moving_pad_stationary`; its template lives in
 [`tests/fixtures`](../tests/fixtures/configured-stationary-pad-run.json).
 Completed moving-pad runs validate the moving-pad scoring rules, independently
 of the companion's mission completion.
+
+An explicit `auxiliary_services=("operator-wait-runtime",)` launch adds the
+external operator service to health supervision. It remains outside the seven
+module owners and quiescence barrier. After runtime-frozen, orchestration stops
+it before artifact/manifest hashing. The suite uses it only for the operator
+case; direct operator templates still support manual arming.
 
 At runtime, orchestration publishes `/simulation/run_state` using the actual
 [`RunState` schema](../ros_ws/src/simulation_interfaces/msg/RunState.msg), consumes
@@ -93,6 +123,16 @@ requests, captured logs, and `manifest.json`. It consumes module readiness and
 failure facts, recorder completeness, source/image provenance, simulation timing,
 and scoring provenance. `collect-results` reads the committed result; it does not
 copy or rebuild the bundle.
+
+While waiting for a durable runtime status, the controller checks finalization
+requests, runtime failures, and Compose child health before reading the target
+status. The default delay between completed probes is one wall second. Each
+probe also pays its command and status-read cost: `docker compose ps` retains its
+`min(remaining deadline, 5 seconds)` attempt timeout, and the following sleep is
+clamped to the remaining deadline. Detection latency therefore includes probe
+work plus the inter-probe delay; this is not a one-second abort-latency guarantee.
+The cadence changes host supervision overhead without changing APIs or lifecycle,
+finalization, and teardown deadlines.
 
 ## Constraints worth preserving
 

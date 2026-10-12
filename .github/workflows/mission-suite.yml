@@ -1,0 +1,119 @@
+name: Mission suite
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drone-sim-mission-suite
+  cancel-in-progress: false
+
+jobs:
+  suite:
+    runs-on: [self-hosted, linux, x64, drone-sim]
+    timeout-minutes: 1440
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare output root
+        env:
+          OUTPUT_ROOT: /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}
+        run: mkdir -p "$OUTPUT_ROOT/workflow"
+
+      - name: Sync environment
+        run: /home/willis/.local/bin/uv sync --locked
+
+      - name: Run mission suite
+        id: suite
+        env:
+          OUTPUT_ROOT: /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set +e
+          /home/willis/.local/bin/uv run --locked drone-sim suite --config config/ci-suite.json --output-root "$OUTPUT_ROOT" \
+            2>&1 | tee "$OUTPUT_ROOT/workflow/console.log"
+          suite_exit=${PIPESTATUS[0]}
+          set -e
+          exit "$suite_exit"
+
+      - name: Locate suite report
+        id: report
+        if: ${{ always() }}
+        env:
+          OUTPUT_ROOT: /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          mkdir -p "$OUTPUT_ROOT/workflow"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["OUTPUT_ROOT"]).resolve()
+          console = root / "workflow/console.log"
+          report_path = None
+          if console.is_file():
+              for line in reversed(console.read_text(encoding="utf-8", errors="replace").splitlines()):
+                  try:
+                      value = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if value.get("result_type") == "suite_result" and value.get("report_path"):
+                      candidate = Path(value["report_path"]).resolve()
+                      if candidate.is_relative_to(root) and candidate.is_file():
+                          report_path = candidate
+                          break
+
+          if report_path is None:
+              partial = sorted(
+                  root.glob("suites/*/report.json"),
+                  key=lambda path: path.stat().st_mtime,
+                  reverse=True,
+              )
+              report_path = partial[0] if partial else None
+
+          summary_path = report_path.with_name("report.md") if report_path else None
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as stream:
+              stream.write(f"report_path={report_path or ''}\n")
+              stream.write(f"summary_path={summary_path or ''}\n")
+          PY
+
+      - name: Publish summary
+        if: ${{ always() }}
+        env:
+          SUMMARY_PATH: ${{ steps.report.outputs.summary_path }}
+        shell: bash
+        run: |
+          if [[ -n "$SUMMARY_PATH" && -f "$SUMMARY_PATH" ]]; then
+            cat "$SUMMARY_PATH" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '# Mission suite\n\nNo suite report was produced. See the captured console log.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mission-suite-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/suites/*/report.json
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/suites/*/report.md
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/suites/*/configuration/**/*.json
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/suites/*/configuration/**/*.yaml
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/manifest.json
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/logs/**/*.jsonl
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/logs/**/*.log
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/logs/**/*.partial
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/scoring/**/*.json
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/configuration/**/*.json
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/configuration/**/*.yaml
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/configuration/**/*.parm
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/*/ardupilot_sitl/*.parm
+            /home/willis/projects/drone_sim/runs/ci/${{ github.run_id }}-${{ github.run_attempt }}/workflow/console.log

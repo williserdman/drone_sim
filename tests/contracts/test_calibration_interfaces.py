@@ -18,3 +18,9 @@ def test_calibration_uses_existing_ground_truth_wire_contract():
     assert "geometry_msgs/Pose pose" in declarations
     assert "geometry_msgs/Twist twist" in declarations
     assert "bool in_contact" in declarations
+
+
+def test_roll_gain_allowlist_agrees_between_producer_and_inspector():
+    from drone_sim_companion.autotune import ROLL_GAIN_PARAMETERS as producer
+    from artifacts.diagnostic_acceptance import ROLL_GAIN_PARAMETERS as inspector
+    assert producer == inspector

@@ -6,6 +6,7 @@ from typing import Callable, Mapping
 
 from . import timebase
 from .common_types import GPSCoord, MissionHome
+from .mock_mission import PrecisionMissionPolicy
 
 
 MISSION_DEADLINE_SECONDS = 600.0
@@ -54,9 +55,12 @@ def run_auto_attempt(
     payloads: Mapping[int, object],
     waypoints: Mapping[str, GPSCoord],
     emit: Callable[[str, str], None],
+    precision_policy: PrecisionMissionPolicy,
     mission_functions=None,
 ) -> None:
     """Run one original FM1/FM2/FM3-3/FM3-4/Home attempt in order."""
+    if not isinstance(precision_policy, PrecisionMissionPolicy):
+        raise ValueError("automatic attempt requires a validated precision policy")
     home = _pinned_mission_home(controller)
     check_permission = getattr(controller, "check_permission", None)
     if not callable(check_permission):
@@ -130,6 +134,7 @@ def run_auto_attempt(
             {3},
             waypoints["WA"],
             waypoints["F2"],
+            precision_policy=precision_policy,
         ),
         await_physical_evidence=True,
     )
@@ -144,6 +149,7 @@ def run_auto_attempt(
             {4},
             waypoints["WM"],
             waypoints["F2"],
+            precision_policy=precision_policy,
         ),
         await_physical_evidence=True,
     )

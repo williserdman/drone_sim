@@ -121,6 +121,24 @@ def test_all_variants_share_unloaded_physics(tmp_path):
         ] == [("-3.4", "3.4")] * 4
 
 
+def test_all_variants_feed_the_shared_downward_lidar_to_ardupilot(tmp_path):
+    _prepare_assets(tmp_path)
+
+    for name in ("iris_flight", "iris_moving_pad", "iris_competition"):
+        model = _vehicle_model(tmp_path, name)
+        lidar_topic = model.findtext(
+            "link[@name='competition_sensor_link']/sensor[@name='downward_range']/topic"
+        )
+        sensors = model.findall("plugin[@name='ArduPilotPlugin']/sensor")
+
+        assert len(sensors) == 1
+        assert sensors[0].findtext("type") == "lidar"
+        assert sensors[0].findtext("index") == "1"
+        assert sensors[0].findtext("topic") == lidar_topic == (
+            "/gazebo/private/range/downward"
+        )
+
+
 def test_only_competition_vehicle_has_payload_attachment_plugins(tmp_path):
     _prepare_assets(tmp_path)
     models = {

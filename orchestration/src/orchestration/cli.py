@@ -11,6 +11,7 @@ from typing import Callable, Sequence, TextIO
 
 from .controller import ControllerError, RunController
 from .status_store import ProtocolFileError
+from .suite import SuiteRunner
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -19,6 +20,9 @@ def _parser() -> argparse.ArgumentParser:
 
     start = commands.add_parser("start")
     start.add_argument("--config")
+    suite = commands.add_parser("suite")
+    suite.add_argument("--config")
+    suite.add_argument("--output-root")
 
     for name in ("status", "abort", "collect-results"):
         command = commands.add_parser(name)
@@ -40,6 +44,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     controller_factory: Callable[..., RunController] = RunController,
+    suite_runner_factory: Callable[..., SuiteRunner] = SuiteRunner,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -57,7 +62,12 @@ def main(
         controller = controller_factory(
             project_directory=Path.cwd().resolve(), event_stream=output
         )
-        if arguments.command == "start":
+        if arguments.command == "suite":
+            catalog = Path(arguments.config).resolve() if arguments.config else Path.cwd() / "config/ci-suite.json"
+            result = suite_runner_factory(project_directory=Path.cwd().resolve(),
+                controller=controller, event_stream=output).run(catalog, output_root=_output_root(arguments.output_root))
+            exit_code = result.exit_code
+        elif arguments.command == "start":
             config = (
                 Path(arguments.config)
                 if arguments.config is not None

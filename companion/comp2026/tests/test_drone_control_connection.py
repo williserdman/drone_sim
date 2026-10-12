@@ -244,6 +244,28 @@ def test_drone_control_can_defer_readiness_to_its_host_startup_budget(monkeypatc
     assert captured["options"]["heartbeat_timeout"] == 120
 
 
+def test_drone_control_passes_optional_vehicle_class_to_connect(monkeypatch):
+    captured = {}
+
+    class SimulationVehicle:
+        pass
+
+    def connect(endpoint, **options):
+        captured["endpoint"] = endpoint
+        captured["options"] = options
+        return _Vehicle()
+
+    monkeypatch.setattr(drone_control, "connect", connect)
+
+    drone_control.DroneControl(
+        "tcp:ardupilot-sitl:5760",
+        **_connection_identities(),
+        vehicle_class=SimulationVehicle,
+    )
+
+    assert captured["options"]["vehicle_class"] is SimulationVehicle
+
+
 @pytest.mark.parametrize("source_identity", [SourceIdentity(0, 191), SourceIdentity(1, 0)])
 def test_drone_control_rejects_zero_companion_source_identity_before_connect(
     monkeypatch, source_identity

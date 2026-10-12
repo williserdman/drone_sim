@@ -347,7 +347,7 @@ def test_roll_autotune_template_uses_the_lightweight_flight_world():
         seed=2026,
         duration_ns=120_000_000_000,
         target_real_time_factor=0.1,
-        public_epoch_native_ns=15_000_000_000,
+        public_epoch_native_ns=90_000_000_000,
     )
     assert resolved.competition is None
 
@@ -1055,7 +1055,7 @@ def test_calibration_source_resolves_relative_and_freezes_canonical_json(tmp_pat
     document["calibration"] = {"source_run_directory": "accepted"}
     calls = []
 
-    def importer(path: Path) -> CalibrationImport:
+    def importer(path: Path, vehicle: str, scenario: str) -> CalibrationImport:
         calls.append(path)
         return CalibrationImport(
             json.dumps(_calibration_document(), sort_keys=True, separators=(",", ":")),
@@ -1077,7 +1077,7 @@ def test_calibration_source_resolves_relative_and_freezes_canonical_json(tmp_pat
 
 def test_calibration_rejects_unsupported_consumer_before_import(tmp_path):
     document = _configured_document()
-    document["mission"] = "controlled_descent"
+    document["mission"] = "autotune"
     document.pop("mission_plan")
     document["calibration"] = {"source_run_directory": "/accepted"}
 
@@ -1104,7 +1104,7 @@ def test_calibration_snapshot_copies_exact_bytes_and_rejects_changed_source(tmp_
     resolved = resolve_run_config(
         _write_template(tmp_path, document),
         run_id_factory=lambda: FIXED_RUN_ID,
-        calibration_importer=lambda _path: CalibrationImport(
+        calibration_importer=lambda _path, _vehicle, _scenario: CalibrationImport(
             json.dumps(calibration, sort_keys=True, separators=(",", ":")),
             artifact,
             manifest,
@@ -1125,3 +1125,47 @@ def test_calibration_snapshot_copies_exact_bytes_and_rejects_changed_source(tmp_
     with pytest.raises(ValueError, match="calibration artifact source changed"):
         write_resolved_config(tmp_path / "changed", changed)
     assert not (tmp_path / "changed/configuration/run.json").exists()
+
+
+@pytest.mark.parametrize("mission", ["configured", "controlled_descent", "hover_roll", "autotune_roll"])
+def test_calibration_import_supports_suite_consumers(tmp_path, mission):
+    document = _configured_document()
+    document["mission"] = mission
+    if mission != "configured":
+        document.pop("mission_plan")
+    document["calibration"] = {"source_run_directory": "accepted"}
+    def importer(source, vehicle, scenario):
+        assert vehicle == "iris_flight" and scenario == "descent_v1"
+        return CalibrationImport(json.dumps(_calibration_document()), source / "autotune.parm", source / "manifest.json")
+    config = resolve_run_config(_write_template(tmp_path, document), calibration_importer=importer)
+    assert config.calibration_json is not None
+
+
+def test_reload_role_is_explicit_and_frozen(tmp_path):
+    document = _configured_document()
+    document["calibration"] = {"source_run_directory": "accepted"}
+    document["calibration_validation"] = True
+    importer = lambda source, vehicle, scenario: CalibrationImport(json.dumps(_calibration_document()), source / "autotune.parm", source / "manifest.json")
+    config = resolve_run_config(_write_template(tmp_path, document), calibration_importer=importer)
+    assert config.calibration_validation is True
+    document["calibration_validation"] = False
+    ordinary = resolve_run_config(_write_template(tmp_path, document), run_id_factory=lambda: UUID(config.run_id), calibration_importer=importer)
+    assert ordinary.config_sha256 != config.config_sha256
+    document["calibration_validation"] = True
+    document.pop("calibration")
+    with pytest.raises(ValueError, match="calibrated configured"):
+        resolve_run_config(_write_template(tmp_path, document))
+
+
+def test_competition_consumes_calibration(tmp_path):
+    template = _write_competition_template(tmp_path)
+    document = json.loads(template.read_text())
+    document["calibration"] = {"source_run_directory": "accepted"}
+    template.write_text(json.dumps(document))
+    seen = []
+    def importer(source, vehicle, scenario):
+        seen.append((vehicle, scenario))
+        return CalibrationImport(json.dumps(_calibration_document()), source / "autotune.parm", source / "manifest.json")
+    config = resolve_run_config(template, calibration_importer=importer)
+    assert config.calibration_json is not None
+    assert seen == [("iris_competition", "competition_v1")]

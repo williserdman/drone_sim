@@ -136,6 +136,7 @@ SignalProcessGroup = Callable[[int, int], None]
 GetProcessGroup = Callable[[int], int]
 ProcessGroupExists = Callable[[int, int], bool]
 ObserveLeaderExit = Callable[[int], bool]
+ObserveLeaderStatus = Callable[[int], int | None]
 StateCompressor = Callable[[Path, Path, float], None]
 
 
@@ -196,8 +197,8 @@ def _compress_state_log(source: Path, destination: Path, timeout: float) -> None
         raise
 
 
-def _observe_leader_exit_without_reap(pid: int) -> bool:
-    """Observe child exit while retaining its PID / group identity as a zombie."""
+def _observe_leader_status_without_reap(pid: int) -> int | None:
+    """Read child exit status while retaining its process-group identity."""
     try:
         result = os.waitid(
             os.P_PID,
@@ -207,10 +208,19 @@ def _observe_leader_exit_without_reap(pid: int) -> bool:
     except ChildProcessError as error:
         raise OSError("Gazebo leader identity was reaped outside its owner") from error
     if result is None:
-        return False
+        return None
     if result.si_pid != pid:
         raise OSError("waitid returned an unexpected Gazebo leader identity")
-    return True
+    if result.si_code == os.CLD_EXITED:
+        return int(result.si_status)
+    if result.si_code in {os.CLD_KILLED, os.CLD_DUMPED}:
+        return -int(result.si_status)
+    raise OSError("waitid returned an unexpected Gazebo leader status")
+
+
+def _observe_leader_exit_without_reap(pid: int) -> bool:
+    """Observe child exit while retaining its PID / group identity as a zombie."""
+    return _observe_leader_status_without_reap(pid) is not None
 
 
 def _linux_process_group_exists(process_group_id: int, session_id: int) -> bool:
@@ -627,6 +637,9 @@ class GazeboServer:
         get_process_group: GetProcessGroup = os.getpgid,
         process_group_exists: ProcessGroupExists = _linux_process_group_exists,
         observe_leader_exit: ObserveLeaderExit = _observe_leader_exit_without_reap,
+        observe_leader_status: ObserveLeaderStatus = (
+            _observe_leader_status_without_reap
+        ),
         signal_process_group: SignalProcessGroup = os.killpg,
         state_compressor: StateCompressor = _compress_state_log,
     ) -> None:
@@ -639,6 +652,7 @@ class GazeboServer:
         self._get_process_group = get_process_group
         self._process_group_exists = process_group_exists
         self._observe_leader_exit = observe_leader_exit
+        self._observe_leader_status = observe_leader_status
         self._signal_process_group = signal_process_group
         self._state_compressor = state_compressor
         self._process: _Process | None = None
@@ -793,6 +807,16 @@ class GazeboServer:
                 pass
             self._close_directories()
             raise self._latch(error, context="Gazebo server start failed") from error
+
+    def poll(self) -> int | None:
+        """Return an exited leader's status without reaping its group identity."""
+        self._raise_failure()
+        if not self._started or self._process is None:
+            raise ServerProcessError("Gazebo server has not been started")
+        returncode = self._observe_leader_status(self._process.pid)
+        if returncode is None:
+            return None
+        return self._returncode(returncode)
 
     def _seal_log(self, deadline: float) -> None:
         stream = self._log_stream

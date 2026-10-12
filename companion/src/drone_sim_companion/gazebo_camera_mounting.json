@@ -1,0 +1,11 @@
+{
+    "camera_to_body_frd": [
+        [0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0]
+    ],
+    "down_offset_m": 0.1,
+    "verified": true,
+    "sdf_pose_body_flu": [0.0, 0.0, -0.1, 0.0, 1.570796327, 0.0],
+    "source": "iris_competition/downward_camera SDF transform"
+}

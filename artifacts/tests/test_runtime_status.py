@@ -849,3 +849,17 @@ def test_same_named_unregistered_status_subclass_is_rejected():
         parse_status(UnregisteredStatus, {"run_id": RUN_ID}, expected_run_id=RUN_ID)
     with pytest.raises(RuntimeStatusError):
         status_document(value)
+
+
+def test_operator_wait_status_is_strict_and_write_once():
+    from artifacts.runtime_status import OperatorWaitStartedStatus
+    value = OperatorWaitStartedStatus(RUN_ID, "operation-1", 50_000_000)
+    document = status_document(value)
+    assert document == {"run_id": RUN_ID, "operation_id": "operation-1", "sim_timestamp_ns": 50_000_000,
+                        "tool": "wait_for_state", "state": "running"}
+    assert parse_status(OperatorWaitStartedStatus, document, expected_run_id=RUN_ID) == value
+    assert status_write_policy(OperatorWaitStartedStatus) is WritePolicy.IDENTICAL
+    with pytest.raises(RuntimeStatusError):
+        OperatorWaitStartedStatus(RUN_ID, "", 0)
+    with pytest.raises(RuntimeStatusError):
+        parse_status(OperatorWaitStartedStatus, {**document, "state": "succeeded"}, expected_run_id=RUN_ID)

@@ -369,6 +369,13 @@ def _write_vehicles(
             payloads=payloads,
         )
         model = root.find("model")
+        if name == "iris_competition":
+            ardupilot = model.find("plugin[@name='ArduPilotPlugin']")
+            _text(
+                ardupilot,
+                "rc_input_pwm",
+                "1500 1500 1000 1500 1500 1500 1500",
+            )
         if publish_pose:
             _add_pose_publisher(model)
 

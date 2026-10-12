@@ -13,6 +13,8 @@ from uuid import UUID
 
 from pymavlink import mavutil
 
+from .mavlink_adapter import MavlinkAdapter
+
 
 ROLL_GAIN_PARAMETERS = (
     "ATC_ANG_RLL_P",
@@ -31,6 +33,12 @@ class Phase(str, Enum):
     WAIT_ALT_HOLD = "WAIT_ALT_HOLD"
     WAIT_AUTOTUNE = "WAIT_AUTOTUNE"
     TUNING = "TUNING"
+    WAIT_POST_TUNE_LOITER = "WAIT_POST_TUNE_LOITER"
+    WAIT_GAIN_ACTIVATION = "WAIT_GAIN_ACTIVATION"
+    SETTLING = "SETTLING"
+    WAIT_RETURN_GUIDED = "WAIT_RETURN_GUIDED"
+    RETURNING = "RETURNING"
+    WAIT_LAND = "WAIT_LAND"
     LANDING_TO_SAVE = "LANDING_TO_SAVE"
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
@@ -42,6 +50,10 @@ class ActionKind(str, Enum):
     ARM = "ARM"
     TAKEOFF = "TAKEOFF"
     OVERRIDE_THROTTLE = "OVERRIDE_THROTTLE"
+    CLEAR_OVERRIDES = "CLEAR_OVERRIDES"
+    AUX_FUNCTION = "AUX_FUNCTION"
+    REQUEST_PARAMETERS = "REQUEST_PARAMETERS"
+    WAYPOINT = "WAYPOINT"
     SNAPSHOT_PARAMETERS = "SNAPSHOT_PARAMETERS"
 
 
@@ -50,6 +62,9 @@ class Action:
     kind: ActionKind
     name: str = ""
     value: float | None = None
+    second_value: float | None = None
+    destination: tuple[float, float, float] | None = None
+    expected_parameters: tuple[tuple[str, float], ...] = ()
 
     @classmethod
     def parameter(cls, name: str, value: float) -> "Action":
@@ -72,8 +87,38 @@ class Action:
         return cls(ActionKind.OVERRIDE_THROTTLE, value=float(throttle_pwm))
 
     @classmethod
-    def snapshot(cls) -> "Action":
-        return cls(ActionKind.SNAPSHOT_PARAMETERS)
+    def clear_overrides(cls) -> "Action":
+        return cls(ActionKind.CLEAR_OVERRIDES)
+
+    @classmethod
+    def aux_function(cls, function: int, position: int) -> "Action":
+        return cls(
+            ActionKind.AUX_FUNCTION,
+            value=float(function),
+            second_value=float(position),
+        )
+
+    @classmethod
+    def request_parameters(cls) -> "Action":
+        return cls(ActionKind.REQUEST_PARAMETERS)
+
+    @classmethod
+    def waypoint(
+        cls, latitude_deg: float, longitude_deg: float, altitude_m: float
+    ) -> "Action":
+        return cls(
+            ActionKind.WAYPOINT,
+            destination=(latitude_deg, longitude_deg, altitude_m),
+        )
+
+    @classmethod
+    def snapshot(cls, expected: Mapping[str, float]) -> "Action":
+        return cls(
+            ActionKind.SNAPSHOT_PARAMETERS,
+            expected_parameters=tuple(
+                (name, float(expected[name])) for name in ROLL_GAIN_PARAMETERS
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -86,18 +131,40 @@ class Observation:
     landed: bool | None = None
     relative_altitude_m: float | None = None
     status_text: str | None = None
+    aux_ack: bool = False
+    parameters: Mapping[str, float] | None = None
+    parameter_generation: int = 0
+    telemetry_timestamp_ns: int | None = None
+    horizontal_speed_m_s: float | None = None
+    vertical_speed_m_s: float | None = None
+    roll_rad: float | None = None
+    pitch_rad: float | None = None
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
+    position_timestamp_ns: int | None = None
 
 
 @dataclass(frozen=True)
 class RollAutoTuneState:
     phase: Phase
+    phase_started_ns: int = 0
+    public_deadline_ns: int = 120_000_000_000
     last_timestamp_ns: int | None = None
     gains_saved: bool = False
+    aux_acknowledged: bool = False
+    testing_status_observed: bool = False
+    activated_parameters: tuple[tuple[str, float], ...] = ()
+    settle_started_ns: int | None = None
+    landing_started_ns: int | None = None
+    home_latitude_deg: float | None = None
+    home_longitude_deg: float | None = None
     failure_reason: str = ""
 
     @classmethod
-    def initial(cls) -> "RollAutoTuneState":
-        return cls(Phase.WAIT_READY)
+    def initial(
+        cls, *, public_deadline_ns: int = 120_000_000_000
+    ) -> "RollAutoTuneState":
+        return cls(Phase.WAIT_READY, public_deadline_ns=public_deadline_ns)
 
 
 @dataclass(frozen=True)
@@ -117,6 +184,92 @@ def _failed(state: RollAutoTuneState, stamp: int, reason: str) -> Transition:
     )
 
 
+def _enter(
+    state: RollAutoTuneState, phase: Phase, stamp: int, **changes: Any
+) -> RollAutoTuneState:
+    return replace(
+        state,
+        phase=phase,
+        phase_started_ns=stamp,
+        last_timestamp_ns=stamp,
+        **changes,
+    )
+
+
+def _matching_profile(
+    parameters: Mapping[str, float] | None,
+) -> tuple[tuple[str, float], ...]:
+    if parameters is None or not all(name in parameters for name in ROLL_GAIN_PARAMETERS):
+        return ()
+    values = tuple((name, float(parameters[name])) for name in ROLL_GAIN_PARAMETERS)
+    if not all(math.isfinite(value) and value > 0 for _name, value in values):
+        return ()
+    return values
+
+
+def _fresh_position(observation: Observation) -> bool:
+    values = (
+        observation.latitude_deg,
+        observation.longitude_deg,
+        observation.relative_altitude_m,
+    )
+    return bool(
+        observation.position_timestamp_ns is not None
+        and 0
+        <= observation.timestamp_ns - observation.position_timestamp_ns
+        <= 500_000_000
+        and all(
+            type(value) in (int, float) and math.isfinite(value) for value in values
+        )
+        and -90 <= observation.latitude_deg <= 90
+        and -180 <= observation.longitude_deg <= 180
+    )
+
+
+def _stable_sample(observation: Observation) -> bool:
+    values = (
+        observation.horizontal_speed_m_s,
+        observation.vertical_speed_m_s,
+        observation.roll_rad,
+        observation.pitch_rad,
+    )
+    return bool(
+        observation.telemetry_timestamp_ns is not None
+        and 0
+        <= observation.timestamp_ns - observation.telemetry_timestamp_ns
+        <= 500_000_000
+        and all(
+            value is not None and math.isfinite(value) for value in values
+        )
+        and abs(observation.horizontal_speed_m_s or 0) <= 0.2
+        and abs(observation.vertical_speed_m_s or 0) <= 0.2
+        and abs(observation.roll_rad or 0) <= math.radians(5)
+        and abs(observation.pitch_rad or 0) <= math.radians(5)
+    )
+
+
+def _arrived_home(state: RollAutoTuneState, observation: Observation) -> bool:
+    if not _fresh_position(observation) or not _stable_sample(observation):
+        return False
+    if state.home_latitude_deg is None or state.home_longitude_deg is None:
+        return False
+    north = (
+        math.radians(observation.latitude_deg - state.home_latitude_deg) * 6_371_000
+    )
+    longitude_delta = (
+        observation.longitude_deg - state.home_longitude_deg + 180
+    ) % 360 - 180
+    east = (
+        math.radians(longitude_delta)
+        * 6_371_000
+        * math.cos(math.radians(state.home_latitude_deg))
+    )
+    return (
+        math.hypot(north, east) <= 0.5
+        and abs(observation.relative_altitude_m - 5.0) <= 0.5
+    )
+
+
 def advance(state: RollAutoTuneState, observation: Observation) -> Transition:
     """Advance the roll AutoTune policy using ordered simulation observations."""
     if state.phase in {Phase.COMPLETE, Phase.FAILED}:
@@ -129,19 +282,55 @@ def advance(state: RollAutoTuneState, observation: Observation) -> Transition:
         "AutoTune: Failed"
     ):
         return _failed(current, stamp, observation.status_text)
+    if stamp >= state.public_deadline_ns:
+        return _failed(current, stamp, "roll AutoTune public deadline reached")
+    if state.phase in {
+        Phase.WAIT_ALTITUDE,
+        Phase.WAIT_ALT_HOLD,
+        Phase.WAIT_AUTOTUNE,
+        Phase.TUNING,
+        Phase.WAIT_POST_TUNE_LOITER,
+        Phase.WAIT_GAIN_ACTIVATION,
+        Phase.SETTLING,
+        Phase.WAIT_RETURN_GUIDED,
+        Phase.RETURNING,
+        Phase.WAIT_LAND,
+    } and observation.armed is False:
+        return _failed(current, stamp, "vehicle disarmed before native LAND")
+    if state.phase in {
+        Phase.WAIT_GUIDED,
+        Phase.WAIT_ALT_HOLD,
+        Phase.WAIT_AUTOTUNE,
+        Phase.WAIT_POST_TUNE_LOITER,
+        Phase.WAIT_GAIN_ACTIVATION,
+        Phase.WAIT_RETURN_GUIDED,
+        Phase.WAIT_LAND,
+    } and stamp - state.phase_started_ns > 10_000_000_000:
+        return _failed(current, stamp, f"{state.phase.value} timed out")
 
     if state.phase is Phase.WAIT_READY:
         if not observation.heartbeat or observation.prearm_checks_healthy is not True:
             return Transition(current)
         return Transition(
-            replace(current, phase=Phase.WAIT_GUIDED),
+            _enter(current, Phase.WAIT_GUIDED, stamp),
             (Action.mode("GUIDED"),),
         )
     if state.phase is Phase.WAIT_GUIDED:
-        if observation.mode != "GUIDED":
+        if (
+            observation.mode != "GUIDED"
+            or observation.armed is not False
+            or not _fresh_position(observation)
+            or abs(observation.relative_altitude_m) > 0.3
+        ):
             return Transition(current)
         return Transition(
-            replace(current, phase=Phase.WAIT_ARMED),
+            _enter(
+                current,
+                Phase.WAIT_ARMED,
+                stamp,
+                home_latitude_deg=observation.latitude_deg,
+                home_longitude_deg=observation.longitude_deg,
+            ),
             (
                 Action.parameter("ATC_RAT_RLL_P", 0.0675),
                 Action.parameter("ATC_RAT_RLL_I", 0.0675),
@@ -155,39 +344,143 @@ def advance(state: RollAutoTuneState, observation: Observation) -> Transition:
         if observation.armed is not True:
             return Transition(current)
         return Transition(
-            replace(current, phase=Phase.WAIT_ALTITUDE),
+            _enter(current, Phase.WAIT_ALTITUDE, stamp),
             (Action.takeoff(5.0),),
         )
     if state.phase is Phase.WAIT_ALTITUDE:
         if observation.relative_altitude_m is None or observation.relative_altitude_m < 4.5:
             return Transition(current)
         return Transition(
-            replace(current, phase=Phase.WAIT_ALT_HOLD),
+            _enter(current, Phase.WAIT_ALT_HOLD, stamp),
             (Action.override(1500), Action.mode("ALT_HOLD")),
         )
     if state.phase is Phase.WAIT_ALT_HOLD:
         if observation.mode != "ALT_HOLD":
             return Transition(current)
         return Transition(
-            replace(current, phase=Phase.WAIT_AUTOTUNE),
+            _enter(current, Phase.WAIT_AUTOTUNE, stamp),
             (Action.mode("AUTOTUNE"),),
         )
     if state.phase is Phase.WAIT_AUTOTUNE:
         if observation.mode != "AUTOTUNE":
             return Transition(current)
-        return Transition(replace(current, phase=Phase.TUNING))
+        return Transition(_enter(current, Phase.TUNING, stamp))
     if state.phase is Phase.TUNING:
+        if observation.mode != "AUTOTUNE":
+            return _failed(current, stamp, "left AUTOTUNE before success")
         if observation.status_text != "AutoTune: Success":
             return Transition(current)
         return Transition(
-            replace(current, phase=Phase.LANDING_TO_SAVE),
-            (Action.override(1300),),
+            _enter(current, Phase.WAIT_POST_TUNE_LOITER, stamp),
+            (Action.mode("LOITER"),),
         )
+    if state.phase is Phase.WAIT_POST_TUNE_LOITER:
+        if observation.mode not in {"AUTOTUNE", "LOITER"}:
+            return _failed(current, stamp, "unexpected mode while leaving AUTOTUNE")
+        if observation.mode != "LOITER":
+            return Transition(current)
+        return Transition(
+            _enter(current, Phase.WAIT_GAIN_ACTIVATION, stamp),
+            (Action.aux_function(180, 2), Action.request_parameters()),
+        )
+    if state.phase is Phase.WAIT_GAIN_ACTIVATION:
+        if observation.mode != "LOITER":
+            return _failed(current, stamp, "left LOITER before gain activation")
+        acknowledged = state.aux_acknowledged or observation.aux_ack
+        testing = (
+            state.testing_status_observed
+            or observation.status_text == "AutoTune: Pilot Testing gains for Roll"
+        )
+        profile = _matching_profile(observation.parameters)
+        current = replace(
+            current,
+            aux_acknowledged=acknowledged,
+            testing_status_observed=testing,
+        )
+        if not (
+            acknowledged
+            and testing
+            and profile
+            and observation.parameter_generation > 0
+        ):
+            return Transition(current)
+        return Transition(
+            _enter(
+                current,
+                Phase.SETTLING,
+                stamp,
+                activated_parameters=profile,
+                settle_started_ns=None,
+            )
+        )
+    if state.phase is Phase.SETTLING:
+        if observation.mode != "LOITER":
+            return _failed(current, stamp, "left LOITER while settling")
+        if stamp - state.phase_started_ns > 20_000_000_000:
+            return _failed(current, stamp, "settling timed out")
+        if not _stable_sample(observation):
+            return Transition(replace(current, settle_started_ns=None))
+        started = state.settle_started_ns if state.settle_started_ns is not None else stamp
+        current = replace(current, settle_started_ns=started)
+        if stamp - started < 2_000_000_000:
+            return Transition(current)
+        return Transition(
+            _enter(current, Phase.WAIT_RETURN_GUIDED, stamp, settle_started_ns=None),
+            (Action.clear_overrides(), Action.mode("GUIDED")),
+        )
+    if state.phase is Phase.WAIT_RETURN_GUIDED:
+        if observation.mode not in {"LOITER", "GUIDED"}:
+            return _failed(current, stamp, "unexpected mode while entering return GUIDED")
+        if observation.mode != "GUIDED":
+            return Transition(current)
+        if state.home_latitude_deg is None or state.home_longitude_deg is None:
+            return _failed(current, stamp, "return position was not captured before arming")
+        return Transition(
+            _enter(current, Phase.RETURNING, stamp),
+            (
+                Action.waypoint(
+                    state.home_latitude_deg, state.home_longitude_deg, 5.0
+                ),
+            ),
+        )
+    if state.phase is Phase.RETURNING:
+        if observation.mode != "GUIDED":
+            return _failed(current, stamp, "left GUIDED while returning to the landing zone")
+        if stamp - state.phase_started_ns > 60_000_000_000:
+            return _failed(current, stamp, "return to landing zone timed out")
+        if not _arrived_home(state, observation):
+            return Transition(replace(current, settle_started_ns=None))
+        started = state.settle_started_ns if state.settle_started_ns is not None else stamp
+        current = replace(current, settle_started_ns=started)
+        if stamp - started < 2_000_000_000:
+            return Transition(current)
+        return Transition(
+            _enter(current, Phase.WAIT_LAND, stamp, landing_started_ns=stamp),
+            (Action.clear_overrides(), Action.mode("LAND")),
+        )
+    if state.phase is Phase.WAIT_LAND:
+        if observation.mode not in {"GUIDED", "LAND"}:
+            return _failed(current, stamp, "unexpected mode while entering native LAND")
+        if observation.mode != "LAND":
+            return Transition(current)
+        return Transition(_enter(current, Phase.LANDING_TO_SAVE, stamp))
     if state.phase is Phase.LANDING_TO_SAVE:
+        if observation.mode != "LAND":
+            return _failed(current, stamp, "left native LAND before disarm")
+        landing_started = (
+            state.landing_started_ns
+            if state.landing_started_ns is not None
+            else state.phase_started_ns
+        )
+        if stamp - landing_started > 45_000_000_000:
+            return _failed(current, stamp, "native LAND timed out")
         saved = state.gains_saved or observation.status_text == "AutoTune: Saved gains for Roll"
         current = replace(current, gains_saved=saved)
         if saved and observation.armed is False and observation.landed is True:
-            return Transition(replace(current, phase=Phase.COMPLETE), (Action.snapshot(),))
+            return Transition(
+                _enter(current, Phase.COMPLETE, stamp),
+                (Action.snapshot(dict(state.activated_parameters)),),
+            )
         return Transition(current)
     return Transition(current)
 
@@ -299,6 +592,7 @@ def execute_actions(
     snapshot_reader: Callable[[Path], Mapping[str, float]] = (
         read_saved_roll_gains_from_dataflash
     ),
+    request_parameters: Callable[[], None] | None = None,
 ) -> None:
     for action in actions:
         if action.kind is ActionKind.SET_PARAMETER:
@@ -326,8 +620,47 @@ def execute_actions(
                 "3": int(action.value),
                 "4": 1500,
             }
+        elif action.kind is ActionKind.CLEAR_OVERRIDES:
+            vehicle.channels.overrides = {}
+        elif action.kind is ActionKind.AUX_FUNCTION:
+            master = vehicle._master
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_AUX_FUNCTION,
+                0,
+                float(action.value),
+                float(action.second_value),
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        elif action.kind is ActionKind.REQUEST_PARAMETERS:
+            if request_parameters is not None:
+                request_parameters()
+            else:
+                master = vehicle._master
+                master.mav.param_request_list_send(
+                    master.target_system, master.target_component
+                )
+        elif action.kind is ActionKind.WAYPOINT:
+            if action.destination is None:
+                raise ValueError("waypoint requires a destination")
+            MavlinkAdapter(vehicle._master, mavutil).send_waypoint(*action.destination)
         elif action.kind is ActionKind.SNAPSHOT_PARAMETERS:
             values = snapshot_reader(run_directory)
+            expected = dict(action.expected_parameters)
+            if set(values) != set(expected) or any(
+                not math.isclose(
+                    float(values[name]), expected[name], rel_tol=1e-5, abs_tol=1e-7
+                )
+                for name in values
+            ):
+                raise ValueError(
+                    "saved DataFlash roll gains do not match activated gains"
+                )
             write_roll_gain_artifact(run_directory, run_id, values)
 
 
@@ -341,12 +674,15 @@ class RollAutoTuneDriver:
         run_directory: Path,
         run_id: str,
         mode_factory: Callable[[str], Any],
+        public_deadline_ns: int = 120_000_000_000,
+        request_parameters: Callable[[], None] | None = None,
     ) -> None:
         self.vehicle = vehicle
         self.run_directory = run_directory
         self.run_id = run_id
         self.mode_factory = mode_factory
-        self.state = RollAutoTuneState.initial()
+        self.request_parameters = request_parameters
+        self.state = RollAutoTuneState.initial(public_deadline_ns=public_deadline_ns)
 
     def _execute(self, actions: tuple[Action, ...]) -> None:
         execute_actions(
@@ -355,6 +691,7 @@ class RollAutoTuneDriver:
             run_directory=self.run_directory,
             run_id=self.run_id,
             mode_factory=self.mode_factory,
+            request_parameters=self.request_parameters,
         )
 
     def observe(self, observation: Observation) -> Transition:
@@ -370,10 +707,11 @@ class RollAutoTuneDriver:
             Phase.WAIT_ALT_HOLD,
             Phase.WAIT_AUTOTUNE,
             Phase.TUNING,
+            Phase.WAIT_POST_TUNE_LOITER,
+            Phase.WAIT_GAIN_ACTIVATION,
+            Phase.SETTLING,
         }:
             self._execute((Action.override(1500),))
-        elif self.state.phase is Phase.LANDING_TO_SAVE:
-            self._execute((Action.override(1300),))
 
 
 __all__ = ["ROLL_GAIN_PARAMETERS", "RollAutoTuneDriver", "write_roll_gain_artifact"]

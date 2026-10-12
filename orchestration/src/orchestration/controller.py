@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
@@ -322,9 +322,9 @@ class RunController:
         sleep: Callable[[float], None] = time.sleep,
         utcnow: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         event_stream: TextIO | None = None,
-        poll_interval: float = 0.1,
+        poll_interval: float = 1.0,
         source_runner: Callable[..., Any] = subprocess.run,
-        calibration_importer: Callable[[Path], CalibrationImport] | None = None,
+        calibration_importer: Callable[[Path, str, str], CalibrationImport] | None = None,
     ) -> None:
         self.project_directory = Path(
             project_directory
@@ -346,18 +346,26 @@ class RunController:
         self.poll_interval = float(poll_interval)
         self.source_runner = source_runner
         self.calibration_importer = calibration_importer or (
-            lambda source: freeze_calibration_import(
-                source, project_directory=self.project_directory
+            lambda source, vehicle, scenario: freeze_calibration_import(
+                source, project_directory=self.project_directory,
+                consumer_vehicle=vehicle, consumer_scenario=scenario,
             )
         )
 
-    def _default_compose(self, config: RunConfig, run_directory: Path) -> ComposeRuntime:
+    def _default_compose(
+        self,
+        config: RunConfig,
+        run_directory: Path,
+        *,
+        auxiliary_services: Sequence[str] = (),
+    ) -> ComposeRuntime:
         return ComposeRuntime(
             project_directory=self.project_directory,
             run_id=config.run_id,
             run_directory=run_directory,
             config_path=run_directory / "configuration/run.json",
             topology=config.topology,
+            auxiliary_services=auxiliary_services,
             monotonic=self.monotonic,
         )
 
@@ -382,7 +390,9 @@ class RunController:
 
     @staticmethod
     def _ps_cause(
-        result: ComposeCommandResult, topology: RuntimeTopology
+        result: ComposeCommandResult,
+        topology: RuntimeTopology,
+        required_services: frozenset[str] | None = None,
     ) -> TerminalCause | None:
         if result.returncode != 0:
             return TerminalCause("child_process", "compose_ps_failed")
@@ -413,8 +423,12 @@ class RunController:
         ):
             return TerminalCause("child_process", "compose_child_exited")
         services = [row["Service"] for row in rows]
-        required_services = {service for service, _module in topology.ownership}
-        if len(services) != len(set(services)) or set(services) != required_services:
+        expected = (
+            frozenset(required_services)
+            if required_services is not None
+            else frozenset(service for service, _module in topology.ownership)
+        )
+        if len(services) != len(set(services)) or set(services) != expected:
             return TerminalCause("child_process", "compose_child_set_invalid")
         return None
 
@@ -448,7 +462,11 @@ class RunController:
             deadline_check()
             result = compose.ps(min(remaining, _COMPOSE_PS_ATTEMPT_SECONDS))
             deadline_check()
-            return self._ps_cause(result, topology)
+            return self._ps_cause(
+                result,
+                topology,
+                getattr(compose, "services", None),
+            )
         except subprocess.TimeoutExpired:
             return None
         except TimeoutError:
@@ -576,6 +594,10 @@ class RunController:
             raise ControllerError("source_revision_unavailable") from exc
         return tuple(records)
 
+    def source_revisions(self, deadline: float) -> tuple[SourceRevision, ...]:
+        """Return the source identity within the caller's absolute deadline."""
+        return self._source_revisions(deadline)
+
     def _score_metadata(
         self,
         run_directory: Path,
@@ -695,7 +717,18 @@ class RunController:
                 os.close(descriptor)
             os.close(logs_fd)
 
-    def start(self, config_path: Path | str) -> RunResult:
+    def start(
+        self,
+        config_path: Path | str,
+        *,
+        auxiliary_services: Sequence[str] = (),
+        on_allocated: Callable[[str, Path], None] | None = None,
+    ) -> RunResult:
+        auxiliaries = tuple(auxiliary_services)
+        if auxiliaries not in {(), ("operator-wait-runtime",)}:
+            raise ValueError(
+                "auxiliary_services must be empty or ('operator-wait-runtime',)"
+            )
         try:
             config = resolve_run_config(
                 config_path,
@@ -710,6 +743,8 @@ class RunController:
         topology = config.topology
         store = self.status_store_factory(config.output_root)
         run_directory = store.allocate(config.run_id)
+        if on_allocated is not None:
+            on_allocated(config.run_id, run_directory)
         lifecycle = RunLifecycle.created(config.run_id)
         store.write_operator_status(self._status(lifecycle))
         diagnostics: list[TerminalCause] = []
@@ -753,7 +788,14 @@ class RunController:
             store.write_operator_status(self._status(lifecycle))
             emit_event("run_starting", config_sha256=config.config_sha256)
             try:
-                compose = self.compose_factory(config, run_directory)
+                if auxiliaries:
+                    compose = self.compose_factory(
+                        config,
+                        run_directory,
+                        auxiliary_services=auxiliaries,
+                    )
+                else:
+                    compose = self.compose_factory(config, run_directory)
             except Exception as exc:
                 primary = TerminalCause(
                     "compose_factory",
@@ -956,7 +998,8 @@ class RunController:
                 manifest_deadline_check = self._deadline_check(manifest_deadline)
 
                 if compose_started:
-                    for status_type in (RuntimeFrozenStatus, ArtifactsFinalStatus):
+                    frozen = False
+                    for status_type in (RuntimeFrozenStatus,):
                         try:
                             document, cause = self._wait_for(
                                 store,
@@ -981,6 +1024,58 @@ class RunController:
                                 requested = "FAILED"
                                 reason = cause.reason
                             break
+                        frozen = document is not None
+
+                    if frozen and auxiliaries:
+                        try:
+                            stop_result = compose.stop_services(
+                                auxiliaries,
+                                self._remaining(work_deadline, self.monotonic),
+                            )
+                            if stop_result.returncode != 0:
+                                raise ControllerError("auxiliary_service_stop_failed")
+                        except Exception as exc:
+                            cause = TerminalCause(
+                                "auxiliary_service",
+                                "finalization_deadline"
+                                if isinstance(exc, TimeoutError)
+                                else "auxiliary_service_stop_failed",
+                            )
+                            if primary is None:
+                                primary = cause
+                            elif cause != primary:
+                                diagnostics.append(cause)
+                            if requested == "COMPLETED":
+                                requested = "FAILED"
+                                reason = cause.reason
+
+                    if frozen:
+                        try:
+                            _artifacts_final, cause = self._wait_for(
+                                store,
+                                config.run_id,
+                                compose,
+                                topology,
+                                ArtifactsFinalStatus,
+                                work_deadline,
+                                TerminalCause(
+                                    "finalization_deadline", "finalization_deadline"
+                                ),
+                                observe_causes=False,
+                                deadline_check=work_deadline_check,
+                            )
+                        except KeyboardInterrupt:
+                            cause = TerminalCause(
+                                "operator_interrupt", "operator_interrupt"
+                            )
+                        if cause is not None:
+                            if primary is None:
+                                primary = cause
+                            elif cause != primary:
+                                diagnostics.append(cause)
+                            if requested == "COMPLETED":
+                                requested = "FAILED"
+                                reason = cause.reason
 
                 emit_event("log_capture_starting")
                 close_event_log()

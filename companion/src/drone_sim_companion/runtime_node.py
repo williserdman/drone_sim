@@ -28,14 +28,19 @@ from artifacts.runtime_status import (
     MissionExecutionReadyStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
+    OperatorWaitStartedStatus,
     RuntimeFailureStatus,
     RuntimeStatus,
 )
 
+from .autotune import Action as AutoTuneAction
+from .autotune import ActionKind as AutoTuneActionKind
 from .autotune import Observation as AutoTuneObservation
 from .autotune import Phase as AutoTunePhase
+from .autotune import ROLL_GAIN_PARAMETERS
 from .autotune import RollAutoTuneDriver
 from . import calibration_autotune
+from .calibration_gate import CalibrationGate, calibration_parameters
 from .hover import Observation as HoverObservation
 from .hover import Phase as HoverPhase
 from .hover import RollHoverDriver
@@ -55,6 +60,7 @@ from .comp2026_host import (
     RosFrameSource,
     RosLidar,
     SimulationClock,
+    _heartbeat_is_live,
     load_course_waypoints,
     refresh_comp2026_start_gate,
 )
@@ -269,6 +275,35 @@ def autotune_control_timestamp_ns(
     return 0 if first_command_pending else None
 
 
+def _decode_global_position(
+    message: Any, timestamp_ns: int
+) -> tuple[int, float, float, float, float, float] | None:
+    raw = tuple(
+        getattr(message, name, None)
+        for name in ("vx", "vy", "vz", "relative_alt", "lat", "lon")
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in raw
+    ):
+        return None
+    vx, vy, vz, relative_alt, latitude, longitude = (float(value) for value in raw)
+    latitude /= 10_000_000.0
+    longitude /= 10_000_000.0
+    if not -90.0 <= latitude <= 90.0 or not -180.0 <= longitude <= 180.0:
+        return None
+    return (
+        timestamp_ns,
+        math.hypot(vx, vy) / 100.0,
+        abs(vz) / 100.0,
+        relative_alt / 1000.0,
+        latitude,
+        longitude,
+    )
+
+
 def autotune_failure_recovery_complete(
     *, recovery_started_ns: int, timestamp_ns: int, armed: bool | None
 ) -> bool:
@@ -283,6 +318,68 @@ def autotune_neutral_refresh_due(
         calibration_autotune.neutral_override_required(phase)
         and wall_now - last_refresh_wall >= 0.5
     )
+
+
+class _CalibrationReadiness:
+    def __init__(self, expected: Mapping[str, float]) -> None:
+        self.expected = dict(expected)
+        self.gate = CalibrationGate(self.expected)
+        self.reported = False
+
+    @property
+    def required(self) -> bool:
+        return bool(self.expected)
+
+    @property
+    def failure(self) -> str | None:
+        return self.gate.failure
+
+    @property
+    def ready(self) -> bool:
+        return self.gate.ready
+
+    @property
+    def pending_parameters(self) -> tuple[str, ...]:
+        observed = self.gate.snapshot()
+        return tuple(name for name in self.expected if name not in observed)
+
+    def observe(self, name: str, value: float) -> None:
+        if self.reported:
+            return
+        self.gate.observe(name, value)
+
+    def observe_cached(self, parameters: Mapping[str, float]) -> None:
+        if self.reported:
+            return
+        for name in self.expected:
+            try:
+                value = parameters.get(name, wait_ready=False)
+            except TypeError:
+                try:
+                    value = parameters[name]
+                except (KeyError, TypeError):
+                    continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                self.gate.observe(name, float(value))
+
+    def release(
+        self,
+        protocol: object,
+        lifecycle: CompanionLifecycle,
+        run_id: str,
+        timestamp_ns: int,
+    ) -> bool:
+        if not self.gate.ready:
+            return False
+        if self.required and not self.reported:
+            lifecycle.emit(
+                "calibration_parameters_verified",
+                timestamp_ns,
+                {"stage": "pre_arm", "parameters": self.gate.snapshot()},
+            )
+            protocol.write_status(MissionExecutionReadyStatus(run_id, timestamp_ns))
+            self.reported = True
+        return True
 
 
 class _Comp2026ShutdownAdmission:
@@ -359,8 +456,29 @@ def _deliver_comp2026_initial_command(
     return claimed and delivered
 
 
-class _InitialCommandWindowMissed(Exception):
+class _InitialCommandWindowMissed(RuntimeError):
     pass
+
+
+def _comp2026_initial_transport(clock, controller, native_transaction):
+    """Keep the first guarded GUIDED enqueue inside the public clock window."""
+    def transaction(output, before_final):
+        if controller._guided_output_delivery_reported:
+            return native_transaction(output, before_final)
+        result = []
+
+        def enqueue(timestamp_ns):
+            if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
+                raise _InitialCommandWindowMissed(
+                    "initial GUIDED command missed the 50 ms delivery window"
+                )
+            result.append(native_transaction(output, before_final))
+
+        if not clock.run_at_current_timestamp(enqueue):
+            raise RuntimeError("initial GUIDED command requires the public clock")
+        return result[0]
+
+    return transaction
 
 
 def comp2026_start_gate_poll_required(
@@ -392,10 +510,14 @@ def connect_autotune_vehicle(
     """Connect only after ROS can receive the READY state that starts simulation."""
     if run_state_subscription is None:
         raise RuntimeError("AutoTune requires a run-state subscription before connecting")
+    _enable_dronekit_python312_compatibility()
+    from .dronekit_sim import SimulationVehicle
+
     return factory(
         endpoint,
         wait_ready=False,
         heartbeat_timeout=heartbeat_timeout,
+        vehicle_class=SimulationVehicle,
     )
 
 
@@ -412,6 +534,7 @@ class _ProductionProtocol:
             MissionCommandDeliveredStatus,
             MissionExecutionReadyStatus,
             MissionFinishedStatus,
+            OperatorWaitStartedStatus,
             RuntimeFailureStatus,
         }:
             raise ValueError("companion does not own that status")
@@ -557,6 +680,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
         return 1
     lifecycle.mark_transport_ready()
     vehicle = MavlinkAdapter(connection, mavutil)
+    calibration = _CalibrationReadiness(calibration_parameters(config))
     controller = MissionController(
         vehicle,
         lifecycle.emit,
@@ -610,6 +734,7 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     telemetry_requested = False
+    parameters_requested = False
     exit_code = 0
     try:
         while rclpy.ok() and not requested_stop and not finalizing:
@@ -622,6 +747,9 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                 policy_active
                 and latest_clock_ns == 0
                 and controller.mission_ready
+                and calibration.release(
+                    protocol, lifecycle, config.run_id, latest_clock_ns
+                )
                 and controller.state.phase is MissionPhase.WAIT_HEARTBEAT
                 and failure is None
             ):
@@ -637,6 +765,16 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                         )
                         if telemetry is None:
                             break
+                        if (
+                            telemetry.parameter_name is not None
+                            and telemetry.parameter_value is not None
+                        ):
+                            calibration.observe(
+                                telemetry.parameter_name, telemetry.parameter_value
+                            )
+                            if calibration.failure is not None:
+                                failure = calibration.failure
+                                break
                         process_runtime_telemetry(
                             controller,
                             lifecycle,
@@ -655,6 +793,14 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
                 vehicle.request_telemetry(rate_hz=10)
                 lifecycle.emit("telemetry_requested", latest_clock_ns, {"rate_hz": 10})
                 telemetry_requested = True
+            if (
+                calibration.required
+                and controller.heartbeat_observed
+                and not parameters_requested
+                and failure is None
+            ):
+                vehicle.request_parameters(tuple(calibration.expected))
+                parameters_requested = True
             lifecycle.observe_terminal(controller.state)
             if controller.state.phase is MissionPhase.FAILED:
                 failure = controller.state.failure_reason
@@ -675,6 +821,21 @@ def _run_controlled_descent(config: RuntimeConfig) -> int:
             )
             if heartbeat_failure is not None:
                 failure = heartbeat_failure
+                lifecycle.observe_terminal(
+                    MissionState(
+                        MissionPhase.FAILED,
+                        last_timestamp_ns=latest_clock_ns or 0,
+                        failure_reason=failure,
+                    )
+                )
+                exit_code = 1
+                break
+            if (
+                calibration.required
+                and not calibration.gate.ready
+                and time.monotonic() >= overall_wall_deadline
+            ):
+                failure = "calibration parameter readback was unavailable before the overall run wall failsafe"
                 lifecycle.observe_terminal(
                     MissionState(
                         MissionPhase.FAILED,
@@ -721,6 +882,13 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
     command_delivered = False
     failure: str | None = None
     last_override_refresh = 0.0
+    parameters_requested = False
+    roll_parameter_values: dict[str, float] = {}
+    roll_parameter_generations: dict[str, int] = {}
+    roll_parameter_generation_counter = 0
+    roll_aux_ack = False
+    roll_position_sample: tuple[int, float, float, float, float, float] | None = None
+    roll_attitude_sample: tuple[int, float, float] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         nonlocal requested_stop
@@ -780,13 +948,8 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
         return 1
 
     lifecycle.mark_transport_ready()
+    calibration = _CalibrationReadiness(calibration_parameters(config))
     hover_only = config.mission == "hover_roll"
-    driver = (RollHoverDriver if hover_only else RollAutoTuneDriver)(
-        vehicle,
-        run_directory=config.run_directory,
-        run_id=config.run_id,
-        mode_factory=VehicleMode,
-    )
     status_texts: collections.deque[str] = collections.deque()
     status_lock = threading.Lock()
 
@@ -799,10 +962,103 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
             with status_lock:
                 status_texts.append(normalized)
 
-    vehicle.add_message_listener("STATUSTEXT", status_callback)
+    def parameter_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_parameter_generation_counter
+        raw_name = getattr(message, "param_id", "")
+        if isinstance(raw_name, bytes):
+            raw_name = raw_name.decode("ascii", errors="ignore")
+        name = str(raw_name).rstrip("\x00")
+        value = getattr(message, "param_value", None)
+        if (
+            name
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        ):
+            with status_lock:
+                roll_parameter_generation_counter += 1
+                roll_parameter_values[name] = float(value)
+                roll_parameter_generations[name] = roll_parameter_generation_counter
+
+    def ack_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_aux_ack
+        if (
+            getattr(message, "command", None)
+            == calibration_autotune.mavutil.mavlink.MAV_CMD_DO_AUX_FUNCTION
+            and getattr(message, "result", None)
+            == calibration_autotune.mavutil.mavlink.MAV_RESULT_ACCEPTED
+        ):
+            with status_lock:
+                roll_aux_ack = True
+
+    def position_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_position_sample
+        stamp = latest_clock_ns
+        if stamp is None:
+            return
+        decoded = _decode_global_position(message, stamp)
+        if decoded is not None:
+            with status_lock:
+                roll_position_sample = decoded
+
+    def attitude_callback(_vehicle: Any, _name: str, message: Any) -> None:
+        nonlocal roll_attitude_sample
+        stamp = latest_clock_ns
+        if stamp is None:
+            return
+        roll = getattr(message, "roll", None)
+        pitch = getattr(message, "pitch", None)
+        if (
+            isinstance(roll, (int, float))
+            and not isinstance(roll, bool)
+            and math.isfinite(roll)
+            and isinstance(pitch, (int, float))
+            and not isinstance(pitch, bool)
+            and math.isfinite(pitch)
+        ):
+            with status_lock:
+                roll_attitude_sample = (stamp, float(roll), float(pitch))
+
+    def request_roll_parameter_session() -> None:
+        with status_lock:
+            roll_parameter_values.clear()
+            roll_parameter_generations.clear()
+            vehicle._master.mav.param_request_list_send(
+                vehicle._master.target_system,
+                vehicle._master.target_component,
+            )
+
+    if hover_only:
+        driver = RollHoverDriver(
+            vehicle,
+            run_directory=config.run_directory,
+            run_id=config.run_id,
+            mode_factory=VehicleMode,
+        )
+        listeners = (("STATUSTEXT", status_callback),)
+    else:
+        driver = RollAutoTuneDriver(
+            vehicle,
+            run_directory=config.run_directory,
+            run_id=config.run_id,
+            mode_factory=VehicleMode,
+            public_deadline_ns=config.public_duration_ns or 120_000_000_000,
+            request_parameters=request_roll_parameter_session,
+        )
+        listeners = (
+            ("STATUSTEXT", status_callback),
+            ("PARAM_VALUE", parameter_callback),
+            ("COMMAND_ACK", ack_callback),
+            ("GLOBAL_POSITION_INT", position_callback),
+            ("ATTITUDE", attitude_callback),
+        )
+    for name, callback in listeners:
+        vehicle.add_message_listener(name, callback)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     exit_code = 0
+    recovery_started_ns: int | None = None
+    aux_ack_event_emitted = False
     try:
         while rclpy.ok() and not requested_stop and not finalizing:
             rclpy.spin_once(node, timeout_sec=0.02)
@@ -813,10 +1069,20 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 and 0.0 <= vehicle.last_heartbeat <= 60.0
             )
             armable = getattr(vehicle, "is_armable", False) is True
+            armed = getattr(vehicle, "armed", None)
             lifecycle.observe_mission_readiness(
                 heartbeat_observed=heartbeat,
                 prearm_checks_healthy=armable,
             )
+            if calibration.required and heartbeat and not parameters_requested:
+                vehicle._master.mav.param_request_list_send(
+                    vehicle._master.target_system,
+                    vehicle._master.target_component,
+                )
+                parameters_requested = True
+            calibration.observe_cached(getattr(vehicle, "parameters", {}))
+            if calibration.failure is not None:
+                failure = calibration.failure
 
             control_timestamp_ns = autotune_control_timestamp_ns(
                 mission_running=mission_running,
@@ -824,7 +1090,16 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 first_command_pending=driver.state.phase
                 is (HoverPhase.WAIT_READY if hover_only else AutoTunePhase.WAIT_READY),
             )
-            if control_timestamp_ns is not None and failure is None:
+            if (
+                control_timestamp_ns is not None
+                and failure is None
+                and calibration.release(
+                    protocol,
+                    lifecycle,
+                    config.run_id,
+                    control_timestamp_ns,
+                )
+            ):
                 with status_lock:
                     status_text = status_texts.popleft() if status_texts else None
                 mode_value = getattr(vehicle, "mode", None)
@@ -835,17 +1110,16 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                     "alt",
                     None,
                 )
-                landed = (
-                    armed is False
-                    and isinstance(altitude, (int, float))
-                    and math.isfinite(altitude)
-                    and altitude <= 0.3
-                )
                 try:
                     previous_phase = driver.state.phase
-                    observation_type = HoverObservation if hover_only else AutoTuneObservation
-                    transition = driver.observe(
-                        observation_type(
+                    if hover_only:
+                        landed = (
+                            armed is False
+                            and isinstance(altitude, (int, float))
+                            and math.isfinite(altitude)
+                            and altitude <= 0.3
+                        )
+                        observation = HoverObservation(
                             control_timestamp_ns,
                             heartbeat=heartbeat,
                             prearm_checks_healthy=armable,
@@ -855,13 +1129,107 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                             relative_altitude_m=altitude,
                             status_text=status_text,
                         )
-                    )
+                    else:
+                        with status_lock:
+                            parameters = dict(roll_parameter_values)
+                            generation = calibration_autotune.parameter_readback_generation(
+                                parameters,
+                                roll_parameter_generations,
+                                tuple(ROLL_GAIN_PARAMETERS),
+                            )
+                            ack = roll_aux_ack
+                            position = roll_position_sample
+                            attitude = roll_attitude_sample
+                        telemetry_stamp = (
+                            min(position[0], attitude[0])
+                            if position is not None and attitude is not None
+                            else None
+                        )
+                        observation = AutoTuneObservation(
+                            control_timestamp_ns,
+                            heartbeat=heartbeat,
+                            prearm_checks_healthy=armable,
+                            mode=mode,
+                            armed=armed,
+                            landed=(
+                                armed is False
+                                and position is not None
+                                and position[3] <= 0.3
+                            ),
+                            relative_altitude_m=(position[3] if position else None),
+                            status_text=status_text,
+                            aux_ack=ack,
+                            parameters=parameters,
+                            parameter_generation=generation,
+                            telemetry_timestamp_ns=telemetry_stamp,
+                            horizontal_speed_m_s=(position[1] if position else None),
+                            vertical_speed_m_s=(position[2] if position else None),
+                            roll_rad=(attitude[1] if attitude else None),
+                            pitch_rad=(attitude[2] if attitude else None),
+                            latitude_deg=(position[4] if position else None),
+                            longitude_deg=(position[5] if position else None),
+                            position_timestamp_ns=(position[0] if position else None),
+                        )
+                    transition = driver.observe(observation)
+                    if not hover_only:
+                        written_parameters = {
+                            action.name: action.value
+                            for action in transition.actions
+                            if action.kind is AutoTuneActionKind.SET_PARAMETER
+                        }
+                        if written_parameters:
+                            lifecycle.emit(
+                                "calibration_parameters_overridden",
+                                control_timestamp_ns,
+                                {
+                                    "parameters": written_parameters,
+                                    "reason": "roll diagnostic seed",
+                                },
+                            )
                     if transition.state.phase is not previous_phase:
                         lifecycle.emit(
                             "hover_phase" if hover_only else "autotune_phase",
                             control_timestamp_ns,
                             {"phase": transition.state.phase.value},
                         )
+                    if not hover_only:
+                        if (
+                            previous_phase is AutoTunePhase.WAIT_RETURN_GUIDED
+                            and transition.state.phase is AutoTunePhase.RETURNING
+                        ):
+                            lifecycle.emit(
+                                "autotune_return_target",
+                                control_timestamp_ns,
+                                {
+                                    "latitude_deg": transition.state.home_latitude_deg,
+                                    "longitude_deg": transition.state.home_longitude_deg,
+                                    "relative_altitude_m": 5.0,
+                                },
+                            )
+                        elif (
+                            previous_phase is AutoTunePhase.RETURNING
+                            and transition.state.phase is AutoTunePhase.WAIT_LAND
+                        ):
+                            lifecycle.emit(
+                                "autotune_return_arrived",
+                                control_timestamp_ns,
+                                {
+                                    "latitude_deg": observation.latitude_deg,
+                                    "longitude_deg": observation.longitude_deg,
+                                    "relative_altitude_m": observation.relative_altitude_m,
+                                },
+                            )
+                        if (
+                            ack
+                            and previous_phase is AutoTunePhase.WAIT_GAIN_ACTIVATION
+                            and not aux_ack_event_emitted
+                        ):
+                            lifecycle.emit(
+                                "autotune_aux_ack",
+                                control_timestamp_ns,
+                                {"function": 180, "position": 2},
+                            )
+                            aux_ack_event_emitted = True
                     if status_text is not None:
                         lifecycle.emit(
                             "ardupilot_status_text",
@@ -896,6 +1264,30 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                     failure = driver.state.failure_reason
 
             if failure is not None:
+                recovery_stamp = latest_clock_ns or 0
+                if not hover_only and armed is True:
+                    if recovery_started_ns is None:
+                        try:
+                            driver._execute(
+                                (
+                                    AutoTuneAction.clear_overrides(),
+                                    AutoTuneAction.mode("LAND"),
+                                )
+                            )
+                            recovery_started_ns = recovery_stamp
+                            lifecycle.emit(
+                                "autotune_failure_recovery",
+                                recovery_stamp,
+                                {"mode": "LAND"},
+                            )
+                        except Exception:
+                            recovery_started_ns = recovery_stamp - 45_000_000_000
+                    if not autotune_failure_recovery_complete(
+                        recovery_started_ns=recovery_started_ns,
+                        timestamp_ns=recovery_stamp,
+                        armed=armed,
+                    ) and time.monotonic() < overall_wall_deadline:
+                        continue
                 lifecycle.observe_terminal(
                     MissionState(
                         MissionPhase.FAILED,
@@ -921,12 +1313,28 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
                 )
                 exit_code = 1
                 break
+            if (
+                calibration.required
+                and not calibration.gate.ready
+                and time.monotonic() >= overall_wall_deadline
+            ):
+                failure = "calibration parameter readback was unavailable before the overall run wall failsafe"
+                lifecycle.observe_terminal(
+                    MissionState(
+                        MissionPhase.FAILED,
+                        last_timestamp_ns=latest_clock_ns or 0,
+                        failure_reason=failure,
+                    )
+                )
+                exit_code = 1
+                break
             if protocol.read_finalize_request() is not None:
                 finalizing = True
     finally:
         try:
             vehicle.channels.overrides = {}
-            vehicle.remove_message_listener("STATUSTEXT", status_callback)
+            for name, callback in listeners:
+                vehicle.remove_message_listener(name, callback)
             vehicle.close()
         finally:
             lifecycle.finalize(latest_clock_ns)
@@ -937,7 +1345,7 @@ def _run_autotune_roll(config: RuntimeConfig) -> int:
 
 
 def _run_autotune(config: RuntimeConfig) -> int:
-    """Run all-axis AutoTune, activate its gains, settle, and use native LAND."""
+    """Tune all axes, activate gains, return to launch, and use native LAND."""
     protocol = _ProductionProtocol(config)
     lifecycle = CompanionLifecycle(run_id=config.run_id, protocol=protocol, stream=sys.stdout)
     lifecycle.emit("starting", None, {"mavlink_endpoint": config.mavlink_endpoint})
@@ -990,7 +1398,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
     parameter_generations: dict[str, int] = {}
     parameter_generation_counter = 0
     aux_ack = False
-    position_sample: tuple[int, float, float, float] | None = None
+    position_sample: tuple[int, float, float, float, float, float] | None = None
     attitude_sample: tuple[int, float, float] | None = None
     locked = threading.Lock()
 
@@ -1019,9 +1427,9 @@ def _run_autotune(config: RuntimeConfig) -> int:
         nonlocal position_sample
         stamp = latest_clock_ns
         if stamp is None: return
-        values = (getattr(message, "vx", None), getattr(message, "vy", None), getattr(message, "vz", None), getattr(message, "relative_alt", None))
-        if all(isinstance(value, (int, float)) for value in values):
-            with locked: position_sample = (stamp, math.hypot(float(values[0]), float(values[1])) / 100.0, abs(float(values[2])) / 100.0, float(values[3]) / 1000.0)
+        decoded = _decode_global_position(message, stamp)
+        if decoded is not None:
+            with locked: position_sample = decoded
     def attitude_callback(_vehicle: Any, _name: str, message: Any) -> None:
         nonlocal attitude_sample
         stamp = latest_clock_ns
@@ -1087,7 +1495,7 @@ def _run_autotune(config: RuntimeConfig) -> int:
                 mode_value = getattr(vehicle, "mode", None); mode = getattr(mode_value, "name", str(mode_value))
                 armed_seen = armed_seen or armed is True
                 telemetry_stamp = min(pos[0], att[0]) if pos and att else None
-                observation = calibration_autotune.Observation(timestamp_ns=stamp, heartbeat=heartbeat, prearm_checks_healthy=armable, mode=mode, armed=armed, landed=armed is False and pos is not None and pos[3] <= .3, relative_altitude_m=pos[3] if pos else None, status_text=status, aux_ack=ack, parameters=parameters, parameter_generation=generation, telemetry_timestamp_ns=telemetry_stamp, horizontal_speed_m_s=pos[1] if pos else None, vertical_speed_m_s=pos[2] if pos else None, roll_rad=att[1] if att else None, pitch_rad=att[2] if att else None)
+                observation = calibration_autotune.Observation(timestamp_ns=stamp, heartbeat=heartbeat, prearm_checks_healthy=armable, mode=mode, armed=armed, landed=armed is False and pos is not None and pos[3] <= .3, relative_altitude_m=pos[3] if pos else None, status_text=status, aux_ack=ack, parameters=parameters, parameter_generation=generation, telemetry_timestamp_ns=telemetry_stamp, position_timestamp_ns=pos[0] if pos else None, horizontal_speed_m_s=pos[1] if pos else None, vertical_speed_m_s=pos[2] if pos else None, latitude_deg=pos[4] if pos else None, longitude_deg=pos[5] if pos else None, roll_rad=att[1] if att else None, pitch_rad=att[2] if att else None)
                 previous = state.phase
                 try:
                     transition = calibration_autotune.advance(state, observation)
@@ -1101,6 +1509,18 @@ def _run_autotune(config: RuntimeConfig) -> int:
                     state = transition.state
                 except Exception as error: failure = f"all-axis AutoTune control failed: {error}"
                 if state.phase is not previous: lifecycle.emit("autotune_phase", stamp, {"phase": state.phase.value})
+                if previous is calibration_autotune.Phase.WAIT_RETURN_GUIDED and state.phase is calibration_autotune.Phase.RETURNING:
+                    lifecycle.emit("autotune_return_target", stamp, {
+                        "latitude_deg": state.home_latitude_deg,
+                        "longitude_deg": state.home_longitude_deg,
+                        "relative_altitude_m": 5.0,
+                    })
+                elif previous is calibration_autotune.Phase.RETURNING and state.phase is calibration_autotune.Phase.WAIT_LAND:
+                    lifecycle.emit("autotune_return_arrived", stamp, {
+                        "latitude_deg": observation.latitude_deg,
+                        "longitude_deg": observation.longitude_deg,
+                        "relative_altitude_m": observation.relative_altitude_m,
+                    })
                 evidence_stage = None
                 if previous is calibration_autotune.Phase.WAIT_GUIDED and state.phase is calibration_autotune.Phase.WAIT_ARMED:
                     evidence_stage = "baseline"
@@ -1176,13 +1596,18 @@ def _create_simulator_camera(
     camera_manager_type: Any,
     camera_type: Any,
     frame_source: Any,
+    *,
+    clock: SimulationClock,
 ) -> Any:
     calibration_path = Path(__file__).with_name("gazebo_camera_calibration.json")
+    mounting_path = Path(__file__).with_name("gazebo_camera_mounting.json")
     manager = camera_manager_type(
         frame_source=frame_source,
         calibration_path=calibration_path,
+        clock=lambda: clock.timestamp_ns,
+        max_exposure_age_ns=250_000_000,
     )
-    return camera_type(100, manager=manager)
+    return camera_type(100, manager=manager, mounting_path=mounting_path)
 
 
 def _run_comp2026(config: RuntimeConfig) -> int:
@@ -1199,11 +1624,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     import rclpy
     from drone.auto_attempt import run_auto_attempt
     from drone import timebase
-    from drone.control.drone_control import DroneControl
     from drone.control.mission_info import MissonTracker
     from drone.sensors.camera._camera_manager import CameraManager
     from drone.sensors.camera.camera import Camera
-    from dronekit import VehicleMode
+    from .comp2026_control import SimulationCompetitionControl
+    from .comp2026_policy import build_competition_policy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
@@ -1224,6 +1649,9 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             ),
         )
 
+    policy = build_competition_policy(
+        config.run_directory / "configuration/run.json", clock=timebase.monotonic
+    )
     rclpy.init()
     node = Node("drone_sim_companion")
     clock_callback_group = MutuallyExclusiveCallbackGroup()
@@ -1241,6 +1669,9 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     frame_source = RosFrameSource(width_px=640, height_px=480)
     lidar = RosLidar(clock)
     gate = Comp2026StartGate()
+    calibration = _CalibrationReadiness({
+        **policy.parameter_expectations, **calibration_parameters(config),
+    })
     mission_publisher = node.create_publisher(
         MissionEvent,
         "/simulation/mission_events",
@@ -1259,8 +1690,12 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     runtime_failure_lock = threading.Lock()
     exit_code = 0
     controller: Any | None = None
+    competition_control: Any | None = None
     mission_worker: threading.Thread | None = None
+    initial_command_allowed = threading.Event()
     last_start_readiness: dict[str, bool] | None = None
+    competition_start_admitted = False
+    last_ground_telemetry_pending: tuple[str, ...] | None = None
 
     def stop(_signum: int, _frame: Any) -> None:
         shutdown_admission.request_stop_from_signal()
@@ -1332,25 +1767,19 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             runtime_failure_written = True
 
     def best_effort_recovery() -> None:
-        if controller is None:
+        if competition_control is None:
             return
         with timebase.configured(clock):
-            for name, action in (
-                ("RTL", controller.rtl),
-                ("LAND", controller.simple_land),
-                ("DISARM", controller.disarm),
-            ):
-                try:
-                    action()
-                except Exception as error:
-                    lifecycle.emit(
-                        "recovery_failed",
-                        clock.timestamp_ns,
-                        {"action": name, "reason": str(error)},
-                    )
+            try:
+                competition_control.recover()
+            except Exception as error:
+                lifecycle.emit("recovery_failed", clock.timestamp_ns, {"reason": str(error)})
 
     def stop_attempt(reason: str) -> None:
+        if competition_control is not None:
+            competition_control.abort(reason)
         gate.stop(reason)
+        initial_command_allowed.set()
         frame_source.stop(reason)
         payload_client.stop()
         clock.stop(reason)
@@ -1371,17 +1800,38 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         recover=best_effort_recovery,
     )
 
+    def guided_delivered() -> None:
+        nonlocal initial_command_delivered
+        timestamp = clock.timestamp_ns
+        if timestamp is None or timestamp > INITIAL_COMMAND_WINDOW_NS:
+            raise RuntimeError("initial GUIDED command missed the 50 ms delivery window")
+        lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, timestamp)
+        initial_command_delivered = True
+
+    def mission_event(phase: str, state: str) -> None:
+        assert competition_control is not None
+        competition_control.phase_event(phase, state)
+        emitter(phase, state)
+
     def run_original_attempt() -> None:
         try:
+            initial_command_allowed.wait()
+            if shutdown_admission.shutdown_requested or attempt_failure.failed:
+                return
+            assert competition_control is not None
+            competition_control.begin_attempt()
+            competition_control.controller.set_guided_mode()
+            gate.mark_command_delivered()
             gate.wait_until_ready()
             assert controller is not None
-            current_home = controller.get_current_gps()
-            home = GPSCoord(current_home.lat, current_home.long, 0.0)
+            current_home = controller.mission_home
+            home = GPSCoord(current_home.lat, current_home.lon, 0.0)
             waypoints = load_course_waypoints(config.course_path, home)
             camera = _create_simulator_camera(
                 CameraManager,
                 Camera,
                 frame_source,
+                clock=clock,
             )
             tracker = MissonTracker(600)
             payloads = {
@@ -1396,7 +1846,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     lidar=lidar,
                     payloads=payloads,
                     waypoints=waypoints,
-                    emit=emitter,
+                    emit=mission_event,
+                    precision_policy=policy.precision_policy,
                 )
             if not emitter.home_complete:
                 raise RuntimeError("original attempt returned without HOME/COMPLETE")
@@ -1408,6 +1859,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     )
                 )
             )
+        except _InitialCommandWindowMissed as error:
+            attempt_failure.fail(str(error))
         except Exception as error:
             if shutdown_admission.shutdown_requested:
                 return
@@ -1452,12 +1905,27 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     )
     sensor_subscriptions_active = True
     overall_wall_deadline = time.monotonic() + config.max_wall_seconds
+    competition_start_deadline = time.monotonic() + config.startup_timeout_seconds
+    clock_scope = timebase.configured(clock)
+    clock_scope.__enter__()
     try:
         try:
-            controller = DroneControl(
-                config.mavlink_endpoint,
-                wait_ready=False,
+            competition_control = SimulationCompetitionControl(
+                policy=policy,
+                run_id=config.run_id,
+                run_directory=config.run_directory,
+                endpoint=config.mavlink_endpoint,
                 heartbeat_timeout=config.startup_timeout_seconds,
+                guided_output_delivery_callback=guided_delivered,
+            )
+            controller = competition_control.controller
+            competition_control.prepare()
+            controller.install_output_transactions(
+                dependency_transaction=competition_control.decoders.output_transaction,
+                supervisor_transaction=competition_control.supervisor.output_transaction,
+                transport_transaction=_comp2026_initial_transport(
+                    clock, controller, controller._transport_output_transaction
+                ),
             )
         except Exception as error:
             attempt_failure.fail(f"DroneKit connection failed: {error}")
@@ -1470,19 +1938,83 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             )
             mission_worker.start()
             gate.mark_process_ready()
-            # Preserve the established status schema. For this mission these
-            # booleans attest to the initialized DroneKit/gated worker seam;
-            # RUNNING-era armability is independently required by the gate.
-            lifecycle.observe_mission_readiness(
-                heartbeat_observed=True,
-                prearm_checks_healthy=True,
-            )
 
         while (
             rclpy.ok()
             and not shutdown_admission.stop_requested
             and not shutdown_admission.finalizing
         ):
+            if controller is not None and not attempt_failure.failed:
+                calibration.observe_cached(
+                    getattr(controller.vehicle, "parameters", {})
+                )
+                if calibration.failure is not None:
+                    attempt_failure.fail(calibration.failure)
+            if (
+                competition_control is not None
+                and not competition_start_admitted
+                and not attempt_failure.failed
+            ):
+                try:
+                    ground_ready = competition_control.ready_for_initial_command()
+                    pending = competition_control.ground_telemetry_pending_reasons
+                    if pending and pending != last_ground_telemetry_pending:
+                        lifecycle.emit(
+                            "ground_telemetry_pending",
+                            None,
+                            {"reasons": list(pending)},
+                        )
+                    last_ground_telemetry_pending = pending
+                    heartbeat_observed = _heartbeat_is_live(
+                        getattr(controller.vehicle, "last_heartbeat", None)
+                    )
+                    prearm_checks_healthy = (
+                        getattr(controller.vehicle, "is_armable", False) is True
+                    )
+                    deadline_expired = time.monotonic() >= competition_start_deadline
+                    if (
+                        ground_ready
+                        and calibration.ready
+                        and heartbeat_observed
+                        and prearm_checks_healthy
+                        and not deadline_expired
+                    ):
+                        lifecycle.observe_mission_readiness(
+                            heartbeat_observed=heartbeat_observed,
+                            prearm_checks_healthy=prearm_checks_healthy,
+                        )
+                        competition_start_admitted = True
+                except Exception as error:
+                    attempt_failure.fail(
+                        f"competition startup readiness failed: {error}"
+                    )
+                if (
+                    not competition_start_admitted
+                    and not attempt_failure.failed
+                    and time.monotonic() >= competition_start_deadline
+                ):
+                    if last_ground_telemetry_pending:
+                        detail = (
+                            "safe-ground telemetry is absent or stale: "
+                            + ", ".join(last_ground_telemetry_pending)
+                        )
+                    elif calibration.pending_parameters:
+                        missing_parameters = calibration.pending_parameters
+                        detail = (
+                            "calibration parameters unavailable: "
+                            + ", ".join(missing_parameters)
+                        )
+                    elif not _heartbeat_is_live(
+                        getattr(controller.vehicle, "last_heartbeat", None)
+                    ):
+                        detail = "DroneKit heartbeat is unavailable"
+                    elif getattr(controller.vehicle, "is_armable", False) is not True:
+                        detail = "vehicle prearm checks are not healthy"
+                    else:
+                        detail = "startup deadline expired"
+                    attempt_failure.fail(
+                        f"competition startup readiness timed out: {detail}"
+                    )
             if controller is not None and comp2026_start_gate_poll_required(
                 mission_running=mission_running,
                 mission_start_ready=gate.mission_start_ready,
@@ -1511,21 +2043,19 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 if (
                     mission_running
                     and gate.mission_ready
+                    and gate.readiness["clock"]
+                    and competition_start_admitted
                     and not initial_command_delivered
+                    and not initial_command_allowed.is_set()
+                    and calibration.release(
+                        protocol,
+                        lifecycle,
+                        config.run_id,
+                        clock.timestamp_ns or 0,
+                    )
                 ):
-                    def mark_initial_command_delivered() -> None:
-                        nonlocal initial_command_delivered
-                        initial_command_delivered = True
-
-                    _deliver_comp2026_initial_command(
-                        vehicle=controller.vehicle,
-                        vehicle_mode_type=VehicleMode,
-                        lifecycle=lifecycle,
-                        gate=gate,
-                        attempt_failure=attempt_failure,
-                        clock=clock,
-                        mark_delivered=mark_initial_command_delivered,
-                        shutdown_admission=shutdown_admission,
+                    attempt_failure.finish_success(
+                        lambda: shutdown_admission.run_if_active(initial_command_allowed.set)
                     )
             if (
                 sensor_subscriptions_active
@@ -1554,6 +2084,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             ):
                 attempt_failure.recover_once()
             node.destroy_node()
+            if competition_control is not None:
+                competition_control.close()
             if controller is not None:
                 try:
                     controller.vehicle.close()
@@ -1572,6 +2104,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
         )
         protocol.close()
         rclpy.shutdown()
+        clock_scope.__exit__(None, None, None)
     return exit_code
 
 

@@ -14,6 +14,7 @@ from uuid import UUID
 
 
 MOVING_PAD_PARAMETERS = Path("/opt/drone_sim/ardupilot/params/moving-pad.parm")
+COMPETITION_PARAMETERS = Path("/opt/drone_sim/ardupilot/params/competition.parm")
 CALIBRATION_PARAMETERS = (
     "ATC_ANG_RLL_P",
     "ATC_RAT_RLL_P",
@@ -102,9 +103,10 @@ def parameter_files_from_environment(
             raise ValueError(
                 "config_sha256 does not match the frozen configuration"
             )
-    overlay = (
-        MOVING_PAD_PARAMETERS if document.get("scenario") == "moving_pad_v1" else None
-    )
+    overlay = {
+        "moving_pad_v1": MOVING_PAD_PARAMETERS,
+        "competition_v1": COMPETITION_PARAMETERS,
+    }.get(document.get("scenario"))
     return overlay, _verified_calibration(document, run_directory)
 
 
@@ -147,6 +149,7 @@ class RuntimeConfig:
     gazebo_port: int = 9002
     gazebo_input_port: int = 9003
     mavlink_port: int = 5760
+    operator_mavlink_port: int = 5762
     home: str = "37.4003371,-122.0800351,0,0"
 
     def __post_init__(self) -> None:
@@ -175,6 +178,9 @@ class RuntimeConfig:
         _port(self.gazebo_port, "gazebo_port")
         _port(self.gazebo_input_port, "gazebo_input_port")
         _port(self.mavlink_port, "mavlink_port")
+        _port(self.operator_mavlink_port, "operator_mavlink_port")
+        if self.operator_mavlink_port == self.mavlink_port:
+            raise ValueError("operator_mavlink_port must differ from mavlink_port")
 
     @property
     def argv(self) -> tuple[str, ...]:
@@ -196,7 +202,9 @@ class RuntimeConfig:
             "--sim-port-out",
             str(self.gazebo_port),
             "--serial0",
-            f"tcp:0.0.0.0:{self.mavlink_port}",
+            f"tcp:{self.mavlink_port}",
+            "--serial1",
+            f"tcp:{self.operator_mavlink_port}",
             "--defaults",
             defaults,
             "--home",

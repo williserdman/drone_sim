@@ -1895,6 +1895,18 @@ _PICKUP_WAYPOINTS = ("WA", "WM1", "WM2", "WM3", "WM4", "WM5", "WM6")
 _ALL_WAYPOINTS = ("L", "TARGET", *_PICKUP_WAYPOINTS)
 
 
+class GroundTelemetryPending(CommandRejected):
+    """Required safe-ground observations have not arrived or are no longer fresh."""
+
+    def __init__(self, reasons: tuple[str, ...]) -> None:
+        if not reasons:
+            raise ValueError("ground telemetry pending reasons must not be empty")
+        self.reasons = reasons
+        super().__init__(
+            "safe-ground telemetry is absent or stale: " + ", ".join(reasons)
+        )
+
+
 def _require_fresh_ground_snapshot(flight_state: object):
     from .flight_state import FailsafeEvidence, RCInput
 
@@ -1911,11 +1923,15 @@ def _require_fresh_ground_snapshot(flight_state: object):
         "rc_input",
         "failsafe",
     )
-    if any(
-        getattr(snapshot, name) is None or getattr(snapshot, name).fresh is not True
-        for name in required
-    ):
-        raise CommandRejected("safe-ground telemetry is absent or stale")
+    pending = []
+    for name in required:
+        field = getattr(snapshot, name)
+        if field is None:
+            pending.append(f"{name} absent")
+        elif field.fresh is not True:
+            pending.append(f"{name} stale")
+    if pending:
+        raise GroundTelemetryPending(tuple(pending))
     if snapshot.landed_state.observation.value != 1:
         raise CommandRejected("safe-ground admission requires exact ON_GROUND")
     if snapshot.armed.observation.value is not False:

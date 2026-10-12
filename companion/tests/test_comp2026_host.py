@@ -189,6 +189,106 @@ def test_lidar_promotes_each_pending_same_tick_range_as_clock_catches_up() -> No
     assert lidar.get_distance() == pytest.approx(4.572)
 
 
+@pytest.fixture
+def nested_comp2026_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "comp2026" / "src"))
+
+
+def test_lidar_get_sample_preserves_frame_identity_across_repeated_reads(
+    nested_comp2026_import_path: None,
+) -> None:
+    from drone.sensors.lidar.lidar import LidarSample
+
+    clock = SimulationClock()
+    lidar = RosLidar(clock)
+    first_scan = SimpleNamespace(ranges=[4.5], range_min=0.1, range_max=30.0)
+    second_scan = SimpleNamespace(ranges=[4.4], range_min=0.1, range_max=30.0)
+    clock.accept(1_000_000_000)
+    lidar.accept(first_scan, 1_000_000_000)
+
+    first = lidar.get_sample()
+    repeated = lidar.get_sample()
+    lidar.accept(second_scan, 1_100_000_000)
+    clock.accept(1_100_000_000)
+    second = lidar.get_sample()
+
+    assert isinstance(first, LidarSample)
+    assert first == LidarSample(4.5, 1.0, 1, 0)
+    assert repeated.sequence == first.sequence
+    assert second == LidarSample(4.4, 1.1, 2, 0)
+    assert lidar.get_distance() == pytest.approx(4.4)
+
+
+def test_lidar_promotes_queued_future_samples_in_timestamp_order(
+    nested_comp2026_import_path: None,
+) -> None:
+    clock = SimulationClock()
+    lidar = RosLidar(clock)
+    clock.accept(1_000_000_000)
+    lidar.accept(
+        SimpleNamespace(ranges=[4.5], range_min=0.1, range_max=30.0),
+        1_050_000_000,
+    )
+    lidar.accept(
+        SimpleNamespace(ranges=[4.4], range_min=0.1, range_max=30.0),
+        1_100_000_000,
+    )
+
+    clock.accept(1_050_000_000)
+    first = lidar.get_sample()
+    clock.accept(1_100_000_000)
+    second = lidar.get_sample()
+
+    assert (first.distance_m, first.sequence) == pytest.approx((4.5, 1))
+    assert (second.distance_m, second.sequence) == pytest.approx((4.4, 2))
+
+
+def test_lidar_rejected_evidence_breaks_sample_continuity(
+    nested_comp2026_import_path: None,
+) -> None:
+    clock = SimulationClock()
+    lidar = RosLidar(clock)
+    valid_scan = SimpleNamespace(ranges=[4.5], range_min=0.1, range_max=30.0)
+    clock.accept(1_000_000_000)
+    lidar.accept(valid_scan, 1_000_000_000)
+    first = lidar.get_sample()
+
+    with pytest.raises(ValueError, match="invalid"):
+        lidar.accept(
+            SimpleNamespace(ranges=[float("nan")], range_min=0.1, range_max=30.0),
+            1_100_000_000,
+        )
+    with pytest.raises(StaleSensorError, match="not ready"):
+        lidar.get_sample()
+
+    clock.accept(1_200_000_000)
+    lidar.accept(valid_scan, 1_200_000_000)
+    recovered = lidar.get_sample()
+
+    assert recovered.sequence == first.sequence + 1
+    assert recovered.invalidation_generation == first.invalidation_generation + 1
+
+
+def test_lidar_stale_sample_is_revoked_before_recovery(
+    nested_comp2026_import_path: None,
+) -> None:
+    clock = SimulationClock()
+    lidar = RosLidar(clock)
+    scan = SimpleNamespace(ranges=[4.5], range_min=0.1, range_max=30.0)
+    clock.accept(1_000_000_000)
+    lidar.accept(scan, 1_000_000_000)
+    first = lidar.get_sample()
+
+    clock.accept(1_500_000_001)
+    with pytest.raises(StaleSensorError, match="older than 0.5"):
+        lidar.get_sample()
+
+    lidar.accept(scan, 1_500_000_001)
+    recovered = lidar.get_sample()
+
+    assert recovered.invalidation_generation == first.invalidation_generation + 1
+
+
 class FakePayloadClient:
     def __init__(self) -> None:
         self.requests: list[object] = []

@@ -18,6 +18,23 @@ _RUNTIME_IMAGES = (
     "drone-sim-ardupilot-runtime:phase3",
     "drone-sim-gazebo-runtime:phase3",
 )
+_VEHICLES = ("iris_flight", "iris_moving_pad", "iris_competition")
+
+
+def _model_path(root: Path, vehicle: str) -> Path:
+    if vehicle not in _VEHICLES:
+        raise ValueError(f"unsupported calibration consumer vehicle: {vehicle}")
+    return root / f"gazebo/resources/models/{vehicle}/model.sdf"
+
+
+def _parameters(path: Path) -> dict[str, float]:
+    values = {}
+    for line in path.read_text().splitlines():
+        fields = line.split("#", 1)[0].split()
+        if fields:
+            name, value = fields
+            values[name] = float(value)
+    return values
 
 
 def _sha256(path: Path) -> str:
@@ -73,7 +90,8 @@ def build_source_calibration_profile(
     ):
         raise ValueError("calibration profile image digests are invalid")
     profile: dict[str, Any] = {
-        "id": "competition-unloaded-v1",
+        "schema_version": 2,
+        "id": "competition-airframe-v2",
         "vehicle": "iris_flight",
         "physical_model_sha256": _sha256(
             root / "gazebo/resources/models/iris_flight/model.sdf"
@@ -84,6 +102,12 @@ def build_source_calibration_profile(
         "image_digests": dict(sorted(images.items())),
         "baseline_parameters": {},
     }
+    from artifacts.calibration import airframe_fingerprint
+    fingerprints = {airframe_fingerprint(_model_path(root, vehicle).read_bytes()) for vehicle in _VEHICLES}
+    if len(fingerprints) != 1:
+        raise ValueError("calibration vehicle variants have incompatible airframe physics")
+    profile["airframe_sha256"] = fingerprints.pop()
+    profile["vehicle_models_sha256"] = {vehicle: _sha256(_model_path(root, vehicle)) for vehicle in _VEHICLES}
     profile["profile_sha256"] = _profile_hash(profile)
     return profile
 
@@ -92,6 +116,8 @@ def freeze_calibration_import(
     source_run_directory: Path | str,
     *,
     project_directory: Path | str,
+    consumer_vehicle: str = "iris_flight",
+    consumer_scenario: str = "descent_v1",
     inspector: Callable[..., Any] | None = None,
     image_digests: Mapping[str, str] | None = None,
     artifact_reader: Callable[[Path], tuple[str, dict[str, float]]] | None = None,
@@ -144,15 +170,53 @@ def freeze_calibration_import(
     expected_profile = build_source_calibration_profile(
         root, image_digests=image_digests or _local_image_digests()
     )
+    legacy = profile.get("id") == "competition-unloaded-v1" and "schema_version" not in profile
+    if legacy:
+        if consumer_vehicle != "iris_flight":
+            raise ValueError("legacy calibration supports iris_flight only")
+        expected_profile = {key: value for key, value in expected_profile.items()
+            if key not in {"schema_version", "airframe_sha256", "vehicle_models_sha256"}}
+        expected_profile["id"] = "competition-unloaded-v1"
     for field in (
         "id", "vehicle", "physical_model_sha256", "base_parameter_sha256",
         "overlay_parameter_sha256s", "firmware_revision", "image_digests",
     ):
         if profile.get(field) != expected_profile[field]:
             raise ValueError(f"calibration source profile is incompatible: {field}")
+    if not legacy:
+        for field in ("schema_version", "airframe_sha256", "vehicle_models_sha256"):
+            if profile.get(field) != expected_profile[field]:
+                raise ValueError(f"calibration source profile is incompatible: {field}")
     read_baseline = baseline_reader or read_calibration_baseline
     frozen_profile = dict(profile)
     frozen_profile["baseline_parameters"] = dict(sorted(read_baseline(source).items()))
+    if not legacy:
+        model = _model_path(root, consumer_vehicle)
+        overlays = {
+            "moving_pad_v1": [root / "ardupilot_sitl/params/moving-pad.parm"],
+            "competition_v1": [root / "ardupilot_sitl/params/competition.parm"],
+        }.get(consumer_scenario, [])
+        settings = _parameters(root / "ardupilot_sitl/params/descent.parm")
+        for overlay in overlays:
+            settings.update(_parameters(overlay))
+        effective = dict(frozen_profile["baseline_parameters"])
+        for name in settings:
+            if name in effective or name.startswith("PLND_") or name == "LAND_SPD_MS" or (
+                consumer_scenario == "moving_pad_v1" and name in {"AHRS_EKF_TYPE", "PSC_NE_POS_P"}
+            ) or (
+                consumer_scenario == "competition_v1" and name in {
+                    "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
+                    "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
+                }
+            ):
+                effective[name] = settings[name]
+        frozen_profile.update(
+            consumer_vehicle=consumer_vehicle,
+            consumer_model_resource=f"gazebo/resources/models/{consumer_vehicle}/model.sdf",
+            consumer_model_sha256=_sha256(model),
+            overlay_parameter_sha256s=[_sha256(path) for path in overlays],
+            effective_baseline_parameters=dict(sorted(effective.items())),
+        )
     frozen_profile["source_image_digests"] = dict(sorted(expected_images.items()))
     frozen_profile["profile_sha256"] = _profile_hash(frozen_profile)
     document = {

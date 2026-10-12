@@ -35,7 +35,8 @@ resources as a substitute for public physical truth.
 - [prepare_competition_assets.py](scripts/prepare_competition_assets.py) generates
   `iris_flight`, `iris_moving_pad`, and `iris_competition` from one physical
   vehicle template. Each unloaded model is 1.66001 kg with ±3.4 motor limits,
-  the competition camera/range hardware, and the payload hardpoint. Only
+  the competition camera/range hardware, the shared native ArduPilot JSON
+  range subscription, and the payload hardpoint. Only
   `iris_competition` receives mission payload attachment plugins. The same
   generator derives `vertical_descent_025.sdf` from the diagnostic world by
   changing only its physics cadence; 0.1 runs retain `vertical_descent.sdf`.
@@ -64,6 +65,19 @@ Gazebo also provides module readiness, source-finished, failure, native state,
 server-log, and quiescence evidence. Payload command authorization belongs to
 the electromagnet; the Gazebo-side coordinator only applies a correlated
 private command and reports confirmed joint state.
+
+The downward Gazebo ray has two consumers. The ROS adapter publishes it for
+companion clearance decisions. The common ArduPilot plugin subscription writes
+the same sample to JSON `rng_1`; only the competition SITL overlay enables that
+backend, which makes the flight controller the source of MAVLink
+`DISTANCE_SENSOR` telemetry. All three generated vehicle variants retain the
+same plugin subscription so their calibration fingerprint remains identical.
+
+The competition Iris adds seven fixed, safe RC PWM values to the native
+ArduPilot JSON sensor packet. Channels 1, 2, 4, 5, 6, and 7 are 1500; throttle
+channel 3 is 1000. ArduPilot therefore observes a real healthy SITL receiver
+with RC7 initially in the companion GUIDED slot. Diagnostic and moving-pad
+models omit these fields.
 
 The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
 defines those durable facts. In particular, typed Gazebo readiness contains a
@@ -96,6 +110,13 @@ The runtime publishes it through the
   is a fault rather than an airborne sample.
 - Flight readiness requires a paused ArduPilot/Gazebo round trip with servo,
   motor-update, and JSON-send progress and no frame gaps or send errors.
+- Flight worlds run physics and the IMU at 1 ms. After the one-time paused
+  `0.000001`-second bootstrap state, each JSON state waits up to one wall second
+  for the IMU sample with the exact same integer native timestamp. A missing,
+  future, or regressing sample increments the JSON error count and stops Gazebo;
+  the plugin never sends a stale sample or advances its last-controller time.
+  Runtime supervision treats any resulting server exit, including exit zero,
+  as a failed source.
 - The passive `phase3_foundation` world has no ArduPilot exchange, so the typed
   readiness contract no longer supports it. The runtime rejects that world
   before starting the Gazebo server. Restoring operator support requires a

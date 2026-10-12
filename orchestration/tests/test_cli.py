@@ -188,11 +188,33 @@ def test_parse_errors_exit_two_without_python_traceback(argv):
     assert "Traceback" not in stderr
 
 
-def test_help_lists_exactly_the_four_operator_commands():
+def test_help_lists_operator_and_suite_commands():
     code, stdout, stderr = _invoke(["--help"], FakeController())
 
     assert code == 0
     assert stderr == ""
-    for command in ("start", "status", "abort", "collect-results"):
+    for command in ("start", "suite", "status", "abort", "collect-results"):
         assert command in stdout
-    assert "{start,status,abort,collect-results}" in stdout
+    assert "{start,suite,status,abort,collect-results}" in stdout
+
+
+@pytest.mark.parametrize('state,exit_code',[('PASSED',0),('FAILED',1),('SETUP_FAILED',2),('INTERRUPTED',130)])
+def test_suite_cli_prints_final_result_and_preserves_exit(tmp_path,monkeypatch,state,exit_code):
+    from orchestration.suite import SuiteResult
+    monkeypatch.chdir(tmp_path)
+    seen=[]
+    def runner_factory(**kwargs):
+        class Runner:
+            def run(self,catalog,*,output_root):
+                seen.append((catalog,output_root))
+                kwargs['event_stream'].write('suite progress\n')
+                return SuiteResult('suite-id',state,tmp_path/'report.json',exit_code)
+        return Runner()
+    output,errors=io.StringIO(),io.StringIO()
+    actual=main(['suite','--output-root',str(tmp_path/'runs')],
+                controller_factory=lambda **kwargs: object(),suite_runner_factory=runner_factory,
+                stdout=output,stderr=errors)
+    assert actual==exit_code and errors.getvalue()==''
+    result=json.loads(output.getvalue().splitlines()[-1])
+    assert result['result_type']=='suite_result' and result['state']==state and result['exit_code']==exit_code
+    assert seen==[(tmp_path/'config/ci-suite.json',tmp_path/'runs')]

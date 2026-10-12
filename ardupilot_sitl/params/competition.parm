@@ -1,0 +1,8 @@
+# Native RC7 authority switch for the guarded Comp2026 mission.
+FLTMODE_CH 7
+FLTMODE1 0
+FLTMODE4 4
+FLTMODE6 5
+RNGFND1_MIN 0.05
+RNGFND1_MAX 40
+RNGFND1_TYPE 100
