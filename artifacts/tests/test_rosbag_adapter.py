@@ -1974,7 +1974,7 @@ def test_test_image_apt_dependencies_match_recorded_exact_versions():
         pytest.skip("apt dependency lock is verified in the artifact test image")
     expected = {
         "python3-venv": "3.12.3-0ubuntu2.1",
-        "python3.12-venv": "3.12.3-1ubuntu0.15",
+        "python3.12-venv": "3.12.3-1ubuntu0.17",
         "python3-pip-whl": "24.0+dfsg-1ubuntu1.3",
         "python3-setuptools-whl": "68.1.2-2ubuntu1.2",
         "python3-wheel": "0.42.0-2",

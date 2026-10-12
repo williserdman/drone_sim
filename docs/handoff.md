@@ -3,14 +3,52 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-08. Branch `feat/manual-ci-suite` extends
+Audited 2026-10-12. Branch `feat/manual-ci-suite` extends
 `design/moving-pad-landing`, which adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. Imported
 `companion/comp2026` history and provenance remain preserved.
 
-Project paused at the user's request on 2026-10-08 at 18:53 UTC. The latest
-suite `a0a575bb-4b75-444c-9880-72482387718d`, from clean `fb92033`, exited 130
+Project paused again at the user's request on 2026-10-12. No project builds,
+flights, probes, or observation processes remained at the 21:51 UTC shutdown
+check. Unrelated workstation services were left running. Run evidence, local
+diagnostics, and preserved image tags remain intact.
+
+The October 12 attempt from clean `646892f`, suite
+`9890533a-a401-48e1-b8d2-2ffe6f1b1da9`, ended `SETUP_FAILED` before allocating
+any flights. Its image build requested `python3.12-venv=3.12.3-1ubuntu0.15`,
+which the package repository no longer supplies. Evidence remains under
+`/home/willis/projects/drone_sim/runs/local-ci/20261012-646892f`.
+
+The saved partial repair updates that pin to `3.12.3-1ubuntu0.17` in the
+orchestration, artifacts, electromagnet, and Gazebo build inputs, including the
+artifact image's version assertion. This is an unfinished build repair:
+
+- The orchestration runtime diagnostic image built successfully. The artifacts
+  image installed the Python dependency, then failed because its FFmpeg lock
+  requests unavailable `libpciaccess0=0.17-3ubuntu0.24.04.2`. Its in-image version
+  test remains unrun.
+- The Gazebo lock also contains unavailable Ubuntu and ROS package versions.
+  Its replacement dependency delta was not derived before the probe stopped.
+  No broader lock refresh or source dependency changes were saved.
+- Before the pause, focused checks passed 91 tests with four skips. Host tests
+  passed 2,404 with 27 skips, and imported Comp2026 tests passed all 1,130.
+  These results do not establish that all runtime images build or missions pass.
+
+Diagnostic logs and the shutdown receipt are local to
+`.superpowers/full-suite-resume-20261012/` in the working checkout. Resume with
+both package locks and real image verification before another fresh full-suite
+run. Preserve exact installed-package checks. The full 11-case demonstration
+remains incomplete. Actions dispatch remains unrun: `main` still has no workflow
+and the registered runner was offline at the October 12 check.
+
+Documentation impact: this checkpoint updates the handoff. The four affected
+module READMEs, architecture, and runbook remain unchanged because package-pin
+repair does not change their interfaces, responsibilities, or operator commands.
+No machine configuration changed.
+
+The previous suite was paused on 2026-10-08 at 18:53 UTC. Suite
+`a0a575bb-4b75-444c-9880-72482387718d`, from clean `fb92033`, exited 130
 with state `INTERRUPTED`. Evidence remains under
 `/home/willis/projects/drone_sim/runs/local-ci/20261008-fb92033`; its report is
 `suites/a0a575bb-4b75-444c-9880-72482387718d/report.json`.
@@ -30,12 +68,14 @@ with state `INTERRUPTED`. Evidence remains under
   Existing evidence remains intact; all seven images have `:fb92033-suite`
   preservation tags.
 
-The full 11-case demonstration remains incomplete. Additional native-log and
-physical diagnostics were deferred, not run after the pause. Resume from this
-checkpoint with a fresh full-suite run when workstation use is authorized again.
-The manual workflow is still absent from `main` and its registered runner is
-offline; provider verification remains unrun. No runtime behavior changed in
-this pause checkpoint, so module READMEs, architecture and runbook are unchanged.
+During the authorized October 12 resumption, independent inspection of that
+finalized calibration passed all 13 native-log assertions and checked all
+18,000 physical samples. Touchdown descent was 0.500056 m/s, with contact about
+10 mm from the target. Physical predicates agreed with the recorded 100/100
+score, and the accepted artifact evidence remains valid. Derived reports are
+local to `.superpowers/full-suite-host-budget-3h/final-native/report.json` and
+`final-physical/report.json` under the same scratch root. This verifies the old
+calibration, not a new full-suite pass.
 
 The earlier common-build suite `be09da8c-d096-4b34-82ac-de5b05d25d30`, from clean
 `d1335a3`, attempted all 11 cases and finished **FAILED**, six passed and five
