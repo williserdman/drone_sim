@@ -281,8 +281,13 @@ Do not include unrelated environment variables or credentials. Transport status,
 QGC command admission, physical outcome, score, and artifact validity remain
 separate observations.
 
-Cleanup closes project-owned transports and helper resources, publishes media
-from the existing Linux named-volume spool, and completes ordinary finalization.
+Cleanup closes project-owned run transports and manifest log writers before
+inventory, publishes media from the existing Linux named-volume spool, and
+completes ordinary finalization. The helper may retain a lease-only control
+connection through the existing post-manifest container teardown. The bundled
+host log ends at `cleanup_pending`; final teardown and owner-clear results are
+recorded in session and native registration receipts outside the manifest.
+No inventoried log is appended after its writers quiesce.
 Keep the lease until owned-resource cleanup is confirmed. Cleanup preserves QGC
 and its settings. An orphaned helper or failed media publication blocks a new
 run until the existing recovery path resolves it without deleting evidence.
