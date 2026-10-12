@@ -5,7 +5,9 @@ param(
     [string] $LedgerId,
     [string] $DistroName,
     [string] $RunId,
-    [string] $SessionId
+    [string] $SessionId,
+    [string] $Executable,
+    [string] $SettingsFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,6 +129,24 @@ if ($ChildCase) {
         $bytes = [Text.Encoding]::UTF8.GetBytes('locked-path-publication')
         $receipt = Publish-QgcActions -Directory $FixtureRoot -Filename 'locked.json' -Bytes $bytes -Sha256 (Get-Sha256 $bytes)
         [IO.File]::WriteAllText((Join-Path ([IO.Path]::GetDirectoryName($FixtureRoot)) 'child-result.txt'), $receipt.sha256)
+        exit 0
+    }
+    if ($ChildCase -eq 'OpenWithPause') {
+        $filesystemModule = Import-Module $filesystemPath -Force -PassThru
+        Set-ModuleFault $filesystemModule 'pause_before_qgc_open'
+        $installation = Get-QgcInstallation -Executable $Executable -SettingsFile $SettingsFile
+        $result = Open-Qgc -Installation $installation
+        $selected = [IO.Path]::GetFullPath($Executable)
+        foreach ($process in [Diagnostics.Process]::GetProcessesByName('QGroundControl')) {
+            try {
+                if ([string]::Equals([IO.Path]::GetFullPath($process.MainModule.FileName), $selected, [StringComparison]::OrdinalIgnoreCase)) {
+                    $process.Kill()
+                    $process.WaitForExit()
+                }
+            }
+            finally { $process.Dispose() }
+        }
+        [IO.File]::WriteAllText((Join-Path $FixtureRoot 'child-result.txt'), $result.detail)
         exit 0
     }
     throw "Unknown child case: $ChildCase"
@@ -299,6 +319,40 @@ try {
         $process.WaitForExit()
     }
 
+    Invoke-Test 'Test-ValidatedQgcExecutableCannotBeReplacedBeforeLaunch' {
+        $env:DRONE_SIM_TEST_PAUSE_READY = Join-Path $tempRoot 'qgc-open-pause-ready'
+        $env:DRONE_SIM_TEST_PAUSE_CONTINUE = Join-Path $tempRoot 'qgc-open-pause-continue'
+        Remove-Item -LiteralPath $env:DRONE_SIM_TEST_PAUSE_READY, $env:DRONE_SIM_TEST_PAUSE_CONTINUE -Force -ErrorAction SilentlyContinue
+        $child = Start-TestChild -Case 'OpenWithPause' -Arguments @{ FixtureRoot = $tempRoot; Executable = $executable; SettingsFile = $settings }
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not [IO.File]::Exists($env:DRONE_SIM_TEST_PAUSE_READY)) {
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Open-Qgc child did not reach locked launch boundary' }
+            Start-Sleep -Milliseconds 25
+        }
+        try {
+            $writeBlocked = $false
+            try { [IO.File]::WriteAllBytes($executable, [byte[]] @(0, 1, 2)) }
+            catch { $writeBlocked = $true }
+            Assert-True $writeBlocked 'validated QGC executable write must be denied through launch'
+
+            $renameBlocked = $false
+            try { Move-Item -LiteralPath $executable -Destination ($executable + '.replaced') -ErrorAction Stop }
+            catch { $renameBlocked = $true }
+            Assert-True $renameBlocked 'validated QGC executable replacement must be denied through launch'
+
+            $ancestorRenameBlocked = $false
+            try { Move-Item -LiteralPath $installDirectory -Destination ($installDirectory + '-replaced') -ErrorAction Stop }
+            catch { $ancestorRenameBlocked = $true }
+            Assert-True $ancestorRenameBlocked 'validated QGC ancestor replacement must be denied through launch'
+        }
+        finally {
+            [IO.File]::WriteAllText($env:DRONE_SIM_TEST_PAUSE_CONTINUE, 'continue')
+        }
+        $child.WaitForExit()
+        Assert-Equal $child.ExitCode 0
+        Assert-True ([IO.File]::ReadAllText((Join-Path $tempRoot 'child-result.txt')).StartsWith('started QGroundControl process ')) 'validated fake QGC did not launch'
+    }
+
     $distroA = 'Ubuntu-24.04-test-a'
     $distroB = 'Ubuntu-24.04-test-b'
     $distroAId = [Guid]::NewGuid()
@@ -345,23 +399,62 @@ try {
         Remove-Item -LiteralPath (Join-Path $registrationDirectory 'controller-registration-v1.json') -Force
     }
 
-    foreach ($registrationFault in @('registration_flush', 'registration_replace', 'registration_readback')) {
-        Invoke-Test "Test-DurableRegistrationFault-$registrationFault" {
-            $registrationFile = Join-Path (Join-Path $tempRoot 'drone-sim') 'controller-registration-v1.json'
-            Remove-Item -LiteralPath $registrationFile -Force -ErrorAction SilentlyContinue
+    foreach ($registrationFault in @('registration_flush', 'registration_replace')) {
+        Invoke-Test "Test-FirstEnrollmentRetryBlockedByOrphan-$registrationFault" {
+            $registrationDirectory = Join-Path $tempRoot 'drone-sim'
+            Get-ChildItem -LiteralPath $registrationDirectory -Filter 'controller-registration-v1.json*' -Force -ErrorAction SilentlyContinue | Remove-Item -Force
             Enter-ControllerLease -SessionId ([Guid]::NewGuid().ToString()) | Out-Null
             try {
                 Set-ModuleFault $leaseModule $registrationFault
                 $code = Get-ErrorCode { Register-Controller -InstallationId $installationGuid -LedgerId $ledgerGuid -DistroName $distroA -Pristine $true }
-                Assert-True ($code -eq 'controller_registration_write_failed' -or $code -eq 'controller_registration_readback_failed') 'durable registration fault returned an unexpected code'
+                Assert-Equal $code 'controller_registration_write_failed'
                 Set-ModuleFault $leaseModule ''
-                $evidence = @(Get-ChildItem -LiteralPath (Join-Path $tempRoot 'drone-sim') -Force)
+                $evidence = @(Get-ChildItem -LiteralPath $registrationDirectory -Filter 'controller-registration-v1.json.tmp-*' -Force)
                 Assert-True ($evidence.Count -ge 1) 'failed or uncertain registration update must retain evidence'
+                Assert-Equal (Get-ErrorCode { Register-Controller -InstallationId $installationGuid -LedgerId $ledgerGuid -DistroName $distroA -Pristine $true }) 'controller_recovery_required'
             }
             finally {
                 Set-ModuleFault $leaseModule ''
                 Exit-ControllerLease
+                Get-ChildItem -LiteralPath $registrationDirectory -Filter 'controller-registration-v1.json*' -Force -ErrorAction SilentlyContinue | Remove-Item -Force
             }
+        }
+    }
+
+    foreach ($registrationFault in @('registration_flush', 'registration_replace')) {
+        Invoke-Test "Test-ExistingRegistrationUpdateRetryBlockedByOrphan-$registrationFault" {
+            $registrationDirectory = Join-Path $tempRoot 'drone-sim'
+            Get-ChildItem -LiteralPath $registrationDirectory -Filter 'controller-registration-v1.json*' -Force -ErrorAction SilentlyContinue | Remove-Item -Force
+            $activeSession = [Guid]::NewGuid().ToString()
+            Enter-ControllerLease -SessionId $activeSession | Out-Null
+            try {
+                Register-Controller -InstallationId $installationGuid -LedgerId $ledgerGuid -DistroName $distroA -Pristine $true | Out-Null
+                Set-ModuleFault $leaseModule $registrationFault
+                Assert-Equal (Get-ErrorCode { Set-ActiveRun -RunId ([Guid]::NewGuid().ToString()) -SessionId $activeSession }) 'controller_registration_write_failed'
+                Set-ModuleFault $leaseModule ''
+                $orphanEvidence = @(Get-ChildItem -LiteralPath $registrationDirectory -Filter 'controller-registration-v1.json.tmp-*' -Force)
+                Assert-True ($orphanEvidence.Count -ge 1) 'failed active-run update must retain temporary evidence beside the old final registration'
+                Assert-Equal (Get-ErrorCode { Set-ActiveRun -RunId ([Guid]::NewGuid().ToString()) -SessionId $activeSession }) 'controller_recovery_required'
+            }
+            finally {
+                Set-ModuleFault $leaseModule ''
+                Exit-ControllerLease
+                Get-ChildItem -LiteralPath $registrationDirectory -Filter 'controller-registration-v1.json*' -Force -ErrorAction SilentlyContinue | Remove-Item -Force
+            }
+        }
+    }
+
+    Invoke-Test 'Test-DurableRegistrationReadbackFailureIsVisible' {
+        $registrationDirectory = Join-Path $tempRoot 'drone-sim'
+        Get-ChildItem -LiteralPath $registrationDirectory -Filter 'controller-registration-v1.json*' -Force -ErrorAction SilentlyContinue | Remove-Item -Force
+        Enter-ControllerLease -SessionId ([Guid]::NewGuid().ToString()) | Out-Null
+        try {
+            Set-ModuleFault $leaseModule 'registration_readback'
+            Assert-Equal (Get-ErrorCode { Register-Controller -InstallationId $installationGuid -LedgerId $ledgerGuid -DistroName $distroA -Pristine $true }) 'controller_registration_readback_failed'
+        }
+        finally {
+            Set-ModuleFault $leaseModule ''
+            Exit-ControllerLease
         }
     }
 

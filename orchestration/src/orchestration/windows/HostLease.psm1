@@ -233,6 +233,15 @@ function Test-ObjectProperty {
     return $null -ne $Object.PSObject.Properties[$Name]
 }
 
+function Assert-NoRegistrationOrphans {
+    param([string] $Directory)
+    $orphans = @([IO.Directory]::GetFileSystemEntries($Directory, 'controller-registration-v1.json.tmp-*'))
+    if ($orphans.Count -gt 0) {
+        $names = @($orphans | ForEach-Object { [IO.Path]::GetFileName($_) }) -join ', '
+        Throw-HostLeaseError 'controller_recovery_required' "Retained controller-registration write evidence requires recovery inspection: $names" $null
+    }
+}
+
 function Read-ControllerRegistration {
     $path = Get-RegistrationPath
     $directory = [IO.Path]::GetDirectoryName($path)
@@ -241,11 +250,18 @@ function Read-ControllerRegistration {
     $stream = $null
     try {
         $directoryLock = [DroneSim.WindowsFileSystemNative]::LockDirectoryPath($directory)
-        [DroneSim.WindowsFileSystemNative]::ValidateLocalNtfs($directory)
+        [DroneSim.WindowsFileSystemNative]::ValidateLocalNtfs($directory, '')
     }
     catch {
         if ($null -ne $directoryLock) { $directoryLock.Dispose() }
         Throw-HostLeaseError 'controller_registration_path_invalid' 'Controller registration directory must be local NTFS without reparse components' $_.Exception
+    }
+    try {
+        Assert-NoRegistrationOrphans $directory
+    }
+    catch {
+        $directoryLock.Dispose()
+        throw
     }
     if (-not [DroneSim.WindowsFileSystemNative]::PathExistsNoFollow($path)) {
         $directoryLock.Dispose()
@@ -326,7 +342,7 @@ function Write-ControllerRegistration {
         $parentLock = [DroneSim.WindowsFileSystemNative]::LockDirectoryPath($parent.FullName)
         [IO.Directory]::CreateDirectory($directory) | Out-Null
         $directoryLock = [DroneSim.WindowsFileSystemNative]::LockDirectoryPath($directory)
-        [DroneSim.WindowsFileSystemNative]::ValidateLocalNtfs($directory)
+        [DroneSim.WindowsFileSystemNative]::ValidateLocalNtfs($directory, '')
     }
     catch {
         if ($null -ne $directoryLock) { $directoryLock.Dispose() }

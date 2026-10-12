@@ -107,11 +107,13 @@ namespace DroneSim {
             }
         }
 
-        private static SafeFileHandle OpenPathComponent(string path, bool requireDirectory) {
+        private static SafeFileHandle OpenPathComponent(string path, bool requireDirectory, bool allowWriteSharing) {
+            uint shareMode = FILE_SHARE_READ;
+            if (allowWriteSharing) shareMode |= FILE_SHARE_WRITE;
             SafeFileHandle handle = CreateFileW(
                 path,
                 FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                shareMode,
                 IntPtr.Zero,
                 OPEN_EXISTING,
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -143,7 +145,7 @@ namespace DroneSim {
             }
         }
 
-        private static LockedPath LockPathInternal(string path, bool requireFinalDirectory) {
+        private static LockedPath LockPathInternal(string path, bool requireFinalDirectory, bool denyWrite) {
             string fullPath = Path.GetFullPath(path);
             string root = Path.GetPathRoot(fullPath);
             if (String.IsNullOrEmpty(root)) {
@@ -151,13 +153,17 @@ namespace DroneSim {
             }
             List<SafeFileHandle> handles = new List<SafeFileHandle>();
             try {
-                handles.Add(OpenPathComponent(root, true));
+                handles.Add(OpenPathComponent(root, true, !denyWrite));
                 string remainder = fullPath.Substring(root.Length);
                 string current = root;
                 string[] parts = remainder.Split(new char[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
                 for (int index = 0; index < parts.Length; index++) {
                     current = Path.Combine(current, parts[index]);
-                    handles.Add(OpenPathComponent(current, index < parts.Length - 1 || requireFinalDirectory));
+                    bool isFinal = index == parts.Length - 1;
+                    handles.Add(OpenPathComponent(
+                        current,
+                        !isFinal || requireFinalDirectory,
+                        !denyWrite));
                 }
                 return new LockedPath(handles);
             } catch {
@@ -167,11 +173,15 @@ namespace DroneSim {
         }
 
         public static LockedPath LockPath(string path) {
-            return LockPathInternal(path, false);
+            return LockPathInternal(path, false, false);
         }
 
         public static LockedPath LockDirectoryPath(string path) {
-            return LockPathInternal(path, true);
+            return LockPathInternal(path, true, false);
+        }
+
+        public static LockedPath LockFilePathNoWrite(string path) {
+            return LockPathInternal(path, false, true);
         }
 
         public static bool PathExistsNoFollow(string path) {
@@ -211,7 +221,13 @@ namespace DroneSim {
             }
         }
 
-        public static void ValidateLocalNtfs(string path) {
+        public static void ValidateLocalNtfs(string path, string testFault) {
+            if (String.Equals(testFault, "network_storage", StringComparison.Ordinal)) {
+                throw new InvalidOperationException("nonlocal:injected-network-volume");
+            }
+            if (String.Equals(testFault, "non_ntfs_storage", StringComparison.Ordinal)) {
+                throw new InvalidOperationException("nonntfs:ReFS");
+            }
             StringBuilder volumePath = new StringBuilder(512);
             if (!GetVolumePathNameW(Path.GetFullPath(path), volumePath, (uint)volumePath.Capacity)) {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot resolve publication volume");
@@ -277,6 +293,18 @@ function Get-StreamSha256 {
     finally {
         $algorithm.Dispose()
     }
+}
+
+function Get-NativeStorageFailureCode {
+    param([Exception] $Exception)
+    $current = $Exception
+    while ($null -ne $current) {
+        if ($current.Message.StartsWith('nonlocal:') -or $current.Message.StartsWith('nonntfs:')) {
+            return 'unsupported_publication_storage'
+        }
+        $current = $current.InnerException
+    }
+    return $null
 }
 
 function Read-StableBytes {
@@ -517,17 +545,13 @@ function Publish-QgcActions {
             [IO.Directory]::CreateDirectory($directoryPath) | Out-Null
         }
         $directoryLock = [DroneSim.WindowsFileSystemNative]::LockDirectoryPath($directoryPath)
-        [DroneSim.WindowsFileSystemNative]::ValidateLocalNtfs($directoryPath)
-        if ($script:TestFault -eq 'unsupported_storage' -or $script:TestFault -eq 'network_storage' -or $script:TestFault -eq 'non_ntfs_storage') {
-            Throw-HostFilesystemError 'unsupported_publication_storage' 'Injected unsupported publication storage' $null
-        }
+        [DroneSim.WindowsFileSystemNative]::ValidateLocalNtfs($directoryPath, $script:TestFault)
     }
     catch {
         if ($null -ne $directoryLock) { $directoryLock.Dispose() }
         if ($null -ne $parentLock) { $parentLock.Dispose() }
         if ($_.Exception.Data['code']) { throw }
-        $text = $_.Exception.Message
-        if ($text.StartsWith('nonlocal:') -or $text.StartsWith('nonntfs:')) {
+        if ((Get-NativeStorageFailureCode $_.Exception) -eq 'unsupported_publication_storage') {
             Throw-HostFilesystemError 'unsupported_publication_storage' 'QGroundControl actions must be published to a local NTFS directory' $_.Exception
         }
         Throw-HostFilesystemError 'unsafe_publication_path' "Publication directory contains an unsafe reparse component: $directoryPath" $_.Exception
@@ -635,28 +659,54 @@ function Open-Qgc {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][object] $Installation)
 
-    $verified = Get-QgcInstallation -Executable ([string] $Installation.executable) -SettingsFile ([string] $Installation.settings_file)
-    $running = @(Get-RunningQgcProcesses $verified.executable)
-    if ($running.Count -gt 0) {
-        $window = $running[0].MainWindowHandle
-        if ($window -eq [IntPtr]::Zero) {
-            Throw-HostFilesystemError 'qgc_focus_failed' 'Running QGroundControl has no focusable main window' $null
+    $selectedExecutable = [IO.Path]::GetFullPath([string] $Installation.executable)
+    $launchLock = $null
+    try {
+        try {
+            $launchLock = [DroneSim.WindowsFileSystemNative]::LockFilePathNoWrite($selectedExecutable)
         }
-        [DroneSim.WindowsFileSystemNative]::ShowWindowAsync($window, 9) | Out-Null
-        if (-not [DroneSim.WindowsFileSystemNative]::SetForegroundWindow($window)) {
-            Throw-HostFilesystemError 'qgc_focus_failed' 'Windows refused to focus the validated QGroundControl window' $null
+        catch {
+            Throw-HostFilesystemError 'qgc_path_unsafe' 'QGroundControl executable or an ancestor changed before launch' $_.Exception
         }
-        return [pscustomobject] @{ opened = $true; detail = 'focused existing QGroundControl' }
+        $verified = Get-QgcInstallation -Executable $selectedExecutable -SettingsFile ([string] $Installation.settings_file)
+        $running = @(Get-RunningQgcProcesses $verified.executable)
+        if ($script:TestFault -eq 'pause_before_qgc_open') {
+            if ($env:DRONE_SIM_WINDOWS_NATIVE_TEST_MODE -ne '1' -or -not $env:DRONE_SIM_TEST_PAUSE_READY -or -not $env:DRONE_SIM_TEST_PAUSE_CONTINUE) {
+                Throw-HostFilesystemError 'qgc_test_hook_rejected' 'QGroundControl open pause is restricted to the native test harness' $null
+            }
+            [IO.File]::WriteAllText($env:DRONE_SIM_TEST_PAUSE_READY, 'ready')
+            $deadline = [DateTime]::UtcNow.AddSeconds(15)
+            while (-not [IO.File]::Exists($env:DRONE_SIM_TEST_PAUSE_CONTINUE)) {
+                if ([DateTime]::UtcNow -ge $deadline) {
+                    Throw-HostFilesystemError 'qgc_test_hook_timeout' 'Timed out waiting for native QGroundControl replacement-race continuation' $null
+                }
+                [Threading.Thread]::Sleep(25)
+            }
+        }
+        if ($running.Count -gt 0) {
+            $window = $running[0].MainWindowHandle
+            if ($window -eq [IntPtr]::Zero) {
+                Throw-HostFilesystemError 'qgc_focus_failed' 'Running QGroundControl has no focusable main window' $null
+            }
+            [DroneSim.WindowsFileSystemNative]::ShowWindowAsync($window, 9) | Out-Null
+            if (-not [DroneSim.WindowsFileSystemNative]::SetForegroundWindow($window)) {
+                Throw-HostFilesystemError 'qgc_focus_failed' 'Windows refused to focus the validated QGroundControl window' $null
+            }
+            return [pscustomobject] @{ opened = $true; detail = 'focused existing QGroundControl' }
+        }
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = $verified.executable
+        $start.WorkingDirectory = [IO.Path]::GetDirectoryName($verified.executable)
+        $start.UseShellExecute = $true
+        $process = [Diagnostics.Process]::Start($start)
+        if ($null -eq $process) {
+            Throw-HostFilesystemError 'qgc_launch_failed' 'Windows did not start QGroundControl' $null
+        }
+        return [pscustomobject] @{ opened = $true; detail = "started QGroundControl process $($process.Id)" }
     }
-    $start = New-Object Diagnostics.ProcessStartInfo
-    $start.FileName = $verified.executable
-    $start.WorkingDirectory = [IO.Path]::GetDirectoryName($verified.executable)
-    $start.UseShellExecute = $true
-    $process = [Diagnostics.Process]::Start($start)
-    if ($null -eq $process) {
-        Throw-HostFilesystemError 'qgc_launch_failed' 'Windows did not start QGroundControl' $null
+    finally {
+        if ($null -ne $launchLock) { $launchLock.Dispose() }
     }
-    return [pscustomobject] @{ opened = $true; detail = "started QGroundControl process $($process.Id)" }
 }
 
 Export-ModuleMember -Function Get-QgcInstallation, Publish-QgcActions, Open-Qgc
