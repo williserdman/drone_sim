@@ -3,16 +3,16 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-Audited 2026-10-12. Branch `feat/manual-ci-suite` extends
+Audited 2026-10-13. Branch `feat/manual-ci-suite` extends
 `design/moving-pad-landing`, which adds the moving-pad
 world, configured precision-landing operation, concurrent camera observation,
 SITL overlay, physical scoring, and independent artifact checks. Imported
 `companion/comp2026` history and provenance remain preserved.
 
-Project paused again at the user's request on 2026-10-12. No project builds,
-flights, probes, or observation processes remained at the 21:51 UTC shutdown
-check. Unrelated workstation services were left running. Run evidence, local
-diagnostics, and preserved image tags remain intact.
+Project paused at the user's request on 2026-10-13 local time to release the
+workstation. This checkpoint completes the dependency repair started at
+`5053504`. No simulation, build, or observer jobs remained at the shutdown
+check. No new suite was launched, and no new flight acceptance is claimed.
 
 The October 12 attempt from clean `646892f`, suite
 `9890533a-a401-48e1-b8d2-2ffe6f1b1da9`, ended `SETUP_FAILED` before allocating
@@ -22,25 +22,42 @@ which the package repository no longer supplies. Evidence remains under
 
 The saved partial repair updates that pin to `3.12.3-1ubuntu0.17` in the
 orchestration, artifacts, electromagnet, and Gazebo build inputs, including the
-artifact image's version assertion. This is an unfinished build repair:
+artifact image's version assertion. The remaining package repairs were verified:
 
 - The orchestration runtime diagnostic image built successfully. The artifacts
-  image installed the Python dependency, then failed because its FFmpeg lock
-  requests unavailable `libpciaccess0=0.17-3ubuntu0.24.04.2`. Its in-image version
-  test remains unrun.
-- The Gazebo lock also contains unavailable Ubuntu and ROS package versions.
-  Its replacement dependency delta was not derived before the probe stopped.
-  No broader lock refresh or source dependency changes were saved.
-- Before the pause, focused checks passed 91 tests with four skips. Host tests
-  passed 2,404 with 27 skips, and imported Comp2026 tests passed all 1,130.
-  These results do not establish that all runtime images build or missions pass.
+  image then failed on unavailable `libpciaccess0=0.17-3ubuntu0.24.04.2`.
+  Updating that sole unavailable FFmpeg pin to `.3` produced a successful build
+  with the exact installed-package delta check intact. Three in-image tests
+  passed: the Python/ROS versions, all FFmpeg lock entries, and real video
+  encoding, probing, and full decoding. Evidence and the diagnostic image ID
+  are in `.superpowers/full-suite-resume-20261013/artifacts-pin/verification.json`.
+- The Gazebo audit retained 708 available pins, replaced 87 unavailable pins,
+  and added 18 measured base-library upgrades required by those dependencies.
+  The 813-entry lock matches the actual installed delta from the immutable
+  base. Direct package arguments and version assertions match the new lock;
+  all 11 host image contracts passed. The fresh build compiled the patched
+  renderer and plugins, and all five native tests passed. The smoke script
+  exposed an exit-141 bug: `grep --quiet` closed the pipe after finding the
+  renderer marker, causing `strings` to receive SIGPIPE under `pipefail`.
+  The check now drains the stream while preserving exact marker matching.
+  The final image passed all 17 runtime tests with its bundled script, and
+  its script hash matches the checkout. Image `11545b6df984` and the complete
+  smoke result are recorded in
+  `.superpowers/full-suite-resume-20261013/gazebo-pin/final-embedded-image-test.receipt.txt`.
+  A loaded-library probe confirmed the patched renderer's exact `8.2.3` path.
+  Rendering and ArduPilot plugin source revisions are unchanged.
+- After the lock refresh, host tests passed 2,404 with 27 environment skips,
+  and imported Comp2026 tests passed all 1,130. No static typechecker is
+  configured. These results do not establish that all runtime images build
+  or missions pass.
 
-Diagnostic logs and the shutdown receipt are local to
-`.superpowers/full-suite-resume-20261012/` in the working checkout. Resume with
-both package locks and real image verification before another fresh full-suite
-run. Preserve exact installed-package checks. The full 11-case demonstration
-remains incomplete. Actions dispatch remains unrun: `main` still has no workflow
-and the registered runner was offline at the October 12 check.
+Diagnostic logs and the latest pause receipt remain local to
+`.superpowers/full-suite-resume-20261013/` in the working checkout. Earlier run
+evidence and image preservation tags remain intact. When the user resumes,
+run the official suite from a clean commit with a new output root; retain the
+exact installed-package checks. The full 11-case demonstration remains
+incomplete. Actions dispatch remains unrun: the latest provider check found
+no workflow on `main` and the registered runner offline.
 
 Documentation impact: this checkpoint updates the handoff. The four affected
 module READMEs, architecture, and runbook remain unchanged because package-pin
