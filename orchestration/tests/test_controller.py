@@ -423,6 +423,7 @@ class FakeCompose:
         runtime_mutator=None,
         up_error: Exception | None = None,
         down_error: Exception | None = None,
+        media_cleanup_verified: bool = True,
         interrupt_sleep=None,
         services=SERVICES,
     ):
@@ -434,6 +435,7 @@ class FakeCompose:
         self.runtime_mutator = runtime_mutator
         self.up_error = up_error
         self.down_error = down_error
+        self._media_cleanup_verified = media_cleanup_verified
         self.down_timeouts: list[float] = []
         self.log_timeouts: list[float] = []
         self.services = services
@@ -498,6 +500,10 @@ class FakeCompose:
             raise self.down_error
         return ComposeCommandResult(0, b"removed")
 
+    def media_cleanup_verified(self, timeout):
+        self.trace.append("verify media cleanup")
+        return self._media_cleanup_verified
+
     def stop_services(self, services, timeout):
         self.trace.append(f"stop {' '.join(services)}")
         return ComposeCommandResult(0, b"stopped")
@@ -552,6 +558,7 @@ def _controller(
     capture_failure=False,
     up_error=None,
     down_error=None,
+    media_cleanup_verified=True,
     clock=None,
     sleep=None,
     artifact_session_factory=None,
@@ -578,6 +585,7 @@ def _controller(
             runtime_mutator=runtime_mutator,
             up_error=up_error,
             down_error=down_error,
+            media_cleanup_verified=media_cleanup_verified,
             services=(*services, *auxiliary_services),
         )
         compose_holder["value"] = compose
@@ -887,7 +895,57 @@ def test_native_owner_clears_only_after_exact_project_cleanup(
     controller.start(_template(tmp_path))
 
     assert events.index("compose down") < events.index("cleanup ps")
-    assert events.index("cleanup ps") < events.index("finish")
+    assert events.index("cleanup ps") < events.index("verify media cleanup")
+    assert events.index("verify media cleanup") < events.index("finish")
+
+
+def test_nonoperator_retained_local_media_does_not_clear_native_owner(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+
+    events: list[str] = []
+
+    class Lease:
+        def begin_run(self, _run_id):
+            pass
+
+        def finish_run(self, _run_id, *, verified_cleanup):
+            events.append("finish")
+
+    class Host:
+        state_directory = tmp_path / "state"
+
+        def preflight(self, _paths):
+            return ()
+
+    class Workstation:
+        host = Host()
+
+        @contextmanager
+        def hold(self, **_kwargs):
+            yield Lease()
+
+    controller, _trace, _clock, holder = _controller(
+        tmp_path,
+        workstation=Workstation(),
+        trace_override=events,
+        media_cleanup_verified=False,
+    )
+    original_ps = FakeCompose.ps
+    monkeypatch.setattr(
+        FakeCompose,
+        "ps",
+        lambda self, timeout: ComposeCommandResult(0, b"[]")
+        if "compose down" in events
+        else original_ps(self, timeout),
+    )
+
+    controller.start(_template(tmp_path))
+
+    assert holder["value"]._media_cleanup_verified is False
+    assert "verify media cleanup" in events
+    assert "finish" not in events
 
 
 def test_cleanup_failure_does_not_clear_native_owner(tmp_path):

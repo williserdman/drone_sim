@@ -11,7 +11,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from .workstation import Workstation
+from .workstation import Workstation, select_workstation
 
 
 _ACCEPTANCE_CONTRACTS = {
@@ -301,10 +301,14 @@ class SuiteRunner:
         from ._adapters.suite import SuiteRuntime
         self.project_directory = project_directory.resolve()
         self.controller = controller
+        selected_workstation = select_workstation(workstation, controller, runtime)
         self.runtime = runtime or SuiteRuntime(
             project_directory=self.project_directory,
             controller=controller,
-            workstation=workstation,
+            workstation=selected_workstation,
+        )
+        self.workstation = selected_workstation or getattr(
+            self.runtime, "workstation", None
         )
         self.event_stream = event_stream
         self._interrupted = False

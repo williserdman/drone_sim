@@ -178,6 +178,64 @@ def test_recovery_without_active_run_fails_closed(tmp_path: Path) -> None:
             pass
 
 
+def test_persistent_active_owner_survives_mutex_release_until_exact_cleanup(
+    tmp_path: Path,
+) -> None:
+    from orchestration.workstation import Workstation
+
+    run_id = "00000000-0000-4000-8000-000000000301"
+    events: list[str] = []
+
+    class PersistentLease(Lease):
+        def register_controller(self, identity, *, pristine: bool):
+            super().register_controller(identity, pristine=pristine)
+            return ControllerRegistration(self.active_run_id, self.active_run_id is not None)
+
+        def begin_run(self, value: str) -> None:
+            self.active_run_id = value
+
+        def finish_run(self, value: str, *, verified_cleanup: bool) -> None:
+            assert value == self.active_run_id
+            assert verified_cleanup is True
+            self.active_run_id = None
+
+    host = Host(tmp_path / "state", events, kind="wsl2")
+    host.lease = PersistentLease(events)
+    host.lease.active_run_id = None
+    lock_path = tmp_path / "lock"
+
+    with Workstation(host, lock_path=lock_path).hold() as lease:
+        lease.begin_run(run_id)
+
+    with pytest.raises(RuntimeError, match=run_id):
+        with Workstation(host, lock_path=lock_path).hold():
+            pass
+    with Workstation(host, lock_path=lock_path).hold(
+        recovery_run_id=run_id
+    ) as lease:
+        lease.finish_run(run_id, verified_cleanup=True)
+    with Workstation(host, lock_path=lock_path).hold():
+        pass
+
+
+def test_worktrees_share_monotonic_ledger(tmp_path: Path) -> None:
+    from artifacts.qgc_operator import MavlinkIdentity
+    from orchestration.qgc_actions import QgcActionStore
+
+    shared_state = tmp_path / "native-state"
+    first_worktree = QgcActionStore(shared_state, MavlinkIdentity(255, 190))
+    second_worktree = QgcActionStore(shared_state, MavlinkIdentity(255, 190))
+
+    first_token = first_worktree.allocate(
+        "00000000-0000-4000-8000-000000000401"
+    ).descriptor.attempt_token
+    second_token = second_worktree.allocate(
+        "00000000-0000-4000-8000-000000000402"
+    ).descriptor.attempt_token
+
+    assert second_token == first_token + 1
+
+
 def test_lock_rejects_symlink_without_touching_target(tmp_path: Path) -> None:
     from orchestration.workstation import Workstation
 

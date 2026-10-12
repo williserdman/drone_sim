@@ -44,7 +44,6 @@ from artifacts.runtime_status import (
     ArtifactsReadyStatus,
     CompanionReadyStatus,
     GazeboReadyStatus,
-    MediaSpoolPublishedStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
     RuntimeFailureStatus,
@@ -1685,15 +1684,9 @@ class RunController:
                                     "compose_cleanup_verification_failed"
                                 )
                             else:
-                                media_published = (
-                                    not operator_mode
-                                    or store.read_runtime_status(
-                                        config.run_id,
-                                        MediaSpoolPublishedStatus,
-                                    )
-                                    is not None
-                                )
-                                if not media_published:
+                                if not compose.media_cleanup_verified(
+                                    self._remaining(deadline, self.monotonic)
+                                ):
                                     teardown_failure = (
                                         "media_cleanup_verification_failed"
                                     )

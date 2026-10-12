@@ -92,6 +92,58 @@ def test_nonlocal_down_never_removes_named_volumes(tmp_path: Path) -> None:
     assert calls[0][-2:] == ["down", "--remove-orphans"]
 
 
+def test_nonlocal_media_cleanup_is_verified_by_compose_topology(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    compose = _compose(tmp_path, calls, overlay="")
+
+    assert compose.media_cleanup_verified(20) is True
+    assert calls == []
+
+
+def test_local_media_cleanup_requires_absent_exact_owned_volume(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    compose = _compose(tmp_path, calls, overlay="local")
+
+    assert compose.media_cleanup_verified(20) is True
+    assert calls == [[
+        "docker",
+        "volume",
+        "ls",
+        "--quiet",
+        "--filter",
+        f"label=com.docker.compose.project={PROJECT_NAME}",
+        "--filter",
+        "label=com.docker.compose.volume=artifacts-media",
+    ]]
+
+
+def test_local_media_cleanup_fails_for_retained_or_uninspectable_owned_volume(
+    tmp_path: Path,
+) -> None:
+    run_directory = (tmp_path / "runs" / RUN_ID).resolve()
+    (run_directory / "configuration").mkdir(parents=True)
+    results = iter(
+        (
+            SimpleNamespace(returncode=0, stdout=(VOLUME_NAME + "\n").encode()),
+            SimpleNamespace(returncode=1, stdout=b"inventory failed"),
+            SimpleNamespace(returncode=0, stdout=b"\xff"),
+        )
+    )
+    compose = ComposeRuntime(
+        project_directory=tmp_path.resolve(),
+        run_id=RUN_ID,
+        run_directory=run_directory,
+        config_path=run_directory / "configuration/run.json",
+        topology=PHASE3_TOPOLOGY,
+        runner=lambda *_args, **_kwargs: next(results),
+        base_environment={"SIM_COMPOSE_OVERLAY": "local"},
+    )
+
+    assert compose.media_cleanup_verified(20) is False
+    assert compose.media_cleanup_verified(20) is False
+    assert compose.media_cleanup_verified(20) is False
+
+
 def test_remaining_resources_reports_run_owned_containers_and_media_volumes(
     tmp_path: Path,
 ) -> None:

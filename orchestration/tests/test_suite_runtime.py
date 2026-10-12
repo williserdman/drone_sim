@@ -5,6 +5,42 @@ from types import SimpleNamespace
 import pytest
 
 
+class _Workstation:
+    def __init__(self, host):
+        self.host = host
+
+    def hold(self):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
+def test_suite_runtime_adopts_injected_controllers_workstation(tmp_path):
+    from orchestration._adapters.suite import SuiteRuntime
+
+    host = SimpleNamespace()
+    workstation = _Workstation(host)
+    controller = SimpleNamespace(workstation=workstation)
+
+    runtime = SuiteRuntime(project_directory=tmp_path, controller=controller)
+
+    assert runtime.workstation is workstation
+
+
+def test_suite_runtime_rejects_different_injected_workstations(tmp_path):
+    from orchestration._adapters.suite import SuiteRuntime
+
+    host = SimpleNamespace()
+    controller = SimpleNamespace(workstation=_Workstation(host))
+
+    with pytest.raises(ValueError, match="same workstation"):
+        SuiteRuntime(
+            project_directory=tmp_path,
+            controller=controller,
+            workstation=_Workstation(host),
+        )
+
+
 def test_suite_lock_spans_different_output_roots(tmp_path):
     from orchestration._adapters.suite import SuiteRuntime
     first = SuiteRuntime(project_directory=tmp_path / 'checkout-a')

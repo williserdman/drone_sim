@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import stat
 import threading
-from typing import Iterator
+from typing import Any, Iterator
 
 from .controller_identity import load_or_enroll_identity
 from .host_integration import HostIntegration, HostLease
@@ -16,6 +16,21 @@ from .host_integration import HostIntegration, HostLease
 
 _process_lock = threading.RLock()
 _held = threading.local()
+
+
+def select_workstation(
+    workstation: Workstation | None, *dependencies: Any
+) -> Workstation | None:
+    """Adopt one injected workstation and reject split ownership graphs."""
+    candidates = [
+        candidate
+        for dependency in dependencies
+        if (candidate := getattr(dependency, "workstation", None)) is not None
+    ]
+    selected = workstation or (candidates[0] if candidates else None)
+    if selected is not None and any(candidate is not selected for candidate in candidates):
+        raise ValueError("injected dependencies must use the same workstation")
+    return selected
 
 
 class Workstation:
@@ -120,4 +135,4 @@ class Workstation:
             _process_lock.release()
 
 
-__all__ = ["Workstation"]
+__all__ = ["Workstation", "select_workstation"]

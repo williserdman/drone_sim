@@ -24,6 +24,39 @@ ROOT = Path(__file__).resolve().parents[2]
 QGC_SOURCE = MavlinkIdentity(255, 190)
 
 
+def test_session_adopts_one_workstation_from_injected_runtime_and_controller(
+    tmp_path,
+):
+    host = SimpleNamespace(state_directory=tmp_path / "qgc-state")
+    workstation = SimpleNamespace(host=host)
+    runtime = SimpleNamespace(workstation=workstation)
+    controller = SimpleNamespace(workstation=workstation)
+
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=runtime,
+        controller=controller,
+    )
+
+    assert session.workstation is workstation
+    assert session.host is host
+
+
+def test_session_rejects_split_workstations_in_injected_dependencies(tmp_path):
+    host = SimpleNamespace(state_directory=tmp_path / "qgc-state")
+    runtime = SimpleNamespace(workstation=SimpleNamespace(host=host))
+    controller = SimpleNamespace(workstation=SimpleNamespace(host=host))
+
+    with pytest.raises(ValueError, match="same workstation"):
+        OperatorSession(
+            ROOT,
+            state_directory=tmp_path / "session",
+            runtime=runtime,
+            controller=controller,
+        )
+
+
 @pytest.fixture(autouse=True)
 def isolated_workstation_lease(tmp_path, monkeypatch):
     class Lease:
@@ -458,6 +491,19 @@ def test_run_identity_receipt_survives_failure_before_directory_allocation(
     )
     assert persisted["run_id"] == run_id
 
+    assert session.results() == {
+        "cleanup": "incomplete",
+        "manifest": None,
+        "physical_outcome": None,
+        "score": None,
+    }
+    stopping = session.stop(run_id=run_id)
+    assert stopping["state"] == "FINALIZING"
+    _wait_for_worker(session)
+    finished = session.snapshot()
+    assert finished["state"] == "INTERRUPTED"
+    assert finished["cleanup"] == "complete"
+
 
 @pytest.mark.parametrize(
     ("lifecycle_state", "expected_cleanup", "expected_finish"),
@@ -514,6 +560,9 @@ def test_orphan_cleanup_distinguishes_precompose_failure_from_missing_media_rece
 
         def ps(self, _timeout):
             return SimpleNamespace(returncode=0, output=b"[]")
+
+        def media_cleanup_verified(self, _timeout):
+            return False
 
     monkeypatch.setattr("orchestration._adapters.compose.ComposeRuntime", Compose)
     session = OperatorSession(

@@ -25,7 +25,7 @@ from .local_runtime import LocalRuntime
 from .operator_readiness import preflight_snapshot
 from .qgc_actions import QgcActionStore
 from .status_store import StatusStore
-from .workstation import Workstation
+from .workstation import Workstation, select_workstation
 
 
 _TERMINAL = {"COMPLETED", "FAILED", "ABORTED", "INTERRUPTED"}
@@ -54,8 +54,13 @@ class OperatorSession:
                  host: HostIntegration | None = None,
                  workstation: Workstation | None = None) -> None:
         self.project_directory = project_directory.resolve()
-        self.host = host or resolve_host(self.project_directory)
-        self.workstation = workstation or Workstation(self.host)
+        selected_workstation = select_workstation(workstation, runtime, controller)
+        self.host = (
+            host
+            or getattr(selected_workstation, "host", None)
+            or resolve_host(self.project_directory)
+        )
+        self.workstation = selected_workstation or Workstation(self.host)
         self.state_directory = state_directory or self.project_directory / ".local-runtime"
         self.state_directory.mkdir(parents=True, exist_ok=True)
         self.catalog = PresetCatalog(self.project_directory)
@@ -272,10 +277,13 @@ class OperatorSession:
             with self._lock:
                 self._save()
 
-    def _current(self, run_id: str) -> Path:
+    def _validate_current_run(self, run_id: str) -> None:
         _uuid(run_id)
         if run_id != self._record.get("run_id"):
             raise ValueError("action does not match the active run")
+
+    def _current(self, run_id: str) -> Path:
+        self._validate_current_run(run_id)
         if self._record.get("run_directory") is None:
             raise RuntimeError("run directory was not allocated; cleanup recovery is required")
         return Path(self._record["run_directory"])
@@ -311,7 +319,7 @@ class OperatorSession:
     def stop(self, *, run_id: str | None = None) -> dict[str, Any]:
         with self._lock:
             if run_id is not None:
-                self._current(run_id)
+                self._validate_current_run(run_id)
             self._cancel.set()
             if self._record.get("run_id") is not None:
                 run_directory = self._record.get("run_directory")
@@ -321,7 +329,11 @@ class OperatorSession:
                     reason = ("prepared_cancelled" if status.state in {"CREATED", "STARTING", "READY", "PREPARED"}
                               else "simulation_stop")
                     self.controller.abort(self._record["run_id"], directory.parent, reason=reason)
-                if self._record["state"] == "ORPHANED":
+                if (
+                    not self._active()
+                    and self._record["state"] in {"ORPHANED", "FAILED"}
+                    and self._record.get("cleanup") != "complete"
+                ):
                     self._begin_owner()
                     self._worker = threading.Thread(target=self._cleanup_orphan, name="orphan-cleanup")
                     self._record["state"] = "FINALIZING"
@@ -371,7 +383,7 @@ class OperatorSession:
                     and not remaining
                     and (
                         failed_before_compose
-                        or (directory / ".status/media-spool-published.json").is_file()
+                        or compose.media_cleanup_verified(5)
                     )
                 )
                 if cleanup_verified:
@@ -511,7 +523,7 @@ class OperatorSession:
         with self._lock:
             result: dict[str, Any] = {"cleanup": self._record.get("cleanup"), "manifest": None,
                                       "physical_outcome": None, "score": None}
-            if self._record.get("run_id"):
+            if self._record.get("run_id") and self._record.get("run_directory"):
                 directory = Path(self._record["run_directory"])
                 for key, relative in (("manifest", "manifest.json"), ("physical_outcome", ".status/mission-finished.json"),
                                       ("score", "scoring/result.json")):

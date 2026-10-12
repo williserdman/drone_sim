@@ -278,6 +278,31 @@ class ComposeRuntime:
         except (OSError, ProtocolError):
             return False
 
+    def media_cleanup_verified(self, timeout: float) -> bool:
+        """Prove the local run's named media volume is absent after teardown."""
+        if self._overlay != "local":
+            # Only compose.local.yaml declares the artifacts-media named volume.
+            return True
+        result = self._invoke(
+            [
+                "docker",
+                "volume",
+                "ls",
+                "--quiet",
+                "--filter",
+                f"label=com.docker.compose.project={self.project_name}",
+                "--filter",
+                "label=com.docker.compose.volume=artifacts-media",
+            ],
+            timeout,
+        )
+        if result.returncode != 0:
+            return False
+        try:
+            return result.output.decode("utf-8") == ""
+        except UnicodeDecodeError:
+            return False
+
     def ps(self, timeout: float) -> ComposeCommandResult:
         return self._compose(["ps", "--all", "--format", "json"], timeout)
 

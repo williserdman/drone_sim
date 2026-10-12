@@ -9,7 +9,7 @@ import time
 from uuid import uuid4
 
 from orchestration.host_integration import resolve_host
-from orchestration.workstation import Workstation
+from orchestration.workstation import Workstation, select_workstation
 
 from artifacts import ImageDigest, SourceRevision
 from artifacts.acceptance import inspect_phase3_via_container
@@ -34,7 +34,8 @@ class SuiteRuntime:
         runner=subprocess.run,
     ) -> None:
         self.project_directory = project_directory.resolve()
-        self.workstation = workstation or Workstation(
+        selected_workstation = select_workstation(workstation, controller)
+        self.workstation = selected_workstation or Workstation(
             resolve_host(self.project_directory)
         )
         self.controller = controller or RunController(

@@ -5,6 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +24,53 @@ EXPECTED = {
     "changed_outside_symlink_target": "60f9eb1ae2ef735d489d1de3437d4337d8db1d5a7ad70402ed224e7fd861062b",
     "excluded_only_changes": "96bca58be5c193746ce28394d198f6619fc3d2392eb77f609accf707a483292a",
 }
+
+
+@contextmanager
+def _standalone_builder_holding_lease(tmp_path: Path):
+    lock_path = tmp_path / "workstation.lock"
+    ready = tmp_path / "builder-ready"
+    release = tmp_path / "builder-release"
+    code = f"""
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+import time
+import orchestration.local_build as local_build
+from orchestration.workstation import Workstation
+class Host:
+    facts = SimpleNamespace(kind='linux')
+    state_directory = Path({str(tmp_path / 'builder-state')!r})
+    @contextmanager
+    def acquire_native_lease(self):
+        yield object()
+def revision(_root):
+    Path({str(ready)!r}).write_text('ready')
+    while not Path({str(release)!r}).exists():
+        time.sleep(0.01)
+    raise RuntimeError('builder released')
+local_build._revision = revision
+host = Host()
+local_build.build_images(
+    Path({str(tmp_path)!r}), host,
+    Workstation(host, lock_path=Path({str(lock_path)!r}))
+)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 5
+    while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists(), process.communicate(timeout=1)
+    try:
+        yield lock_path
+    finally:
+        release.write_text("release")
+        _stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode != 0
+        assert "builder released" in stderr
 
 
 def _write(root: Path, relative: str, payload: bytes) -> None:
@@ -214,3 +264,119 @@ def test_standalone_builder_loses_real_process_contention_before_docker(
     assert result.returncode != 0
     assert "already owns" in result.stderr
     assert "docker" not in result.stderr.lower()
+
+
+def test_standalone_build_blocks_prepare_direct_suite_and_cleanup_entrypoints(
+    tmp_path: Path,
+) -> None:
+    from orchestration._adapters.suite import SuiteRuntime
+    from orchestration.controller import RunController
+    from orchestration.operator_session import OperatorSession
+    from orchestration.workstation import Workstation
+
+    class Host:
+        facts = SimpleNamespace(kind="linux")
+        state_directory = tmp_path / "state"
+
+        @contextmanager
+        def acquire_native_lease(self):
+            yield object()
+
+        def preflight(self, _paths):
+            return ()
+
+    host = Host()
+    with _standalone_builder_holding_lease(tmp_path) as lock_path:
+        workstation = Workstation(host, lock_path=lock_path)
+
+        prepare = OperatorSession(
+            Path(__file__).resolve().parents[2],
+            state_directory=tmp_path / "prepare-state",
+            runtime=SimpleNamespace(
+                checks=lambda: pytest.fail("prepare reached runtime checks")
+            ),
+            controller=SimpleNamespace(),
+            host=host,
+            workstation=workstation,
+        )
+        prepare.prepare(
+            preset_id="configured-descent",
+            request_id="00000000-0000-4000-8000-000000000701",
+        )
+        assert prepare._worker is not None
+        prepare._worker.join(5)
+        assert "already owns" in prepare.snapshot()["error"]
+
+        with pytest.raises(RuntimeError, match="already owns"):
+            RunController(
+                project_directory=Path(__file__).resolve().parents[2],
+                workstation=workstation,
+            ).start(tmp_path / "unread-direct-template.json")
+
+        suite = SuiteRuntime(
+            project_directory=tmp_path,
+            controller=SimpleNamespace(workstation=workstation),
+            workstation=workstation,
+        )
+        with pytest.raises(RuntimeError, match="already owns"):
+            with suite.lock():
+                pytest.fail("suite acquired the standalone builder lease")
+
+        cleanup = OperatorSession(
+            Path(__file__).resolve().parents[2],
+            state_directory=tmp_path / "cleanup-state",
+            runtime=SimpleNamespace(),
+            controller=SimpleNamespace(),
+            host=host,
+            workstation=workstation,
+        )
+        cleanup._record.update(
+            state="ORPHANED",
+            run_id="00000000-0000-4000-8000-000000000702",
+            cleanup="incomplete",
+        )
+        cleanup.stop(run_id="00000000-0000-4000-8000-000000000702")
+        assert cleanup._worker is not None
+        cleanup._worker.join(5)
+        assert cleanup.snapshot()["state"] == "ORPHANED"
+        assert "already owns" in cleanup.snapshot()["error"]
+
+
+def test_initial_build_enrolls_and_reacquires_without_consuming_action_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import orchestration.local_build as local_build
+    from orchestration.host_integration import ControllerRegistration
+    from orchestration.workstation import Workstation
+
+    events: list[bool] = []
+
+    class Lease:
+        def register_controller(self, _identity, *, pristine):
+            events.append(pristine)
+            return ControllerRegistration(None, False)
+
+    class Host:
+        facts = SimpleNamespace(kind="wsl2")
+        state_directory = tmp_path / "native-state"
+
+        @contextmanager
+        def acquire_native_lease(self):
+            yield Lease()
+
+    host = Host()
+    workstation = Workstation(host, lock_path=tmp_path / "lock")
+    monkeypatch.setattr(
+        local_build,
+        "_revision",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("stop after enrollment")),
+    )
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="stop after enrollment"):
+            local_build.build_images(tmp_path, host, workstation)
+
+    assert events == [True, False]
+    assert json.loads(
+        (host.state_directory / "attempt-ledger.json").read_text()
+    ) == {"schema_version": 1, "last_allocated_token": 0}
