@@ -11,9 +11,11 @@ from typing import Any, Callable, Sequence, TextIO
 from uuid import uuid4
 
 from .controller import ControllerError, RunController, RunResult
+from .host_integration import resolve_host
 from .status_store import ProtocolFileError
 from .suite import SuiteRunner, SuiteResult
 from .console_client import request_console
+from .workstation import Workstation
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -103,14 +105,23 @@ def main(
             output.write(json.dumps(document, allow_nan=False, sort_keys=True) + "\n")
             output.flush()
             return 0
+        project_directory = Path.cwd().resolve()
+        host = resolve_host(project_directory)
+        workstation = Workstation(host)
         controller = controller_factory(
-            project_directory=Path.cwd().resolve(), event_stream=output
+            project_directory=project_directory,
+            event_stream=output,
+            workstation=workstation,
         )
         result: RunResult | SuiteResult
         if arguments.command == "suite":
             catalog = Path(arguments.config).resolve() if arguments.config else Path.cwd() / "config/ci-suite.json"
-            result = suite_runner_factory(project_directory=Path.cwd().resolve(),
-                controller=controller, event_stream=output).run(catalog, output_root=_output_root(arguments.output_root))
+            result = suite_runner_factory(
+                project_directory=project_directory,
+                controller=controller,
+                workstation=workstation,
+                event_stream=output,
+            ).run(catalog, output_root=_output_root(arguments.output_root))
             exit_code = result.exit_code
         elif arguments.command == "start":
             config = (

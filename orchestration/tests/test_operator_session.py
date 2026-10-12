@@ -1,5 +1,5 @@
 from dataclasses import replace
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import hashlib
 import threading
@@ -17,8 +17,7 @@ from orchestration.host_config import HostFacts
 from orchestration.host_integration import LaunchResult, QgcInstallation
 from orchestration.qgc_actions import QgcActionStore
 from orchestration.qgc_publication import publish_posix
-from orchestration.status_store import OperatorStatus, StatusStore
-from orchestration.workstation import workstation_lock
+from orchestration.status_store import OperatorStatus, StatusStore, TerminalCause
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,8 +26,31 @@ QGC_SOURCE = MavlinkIdentity(255, 190)
 
 @pytest.fixture(autouse=True)
 def isolated_workstation_lease(tmp_path, monkeypatch):
-    monkeypatch.setattr("orchestration.operator_session.workstation_lock",
-                        lambda: workstation_lock(tmp_path / "workstation.lock"))
+    class Lease:
+        def begin_run(self, _run_id):
+            pass
+
+        def finish_run(self, _run_id, *, verified_cleanup):
+            pass
+
+    class Workstation:
+        def __init__(self, _host):
+            self.lease = Lease()
+            self._owned = False
+
+        @contextmanager
+        def hold(self, *, allow_nested=False, recovery_run_id=None):
+            self._owned = True
+            try:
+                yield self.lease
+            finally:
+                self._owned = False
+
+        def owned(self):
+            assert self._owned
+            return self.lease
+
+    monkeypatch.setattr("orchestration.operator_session.Workstation", Workstation)
     monkeypatch.setattr(
         "orchestration.operator_session.resolve_host",
         lambda _project: SimpleNamespace(state_directory=tmp_path / "qgc-state"),
@@ -126,17 +148,23 @@ class PrepareHost:
 
 
 class PrepareController:
-    def __init__(self, output_root: Path, run_ids):
+    def __init__(self, output_root: Path, run_ids, *, teardown_failure=False):
         self.output_root = output_root
         self.run_ids = iter(run_ids)
         self.event_stream = None
         self.compose_attempts = 0
         self.configs = []
+        self.teardown_failure = teardown_failure
 
     def start(self, source, **kwargs):
+        def identify():
+            generated = next(self.run_ids)
+            kwargs["on_run_identified"](str(generated))
+            return generated
+
         config = resolve_run_config(
             source,
-            run_id_factory=lambda: next(self.run_ids),
+            run_id_factory=identify,
             launch_mode=kwargs["launch_mode"],
             preparation_wall_seconds=kwargs["preparation_wall_seconds"],
             output_root=kwargs["output_root"],
@@ -144,10 +172,26 @@ class PrepareController:
         )
         directory = StatusStore(self.output_root).allocate(config.run_id)
         kwargs["on_allocated"](config.run_id, directory)
+        StatusStore(self.output_root).write_operator_status(
+            OperatorStatus(config.run_id, "CREATED", "", None)
+        )
         write_resolved_config(directory, config)
         kwargs["on_configuration_ready"](config, directory)
         self.compose_attempts += 1
         self.configs.append(config)
+        StatusStore(self.output_root).write_operator_status(
+            OperatorStatus(
+                config.run_id,
+                "ABORTED",
+                "prepared_cancelled",
+                None,
+                diagnostics=(
+                    (TerminalCause("teardown", "native_owner_clear_failed"),)
+                    if self.teardown_failure
+                    else ()
+                ),
+            )
+        )
         return RunResult(config.run_id, "ABORTED", "prepared_cancelled", None)
 
     def status(self, run_id, _output_root):
@@ -349,6 +393,147 @@ def test_failed_action_publication_retains_identity_without_launching_qgc(tmp_pa
     assert snapshot["cleanup"] == "complete"
     assert host.events == ["settings"]
     assert controller.compose_attempts == 0
+
+
+def test_native_owner_clear_failure_keeps_session_cleanup_incomplete(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+    published = tmp_path / "QGroundControl" / "MavlinkActions"
+    published.mkdir(parents=True)
+    controller = PrepareController(
+        tmp_path / "runs",
+        [UUID("00000000-0000-4000-8000-000000000607")],
+        teardown_failure=True,
+    )
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=PrepareHost(published, tmp_path / "qgc-state"),
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="77777777-7777-4777-8777-777777777777",
+    )
+    _wait_for_worker(session)
+
+    assert session.snapshot()["cleanup"] == "incomplete"
+
+
+def test_run_identity_receipt_survives_failure_before_directory_allocation(
+    tmp_path,
+):
+    run_id = "00000000-0000-4000-8000-000000000608"
+
+    class Controller:
+        event_stream = None
+
+        def start(self, _source, **kwargs):
+            kwargs["on_run_identified"](run_id)
+            raise RuntimeError("token allocation failed")
+
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=Controller(),
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="55555555-5555-4555-8555-555555555555",
+    )
+    _wait_for_worker(session)
+
+    snapshot = session.snapshot()
+    assert snapshot["run_id"] == run_id
+    assert snapshot.get("run_directory") is None
+    assert snapshot["cleanup"] == "incomplete"
+    persisted = __import__("json").loads(
+        (tmp_path / "session/session.json").read_text()
+    )
+    assert persisted["run_id"] == run_id
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_state", "expected_cleanup", "expected_finish"),
+    (("CREATED", "complete", True), ("STARTING", "incomplete", False)),
+)
+def test_orphan_cleanup_distinguishes_precompose_failure_from_missing_media_receipt(
+    tmp_path,
+    monkeypatch,
+    lifecycle_state,
+    expected_cleanup,
+    expected_finish,
+):
+    run_id = "00000000-0000-4000-8000-000000000609"
+    output_root = tmp_path / "runs"
+    config = resolve_run_config(
+        ROOT / "config/configured-descent-run.json",
+        run_id_factory=lambda: UUID(run_id),
+        launch_mode="operator",
+        output_root=output_root,
+    )
+    store = StatusStore(output_root)
+    directory = store.allocate(run_id)
+    write_resolved_config(directory, config)
+    store.write_operator_status(OperatorStatus(run_id, lifecycle_state, "", None))
+    if lifecycle_state != "CREATED":
+        (directory / ".status/artifacts-final.json").write_text("{}")
+
+    class Lease:
+        finished = False
+
+        def finish_run(self, owned_run_id, *, verified_cleanup):
+            assert owned_run_id == run_id
+            assert verified_cleanup is True
+            self.finished = True
+
+    lease = Lease()
+
+    class Workstation:
+        @contextmanager
+        def hold(self, *, recovery_run_id=None, **_kwargs):
+            assert recovery_run_id == run_id
+            yield lease
+
+    class Runtime:
+        def remaining_resources(self):
+            return []
+
+    class Compose:
+        def __init__(self, **_kwargs):
+            pass
+
+        def down(self, _timeout):
+            return SimpleNamespace(returncode=0)
+
+        def ps(self, _timeout):
+            return SimpleNamespace(returncode=0, output=b"[]")
+
+    monkeypatch.setattr("orchestration._adapters.compose.ComposeRuntime", Compose)
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=Runtime(),
+        controller=SimpleNamespace(),
+        workstation=Workstation(),
+    )
+    session._record.update(
+        state="ORPHANED",
+        run_id=run_id,
+        run_directory=str(directory),
+        cleanup="incomplete",
+    )
+
+    session._cleanup_orphan()
+
+    assert session._record["cleanup"] == expected_cleanup
+    assert lease.finished is expected_finish
 
 
 def test_run_again_requires_complete_cleanup(tmp_path):

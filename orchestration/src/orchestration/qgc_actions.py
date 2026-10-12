@@ -304,6 +304,38 @@ class QgcActionStore:
                         os.close(lock_fd)
                 os.close(directory_fd)
 
+    def initialize(self) -> None:
+        """Create or validate the zero-token ledger without consuming a token."""
+        with _allocation_mutex:
+            directory_fd = self._open_state_directory()
+            lock_fd: int | None = None
+            try:
+                lock_flags = (
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                try:
+                    lock_fd = os.open(
+                        _LOCK_NAME, lock_flags, 0o600, dir_fd=directory_fd
+                    )
+                except OSError as error:
+                    raise RuntimeError("QGC action allocation lock is unsafe") from error
+                metadata = os.fstat(lock_fd)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise RuntimeError("QGC action allocation lock is unsafe")
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                self._initialize_or_validate(directory_fd)
+                _read_ledger(directory_fd)
+            finally:
+                if lock_fd is not None:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(lock_fd)
+                os.close(directory_fd)
+
     def allocate(self, run_id: str) -> QgcActionMaterial:
         """Durably consume one token before constructing its private action bytes."""
         canonical_run_id = _canonical_run_id(run_id)

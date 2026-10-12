@@ -23,6 +23,7 @@ from artifacts.qgc_operator import MavlinkIdentity
 from ..host_config import HostConfig, HostConfigurationError, HostFacts, validate_state_paths
 from ..host_integration import (
     ControllerIdentity,
+    ControllerRegistration,
     HostHelperInfo,
     HostIssue,
     HostLease,
@@ -49,8 +50,9 @@ _MAX_DATAGRAM = 65_507
 class _PosixLease:
     def register_controller(
         self, identity: ControllerIdentity, *, pristine: bool
-    ) -> None:
+    ) -> ControllerRegistration:
         del identity, pristine
+        return ControllerRegistration(None, False)
 
     def begin_run(self, run_id: str) -> None:
         del run_id

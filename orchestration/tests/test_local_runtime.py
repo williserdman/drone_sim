@@ -37,3 +37,26 @@ def test_local_runtime_uses_injected_host_for_qgc_launch(tmp_path: Path) -> None
 
     assert result == LaunchResult(True, "focused")
     assert host.opened == [host.installation]
+
+
+def test_local_runtime_build_calls_python_builder_with_shared_workstation(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import orchestration.local_runtime as local_runtime
+
+    host = FakeHost(tmp_path / "state")
+    workstation = object()
+    calls = []
+    monkeypatch.setattr(
+        local_runtime,
+        "build_images",
+        lambda project, selected_host, selected_workstation: calls.append(
+            (project, selected_host, selected_workstation)
+        ),
+    )
+    runtime = LocalRuntime(tmp_path, host=host, workstation=workstation)
+    runtime.checks = lambda: {"ok": True}
+
+    assert runtime.build() == {"ok": True}
+    assert calls == [(tmp_path.resolve(), host, workstation)]
+    assert "DRONE_SIM_WORKSTATION_LOCK_HELD" not in __import__("os").environ

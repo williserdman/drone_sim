@@ -625,6 +625,18 @@ function Complete-ActiveRun {
     if (-not $VerifiedCleanup) {
         Throw-HostLeaseError 'active_run_cleanup_unverified' 'Windows active ownership remains until exact run cleanup is verified' $null
     }
+    $current = Get-CurrentProcessIdentity
+    $sameHelper = (
+        [int] $registration.helper_process_id -eq $current.process_id -and
+        [string] $registration.helper_process_start_time_utc -ceq $current.process_start_time_utc -and
+        [string] $registration.helper_session_id -ceq $script:LeaseSessionId
+    )
+    if (
+        -not $sameHelper -and
+        -not (Test-FormerProcessIdentityGone ([int] $registration.helper_process_id) ([string] $registration.helper_process_start_time_utc))
+    ) {
+        Throw-HostLeaseError 'controller_helper_still_running' 'Former Windows helper process identity is still live; cleanup-only recovery remains blocked' $null
+    }
     $registration.active_run_id = $null
     $registration.helper_process_id = $null
     $registration.helper_process_start_time_utc = $null

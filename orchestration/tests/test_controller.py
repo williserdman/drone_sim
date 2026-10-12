@@ -557,8 +557,10 @@ def _controller(
     artifact_session_factory=None,
     event_stream=None,
     store_type=TraceStore,
+    workstation=None,
+    trace_override=None,
 ):
-    trace: list[str] = []
+    trace: list[str] = [] if trace_override is None else trace_override
     clock = clock or FakeClock()
     compose_holder = {}
 
@@ -622,6 +624,7 @@ def _controller(
         + timedelta(seconds=clock.monotonic() - 100.0),
         event_stream=event_stream or io.StringIO(),
         poll_interval=1.0,
+        workstation=workstation,
     )
     return controller, trace, clock, compose_holder
 
@@ -771,6 +774,203 @@ def test_allocation_callback_precedes_compose_startup(tmp_path):
 
     assert allocated == [(RUN_ID, tmp_path / "runs" / RUN_ID)]
     assert trace.index("allocation callback") < trace.index("compose up")
+
+
+def test_run_identity_is_durable_before_allocation_side_effects(tmp_path):
+    from contextlib import contextmanager
+    from artifacts.qgc_operator import MavlinkIdentity
+    from orchestration.qgc_actions import QgcActionStore
+
+    events: list[str] = []
+
+    class Lease:
+        def begin_run(self, run_id):
+            assert run_id == RUN_ID
+            events.append("windows_begin_run")
+
+        def finish_run(self, run_id, *, verified_cleanup):
+            events.append(f"finish:{verified_cleanup}")
+
+    class Host:
+        state_directory = tmp_path / "qgc-state"
+
+        def preflight(self, paths):
+            events.append("storage_check")
+            return ()
+
+    class Workstation:
+        host = Host()
+
+        @contextmanager
+        def hold(self, *, allow_nested=False, recovery_run_id=None):
+            events.append("lease_acquire")
+            yield Lease()
+
+    controller, trace, _clock, _holder = _controller(
+        tmp_path, workstation=Workstation(), trace_override=events
+    )
+    actions = QgcActionStore(tmp_path / "actions", MavlinkIdentity(255, 190))
+
+    controller.start(
+        _template(
+            tmp_path,
+            launch_mode="operator",
+            runtime_profile="phase3",
+            simulation={
+                "seed": 9,
+                "duration_sim_seconds": 2.0,
+                "public_epoch_native_sim_seconds": 90.0,
+                "target_real_time_factor": 0.1,
+            },
+        ),
+        on_run_identified=lambda run_id: events.append("identity_receipt"),
+        operator_control_factory=lambda run_id: (
+            events.append("allocate_token"),
+            actions.allocate(run_id),
+        )[1],
+    )
+    assert events.index("storage_check") < events.index("windows_begin_run")
+    assert events.index("windows_begin_run") < events.index("identity_receipt")
+    assert events.index("windows_begin_run") < events.index("allocate_token")
+    assert events.index("windows_begin_run") < events.index("allocate")
+    assert events.index("windows_begin_run") < events.index("compose up")
+
+
+def test_native_owner_clears_only_after_exact_project_cleanup(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+
+    events: list[str] = []
+
+    class Lease:
+        def begin_run(self, _run_id):
+            events.append("begin")
+
+        def finish_run(self, _run_id, *, verified_cleanup):
+            assert verified_cleanup is True
+            events.append("finish")
+
+    class Host:
+        state_directory = tmp_path / "state"
+
+        def preflight(self, _paths):
+            return ()
+
+    class Workstation:
+        host = Host()
+
+        @contextmanager
+        def hold(self, **_kwargs):
+            yield Lease()
+
+    original_down = FakeCompose.down
+    original_ps = FakeCompose.ps
+
+    def down(self, timeout):
+        result = original_down(self, timeout)
+        self.cleaned = True
+        return result
+
+    def ps(self, timeout):
+        if getattr(self, "cleaned", False):
+            events.append("cleanup ps")
+            return ComposeCommandResult(0, b"[]")
+        return original_ps(self, timeout)
+
+    monkeypatch.setattr(FakeCompose, "down", down)
+    monkeypatch.setattr(FakeCompose, "ps", ps)
+    controller, trace, _clock, _holder = _controller(
+        tmp_path, workstation=Workstation(), trace_override=events
+    )
+
+    controller.start(_template(tmp_path))
+
+    assert events.index("compose down") < events.index("cleanup ps")
+    assert events.index("cleanup ps") < events.index("finish")
+
+
+def test_cleanup_failure_does_not_clear_native_owner(tmp_path):
+    from contextlib import contextmanager
+
+    events: list[str] = []
+
+    class Lease:
+        def begin_run(self, _run_id):
+            events.append("begin")
+
+        def finish_run(self, _run_id, *, verified_cleanup):
+            events.append("finish")
+
+    class Host:
+        state_directory = tmp_path / "state"
+
+        def preflight(self, _paths):
+            return ()
+
+    class Workstation:
+        host = Host()
+
+        @contextmanager
+        def hold(self, **_kwargs):
+            yield Lease()
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        workstation=Workstation(),
+        trace_override=events,
+        down_error=RuntimeError("cleanup failed"),
+    )
+
+    controller.start(_template(tmp_path))
+
+    assert "finish" not in events
+
+
+def test_failure_before_compose_attempt_clears_native_owner_without_media_receipt(
+    tmp_path,
+):
+    from contextlib import contextmanager
+
+    events: list[str] = []
+
+    class Lease:
+        def begin_run(self, _run_id):
+            events.append("begin")
+
+        def finish_run(self, _run_id, *, verified_cleanup):
+            assert verified_cleanup is True
+            events.append("finish")
+
+    class Host:
+        state_directory = tmp_path / "state"
+
+        def preflight(self, _paths):
+            return ()
+
+    class Workstation:
+        host = Host()
+
+        @contextmanager
+        def hold(self, **_kwargs):
+            yield Lease()
+
+    controller, _trace, _clock, _holder = _controller(
+        tmp_path,
+        workstation=Workstation(),
+        trace_override=events,
+    )
+
+    with pytest.raises(RuntimeError, match="publication failed"):
+        controller.start(
+            _template(tmp_path),
+            on_configuration_ready=lambda _config, _directory: (_ for _ in ()).throw(
+                RuntimeError("publication failed")
+            ),
+        )
+
+    assert events.index("begin") < events.index("finish")
+    assert "compose up" not in events
 
 
 def test_compose_runtime_gpu_overlay_uses_only_the_owned_gpu_file(tmp_path):

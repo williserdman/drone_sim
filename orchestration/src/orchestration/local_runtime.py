@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import re
 import shutil
@@ -12,7 +13,8 @@ import subprocess
 from typing import Any
 
 from .host_integration import HostIntegration, LaunchResult, resolve_host
-from .workstation import workstation_lock
+from .local_build import build_images, check_build
+from .workstation import Workstation
 
 
 _RUN_CONTAINER = re.compile(r"drone-sim-[0-9a-f]{32}-.+")
@@ -25,9 +27,11 @@ class LocalRuntime:
         project_directory: Path,
         *,
         host: HostIntegration | None = None,
+        workstation: Workstation | None = None,
     ) -> None:
         self.project_directory = project_directory.resolve()
         self.host = host or resolve_host(self.project_directory)
+        self.workstation = workstation or Workstation(self.host)
 
     def _run(self, command: list[str], *, timeout: float = 15) -> subprocess.CompletedProcess[str]:
         return subprocess.run(command, cwd=self.project_directory, capture_output=True, text=True,
@@ -115,10 +119,7 @@ class LocalRuntime:
         provenance: dict[str, Any] = {"ok": False, "reasons": ["runtime images have not been built"]}
         if daemon_ok:
             try:
-                result = self._run([str(self.project_directory / "scripts/local-build.sh"), "--check"], timeout=90)
-                provenance = json.loads(result.stdout)
-                if result.returncode and provenance.get("ok"):
-                    raise ValueError("image check failed despite success response")
+                provenance = check_build(self.project_directory, self.host)
             except (OSError, ValueError, subprocess.TimeoutExpired) as error:
                 provenance = {"ok": False, "reasons": [str(error)]}
         add("Matching runtime images", provenance.get("ok") is True,
@@ -133,11 +134,17 @@ class LocalRuntime:
     def build(self) -> dict[str, Any]:
         directory = self.project_directory / ".local-runtime"
         directory.mkdir(exist_ok=True)
-        with workstation_lock(allow_nested=True), (directory / "build.log").open("w") as log:
-            result = subprocess.run([str(self.project_directory / "scripts/local-build.sh"), "--build"],
-                                    cwd=self.project_directory, stdout=log, stderr=subprocess.STDOUT,
-                                    env={**os.environ, "DRONE_SIM_WORKSTATION_LOCK_HELD": "1"},
-                                    timeout=7200, check=False)
-        if result.returncode:
-            raise RuntimeError("Runtime build failed; open the build log for details")
+        with (directory / "build.log").open("w") as log:
+            try:
+                with redirect_stdout(log), redirect_stderr(log):
+                    build_images(
+                        self.project_directory,
+                        self.host,
+                        self.workstation,
+                    )
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+                print(str(error), file=log)
+                raise RuntimeError(
+                    "Runtime build failed; open the build log for details"
+                ) from error
         return self.checks()

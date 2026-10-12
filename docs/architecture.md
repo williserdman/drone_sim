@@ -108,7 +108,16 @@ interfaces, implementation entry points, tests, and important constraints.
 The local console and its CLI share one persistent host session owner. The
 approved preset determines the entire world/vehicle/mission configuration.
 Browser reconnection observes that session; it does not allocate a replacement.
-The workstation lease spans direct launches, suites, preparation, and teardown.
+The workstation lease spans direct launches, suites, preparation, builds, and
+teardown. One composition root supplies the same `Workstation` to nested callers.
+It acquires the POSIX account lock before the native host lease and releases
+them in reverse order. On WSL2, enrollment binds one Linux controller identity
+and token ledger to the Windows distribution registration. A retained native
+run blocks builds and new runs after the mutex is released. Only an exact-run
+cleanup scope can enter that state. Traffic recovery verifies the published QGC
+action receipt; cleanup of a failure before publication does not require one.
+Native ownership clears only after exact Compose resources and media cleanup are
+verified.
 
 `launch_mode: operator` keeps native Gazebo physics and private camera observations
 live while holding initial mission commands. Host `PREPARED` requires advancing

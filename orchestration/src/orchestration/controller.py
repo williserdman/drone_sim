@@ -44,6 +44,7 @@ from artifacts.runtime_status import (
     ArtifactsReadyStatus,
     CompanionReadyStatus,
     GazeboReadyStatus,
+    MediaSpoolPublishedStatus,
     MissionFinishedStatus,
     MissionReadyStatus,
     RuntimeFailureStatus,
@@ -67,7 +68,8 @@ from .calibration import build_source_calibration_profile, freeze_calibration_im
 from .lifecycle import LifecycleEvent, LifecycleState, RunLifecycle
 from .operator_readiness import preflight_snapshot
 from .qgc_actions import QgcActionMaterial
-from .workstation import exclusive_run
+from .host_integration import HostLease, resolve_host
+from .workstation import Workstation
 from .status_store import (
     OperatorStatus,
     ProtocolFileError,
@@ -329,6 +331,7 @@ class RunController:
         poll_interval: float = 1.0,
         source_runner: Callable[..., Any] = subprocess.run,
         calibration_importer: Callable[[Path, str, str], CalibrationImport] | None = None,
+        workstation: Workstation | None = None,
     ) -> None:
         self.project_directory = Path(
             project_directory
@@ -354,6 +357,9 @@ class RunController:
                 source, project_directory=self.project_directory,
                 consumer_vehicle=vehicle, consumer_scenario=scenario,
             )
+        )
+        self.workstation = workstation or Workstation(
+            resolve_host(self.project_directory)
         )
 
     def _default_compose(
@@ -768,13 +774,41 @@ class RunController:
         except OperatorProtocolError as error:
             raise ProtocolFileError(str(error)) from error
 
-    @exclusive_run
     def start(
         self,
         config_path: Path | str,
         *,
         auxiliary_services: Sequence[str] = (),
         on_allocated: Callable[[str, Path], None] | None = None,
+        on_run_identified: Callable[[str], None] | None = None,
+        on_configuration_ready: Callable[[RunConfig, Path], None] | None = None,
+        operator_control_factory: Callable[[str], QgcActionMaterial] | None = None,
+        launch_mode: str | None = None,
+        preparation_wall_seconds: int | None = None,
+        output_root: Path | None = None,
+    ) -> RunResult:
+        with self.workstation.hold(allow_nested=True) as lease:
+            return self._start_with_lease(
+                lease,
+                config_path,
+                auxiliary_services=auxiliary_services,
+                on_allocated=on_allocated,
+                on_run_identified=on_run_identified,
+                on_configuration_ready=on_configuration_ready,
+                operator_control_factory=operator_control_factory,
+                launch_mode=launch_mode,
+                preparation_wall_seconds=preparation_wall_seconds,
+                output_root=output_root,
+            )
+
+    def _start_with_lease(
+        self,
+        lease: HostLease,
+        config_path: Path | str,
+        *,
+        auxiliary_services: Sequence[str] = (),
+        on_allocated: Callable[[str, Path], None] | None = None,
+        on_run_identified: Callable[[str], None] | None = None,
         on_configuration_ready: Callable[[RunConfig, Path], None] | None = None,
         operator_control_factory: Callable[[str], QgcActionMaterial] | None = None,
         launch_mode: str | None = None,
@@ -786,10 +820,30 @@ class RunController:
             raise ValueError(
                 "unsupported auxiliary_services"
             )
+        def validate_storage(resolved_output_root: Path) -> None:
+            issues = self.workstation.host.preflight(
+                (
+                    self.project_directory,
+                    resolved_output_root,
+                    self.workstation.host.state_directory,
+                )
+            )
+            if issues:
+                raise ValueError("; ".join(issue.message for issue in issues))
+
+        def bind_run_identity() -> UUID:
+            generated = self.uuid_factory()
+            if not isinstance(generated, UUID):
+                return generated
+            lease.begin_run(str(generated))
+            if on_run_identified is not None:
+                on_run_identified(str(generated))
+            return generated
+
         try:
             config = resolve_run_config(
                 config_path,
-                run_id_factory=self.uuid_factory,
+                run_id_factory=bind_run_identity,
                 calibration_importer=self.calibration_importer,
                 calibration_profile_factory=lambda: build_source_calibration_profile(
                     self.project_directory
@@ -797,9 +851,10 @@ class RunController:
                 launch_mode=launch_mode,
                 preparation_wall_seconds=preparation_wall_seconds,
                 output_root=output_root,
+                before_run_binding=validate_storage,
                 operator_control_factory=operator_control_factory,
             )
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             raise ControllerError(str(exc)) from exc
         topology = config.topology
         operator_mode = getattr(config, "launch_mode", "unattended") == "operator"
@@ -810,9 +865,32 @@ class RunController:
         lifecycle = RunLifecycle.created(config.run_id)
         store.write_operator_status(self._status(lifecycle))
         diagnostics: list[TerminalCause] = []
-        event_log = _HostEventLog(
-            run_directory, config.run_id, self.event_stream, self.utcnow
-        )
+        try:
+            event_log = _HostEventLog(
+                run_directory, config.run_id, self.event_stream, self.utcnow
+            )
+        except BaseException:
+            try:
+                lease.finish_run(config.run_id, verified_cleanup=True)
+            except BaseException as cleanup_error:
+                try:
+                    existing = store.read_operator_status(config.run_id)
+                    store.write_operator_status(
+                        replace(
+                            existing,
+                            diagnostics=(
+                                *existing.diagnostics,
+                                TerminalCause(
+                                    "teardown",
+                                    "native_owner_clear_failed:"
+                                    f"{type(cleanup_error).__name__}",
+                                ),
+                            ),
+                        )
+                    )
+                except Exception:
+                    pass
+            raise
 
         def retain_observability(operation: str, exc: BaseException) -> None:
             diagnostic = TerminalCause(
@@ -844,6 +922,21 @@ class RunController:
         sim_end_ns: int | None = None
         manifest_path: Path | None = None
         source_revisions: tuple[SourceRevision, ...] = ()
+
+        def retain_teardown_failure(detail: str) -> None:
+            try:
+                existing = store.read_operator_status(config.run_id)
+                diagnostic = TerminalCause("teardown", detail)
+                if diagnostic not in existing.diagnostics:
+                    store.write_operator_status(
+                        replace(
+                            existing,
+                            diagnostics=(*existing.diagnostics, diagnostic),
+                        )
+                    )
+            except Exception:
+                pass
+
         try:
             self.config_writer(run_directory, config)
             if on_configuration_ready is not None:
@@ -1549,8 +1642,18 @@ class RunController:
             return RunResult(config.run_id, status.state, status.reason, None)
         finally:
             close_event_log()
-            if compose_attempted and compose is not None:
+            if not compose_attempted:
+                try:
+                    # No Compose operation ran, so no run-scoped container or
+                    # media spool could have been created.
+                    lease.finish_run(config.run_id, verified_cleanup=True)
+                except BaseException as exc:
+                    retain_teardown_failure(
+                        f"native_owner_clear_failed:{type(exc).__name__}"
+                    )
+            elif compose is not None:
                 teardown_failure: str | None = None
+                cleanup_verified = False
                 try:
                     # The finalization branch defines final_deadline. Startup failures
                     # retain a small bounded teardown attempt.
@@ -1562,21 +1665,55 @@ class RunController:
                         teardown_failure = (
                             f"compose_down_failed:{down_result.returncode}"
                         )
+                    else:
+                        inspection = compose.ps(
+                            self._remaining(deadline, self.monotonic)
+                        )
+                        if inspection.returncode != 0:
+                            teardown_failure = (
+                                f"compose_cleanup_inspection_failed:{inspection.returncode}"
+                            )
+                        else:
+                            try:
+                                remaining_project = json.loads(
+                                    inspection.output.decode("utf-8") or "[]"
+                                )
+                            except (UnicodeError, json.JSONDecodeError):
+                                remaining_project = None
+                            if remaining_project != []:
+                                teardown_failure = (
+                                    "compose_cleanup_verification_failed"
+                                )
+                            else:
+                                media_published = (
+                                    not operator_mode
+                                    or store.read_runtime_status(
+                                        config.run_id,
+                                        MediaSpoolPublishedStatus,
+                                    )
+                                    is not None
+                                )
+                                if not media_published:
+                                    teardown_failure = (
+                                        "media_cleanup_verification_failed"
+                                    )
+                                else:
+                                    cleanup_verified = True
                 except BaseException as exc:
                     teardown_failure = f"compose_down_exception:{type(exc).__name__}"
-                if teardown_failure is not None:
+                if cleanup_verified:
                     try:
-                        existing = store.read_operator_status(config.run_id)
-                        diagnostic = TerminalCause("teardown", teardown_failure)
-                        if diagnostic not in existing.diagnostics:
-                            store.write_operator_status(
-                                replace(
-                                    existing,
-                                    diagnostics=(*existing.diagnostics, diagnostic),
-                                )
-                            )
-                    except Exception:
-                        pass
+                        lease.finish_run(
+                            config.run_id,
+                            verified_cleanup=True,
+                        )
+                    except BaseException as exc:
+                        teardown_failure = (
+                            "native_owner_clear_failed:"
+                            f"{type(exc).__name__}"
+                        )
+                if teardown_failure is not None:
+                    retain_teardown_failure(teardown_failure)
 
     @staticmethod
     def _absolute_output_root(output_root: Path | str) -> Path:

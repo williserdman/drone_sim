@@ -18,6 +18,7 @@ from artifacts.qgc_operator import MavlinkIdentity
 from ..host_config import HostConfig, HostConfigurationError, HostFacts, validate_state_paths
 from ..host_integration import (
     ControllerIdentity,
+    ControllerRegistration,
     HostHelperInfo,
     HostIssue,
     HostLease,
@@ -42,8 +43,8 @@ class _WslLease:
 
     def register_controller(
         self, identity: ControllerIdentity, *, pristine: bool
-    ) -> None:
-        self.helper.request(
+    ) -> ControllerRegistration:
+        result = self.helper.request(
             "register_controller",
             {
                 "installation_id": str(identity.installation_id),
@@ -51,6 +52,15 @@ class _WslLease:
                 "distro_name": self._distro_name,
                 "pristine": pristine,
             },
+        )
+        active_run_id = result.get("active_run_id")
+        if active_run_id is not None and not isinstance(active_run_id, str):
+            raise RuntimeError(
+                "Windows helper result field active_run_id must be null or a string"
+            )
+        return ControllerRegistration(
+            active_run_id=active_run_id,
+            recovery_required=_boolean(result, "recovery_required"),
         )
 
     def begin_run(self, run_id: str) -> None:

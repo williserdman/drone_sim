@@ -25,7 +25,7 @@ from .local_runtime import LocalRuntime
 from .operator_readiness import preflight_snapshot
 from .qgc_actions import QgcActionStore
 from .status_store import StatusStore
-from .workstation import workstation_lock
+from .workstation import Workstation
 
 
 _TERMINAL = {"COMPLETED", "FAILED", "ABORTED", "INTERRUPTED"}
@@ -51,14 +51,23 @@ class OperatorSession:
     def __init__(self, project_directory: Path, *, state_directory: Path | None = None,
                  runtime: Any = None, controller: Any = None,
                  qgc_action_store: QgcActionStore | None = None,
-                 host: HostIntegration | None = None) -> None:
+                 host: HostIntegration | None = None,
+                 workstation: Workstation | None = None) -> None:
         self.project_directory = project_directory.resolve()
         self.host = host or resolve_host(self.project_directory)
+        self.workstation = workstation or Workstation(self.host)
         self.state_directory = state_directory or self.project_directory / ".local-runtime"
         self.state_directory.mkdir(parents=True, exist_ok=True)
         self.catalog = PresetCatalog(self.project_directory)
-        self.runtime = runtime or LocalRuntime(self.project_directory, host=self.host)
-        self.controller = controller or RunController(project_directory=self.project_directory)
+        self.runtime = runtime or LocalRuntime(
+            self.project_directory,
+            host=self.host,
+            workstation=self.workstation,
+        )
+        self.controller = controller or RunController(
+            project_directory=self.project_directory,
+            workstation=self.workstation,
+        )
         self.qgc_action_store = qgc_action_store or QgcActionStore(
             self.host.state_directory,
             MavlinkIdentity(255, 190),
@@ -78,15 +87,19 @@ class OperatorSession:
             previous = json.loads(receipt.read_text())
             if previous.get("run_id"):
                 _uuid(previous["run_id"])
-                directory = Path(previous["run_directory"])
-                if directory != self.project_directory / "runs" / previous["run_id"]:
-                    raise ValueError("session receipt belongs to another output directory")
                 self._record = previous
-                try:
-                    state = self.controller.status(previous["run_id"], directory.parent).state
-                    self._record["state"] = state if state in _TERMINAL else "ORPHANED"
-                except (OSError, ValueError, RuntimeError):
+                run_directory = previous.get("run_directory")
+                if run_directory is None:
                     self._record["state"] = "ORPHANED"
+                else:
+                    directory = Path(run_directory)
+                    if directory != self.project_directory / "runs" / previous["run_id"]:
+                        raise ValueError("session receipt belongs to another output directory")
+                    try:
+                        state = self.controller.status(previous["run_id"], directory.parent).state
+                        self._record["state"] = state if state in _TERMINAL else "ORPHANED"
+                    except (OSError, ValueError, RuntimeError):
+                        self._record["state"] = "ORPHANED"
                 if self._record["state"] == "ORPHANED":
                     self._record["error"] = "The previous session owner stopped. Stop Simulation to retain diagnostics and clean up its containers."
 
@@ -146,7 +159,7 @@ class OperatorSession:
 
     def _prepare_worker(self, preset: Preset, preparation_wall_seconds: int, calibration_source: str | None) -> None:
         try:
-            with workstation_lock():
+            with self.workstation.hold():
                 checks = self.runtime.checks()
                 with self._lock:
                     self._checks = checks
@@ -163,12 +176,15 @@ class OperatorSession:
                     document["calibration"] = {"source_run_directory": str(Path(calibration_source).expanduser().resolve())}
                     source = self.state_directory / f'input-{self._record["prepare_request_id"]}.json'
                     source.write_text(json.dumps(document))
+                def identified(run_id: str) -> None:
+                    with self._lock:
+                        self._record.update(run_id=run_id)
+                        self._save()
+
                 def allocated(run_id: str, directory: Path) -> None:
                     with self._lock:
                         self._record.update(run_id=run_id, run_directory=str(directory))
                         self._save()
-                        self._bridge = GcsBridge(directory)
-                        self._bridge.start()
                     if self._cancel.is_set():
                         StatusStore(directory.parent).request_finalization(run_id, "ABORTED", "prepared_cancelled")
 
@@ -177,16 +193,20 @@ class OperatorSession:
                     if material is None:
                         raise RuntimeError("operator preparation did not allocate QGC actions")
                     installation = self.host.inspect_qgc()
-                    with self.host.acquire_native_lease() as lease:
-                        publication = self.host.publish_actions(
-                            material, installation, lease
-                        )
+                    publication = self.host.publish_actions(
+                        material,
+                        installation,
+                        self.workstation.owned(),
+                    )
                     with self._lock:
                         self._record.update(
                             qgc_action_path=publication.native_path,
                             qgc_action_filename=publication.filename,
+                            qgc_action_sha256=publication.sha256,
                         )
                         self._save()
+                        self._bridge = GcsBridge(_directory)
+                        self._bridge.start()
                     self.host.open_qgc(installation)
 
                 with (self.state_directory / "owner.log").open("w") as events:
@@ -194,6 +214,7 @@ class OperatorSession:
                     result = self.controller.start(source, launch_mode="operator",
                         preparation_wall_seconds=preparation_wall_seconds,
                         output_root=self.project_directory / "runs", auxiliary_services=("gazebo-viewer",),
+                        on_run_identified=identified,
                         on_allocated=allocated,
                         on_configuration_ready=configuration_ready,
                         operator_control_factory=self.qgc_action_store.allocate)
@@ -201,16 +222,42 @@ class OperatorSession:
                     self._bridge.stop()
                 remaining = self.runtime.remaining_resources()
                 with self._lock:
+                    terminal_output_root = Path(self._record["run_directory"]).parent
+                terminal_status = StatusStore(terminal_output_root).read_operator_status(
+                    result.run_id
+                )
+                teardown_failed = any(
+                    diagnostic.kind == "teardown"
+                    for diagnostic in terminal_status.diagnostics
+                )
+                with self._lock:
                     self._record.update(state=result.state, reason=result.reason,
-                        cleanup="complete" if not remaining else "incomplete", remaining_resources=remaining)
+                        cleanup="complete" if not remaining and not teardown_failed else "incomplete",
+                        remaining_resources=remaining)
         except (OSError, ValueError, RuntimeError) as error:
             with self._lock:
                 update: dict[str, Any] = {"state": "FAILED", "error": str(error)}
                 if self._record.get("run_id") is not None:
                     try:
                         remaining = self.runtime.remaining_resources()
+                        cleanup_complete = False
+                        run_directory = self._record.get("run_directory")
+                        if run_directory is not None:
+                            status = StatusStore(
+                                Path(run_directory).parent
+                            ).read_operator_status(self._record["run_id"])
+                            cleanup_complete = (
+                                status.state == "CREATED"
+                                and not remaining
+                                and not any(
+                                    diagnostic.kind == "teardown"
+                                    for diagnostic in status.diagnostics
+                                )
+                            )
                         update.update(
-                            cleanup="complete" if not remaining else "incomplete",
+                            cleanup=(
+                                "complete" if cleanup_complete else "incomplete"
+                            ),
                             remaining_resources=remaining,
                         )
                     except (OSError, ValueError, RuntimeError) as cleanup_error:
@@ -229,6 +276,8 @@ class OperatorSession:
         _uuid(run_id)
         if run_id != self._record.get("run_id"):
             raise ValueError("action does not match the active run")
+        if self._record.get("run_directory") is None:
+            raise RuntimeError("run directory was not allocated; cleanup recovery is required")
         return Path(self._record["run_directory"])
 
     def start_mission(self, *, run_id: str, request_id: str) -> dict[str, Any]:
@@ -265,11 +314,13 @@ class OperatorSession:
                 self._current(run_id)
             self._cancel.set()
             if self._record.get("run_id") is not None:
-                directory = Path(self._record["run_directory"])
-                status = self.controller.status(self._record["run_id"], directory.parent)
-                reason = ("prepared_cancelled" if status.state in {"CREATED", "STARTING", "READY", "PREPARED"}
-                          else "simulation_stop")
-                self.controller.abort(self._record["run_id"], directory.parent, reason=reason)
+                run_directory = self._record.get("run_directory")
+                if run_directory is not None:
+                    directory = Path(run_directory)
+                    status = self.controller.status(self._record["run_id"], directory.parent)
+                    reason = ("prepared_cancelled" if status.state in {"CREATED", "STARTING", "READY", "PREPARED"}
+                              else "simulation_stop")
+                    self.controller.abort(self._record["run_id"], directory.parent, reason=reason)
                 if self._record["state"] == "ORPHANED":
                     self._begin_owner()
                     self._worker = threading.Thread(target=self._cleanup_orphan, name="orphan-cleanup")
@@ -281,20 +332,52 @@ class OperatorSession:
         """Retain an interrupted run; do not invent a terminal manifest or landing."""
         from ._adapters.compose import ComposeRuntime
 
-        directory = Path(self._record["run_directory"])
+        run_id = self._record["run_id"]
+        run_directory = self._record.get("run_directory")
         try:
-            with workstation_lock():
+            with self.workstation.hold(recovery_run_id=run_id) as lease:
+                if run_directory is None:
+                    lease.finish_run(run_id, verified_cleanup=True)
+                    with self._lock:
+                        self._record.update(
+                            state="INTERRUPTED",
+                            cleanup="complete",
+                            remaining_resources=[],
+                            error="Owner stopped before run-directory allocation; native ownership was cleared after cleanup-only recovery.",
+                        )
+                    return
+                directory = Path(run_directory)
                 config = load_run_config(directory / "configuration/run.json")
+                lifecycle = StatusStore(directory.parent).read_operator_status(run_id)
+                failed_before_compose = lifecycle.state == "CREATED"
                 compose = ComposeRuntime(project_directory=self.project_directory, run_id=config.run_id,
                     run_directory=directory, config_path=directory / "configuration/run.json", topology=config.topology,
                     auxiliary_services=("gazebo-viewer",), base_environment={**os.environ, "SIM_COMPOSE_OVERLAY": "local"})
                 deadline = time.monotonic() + config.finalization_wall_seconds
-                while time.monotonic() < deadline and not (directory / ".status/artifacts-final.json").exists():
+                while (not failed_before_compose and time.monotonic() < deadline
+                       and not (directory / ".status/artifacts-final.json").exists()):
                     time.sleep(0.5)
                 result = compose.down(20)
                 remaining = self.runtime.remaining_resources()
+                project = compose.ps(5)
+                try:
+                    project_rows = json.loads(project.output or b"[]")
+                except (UnicodeError, json.JSONDecodeError) as error:
+                    raise RuntimeError("could not verify exact run resource cleanup") from error
+                cleanup_verified = (
+                    result.returncode == 0
+                    and project.returncode == 0
+                    and project_rows == []
+                    and not remaining
+                    and (
+                        failed_before_compose
+                        or (directory / ".status/media-spool-published.json").is_file()
+                    )
+                )
+                if cleanup_verified:
+                    lease.finish_run(run_id, verified_cleanup=True)
                 with self._lock:
-                    self._record.update(state="INTERRUPTED", cleanup="complete" if result.returncode == 0 and not remaining else "incomplete",
+                    self._record.update(state="INTERRUPTED", cleanup="complete" if cleanup_verified else "incomplete",
                         remaining_resources=remaining, error="Owner was interrupted; retained evidence has no new terminal validity claim.")
         except (OSError, RuntimeError, ValueError) as error:
             with self._lock:
@@ -335,6 +418,8 @@ class OperatorSession:
             result.update(can_start=False, qgc_admission_ready=False, checks=self._checks)
             run_id = result.get("run_id")
             if run_id is None:
+                return result
+            if result.get("run_directory") is None:
                 return result
             directory = Path(result["run_directory"])
             try:
@@ -413,12 +498,11 @@ class OperatorSession:
 
     def _build_worker(self) -> None:
         try:
-            with workstation_lock():
-                checks = self.runtime.build()
-                with self._lock:
-                    self._checks = checks
-                    self._checks_context = (self._owner_generation, False)
-                    self._record.update(state="IDLE", error="")
+            checks = self.runtime.build()
+            with self._lock:
+                self._checks = checks
+                self._checks_context = (self._owner_generation, False)
+                self._record.update(state="IDLE", error="")
         except (OSError, RuntimeError, ValueError) as error:
             with self._lock:
                 self._record.update(state="FAILED", error=str(error))

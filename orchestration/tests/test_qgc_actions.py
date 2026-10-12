@@ -174,3 +174,19 @@ def test_allocation_never_reuses_after_failure_or_corruption(
     )
     with pytest.raises(RuntimeError, match="exhausted"):
         exhausted_store.allocate("00000000-0000-4000-8000-000000000016")
+
+
+def test_initialize_creates_and_validates_zero_token_ledger_without_consuming_token(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    store = QgcActionStore(state, QGC_SOURCE)
+
+    store.initialize()
+    store.initialize()
+
+    assert json.loads((state / "attempt-ledger.json").read_text()) == {
+        "schema_version": 1,
+        "last_allocated_token": 0,
+    }
+    assert store.allocate(RUN_ID).descriptor.attempt_token == 1

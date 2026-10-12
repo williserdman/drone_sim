@@ -79,8 +79,9 @@ not close the application.
 
    The build record binds the current revision, runtime input content, native
    platform, Docker context, and all eight image IDs. Source or image changes
-   require a matching build before another preparation. Preserve image tags
-   during a run and finalization.
+   require a matching build before another preparation. The terminal wrapper,
+   console builder, direct runs, and suites use the same account-wide
+   workstation lease. Preserve image tags during a run and finalization.
 
 2. Choose the world and a compatible preset. These are complete tuples from
    `config/ci-suite.json`; the UI does not synthesize arbitrary combinations.
@@ -162,13 +163,18 @@ frozen; `configuration/start-admission.json` records the actual native/public
 clock mapping. Read the committed manifest as terminal authority. If the owner
 crashes, the next console identifies the orphaned session and blocks another
 preparation until cleanup. Its interrupted evidence does not acquire a fabricated
-landing or artifact-validity claim.
+landing or artifact-validity claim. Use **Stop simulation** on that orphan to
+enter exact-run cleanup. A run that failed before Compose startup can clear its
+retained owner after the console verifies that no run resources exist. If
+Compose started without verified media publication, the retained media volume
+and native owner continue to block builds and preparations.
 
 ### Windows QGroundControl prerequisites for WSL2
 
-WSL2 console activation is still pending shared lease and lifecycle integration.
-The packaged helper and direct WSL adapter exist, but the production resolver
-deliberately continues to reject WSL2 until that later integration is complete.
+WSL2 console activation is still pending the final host composition and lifecycle
+transport. The packaged helper, shared lease, and direct WSL adapter exist, but
+the production resolver deliberately continues to reject WSL2 until Task 8 is
+complete.
 Before its native acceptance run, use Windows 11 x86-64 with Ubuntu 24.04 in
 WSL2. Keep the checkout, run evidence, session receipts, and token ledger on the
 distribution's Linux ext4 filesystem. Do not use `/mnt/c`, another `drvfs` or

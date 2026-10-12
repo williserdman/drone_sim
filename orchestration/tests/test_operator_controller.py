@@ -11,6 +11,7 @@ from artifacts.operator_protocol import OperatorProtocol, OperatorProtocolConfli
 from orchestration.config import resolve_run_config, write_resolved_config
 from orchestration.controller import ControllerError, RunController
 from orchestration.qgc_actions import QgcActionStore
+from orchestration.qgc_publication import publish_posix
 from orchestration.status_store import OperatorStatus, StatusStore
 
 
@@ -113,7 +114,10 @@ def test_qgc_configuration_is_published_before_compose_and_bound_in_manifest(tmp
     def configuration_ready(config, directory):
         assert (directory / "configuration/run.json").is_file()
         assert (directory / "configuration/qgc-actions.json").read_bytes() == config.operator_actions.action_bytes
-        published = actions.publish(config.operator_actions, tmp_path / "QGroundControl/MavlinkActions")
+        published = publish_posix(
+            config.operator_actions,
+            tmp_path / "QGroundControl/MavlinkActions",
+        )
         events.append(("published", published))
 
     def compose_factory(*_args, **_kwargs):
@@ -141,5 +145,10 @@ def test_qgc_configuration_is_published_before_compose_and_bound_in_manifest(tmp
     assert config_records["configuration/qgc-actions.json"] == json.loads(
         (tmp_path / "runs" / run_id / "configuration/run.json").read_text()
     )["operator_control"]["actions_sha256"]
-    assert Path(events[1][1]).name == f"drone-sim-{run_id}.json"
+    receipt = events[1][1]
+    assert receipt.filename == f"drone-sim-{run_id}.json"
+    assert receipt.native_path == str(
+        tmp_path / "QGroundControl/MavlinkActions" / receipt.filename
+    )
+    assert receipt.sha256 == config_records["configuration/qgc-actions.json"]
     assert result.state == "FAILED"

@@ -115,6 +115,52 @@ def test_cli_binds_controller_project_directory_to_invocation_checkout(tmp_path)
     assert factory_kwargs["project_directory"] == tmp_path.resolve()
 
 
+def test_cli_composes_one_host_and_workstation_for_controller_and_suite(
+    tmp_path, monkeypatch
+):
+    import orchestration.cli as cli
+    from orchestration.suite import SuiteResult
+
+    monkeypatch.chdir(tmp_path)
+    host = object()
+    workstation = object()
+    controller = object()
+    seen = {}
+    monkeypatch.setattr(cli, "resolve_host", lambda project: host)
+    monkeypatch.setattr(
+        cli, "Workstation", lambda selected_host: workstation
+    )
+
+    def controller_factory(**kwargs):
+        seen["controller"] = kwargs
+        return controller
+
+    def suite_factory(**kwargs):
+        seen["suite"] = kwargs
+        return type(
+            "Runner",
+            (),
+            {
+                "run": lambda self, catalog, *, output_root: SuiteResult(
+                    "suite-id", "PASSED", tmp_path / "report.json", 0
+                )
+            },
+        )()
+
+    code = main(
+        ["suite", "--output-root", str(tmp_path / "runs")],
+        controller_factory=controller_factory,
+        suite_runner_factory=suite_factory,
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+
+    assert code == 0
+    assert seen["controller"]["workstation"] is workstation
+    assert seen["suite"]["workstation"] is workstation
+    assert seen["suite"]["controller"] is controller
+
+
 @pytest.mark.parametrize("command", ["status", "abort", "collect-results"])
 def test_run_directory_commands_default_to_resolved_invocation_runs_and_print_one_json(
     tmp_path, command

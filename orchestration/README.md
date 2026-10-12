@@ -78,11 +78,11 @@ keeps the controller alive independently of browser connections. The approved
 static UI, and bounded camera proxy connections. Mutations require a local host,
 local origin, and per-server token. The CLI uses
 [`console_client.py`](src/orchestration/console_client.py), not a second controller.
-Prepare allocates its action token while holding the workstation lease. After
-the controller writes immutable configuration, a separate callback publishes
-the retained action bytes under QGC's configured save path and opens or focuses
-QGC. Publication precedes Compose startup. A publication failure retains the
-allocated run identity and starts no simulator.
+Prepare records the native active-run identity before it allocates an action
+token or a run directory. After the controller writes immutable configuration,
+a separate callback publishes the retained action bytes under QGC's configured
+save path and opens or focuses QGC. Publication precedes Compose startup. A
+publication failure retains the run identity and starts no simulator.
 
 Host lifecycle adds `PREPARED` and `STARTING_MISSION`. Preparation requires fresh,
 advancing Gazebo observations and fresh disarmed companion preflight. The
@@ -93,10 +93,17 @@ admission checksum becomes a separate manifest configuration record.
 
 [`workstation.py`](src/orchestration/workstation.py) shares the workstation lease
 across direct launches, suites, and console workers; controller calls nested
-inside a suite reuse its lease. Prerequisites and image provenance are checked by
+inside a suite reuse its lease. The lease acquires the POSIX file lock before
+the native host lease and releases them in reverse order. The standalone image
+builder uses the same `Workstation` through
+[`local_build.py`](src/orchestration/local_build.py). Prerequisites and image
+provenance are checked by
 [`local_runtime.py`](src/orchestration/local_runtime.py). Failed cleanup or an
-orphaned owner blocks another preparation. An interrupted owner can be cleaned
-up while preserving evidence, without inventing a completed manifest.
+orphaned owner blocks another preparation. Exact-run recovery can enter only to
+inspect and clean the retained run. It clears native ownership after Compose
+reports no run resources and closed media publication is verified. A failure
+before Compose starts has no media spool and uses its durable `CREATED` state as
+the no-start proof.
 
 The resolved host's `state_directory` is the QGC token ledger authority. macOS
 keeps the existing `~/Library/Application Support/drone-sim/qgc/` directory.
@@ -137,7 +144,11 @@ Windows helper PID, process creation time, and wire session. Releasing or
 abandoning the mutex does not clear it. Recovery accepts the Python controller's
 run-bound immutable publication receipt, verifies the old Windows process
 identity is gone and the run-named native bytes still match, then rebinds the
-held helper session. Only verified cleanup clears active ownership.
+held helper session. Cleanup-only recovery does not require an action publication
+receipt because allocation can fail before publication. It still requires the
+exact retained run, verified resource and media cleanup, and proof that the old
+helper process identity has exited. The current helper can finish its own run
+only when its process ID, process creation time, and wire session all match.
 
 [`host.ps1`](src/orchestration/windows/host.ps1) is the fixed Windows PowerShell
 5.1 entry point. [`windows_helper.py`](src/orchestration/windows_helper.py)
@@ -157,8 +168,8 @@ closing its datagram transport leaves its control pipe and mutex alive for
 finalization and verified cleanup. `HostHelperInfo` exposes the active helper's
 validated version and packaged-source digest, or a harmless short-lived probe
 when no lease is held. Recovery never replays datagrams or resumes a mission.
-The production host resolver still keeps WSL2 disabled until Task 8 connects
-shared leases and lifecycle persistence. Native Windows 11, Windows PowerShell
+The production host resolver still keeps WSL2 disabled until Task 8 enables the
+adapter in the final composition and completes its lifecycle transport. Native Windows 11, Windows PowerShell
 5.1, and WSL2 NAT and mirrored-network verification remain required acceptance
 gates.
 

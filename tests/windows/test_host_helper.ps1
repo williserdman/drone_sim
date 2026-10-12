@@ -544,6 +544,7 @@ try {
         Enter-ControllerLease -SessionId ([Guid]::NewGuid().ToString()) | Out-Null
         try {
             Assert-Equal (Get-ErrorCode { Confirm-RunRecovery -RunId $ownedRun -Publication $receipt }) 'controller_helper_still_running'
+            Assert-Equal (Get-ErrorCode { Complete-ActiveRun -RunId $ownedRun -VerifiedCleanup $true }) 'controller_helper_still_running'
         }
         finally { Exit-ControllerLease }
 

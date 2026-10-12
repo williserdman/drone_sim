@@ -1470,3 +1470,30 @@ def test_competition_consumes_calibration(tmp_path):
     config = resolve_run_config(template, calibration_importer=importer)
     assert config.calibration_json is not None
     assert seen == [("iris_competition", "competition_v1")]
+
+
+def test_storage_binding_precedes_run_identity_and_operator_token(tmp_path):
+    from artifacts.qgc_operator import MavlinkIdentity
+    from orchestration.qgc_actions import QgcActionStore
+
+    document = _configured_document()
+    document["launch_mode"] = "operator"
+    template = _write_template(tmp_path, document)
+    events: list[object] = []
+    store = QgcActionStore(tmp_path / "qgc", MavlinkIdentity(255, 190))
+
+    config = resolve_run_config(
+        template,
+        run_id_factory=lambda: (events.append("uuid"), FIXED_RUN_ID)[1],
+        before_run_binding=lambda root: events.append(("storage", root)),
+        operator_control_factory=lambda run_id: (
+            events.append("token"),
+            store.allocate(run_id),
+        )[1],
+    )
+
+    assert events == [
+        ("storage", config.output_root),
+        "uuid",
+        "token",
+    ]

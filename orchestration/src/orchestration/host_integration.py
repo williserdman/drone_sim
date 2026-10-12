@@ -73,6 +73,23 @@ class ControllerIdentity:
     ledger_id: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class ControllerRegistration:
+    active_run_id: str | None
+    recovery_required: bool
+
+    def __post_init__(self) -> None:
+        if self.active_run_id is not None:
+            try:
+                parsed = UUID(self.active_run_id)
+            except (ValueError, TypeError, AttributeError) as error:
+                raise ValueError("active run identity must be a canonical UUID") from error
+            if str(parsed) != self.active_run_id:
+                raise ValueError("active run identity must be a canonical UUID")
+        if type(self.recovery_required) is not bool:
+            raise TypeError("recovery_required must be boolean")
+
+
 class HostTransportError(RuntimeError):
     """The native QGC datagram boundary failed or was already closed."""
 
@@ -88,7 +105,7 @@ class DatagramTransport(Protocol):
 class HostLease(Protocol):
     def register_controller(
         self, identity: ControllerIdentity, *, pristine: bool
-    ) -> None: ...
+    ) -> ControllerRegistration: ...
 
     def begin_run(self, run_id: str) -> None: ...
 
@@ -151,6 +168,7 @@ def resolve_host(
 
 __all__ = [
     "ControllerIdentity",
+    "ControllerRegistration",
     "DatagramTransport",
     "HostIntegration",
     "HostHelperInfo",

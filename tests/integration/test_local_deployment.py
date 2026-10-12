@@ -150,18 +150,15 @@ def test_viewer_desktop_is_reconnectable_and_uses_matching_gazebo_runtime() -> N
 
 
 def test_local_build_selects_native_arm64_and_all_runtime_images_deterministically() -> None:
+    from orchestration.local_build import EXPECTED_PLATFORM, IMAGE_REFS, RUNTIME_SERVICES as BUILD_SERVICES
+
     script = LOCAL_BUILD.read_text(encoding="utf-8")
 
-    assert 'EXPECTED_ARCH="arm64"' in script
-    assert "docker version" in script
-    assert 'DOCKER_DEFAULT_PLATFORM="${EXPECTED_PLATFORM}"' in script
-    assert "SIM_COMP2026_REVISION" in script
-    for service in sorted(RUNTIME_SERVICES | {"gazebo-viewer"}):
-        assert service in script
-    assert "docker image inspect" in script
-    assert "source_tree_sha256" in script
-    assert "image_id" in script
-    assert "os_architecture" in script
+    assert EXPECTED_PLATFORM == "linux/arm64"
+    assert set(BUILD_SERVICES) == RUNTIME_SERVICES
+    assert len(IMAGE_REFS) == 8
+    assert IMAGE_REFS[-1] == "drone-sim-gazebo-viewer:local"
+    assert "python -m orchestration.local_build" in script
 
 
 def test_local_build_has_a_read_only_reuse_check_and_ignored_atomic_record() -> None:
@@ -169,21 +166,9 @@ def test_local_build_has_a_read_only_reuse_check_and_ignored_atomic_record() -> 
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
 
     assert ".local-runtime/" in ignore
-    assert "--build" in script
-    assert "--check" in script
-    assert 'BUILD_RECORD="${PROJECT_ROOT}/.local-runtime/build.json"' in script
-    assert '"ok"' in script
-    assert '"reasons"' in script
-    assert '"current_source"' in script
-    assert '"current_platform"' in script
-    assert '"current_context"' in script
-    assert "source_tree_sha256_after_build" in script
-    assert "source_tree_sha256_before_publish" in script
-    assert "refusing to publish a mixed-source build record" in script
-    assert 'DRONE_SIM_WORKSTATION_LOCK_HELD:-' in script
-    assert "fcntl.LOCK_EX | fcntl.LOCK_NB" in script
-    assert "os.replace" in script
-    assert "check mode must not invoke a build" not in script
+    assert 'exec uv run --locked python -m orchestration.local_build "$@"' in script
+    assert "DRONE_SIM_WORKSTATION_LOCK_HELD" not in script
+    assert "fcntl" not in script
 
 
 def test_gazebo_runtime_chooses_a_complete_lock_for_the_target_architecture() -> None:

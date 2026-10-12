@@ -12,6 +12,7 @@ from orchestration._adapters.wsl_host import WslHost
 from orchestration.host_config import HostConfig, HostFacts
 from orchestration.host_integration import (
     ControllerIdentity,
+    ControllerRegistration,
     HostHelperInfo,
     HostTransportError,
     PublicationReceipt,
@@ -48,7 +49,11 @@ class FakeHelper:
     def request(self, operation: str, payload: dict[str, object], *, timeout_s: float = 10.0):
         del timeout_s
         self.requests.append((operation, payload))
-        value = self.responses.get(operation, {})
+        value = self.responses.get(operation)
+        if value is None and operation == "register_controller":
+            value = {"active_run_id": None, "recovery_required": False}
+        if value is None:
+            value = {}
         if isinstance(value, Exception):
             raise value
         return value
@@ -172,7 +177,9 @@ def test_lease_keeps_one_wire_session_for_run_operations(tmp_path: Path) -> None
     )
 
     with host.acquire_native_lease() as lease:
-        lease.register_controller(identity, pristine=True)
+        assert lease.register_controller(
+            identity, pristine=True
+        ) == ControllerRegistration(None, False)
         lease.begin_run(RUN_ID)
         lease.finish_run(RUN_ID, verified_cleanup=True)
         assert helper.closed is False
@@ -186,6 +193,29 @@ def test_lease_keeps_one_wire_session_for_run_operations(tmp_path: Path) -> None
         "release_lease",
     ]
     assert helper.closed is True
+
+
+def test_registration_retains_native_active_run_and_recovery_requirement(
+    tmp_path: Path,
+) -> None:
+    helper = FakeHelper(
+        {
+            "register_controller": {
+                "active_run_id": RUN_ID,
+                "recovery_required": True,
+            }
+        }
+    )
+    host = _host(tmp_path, [helper])
+    identity = ControllerIdentity(
+        UUID("22222222-2222-4222-8222-222222222222"),
+        UUID("33333333-3333-4333-8333-333333333333"),
+    )
+
+    with host.acquire_native_lease() as lease:
+        assert lease.register_controller(
+            identity, pristine=False
+        ) == ControllerRegistration(RUN_ID, True)
 
 
 def test_recovery_uses_replacement_helper_after_old_helper_exits(

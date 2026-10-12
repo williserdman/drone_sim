@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
-import fcntl
-import os
 from pathlib import Path
 import subprocess
 import time
 from uuid import uuid4
 
-from orchestration.workstation import workstation_lock
+from orchestration.host_integration import resolve_host
+from orchestration.workstation import Workstation
 
 from artifacts import ImageDigest, SourceRevision
 from artifacts.acceptance import inspect_phase3_via_container
@@ -27,9 +25,22 @@ class FrozenSuiteRuntime:
 
 
 class SuiteRuntime:
-    def __init__(self, *, project_directory: Path, controller=None, runner=subprocess.run) -> None:
+    def __init__(
+        self,
+        *,
+        project_directory: Path,
+        controller=None,
+        workstation: Workstation | None = None,
+        runner=subprocess.run,
+    ) -> None:
         self.project_directory = project_directory.resolve()
-        self.controller = controller or RunController(project_directory=self.project_directory)
+        self.workstation = workstation or Workstation(
+            resolve_host(self.project_directory)
+        )
+        self.controller = controller or RunController(
+            project_directory=self.project_directory,
+            workstation=self.workstation,
+        )
         self.runner = runner
         run_id = str(uuid4())
         probe = self.project_directory / "runs" / run_id
@@ -37,10 +48,8 @@ class SuiteRuntime:
             run_id=run_id, run_directory=probe, config_path=probe / "configuration/run.json",
             topology=PHASE3_TOPOLOGY)
 
-    @contextmanager
     def lock(self):
-        with workstation_lock():
-            yield
+        return self.workstation.hold()
 
     def _sources(self):
         records = self.controller.source_revisions(time.monotonic() + 30)

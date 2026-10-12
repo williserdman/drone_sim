@@ -14,6 +14,30 @@ from orchestration.suite import SuiteRunner
 ROOT = Path(__file__).parents[2]
 
 
+def test_suite_runner_passes_shared_workstation_to_default_runtime(monkeypatch):
+    import orchestration._adapters.suite as suite_adapter
+
+    workstation = object()
+    controller = object()
+    seen = {}
+
+    class Runtime:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(suite_adapter, "SuiteRuntime", Runtime)
+    runner = SuiteRunner(
+        project_directory=ROOT,
+        controller=controller,
+        workstation=workstation,
+        event_stream=StringIO(),
+    )
+
+    assert runner.runtime is not None
+    assert seen["controller"] is controller
+    assert seen["workstation"] is workstation
+
+
 def make_suite(tmp_path, *, failed_case=None, lifecycle_failure=None, teardown_failure=None, changed_after=None):
     frozen = FrozenSuiteRuntime((SourceRevision('drone_sim','a'*40,False), SourceRevision('comp2026','a'*40,False)),
                                 (ImageDigest('image','b'*64),))

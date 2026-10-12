@@ -758,6 +758,7 @@ def resolve_run_config(
     preparation_wall_seconds: int | None = None,
     output_root: Path | None = None,
     *,
+    before_run_binding: Callable[[Path], None] | None = None,
     operator_control_factory: Callable[[str], QgcActionMaterial] | None = None,
 ) -> RunConfig:
     """Validate an operator template and bind it to one generated run identity."""
@@ -779,6 +780,11 @@ def resolve_run_config(
         raise ValueError("preparation_wall_seconds must be a positive integer")
     if output_root is not None and not isinstance(output_root, Path):
         raise ValueError("output_root override must be a Path")
+    resolved_output_root = (
+        template.output_root if output_root is None else output_root.resolve()
+    )
+    if before_run_binding is not None:
+        before_run_binding(resolved_output_root)
     calibration_profile_json = template.calibration_profile_json
     if template.mission == "autotune" and calibration_profile_json is None:
         if calibration_profile_factory is None:
@@ -824,7 +830,7 @@ def resolve_run_config(
         vehicle=template.vehicle,
         mission=template.mission,
         scenario=template.scenario,
-        output_root=(template.output_root if output_root is None else output_root.resolve()),
+        output_root=resolved_output_root,
         max_wall_seconds=template.max_wall_seconds,
         startup_wall_seconds=template.startup_wall_seconds,
         finalization_wall_seconds=template.finalization_wall_seconds,

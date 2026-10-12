@@ -11,6 +11,8 @@ import re
 from typing import Any
 from uuid import uuid4
 
+from .workstation import Workstation
+
 
 _ACCEPTANCE_CONTRACTS = {
     "calibration",
@@ -287,11 +289,23 @@ class SuiteResult:
 
 
 class SuiteRunner:
-    def __init__(self, *, project_directory: Path, controller, runtime=None, event_stream) -> None:
+    def __init__(
+        self,
+        *,
+        project_directory: Path,
+        controller,
+        runtime=None,
+        workstation: Workstation | None = None,
+        event_stream,
+    ) -> None:
         from ._adapters.suite import SuiteRuntime
         self.project_directory = project_directory.resolve()
         self.controller = controller
-        self.runtime = runtime or SuiteRuntime(project_directory=self.project_directory, controller=controller)
+        self.runtime = runtime or SuiteRuntime(
+            project_directory=self.project_directory,
+            controller=controller,
+            workstation=workstation,
+        )
         self.event_stream = event_stream
         self._interrupted = False
         self._active = None
