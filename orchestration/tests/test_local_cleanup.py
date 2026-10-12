@@ -16,6 +16,11 @@ PROJECT_NAME = "drone-sim-11111111111141118111111111111111"
 VOLUME_NAME = f"{PROJECT_NAME}_artifacts-media"
 
 
+def _runtime(tmp_path: Path) -> LocalRuntime:
+    host = SimpleNamespace(state_directory=tmp_path / "qgc-state")
+    return LocalRuntime(tmp_path, host=host)
+
+
 def _compose(tmp_path: Path, calls: list[list[str]], *, overlay: str) -> ComposeRuntime:
     run_directory = (tmp_path / "runs" / RUN_ID).resolve()
     (run_directory / "configuration").mkdir(parents=True)
@@ -90,7 +95,7 @@ def test_nonlocal_down_never_removes_named_volumes(tmp_path: Path) -> None:
 def test_remaining_resources_reports_run_owned_containers_and_media_volumes(
     tmp_path: Path,
 ) -> None:
-    runtime = LocalRuntime(tmp_path)
+    runtime = _runtime(tmp_path)
     calls: list[list[str]] = []
 
     def run(command, **_kwargs):
@@ -134,7 +139,7 @@ def test_remaining_resources_reports_run_owned_containers_and_media_volumes(
 def test_remaining_resources_fails_closed_when_volume_inventory_fails(
     tmp_path: Path,
 ) -> None:
-    runtime = LocalRuntime(tmp_path)
+    runtime = _runtime(tmp_path)
     results = iter(
         (
             SimpleNamespace(returncode=0, stdout="", stderr=""),

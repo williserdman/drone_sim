@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import configparser
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,7 @@ import socket
 import subprocess
 from typing import Any
 
+from .host_integration import HostIntegration, LaunchResult, resolve_host
 from .workstation import workstation_lock
 
 
@@ -24,12 +24,10 @@ class LocalRuntime:
         self,
         project_directory: Path,
         *,
-        qgc_settings_path: Path | None = None,
+        host: HostIntegration | None = None,
     ) -> None:
         self.project_directory = project_directory.resolve()
-        self.qgc_settings_path = qgc_settings_path or (
-            Path.home() / ".config/qgroundcontrol.com/QGroundControl.ini"
-        )
+        self.host = host or resolve_host(self.project_directory)
 
     def _run(self, command: list[str], *, timeout: float = 15) -> subprocess.CompletedProcess[str]:
         return subprocess.run(command, cwd=self.project_directory, capture_output=True, text=True,
@@ -88,8 +86,15 @@ class LocalRuntime:
                 "At least 4 CPUs and 8 GiB RAM; 6 CPUs and 12 GiB recommended")
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.TimeoutExpired) as error:
             add("Local Linux runtime", False, str(error))
-        qgc = Path("/Applications/QGroundControl.app")
-        add("QGroundControl", qgc.is_dir(), str(qgc))
+        try:
+            installation = self.host.inspect_qgc()
+            add(
+                "QGroundControl",
+                True,
+                f"{installation.version} at {installation.executable}",
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            add("QGroundControl", False, str(error))
         free = shutil.disk_usage(self.project_directory).free
         add("Disk space", free >= 8 * 2**30, f"{free / 2**30:.1f} GiB free; at least 8 GiB required for run evidence")
         if not active:
@@ -121,26 +126,9 @@ class LocalRuntime:
             else "Build matching images to continue. Details are under Source & image identity.")
         return {"ok": all(row["ok"] for row in rows), "checks": rows, "provenance": provenance}
 
-    def open_qgc(self) -> None:
-        result = self._run(["open", "-a", "/Applications/QGroundControl.app"])
-        if result.returncode:
-            raise RuntimeError(result.stderr.strip() or "QGroundControl could not be opened")
-
-    def qgc_actions_directory(self) -> Path:
-        """Read QGC's active save path without changing its settings or selection."""
-        parser = configparser.ConfigParser(interpolation=None, strict=False)
-        try:
-            with self.qgc_settings_path.open(encoding="utf-8") as source:
-                parser.read_file(source)
-            save_path = parser.get("General", "savePath")
-        except (OSError, configparser.Error, KeyError) as error:
-            raise RuntimeError(
-                f"Could not read QGroundControl savePath from {self.qgc_settings_path}"
-            ) from error
-        directory = Path(save_path).expanduser()
-        if not directory.is_absolute():
-            raise RuntimeError("QGroundControl savePath must be absolute")
-        return directory / "MavlinkActions"
+    def open_qgc(self) -> LaunchResult:
+        installation = self.host.inspect_qgc()
+        return self.host.open_qgc(installation)
 
     def build(self) -> dict[str, Any]:
         directory = self.project_directory / ".local-runtime"

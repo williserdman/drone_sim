@@ -20,6 +20,7 @@ from .catalog import PresetCatalog, Preset
 from .config import RunConfig, load_run_config
 from .controller import RunController
 from .gcs_bridge import GcsBridge
+from .host_integration import HostIntegration, resolve_host
 from .local_runtime import LocalRuntime
 from .operator_readiness import preflight_snapshot
 from .qgc_actions import QgcActionStore
@@ -49,15 +50,17 @@ def _tail(path: Path, maximum: int = 16384) -> str:
 class OperatorSession:
     def __init__(self, project_directory: Path, *, state_directory: Path | None = None,
                  runtime: Any = None, controller: Any = None,
-                 qgc_action_store: QgcActionStore | None = None) -> None:
+                 qgc_action_store: QgcActionStore | None = None,
+                 host: HostIntegration | None = None) -> None:
         self.project_directory = project_directory.resolve()
+        self.host = host or resolve_host(self.project_directory)
         self.state_directory = state_directory or self.project_directory / ".local-runtime"
         self.state_directory.mkdir(parents=True, exist_ok=True)
         self.catalog = PresetCatalog(self.project_directory)
-        self.runtime = runtime or LocalRuntime(self.project_directory)
+        self.runtime = runtime or LocalRuntime(self.project_directory, host=self.host)
         self.controller = controller or RunController(project_directory=self.project_directory)
         self.qgc_action_store = qgc_action_store or QgcActionStore(
-            Path.home() / "Library/Application Support/drone-sim/qgc",
+            self.host.state_directory,
             MavlinkIdentity(255, 190),
         )
         self._lock = threading.RLock()
@@ -173,16 +176,18 @@ class OperatorSession:
                     material = config.operator_actions
                     if material is None:
                         raise RuntimeError("operator preparation did not allocate QGC actions")
-                    action_path = self.qgc_action_store.publish(
-                        material, self.runtime.qgc_actions_directory()
-                    )
+                    installation = self.host.inspect_qgc()
+                    with self.host.acquire_native_lease() as lease:
+                        publication = self.host.publish_actions(
+                            material, installation, lease
+                        )
                     with self._lock:
                         self._record.update(
-                            qgc_action_path=str(action_path),
-                            qgc_action_filename=action_path.name,
+                            qgc_action_path=publication.native_path,
+                            qgc_action_filename=publication.filename,
                         )
                         self._save()
-                    self.runtime.open_qgc()
+                    self.host.open_qgc(installation)
 
                 with (self.state_directory / "owner.log").open("w") as events:
                     self.controller.event_stream = events
@@ -393,8 +398,8 @@ class OperatorSession:
                     return self._checks
 
     def open_qgc(self) -> dict[str, Any]:
-        self.runtime.open_qgc()
-        return {"opened": True}
+        result = self.host.open_qgc(self.host.inspect_qgc())
+        return {"opened": result.opened, "detail": result.detail}
 
     def build(self) -> dict[str, Any]:
         with self._lock:

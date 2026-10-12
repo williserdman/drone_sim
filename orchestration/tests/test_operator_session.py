@@ -1,4 +1,5 @@
 from dataclasses import replace
+from contextlib import nullcontext
 from pathlib import Path
 import hashlib
 import threading
@@ -12,8 +13,10 @@ from artifacts.qgc_operator import MavlinkIdentity
 from orchestration.operator_session import OperatorSession
 from orchestration.config import resolve_run_config, write_resolved_config
 from orchestration.controller import RunResult
-from orchestration.local_runtime import LocalRuntime
+from orchestration.host_config import HostFacts
+from orchestration.host_integration import LaunchResult, QgcInstallation
 from orchestration.qgc_actions import QgcActionStore
+from orchestration.qgc_publication import publish_posix
 from orchestration.status_store import OperatorStatus, StatusStore
 from orchestration.workstation import workstation_lock
 
@@ -26,6 +29,10 @@ QGC_SOURCE = MavlinkIdentity(255, 190)
 def isolated_workstation_lease(tmp_path, monkeypatch):
     monkeypatch.setattr("orchestration.operator_session.workstation_lock",
                         lambda: workstation_lock(tmp_path / "workstation.lock"))
+    monkeypatch.setattr(
+        "orchestration.operator_session.resolve_host",
+        lambda _project: SimpleNamespace(state_directory=tmp_path / "qgc-state"),
+    )
 
 
 class Runtime:
@@ -78,22 +85,44 @@ class FakeBridge:
 
 
 class PrepareRuntime:
-    def __init__(self, action_directory: Path):
-        self.action_directory = action_directory
+    def __init__(self):
         self.events = []
 
     def checks(self, **_kwargs):
         return {"ok": True, "checks": []}
 
-    def qgc_actions_directory(self):
-        self.events.append("settings")
-        return self.action_directory
-
-    def open_qgc(self):
-        self.events.append("open-qgc")
-
     def remaining_resources(self):
         return []
+
+
+class PrepareHost:
+    def __init__(self, action_directory: Path, state_directory: Path):
+        self.facts = HostFacts("macos", "arm64", "linux/arm64", "colima")
+        self.state_directory = state_directory
+        self.action_directory = action_directory
+        self.events = []
+
+    def inspect_qgc(self):
+        self.events.append("settings")
+        return QgcInstallation(
+            executable="/Applications/QGroundControl.app/Contents/MacOS/QGroundControl",
+            settings_file="/tmp/QGroundControl.ini",
+            save_path=str(self.action_directory.parent),
+            version="5.0.8",
+            source=QGC_SOURCE,
+        )
+
+    def acquire_native_lease(self):
+        return nullcontext(SimpleNamespace())
+
+    def publish_actions(self, material, installation, lease):
+        del installation, lease
+        return publish_posix(material, self.action_directory)
+
+    def open_qgc(self, installation):
+        del installation
+        self.events.append("open-qgc")
+        return LaunchResult(True, "focused")
 
 
 class PrepareController:
@@ -160,6 +189,19 @@ def test_unknown_preset_never_starts_a_worker(tmp_path):
     with pytest.raises(ValueError, match="unknown preset"):
         session.prepare(preset_id="../../arbitrary.json")
     assert session.snapshot()["state"] == "IDLE"
+
+
+def test_host_state_directory_is_the_default_action_ledger(tmp_path):
+    host = PrepareHost(tmp_path / "actions", tmp_path / "native-state")
+
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=Runtime(),
+        host=host,
+    )
+
+    assert session.qgc_action_store.state_directory == host.state_directory
 
 
 def test_checks_retry_when_a_new_owner_starts_during_slow_prerequisites(tmp_path):
@@ -230,7 +272,8 @@ def test_prepare_publishes_actions_before_qgc_launch_and_run_again_is_fresh(tmp_
     published.mkdir(parents=True)
     existing = published / "custom_missions.json"
     existing.write_bytes(b"user action file\n")
-    runtime = PrepareRuntime(published)
+    runtime = PrepareRuntime()
+    host = PrepareHost(published, tmp_path / "qgc-state")
     run_ids = (
         UUID("00000000-0000-4000-8000-000000000601"),
         UUID("00000000-0000-4000-8000-000000000602"),
@@ -243,6 +286,7 @@ def test_prepare_publishes_actions_before_qgc_launch_and_run_again_is_fresh(tmp_
         runtime=runtime,
         controller=controller,
         qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=host,
     )
 
     session.prepare(
@@ -258,7 +302,7 @@ def test_prepare_publishes_actions_before_qgc_launch_and_run_again_is_fresh(tmp_
     assert hashlib.sha256(first_path.read_bytes()).hexdigest() == first_config.operator_control.actions_sha256
     assert (output_root / first_config.run_id / "configuration/qgc-actions.json").read_bytes() == first_path.read_bytes()
     assert existing.read_bytes() == b"user action file\n"
-    assert runtime.events == ["settings", "open-qgc"]
+    assert host.events == ["settings", "open-qgc"]
 
     session.prepare(
         preset_id="configured-descent",
@@ -278,7 +322,8 @@ def test_failed_action_publication_retains_identity_without_launching_qgc(tmp_pa
     action_directory = tmp_path / "QGroundControl" / "MavlinkActions"
     action_directory.parent.mkdir(parents=True)
     action_directory.symlink_to(tmp_path / "missing")
-    runtime = PrepareRuntime(action_directory)
+    runtime = PrepareRuntime()
+    host = PrepareHost(action_directory, tmp_path / "qgc-state")
     controller = PrepareController(
         tmp_path / "runs",
         [UUID("00000000-0000-4000-8000-000000000603")],
@@ -289,6 +334,7 @@ def test_failed_action_publication_retains_identity_without_launching_qgc(tmp_pa
         runtime=runtime,
         controller=controller,
         qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=host,
     )
 
     session.prepare(
@@ -301,7 +347,7 @@ def test_failed_action_publication_retains_identity_without_launching_qgc(tmp_pa
     assert snapshot["run_id"] == "00000000-0000-4000-8000-000000000603"
     assert "symlink" in snapshot["error"]
     assert snapshot["cleanup"] == "complete"
-    assert runtime.events == ["settings"]
+    assert host.events == ["settings"]
     assert controller.compose_attempts == 0
 
 
@@ -367,13 +413,3 @@ def test_qgc_admission_does_not_depend_on_browser_heartbeat(tmp_path, monkeypatc
             observed_wall_time_ns=time.time_ns() - 10_000_000_000,
         ))
     assert session.snapshot()["qgc_admission_ready"] is False
-
-
-def test_qgc_action_directory_comes_from_active_settings_save_path(tmp_path):
-    settings = tmp_path / "QGroundControl.ini"
-    settings.write_text(
-        "[General]\nsavePath=/tmp/qgc-save\n\n[MavlinkActions]\nflyViewActionsFile=custom_missions.json\n"
-    )
-    runtime = LocalRuntime(ROOT, qgc_settings_path=settings)
-    assert runtime.qgc_actions_directory() == Path("/tmp/qgc-save/MavlinkActions")
-    assert "custom_missions.json" in settings.read_text()

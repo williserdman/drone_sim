@@ -1,9 +1,8 @@
-"""Durable allocation and no-clobber publication of run-bound QGC actions."""
+"""Durable allocation and rendering of run-bound QGC actions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import errno
 import fcntl
 import hashlib
 import json
@@ -207,7 +206,7 @@ def _read_ledger(directory_fd: int) -> int:
 
 
 class QgcActionStore:
-    """Allocate attempt tokens and publish their immutable QGC action bytes."""
+    """Allocate attempt tokens and render their immutable QGC action bytes."""
 
     def __init__(self, state_directory: Path, qgc_source: MavlinkIdentity) -> None:
         if not isinstance(state_directory, Path):
@@ -330,56 +329,5 @@ class QgcActionStore:
             descriptor=descriptor,
             action_bytes=action_bytes,
         )
-
-    def publish(self, material: QgcActionMaterial, save_directory: Path) -> Path:
-        """Create a QGC file, or accept an existing byte-identical regular file."""
-        if not isinstance(material, QgcActionMaterial):
-            raise TypeError("material must be QgcActionMaterial")
-        if not isinstance(save_directory, Path):
-            raise TypeError("save_directory must be a Path")
-        digest = hashlib.sha256(material.action_bytes).hexdigest()
-        if digest != material.descriptor.actions_sha256:
-            raise ValueError("QGC action bytes do not match their descriptor digest")
-        if save_directory.is_symlink():
-            raise RuntimeError("QGC action save directory must not be a symlink")
-        save_directory.mkdir(parents=True, exist_ok=True)
-        target = save_directory / material.published_name
-        flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        try:
-            descriptor = os.open(target, flags, 0o600)
-        except OSError as error:
-            if error.errno != errno.EEXIST:
-                raise
-            if target.is_symlink() or not target.is_file():
-                raise FileExistsError(target) from error
-            if target.read_bytes() != material.action_bytes:
-                raise FileExistsError(target) from error
-            return target
-        try:
-            written = 0
-            while written < len(material.action_bytes):
-                count = os.write(descriptor, material.action_bytes[written:])
-                if count <= 0:
-                    raise OSError("QGC action publication made no progress")
-                written += count
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        directory_fd = os.open(
-            save_directory,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
-        )
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-        return target
-
 
 __all__ = ["QgcActionMaterial", "QgcActionStore"]

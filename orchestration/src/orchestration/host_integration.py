@@ -1,0 +1,141 @@
+"""Platform boundary for native QGC files, processes, and datagrams."""
+
+from __future__ import annotations
+
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol, Sequence
+from uuid import UUID
+
+from artifacts.qgc_operator import MavlinkIdentity
+
+from .host_config import (
+    HostConfigurationError,
+    HostFacts,
+    detect_host,
+    load_host_config,
+)
+from .qgc_actions import QgcActionMaterial
+
+
+@dataclass(frozen=True, slots=True)
+class QgcInstallation:
+    executable: str
+    settings_file: str
+    save_path: str
+    version: str
+    source: MavlinkIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationReceipt:
+    native_path: str
+    filename: str
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class HostIssue:
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchResult:
+    opened: bool
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerIdentity:
+    installation_id: UUID
+    ledger_id: UUID
+
+
+class HostTransportError(RuntimeError):
+    """The native QGC datagram boundary failed or was already closed."""
+
+
+class DatagramTransport(Protocol):
+    def send(self, payload: bytes) -> None: ...
+
+    def receive(self, timeout_s: float) -> bytes | None: ...
+
+    def close(self) -> None: ...
+
+
+class HostLease(Protocol):
+    def register_controller(
+        self, identity: ControllerIdentity, *, pristine: bool
+    ) -> None: ...
+
+    def begin_run(self, run_id: str) -> None: ...
+
+    def verify_resume(
+        self, run_id: str, publication: PublicationReceipt
+    ) -> None: ...
+
+    def finish_run(self, run_id: str, *, verified_cleanup: bool) -> None: ...
+
+
+class HostIntegration(Protocol):
+    facts: HostFacts
+
+    @property
+    def state_directory(self) -> Path: ...
+
+    def preflight(self, paths: Sequence[Path]) -> tuple[HostIssue, ...]: ...
+
+    def inspect_qgc(self) -> QgcInstallation: ...
+
+    def acquire_native_lease(self) -> AbstractContextManager[HostLease]: ...
+
+    def publish_actions(
+        self,
+        material: QgcActionMaterial,
+        installation: QgcInstallation,
+        lease: HostLease,
+    ) -> PublicationReceipt: ...
+
+    def open_qgc(self, installation: QgcInstallation) -> LaunchResult: ...
+
+    def open_browser(self, url: str) -> LaunchResult: ...
+
+    def open_datagrams(
+        self,
+        lease: HostLease,
+        run_id: str,
+        publication: PublicationReceipt,
+    ) -> DatagramTransport: ...
+
+
+def resolve_host(
+    project_directory: Path, config_path: Path | None = None
+) -> HostIntegration:
+    """Resolve one host adapter for the lifetime of a local console."""
+
+    config = load_host_config(project_directory, config_path)
+    facts = detect_host(config)
+    if facts.kind == "wsl2":
+        raise HostConfigurationError(
+            "WSL2 native QGroundControl integration is not available yet; "
+            "run the console on macOS or native Ubuntu until the Windows helper is enabled"
+        )
+    from ._adapters.posix_host import PosixHost
+
+    return PosixHost(project_directory, config, facts)
+
+
+__all__ = [
+    "ControllerIdentity",
+    "DatagramTransport",
+    "HostIntegration",
+    "HostIssue",
+    "HostLease",
+    "HostTransportError",
+    "LaunchResult",
+    "PublicationReceipt",
+    "QgcInstallation",
+    "resolve_host",
+]

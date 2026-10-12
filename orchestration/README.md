@@ -31,12 +31,17 @@ validates; it does not infer physical success from a command or log message.
 - [`host_config.py`](src/orchestration/host_config.py) strictly parses the
   versioned host configuration and resolves supported macOS, Linux, and WSL2
   platform facts. Its WSL check resolves state paths and rejects paths outside
-  the distribution's ext4 filesystem before a caller allocates state. The
-  console does not consume this boundary yet; later portability work will wire
-  it into startup.
+  the distribution's ext4 filesystem before a caller allocates state.
+- [`host_integration.py`](src/orchestration/host_integration.py) defines the
+  native QGC discovery, publication, launch, lease, and datagram contracts.
+  [`_adapters/posix_host.py`](src/orchestration/_adapters/posix_host.py) provides
+  the macOS and native Linux implementation. WSL2 resolution remains disabled
+  until the Windows helper is connected.
 - [`qgc_actions.py`](src/orchestration/qgc_actions.py) allocates durable
-  run-bound QGC attempt tokens, renders the two native Fly View actions, and
-  publishes a run-named file without replacing a different existing file.
+  run-bound QGC attempt tokens and renders the two native Fly View actions.
+  [`qgc_publication.py`](src/orchestration/qgc_publication.py) publishes the
+  run-named file without replacing a different existing file and verifies its
+  final bytes.
 - [`RunLifecycle`](src/orchestration/lifecycle.py) defines valid state transitions.
   [`runtime_node.py`](src/orchestration/runtime_node.py) publishes runtime lifecycle
   state and aggregates the quiescence barrier.
@@ -93,19 +98,33 @@ inside a suite reuse its lease. Prerequisites and image provenance are checked b
 orphaned owner blocks another preparation. An interrupted owner can be cleaned
 up while preserving evidence, without inventing a completed manifest.
 
-QGC token allocation uses a separate monotonic ledger under
-`~/Library/Application Support/drone-sim/qgc/`; callers inject that directory
-for tests. Prepare owns the workstation lease while it calls the allocator. The
-ledger persists the next generation before action rendering, so failed Prepare
-cannot reuse the token. A durable initialization marker distinguishes first use
-from lost state. Missing, corrupt, symlinked, or exhausted state fails Prepare
-instead of resetting the counter. Publication takes an explicit QGC
-`MavlinkActions` directory, accepts an existing byte-identical run file, and
-never overwrites a conflicting file or another user action file. The console
-reads `savePath` from the active
-`~/.config/qgroundcontrol.com/QGroundControl.ini`; it does not change QGC's
-selected action file or other preferences. The bundled action bytes are a
-separate manifest configuration record.
+The resolved host's `state_directory` is the QGC token ledger authority. macOS
+keeps the existing `~/Library/Application Support/drone-sim/qgc/` directory.
+Linux uses `${XDG_STATE_HOME:-~/.local/state}/drone-sim/qgc/`. Prepare owns the
+workstation lease while it calls the allocator. The ledger persists the next
+generation before action rendering, so failed Prepare cannot reuse the token. A
+durable initialization marker distinguishes first use from lost state. Missing,
+corrupt, symlinked, or exhausted state fails Prepare instead of resetting the
+counter.
+
+POSIX publication derives `MavlinkActions` from the inspected QGC `savePath`,
+accepts an existing byte-identical regular file, and never overwrites a
+conflicting file or another user action file. It uses exclusive no-follow file
+creation, flushes the file and directory, then reopens and hashes the final
+bytes. Discovery reads the settings from one read-only snapshot and leaves the
+selected `flyViewActionsFile` and all other preferences unchanged. macOS uses
+`${XDG_CONFIG_HOME:-~/.config}/qgroundcontrol.com/QGroundControl.ini`. Linux
+uses `${XDG_CONFIG_HOME:-~/.config}/QGroundControl/QGroundControl.ini`. The
+bundled action bytes remain a separate manifest configuration record.
+
+The QGC baseline is 5.0.8 with system ID 255 and component ID 190. macOS discovery checks
+the selected application bundle's full version metadata. Linux accepts the
+pinned official x86-64 AppImage by size and SHA-256. It also accepts a native
+executable with a matching ELF architecture and paired standard AppStream
+application and version metadata. It rejects loose binaries and does not execute a version probe or
+infer a version from a filename. Native Linux metadata states the installed
+application and version. It does not prove the source provenance of a custom
+build. Native ARM64 launch acceptance remains pending.
 
 [`gcs_bridge.py`](src/orchestration/gcs_bridge.py) forwards the dedicated SITL GCS
 MAVLink connection to native QGC, preserves wire frames, and inventories manual
@@ -148,6 +167,8 @@ passing them through POSIX path handling. Simulator state paths have different
 semantics: WSL checkouts, run evidence, session state, and token state must
 resolve onto the distribution's ext4 filesystem. Windows mounts exposed as
 `drvfs` or `9p`, other filesystems, and symlinks into those mounts are rejected.
+The production resolver currently rejects WSL2 with a specific unavailable
+integration error. Task 8 enables it after the Windows helper exists.
 
 The CLI consumes templates such as [`config/default-run.json`](../config/default-run.json).
 The resolved configuration selects one immutable service ownership topology; the

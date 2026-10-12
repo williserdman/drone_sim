@@ -174,38 +174,3 @@ def test_allocation_never_reuses_after_failure_or_corruption(
     )
     with pytest.raises(RuntimeError, match="exhausted"):
         exhausted_store.allocate("00000000-0000-4000-8000-000000000016")
-
-
-def test_publish_preserves_existing_qgc_files(tmp_path: Path) -> None:
-    material = QgcActionStore(tmp_path / "state", QGC_SOURCE).allocate(RUN_ID)
-    save_directory = tmp_path / "MavlinkActions"
-    unrelated = save_directory / "custom_missions.json"
-    save_directory.mkdir()
-    unrelated.write_bytes(b"user-owned\n")
-
-    published = QgcActionStore(tmp_path / "state", QGC_SOURCE).publish(
-        material, save_directory
-    )
-
-    assert published == save_directory / material.published_name
-    assert published.read_bytes() == material.action_bytes
-    assert unrelated.read_bytes() == b"user-owned\n"
-    assert QgcActionStore(tmp_path / "state", QGC_SOURCE).publish(
-        material, save_directory
-    ) == published
-
-    with pytest.raises(ValueError, match="canonical rendering"):
-        replace(material, action_bytes=b"different\n")
-
-    different_run = QgcActionStore(tmp_path / "state", QGC_SOURCE).allocate(
-        "22222222-2222-4222-8222-222222222222"
-    )
-    forced_conflict = save_directory / different_run.published_name
-    forced_conflict.write_bytes(b"existing user bytes\n")
-    with pytest.raises(FileExistsError):
-        QgcActionStore(tmp_path / "state", QGC_SOURCE).publish(
-            different_run, save_directory
-        )
-    assert forced_conflict.read_bytes() == b"existing user bytes\n"
-    assert published.read_bytes() == material.action_bytes
-    assert unrelated.read_bytes() == b"user-owned\n"
