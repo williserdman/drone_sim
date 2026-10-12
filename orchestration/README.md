@@ -28,6 +28,12 @@ validates; it does not infer physical success from a command or log message.
 - [`resolve_run_config`](src/orchestration/config.py) is the template-to-resolved-
   configuration boundary; [`ComposeRuntime`](src/orchestration/_adapters/compose.py)
   is the Docker boundary.
+- [`host_config.py`](src/orchestration/host_config.py) strictly parses the
+  versioned host configuration and resolves supported macOS, Linux, and WSL2
+  platform facts. Its WSL check resolves state paths and rejects paths outside
+  the distribution's ext4 filesystem before a caller allocates state. The
+  console does not consume this boundary yet; later portability work will wire
+  it into startup.
 - [`qgc_actions.py`](src/orchestration/qgc_actions.py) allocates durable
   run-bound QGC attempt tokens, renders the two native Fly View actions, and
   publishes a run-named file without replacing a different existing file.
@@ -110,6 +116,38 @@ shutdown; the separate stop action invokes existing finalization.
 
 The [local console workflow](../docs/runbook.md#local-mac-console) defines the
 operator commands, port and spool requirements, and view semantics.
+
+## Host configuration
+
+Host configuration uses schema version 1. The default location is
+`.local-runtime/host.json` under the project directory. A missing default file
+selects automatic discovery. Callers may pass another file explicitly; a
+missing explicitly selected file is an error.
+
+```json
+{
+  "schema_version": 1,
+  "platform": "wsl2",
+  "qgc": {
+    "executable": "C:\\Program Files\\QGroundControl\\QGroundControl.exe",
+    "settings_file": "C:\\Users\\operator\\AppData\\Roaming\\QGroundControl\\QGroundControl.ini"
+  }
+}
+```
+
+`platform` accepts `auto`, `macos`, `linux`, or `wsl2`. An explicit value must
+match the detected host. The `qgc` object and both of its fields are optional.
+Unknown fields, wrong types, unsupported schema versions, unsupported host or
+CPU combinations, and incompatible platform overrides fail with a remediation
+message.
+
+QGC path strings use the path syntax of the machine running QGC. macOS and
+Linux values are native POSIX strings. WSL values are native Windows strings;
+the parser preserves backslashes, spaces, and non-ASCII characters without
+passing them through POSIX path handling. Simulator state paths have different
+semantics: WSL checkouts, run evidence, session state, and token state must
+resolve onto the distribution's ext4 filesystem. Windows mounts exposed as
+`drvfs` or `9p`, other filesystems, and symlinks into those mounts are rejected.
 
 The CLI consumes templates such as [`config/default-run.json`](../config/default-run.json).
 The resolved configuration selects one immutable service ownership topology; the

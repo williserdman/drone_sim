@@ -41,6 +41,7 @@ follow_imports = "silent"
 ignore_missing_imports = true
 mypy_path = ["artifacts/src", "orchestration/src", "companion/src", "gazebo/src", "scorekeeper/src", "electromagnet/src"]
 files = [
+    "orchestration/src/orchestration/host_config.py",
     "orchestration/src/orchestration/catalog.py",
     "orchestration/src/orchestration/workstation.py",
     "orchestration/src/orchestration/gcs_bridge.py",
