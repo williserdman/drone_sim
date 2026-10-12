@@ -257,6 +257,26 @@ def test_wsl_is_detected_before_linux(host_config: ModuleType, monkeypatch: pyte
     assert facts.provider == "docker-desktop"
 
 
+def test_wsl1_is_rejected_instead_of_classified_as_wsl2(
+    host_config: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_host(
+        monkeypatch,
+        host_config,
+        system="Linux",
+        machine="x86_64",
+        release="4.4.0-19041-Microsoft",
+    )
+
+    with pytest.raises(host_config.HostConfigurationError) as caught:
+        host_config.detect_host(host_config.HostConfig("auto", None, None))
+
+    assert "WSL1" in str(caught.value)
+    assert "WSL2" in str(caught.value)
+    assert "4.4.0-19041-Microsoft" in str(caught.value)
+
+
 @pytest.mark.parametrize(
     ("system", "machine", "release", "kind", "normalized", "image", "provider"),
     [

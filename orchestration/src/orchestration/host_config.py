@@ -148,7 +148,7 @@ def detect_host(config: HostConfig) -> HostFacts:
     if system == "Darwin":
         kind: HostKind = "macos"
     elif system == "Linux":
-        kind = "wsl2" if _release_is_wsl(release) else "linux"
+        kind = _linux_host_kind(release)
     else:
         raise HostConfigurationError(
             f"detected unsupported host {system}; run the controller on macOS, "
@@ -234,9 +234,16 @@ def _optional_native_path(
     return value
 
 
-def _release_is_wsl(release: str) -> bool:
+def _linux_host_kind(release: str) -> HostKind:
     lowered = release.lower()
-    return "microsoft" in lowered or "wsl" in lowered
+    if "microsoft" not in lowered and "wsl" not in lowered:
+        return "linux"
+    if "microsoft-standard" in lowered or "wsl2" in lowered:
+        return "wsl2"
+    raise HostConfigurationError(
+        f"detected unsupported WSL1 kernel release {release}; convert the "
+        "distribution to WSL2 before running the controller"
+    )
 
 
 def _read_mounts() -> tuple[_Mount, ...]:
