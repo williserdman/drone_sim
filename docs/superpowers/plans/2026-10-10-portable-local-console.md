@@ -270,7 +270,8 @@ Software verification and scoped review passed at `e9573f8`: the affected Linux 
 **Files:**
 
 - Create: `gazebo/local-viewer/viewer-packages.amd64.lock`.
-- Modify: `orchestration/src/orchestration/local_build.py`, `orchestration/tests/test_local_build.py`, `scripts/local-build.sh`, `orchestration/src/orchestration/local_runtime.py`, `gazebo/local-viewer/Dockerfile`, `tests/integration/test_local_deployment.py`, `gazebo/tests/test_image_contract.py`, `tests/integration/test_phase2_runtime_contract.py`, `tests/integration/test_phase3_runtime_contract.py`, `tests/contracts/test_mission_suite_workflow.py`, `orchestration/README.md`, `gazebo/README.md`, `docs/LEDGER.md`.
+- Modify: `orchestration/src/orchestration/local_build.py`, `orchestration/tests/test_local_build.py`, `orchestration/src/orchestration/local_runtime.py`, `gazebo/local-viewer/Dockerfile`, `tests/integration/test_local_deployment.py`, `gazebo/tests/test_image_contract.py`, `tests/integration/test_phase2_runtime_contract.py`, `tests/integration/test_phase3_runtime_contract.py`, `tests/contracts/test_mission_suite_workflow.py`, `orchestration/README.md`, `gazebo/README.md`, `docs/LEDGER.md`.
+- Audit and preserve unchanged: `scripts/local-build.sh`, already the thin architecture-independent launcher from Task 5.
 - Audit before changing, and edit only when native build evidence requires it: `ardupilot_sitl/Dockerfile`, `ardupilot_sitl/build-packages.arm64.lock`, `artifacts/Dockerfile`, `artifacts/ffmpeg-packages.lock`, `artifacts/ffmpeg-packages.arm64.lock`, `gazebo/Dockerfile`, `gazebo/harmonic-packages.lock`, `gazebo/harmonic-packages.arm64.lock`, their module READMEs, and the shared ROS base manifests consumed by companion/electromagnet/orchestration/scorekeeper.
 
 **Interfaces:**
