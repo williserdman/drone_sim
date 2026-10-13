@@ -325,3 +325,7 @@ Task 6 passed scoped review at `e9573f8`. Failed run transports stay disabled ac
 - The amended Task 7 contract records `scripts/local-build.sh` as audited and intentionally unchanged. Its exact `exec uv run --locked python -m orchestration.local_build "$@"` delegation, argument forwarding, Python `--build|--check` parser, exit behavior, and shell syntax remain covered without a cosmetic wrapper edit. Native build acceptance and the Task 9 full Linux gate remain pending.
 
 Ruling: Task 7 audits and preserves scripts/local-build.sh unchanged. Task 5 already made it a thin architecture-independent launcher that forwards --build/--check and all arguments to the Python builder. The Task 7 file list implied a modification without specifying any new shell behavior; remove that accidental edit requirement rather than add a cosmetic hunk. Cost if wrong: a missed wrapper-level incompatibility would remain; the shell syntax and existing CLI/delegation tests still cover the preserved contract.
+
+### Native build support milestone, 2026-10-12
+
+Task 7 passed scoped review at `12c773b`. The builder checks native ARM64/AMD64 images and the effective Docker endpoint, preserves existing provenance, and keeps architecture-specific package pins. The exact contract gate passed 80 tests; the correction gate passed 42 tests, with configured mypy passing. Native ARM64 image build/check remains scheduled after retained-run finalization; AMD64 native acceptance remains unavailable.
