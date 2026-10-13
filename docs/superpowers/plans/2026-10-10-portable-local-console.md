@@ -305,7 +305,9 @@ Software verification and scoped review passed at `12c773b`: 80 build/image cont
 
 **Files:**
 
-- Modify: `orchestration/src/orchestration/host_integration.py`, `orchestration/src/orchestration/console.py`, `orchestration/src/orchestration/cli.py`, `orchestration/src/orchestration/local_runtime.py`, `orchestration/src/orchestration/operator_session.py`, `orchestration/src/orchestration/controller.py`, `orchestration/src/orchestration/console_static/index.html`, `orchestration/src/orchestration/console_static/console.js`, `orchestration/tests/test_cli.py`, `orchestration/tests/test_console_http.py`, `orchestration/tests/test_local_runtime.py`, `orchestration/tests/test_operator_session.py`, `orchestration/tests/test_controller.py`, `tests/browser/check_console_views.py`, `README.md`, `orchestration/README.md`, `docs/architecture.md`, `docs/runbook.md`, `docs/handoff.md`, `docs/LEDGER.md`.
+- Modify: `orchestration/src/orchestration/host_integration.py`, `orchestration/src/orchestration/console.py`, `orchestration/src/orchestration/cli.py`, `orchestration/src/orchestration/local_runtime.py`, `orchestration/src/orchestration/operator_session.py`, `orchestration/src/orchestration/console_static/index.html`, `orchestration/src/orchestration/console_static/console.js`, `orchestration/tests/test_cli.py`, `orchestration/tests/test_console_http.py`, `orchestration/tests/test_local_runtime.py`, `orchestration/tests/test_operator_session.py`, `tests/browser/check_console_views.py`, `README.md`, `orchestration/README.md`, `docs/architecture.md`, `docs/runbook.md`, `docs/handoff.md`, `docs/LEDGER.md`.
+
+- Audit and preserve unchanged: `orchestration/src/orchestration/controller.py` and `orchestration/tests/test_controller.py`, whose pre-inventory callback and ordering were implemented and reviewed in Task 6.
 
 **Interfaces:**
 
