@@ -124,18 +124,25 @@ def _docker_state(host: HostIntegration) -> _DockerState:
         raise RuntimeError("Docker context selection does not match DOCKER_CONTEXT")
 
     document = _context_document(context)
-    endpoints = document.get("Endpoints")
-    if not isinstance(endpoints, dict):
-        raise RuntimeError("Docker context has no endpoint metadata")
-    docker_endpoint = endpoints.get("docker")
-    if not isinstance(docker_endpoint, dict):
-        raise RuntimeError("Docker context has no Docker endpoint")
-    context_host = docker_endpoint.get("Host")
-    if not isinstance(context_host, str) or not context_host:
-        raise RuntimeError("Docker context has an invalid Docker endpoint")
-
     configured_host = os.environ.get("DOCKER_HOST", "").strip()
-    endpoint = context_host if configured_context else configured_host or context_host
+    context_supplies_endpoint = bool(configured_context) or not configured_host
+    context_tls = False
+    if context_supplies_endpoint:
+        endpoints = document.get("Endpoints")
+        if not isinstance(endpoints, dict):
+            raise RuntimeError("Docker context has no endpoint metadata")
+        docker_endpoint = endpoints.get("docker")
+        if not isinstance(docker_endpoint, dict):
+            raise RuntimeError("Docker context has no Docker endpoint")
+        endpoint = docker_endpoint.get("Host")
+        if not isinstance(endpoint, str) or not endpoint:
+            raise RuntimeError("Docker context has an invalid Docker endpoint")
+        context_tls = (
+            docker_endpoint.get("SkipTLSVerify") is True
+            or bool(document.get("TLSMaterial"))
+        )
+    else:
+        endpoint = configured_host
     if not endpoint.startswith("unix://"):
         raise RuntimeError(
             "local Docker endpoint is required; effective endpoint is remote"
@@ -146,11 +153,7 @@ def _docker_state(host: HostIntegration) -> _DockerState:
         for name in ("DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH")
         if os.environ.get(name, "").strip()
     )
-    if (
-        tls_environment
-        or docker_endpoint.get("SkipTLSVerify") is True
-        or bool(document.get("TLSMaterial"))
-    ):
+    if tls_environment or context_tls:
         raise RuntimeError(
             "local Docker endpoint cannot use TLS environment or context material"
         )

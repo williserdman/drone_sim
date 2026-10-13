@@ -122,6 +122,8 @@ def _docker_output(
     architecture: str = "aarch64",
     context: str = "colima",
     endpoint: str = "unix:///Users/test/.colima/default/docker.sock",
+    skip_tls_verify: bool = False,
+    tls_material: object | None = None,
     missing_image: str | None = None,
     replaced_image: str | None = None,
     wrong_image_architecture: str | None = None,
@@ -137,9 +139,12 @@ def _docker_output(
                 [{
                     "Name": context,
                     "Endpoints": {
-                        "docker": {"Host": endpoint, "SkipTLSVerify": False}
+                        "docker": {
+                            "Host": endpoint,
+                            "SkipTLSVerify": skip_tls_verify,
+                        }
                     },
-                    "TLSMaterial": {},
+                    "TLSMaterial": {} if tls_material is None else tls_material,
                     "Storage": {"TLSPath": "/Users/test/.docker/contexts/tls/local"},
                 }]
             )
@@ -474,6 +479,40 @@ def test_explicit_local_context_overrides_ambient_remote_docker_host(
     )
 
     assert local_build.check_build(tmp_path, _host())["ok"] is True
+
+
+def test_explicit_local_docker_host_ignores_saved_context_tls_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import orchestration.local_build as local_build
+
+    revision = _committed_fixture(tmp_path)
+    _write_build_record(
+        tmp_path, local_build, revision, "linux/amd64", context="default"
+    )
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    monkeypatch.setattr(
+        local_build,
+        "_check_output",
+        _docker_output(
+            local_build,
+            revision,
+            architecture="x86_64",
+            context="default",
+            endpoint="tcp://saved-context.example.invalid:2376",
+            skip_tls_verify=True,
+            tls_material={"ca.pem": "saved-context-material"},
+        ),
+    )
+
+    result = local_build.check_build(
+        tmp_path, _host("linux/amd64", provider="docker")
+    )
+
+    assert result["ok"] is True
+    assert result["current_context"] == "default"
+    assert result["current_platform"] == "linux/amd64"
 
 
 @pytest.mark.parametrize(
