@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from artifacts.qgc_operator import MavlinkIdentity
 from orchestration.host_config import HostFacts
 from orchestration.host_integration import HostIssue, LaunchResult, QgcInstallation
@@ -113,6 +115,41 @@ def test_checks_report_selected_host_and_runtime_provider(tmp_path: Path, monkey
         "machine": "amd64",
         "image_platform": "linux/amd64",
         "provider": "docker-desktop",
+    }
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        HostFacts("macos", "arm64", "linux/arm64", "colima"),
+        HostFacts("linux", "amd64", "linux/amd64", "docker"),
+        HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop"),
+    ],
+)
+def test_empty_docker_error_names_selected_provider_and_native_platform(
+    tmp_path: Path, facts: HostFacts
+) -> None:
+    host = FakeHost(tmp_path / "state")
+    host.facts = facts
+    runtime = LocalRuntime(tmp_path, host=host)
+    runtime._run = lambda _command: SimpleNamespace(
+        returncode=1,
+        stdout="",
+        stderr="",
+    )
+
+    result = runtime.checks(active=True)
+
+    daemon = next(
+        row for row in result["checks"] if row["name"] == "Local Linux runtime"
+    )
+    assert daemon == {
+        "name": "Local Linux runtime",
+        "ok": False,
+        "detail": (
+            f"Docker provider {facts.provider} is unavailable for "
+            f"{facts.image_platform}; start or repair the selected local runtime"
+        ),
     }
 
 

@@ -1,5 +1,6 @@
 from dataclasses import replace
 from contextlib import contextmanager, nullcontext
+import ntpath
 from pathlib import Path
 import hashlib
 import json
@@ -557,6 +558,151 @@ def test_native_publication_path_mismatch_never_starts_compose(tmp_path, monkeyp
     session.prepare(
         preset_id="configured-descent",
         request_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    )
+    _wait_for_worker(session)
+
+    assert controller.compose_attempts == 0
+    assert "native path" in session.snapshot()["error"]
+
+
+@pytest.mark.parametrize(
+    ("save_path", "receipt_root"),
+    [
+        (
+            "C:/Users/Pilot/Documents/QGroundControl",
+            r"C:\Users\Pilot\Documents\QGroundControl",
+        ),
+        (
+            r"C:\Users\Pilot\Documents\QGroundControl",
+            r"c:\users\pilot\documents\qgroundcontrol",
+        ),
+    ],
+)
+def test_wsl_publication_accepts_equivalent_windows_path_spelling(
+    tmp_path, monkeypatch, save_path, receipt_root
+):
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+
+    class EquivalentWindowsPathHost(PrepareHost):
+        def __init__(self, state_directory):
+            super().__init__(tmp_path / "unused-actions", state_directory)
+            self.facts = HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop")
+
+        def inspect_qgc(self):
+            self.events.append("settings")
+            return QgcInstallation(
+                executable=r"C:\Program Files\QGroundControl\bin\QGroundControl.exe",
+                settings_file=r"C:\Users\Pilot\AppData\Roaming\QGroundControl\QGroundControl.ini",
+                save_path=save_path,
+                version="5.0.8",
+                source=QGC_SOURCE,
+            )
+
+        def publish_actions(self, material, installation, lease):
+            del installation, lease
+            self.events.append("publish")
+            return PublicationReceipt(
+                ntpath.join(receipt_root, "MavlinkActions", material.published_name),
+                material.published_name,
+                hashlib.sha256(material.action_bytes).hexdigest(),
+            )
+
+    controller = PrepareController(
+        tmp_path / "runs",
+        [UUID("00000000-0000-4000-8000-000000000614")],
+    )
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=EquivalentWindowsPathHost(tmp_path / "qgc-state"),
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    )
+    _wait_for_worker(session)
+
+    assert controller.compose_attempts == 1
+    assert session.snapshot()["state"] == "ABORTED"
+
+
+@pytest.mark.parametrize(
+    ("save_path", "receipt_path"),
+    [
+        (
+            r"C:\Users\Pilot\Documents\QGroundControl",
+            r"C:\Users\Pilot\Documents\Other\MavlinkActions\{filename}",
+        ),
+        (
+            r"C:\Users\Pilot\Documents\QGroundControl",
+            r"MavlinkActions\{filename}",
+        ),
+        (
+            r"C:\Users\Pilot\Documents\QGroundControl",
+            r"C:\Users\Pilot\Documents\QGroundControl\MavlinkActions\..\..\Other\MavlinkActions\{filename}",
+        ),
+        (
+            r"relative\QGroundControl",
+            r"C:\Users\Pilot\Documents\QGroundControl\MavlinkActions\{filename}",
+        ),
+        (
+            r"C:\Users\Pilot\Documents\QGroundControl",
+            r"C:\Users\Pilot\Documents\QGroundControl\MavlinkActions\{upper_filename}",
+        ),
+    ],
+)
+def test_wsl_publication_rejects_nonabsolute_wrong_or_inexact_windows_path(
+    tmp_path, monkeypatch, save_path, receipt_path
+):
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+
+    class InvalidWindowsPathHost(PrepareHost):
+        def __init__(self, state_directory):
+            super().__init__(tmp_path / "unused-actions", state_directory)
+            self.facts = HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop")
+
+        def inspect_qgc(self):
+            self.events.append("settings")
+            return QgcInstallation(
+                executable=r"C:\Program Files\QGroundControl\bin\QGroundControl.exe",
+                settings_file=r"C:\Users\Pilot\AppData\Roaming\QGroundControl\QGroundControl.ini",
+                save_path=save_path,
+                version="5.0.8",
+                source=QGC_SOURCE,
+            )
+
+        def publish_actions(self, material, installation, lease):
+            del installation, lease
+            self.events.append("publish")
+            return PublicationReceipt(
+                receipt_path.format(
+                    filename=material.published_name,
+                    upper_filename=material.published_name.upper(),
+                ),
+                material.published_name,
+                hashlib.sha256(material.action_bytes).hexdigest(),
+            )
+
+    controller = PrepareController(
+        tmp_path / "runs",
+        [UUID("00000000-0000-4000-8000-000000000615")],
+    )
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=InvalidWindowsPathHost(tmp_path / "qgc-state"),
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
     )
     _wait_for_worker(session)
 

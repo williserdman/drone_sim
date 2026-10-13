@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import textwrap
+import threading
 import time
 from uuid import uuid4
 
@@ -12,8 +13,10 @@ import pytest
 
 import orchestration.windows_helper as helper_module
 from orchestration.windows_helper import (
+    DATAGRAM_QUEUE_SIZE,
     MAX_DATAGRAM_BYTES,
     MAX_FRAME_BYTES,
+    MAX_OUTSTANDING_REQUESTS,
     WindowsHelper,
     WindowsHelperError,
 )
@@ -356,6 +359,113 @@ def test_datagram_queue_saturation_disconnects_instead_of_dropping(
     time.sleep(0.1)
     with pytest.raises(WindowsHelperError, match="queue"):
         helper.receive(0.5)
+    helper.close()
+
+
+def test_outbound_datagram_queue_saturation_disconnects_without_silent_drop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _start(
+        tmp_path,
+        monkeypatch,
+        """
+        for line in sys.stdin:
+            pass
+        """,
+    )
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    real_stdin = helper._stdin
+
+    class BlockedPipe:
+        def write(self, frame: bytes) -> int:
+            write_entered.set()
+            assert release_write.wait(5)
+            return real_stdin.write(frame)
+
+        def flush(self) -> None:
+            real_stdin.flush()
+
+        def close(self) -> None:
+            real_stdin.close()
+
+    helper._stdin = BlockedPipe()
+    try:
+        helper.send(b"writer-blocker")
+        assert write_entered.wait(2)
+        for sequence in range(DATAGRAM_QUEUE_SIZE):
+            helper.send(sequence.to_bytes(2, "big"))
+        assert helper._datagram_output.qsize() == DATAGRAM_QUEUE_SIZE
+
+        with pytest.raises(WindowsHelperError) as raised:
+            helper.send(b"overflow")
+        assert raised.value.code == "helper_datagram_queue_saturated"
+        with pytest.raises(WindowsHelperError) as disconnected:
+            helper.send(b"after-overflow")
+        assert disconnected.value is raised.value
+        assert helper._datagram_output.qsize() == DATAGRAM_QUEUE_SIZE
+    finally:
+        release_write.set()
+        helper.close()
+
+
+def test_pending_request_limit_rejects_33rd_and_fails_all_on_connection_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _start(
+        tmp_path,
+        monkeypatch,
+        """
+        __import__('threading').Event().wait()
+        """,
+    )
+    requests_enqueued = threading.Event()
+    enqueue_lock = threading.Lock()
+    enqueue_count = 0
+    real_put = helper._control_output.put_nowait
+
+    def observed_put(frame: bytes) -> None:
+        nonlocal enqueue_count
+        real_put(frame)
+        with enqueue_lock:
+            enqueue_count += 1
+            if enqueue_count == MAX_OUTSTANDING_REQUESTS:
+                requests_enqueued.set()
+
+    monkeypatch.setattr(helper._control_output, "put_nowait", observed_put)
+    start = threading.Barrier(MAX_OUTSTANDING_REQUESTS + 1)
+    failures: list[WindowsHelperError] = []
+    failures_lock = threading.Lock()
+
+    def request() -> None:
+        start.wait()
+        try:
+            helper.request("probe", {}, timeout_s=10)
+        except WindowsHelperError as error:
+            with failures_lock:
+                failures.append(error)
+
+    workers = [
+        threading.Thread(target=request)
+        for _ in range(MAX_OUTSTANDING_REQUESTS)
+    ]
+    for worker in workers:
+        worker.start()
+    start.wait()
+    assert requests_enqueued.wait(2)
+    with helper._pending_lock:
+        assert len(helper._pending) == MAX_OUTSTANDING_REQUESTS
+
+    with pytest.raises(WindowsHelperError) as raised:
+        helper.request("probe", {})
+    assert raised.value.code == "helper_request_saturated"
+
+    helper._process.terminate()
+    for worker in workers:
+        worker.join(2)
+        assert not worker.is_alive()
+    assert len(failures) == MAX_OUTSTANDING_REQUESTS
+    assert all(error.code in {"helper_eof", "helper_pipe_failed"} for error in failures)
     helper.close()
 
 

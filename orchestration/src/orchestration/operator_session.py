@@ -50,6 +50,25 @@ def _tail(path: Path, maximum: int = 16384) -> str:
         return ""
 
 
+def _normalized_windows_absolute_path(path: str) -> str | None:
+    drive, _tail = ntpath.splitdrive(path)
+    if not drive or not ntpath.isabs(path):
+        return None
+    return ntpath.normcase(ntpath.normpath(path))
+
+
+def _matches_windows_publication_path(
+    save_path: str, native_path: str, filename: str
+) -> bool:
+    if ntpath.basename(native_path) != filename:
+        return False
+    expected = _normalized_windows_absolute_path(
+        ntpath.join(save_path, "MavlinkActions", filename)
+    )
+    published = _normalized_windows_absolute_path(native_path)
+    return expected is not None and published is not None and published == expected
+
+
 class _HostEvidenceLog:
     _FIELDS = {
         "host": frozenset({"platform", "provider", "image_platform", "transport"}),
@@ -310,19 +329,6 @@ class OperatorSession:
                         self.workstation.owned(),
                     )
                     expected_sha256 = hashlib.sha256(material.action_bytes).hexdigest()
-                    expected_native_path = (
-                        ntpath.join(
-                            installation.save_path,
-                            "MavlinkActions",
-                            material.published_name,
-                        )
-                        if self.host.facts.kind == "wsl2"
-                        else str(
-                            Path(installation.save_path)
-                            / "MavlinkActions"
-                            / material.published_name
-                        )
-                    )
                     if (
                         publication.filename != material.published_name
                         or publication.sha256 != expected_sha256
@@ -331,7 +337,22 @@ class OperatorSession:
                         raise RuntimeError(
                             "native QGroundControl action publication does not match the bundled material"
                         )
-                    if publication.native_path != expected_native_path:
+                    if self.host.facts.kind == "wsl2":
+                        publication_path_matches = _matches_windows_publication_path(
+                            installation.save_path,
+                            publication.native_path,
+                            material.published_name,
+                        )
+                    else:
+                        expected_native_path = str(
+                            Path(installation.save_path)
+                            / "MavlinkActions"
+                            / material.published_name
+                        )
+                        publication_path_matches = (
+                            publication.native_path == expected_native_path
+                        )
+                    if not publication_path_matches:
                         raise RuntimeError(
                             "native QGroundControl action publication returned an unexpected native path"
                         )

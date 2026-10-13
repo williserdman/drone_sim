@@ -98,7 +98,14 @@ class LocalRuntime:
         try:
             result = self._run(["docker", "info", "--format", "{{json .}}"])
             if result.returncode:
-                raise RuntimeError(result.stderr.strip() or "Start Colima with colima start --cpu 6 --memory 12")
+                raise RuntimeError(
+                    result.stderr.strip()
+                    or (
+                        f"Docker provider {self.host.facts.provider} is unavailable for "
+                        f"{self.host.facts.image_platform}; start or repair the selected "
+                        "local runtime"
+                    )
+                )
             info = json.loads(result.stdout)
             architecture = {
                 "aarch64": "arm64",
