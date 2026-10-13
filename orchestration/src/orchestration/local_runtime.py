@@ -84,8 +84,24 @@ class LocalRuntime:
             if result.returncode:
                 raise RuntimeError(result.stderr.strip() or "Start Colima with colima start --cpu 6 --memory 12")
             info = json.loads(result.stdout)
-            daemon_ok = info["OSType"] == "linux" and info["Architecture"] in {"aarch64", "arm64"}
-            add("Local Linux runtime", daemon_ok, f'{info["OSType"]}/{info["Architecture"]}; {info["NCPU"]} CPUs; {info["MemTotal"] / 2**30:.1f} GiB RAM')
+            architecture = {
+                "aarch64": "arm64",
+                "arm64": "arm64",
+                "amd64": "amd64",
+                "x86_64": "amd64",
+            }.get(info["Architecture"])
+            daemon_platform = f"linux/{architecture}" if architecture else None
+            daemon_ok = (
+                info["OSType"] == "linux"
+                and daemon_platform == self.host.facts.image_platform
+            )
+            add(
+                "Local Linux runtime",
+                daemon_ok,
+                f'{info["OSType"]}/{info["Architecture"]}; '
+                f'{info["NCPU"]} CPUs; {info["MemTotal"] / 2**30:.1f} GiB RAM; '
+                f'expected {self.host.facts.image_platform}',
+            )
             add("Runtime resources", info["NCPU"] >= 4 and info["MemTotal"] >= 8 * 2**30,
                 "At least 4 CPUs and 8 GiB RAM; 6 CPUs and 12 GiB recommended")
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.TimeoutExpired) as error:

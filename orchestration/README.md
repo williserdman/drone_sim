@@ -106,6 +106,15 @@ reports no run resources and closed media publication is verified. A failure
 before Compose starts has no media spool and uses its durable `CREATED` state as
 the no-start proof.
 
+The builder derives `linux/arm64` or `linux/amd64` from the resolved host. It
+requires a local Unix-socket Docker endpoint, the host's selected provider, and
+a native Linux daemon with the same architecture. `DOCKER_CONTEXT` has Docker's
+normal precedence over `DOCKER_HOST`; remote endpoints, active TLS overrides,
+and a conflicting `DOCKER_DEFAULT_PLATFORM` fail before Compose build. A
+successful build inspects all eight local images, including the viewer, before
+atomically publishing the schema-1 build record. The unattended suite continues
+to build and record its seven Phase 3 images without the viewer.
+
 The resolved host's `state_directory` is the QGC token ledger authority. macOS
 keeps the existing `~/Library/Application Support/drone-sim/qgc/` directory.
 Linux uses `${XDG_STATE_HOME:-~/.local/state}/drone-sim/qgc/`. Prepare owns the

@@ -52,6 +52,9 @@ def test_workflow_runs_the_locked_suite_and_preserves_its_exit_code():
     assert "PIPESTATUS[0]" in suite["run"]
     assert "tee" in suite["run"]
     assert 'exit "$suite_exit"' in suite["run"]
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    assert "gazebo-viewer" not in workflow_text
+    assert "local-build.sh" not in workflow_text
 
 
 def test_workflow_always_publishes_summary_and_compact_dispatch_artifacts():

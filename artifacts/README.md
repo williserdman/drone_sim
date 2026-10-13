@@ -80,6 +80,13 @@ The deployed private rosbag QoS overrides are
 [`Dockerfile`](Dockerfile). Treat that file and the publisher/subscriber code as
 authority rather than maintaining a duplicate QoS table here.
 
+The Dockerfile selects exact architecture-specific ROS bag pins and an FFmpeg
+package delta for native ARM64 or AMD64. The ARM64 direct pins remain those in
+the accepted ARM image; the refreshed AMD64 lock and direct pins are verified
+by the signed metadata resolver described in the
+[runbook](../docs/runbook.md#native-local-image-build). That evidence does not
+replace a native AMD64 image build or encoder test.
+
 Outputs live under `runs/<run_id>/`: two MP4s, `rosbag/`, configuration, Gazebo
 evidence, per-module logs, scoring files, diagnostics, and `manifest.json`. The
 required inventory is defined by

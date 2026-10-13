@@ -176,6 +176,7 @@ def test_phase2_profile_resolves_exact_stable_project_independent_service_images
     assert set(services_a) == set(services_b) == {name for name, _module in PHASE2_SERVICES}
     assert set(images_a) == set(images_b) == set(PHASE2_IMAGES)
     assert "foundation" not in services_a
+    assert len(images_a) == 7
 
 
 def test_foundation_has_separate_profile_while_plain_config_remains_valid() -> None:

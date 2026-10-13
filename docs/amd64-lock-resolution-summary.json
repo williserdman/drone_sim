@@ -1,0 +1,276 @@
+{
+  "apt_architecture": "amd64",
+  "base": {
+    "amd64_child_manifest_digest": "sha256:bab7e640bf79cd84957e4e18fcba7d87efc3385b4e3f36a32eeca01638e43206",
+    "amd64_config_digest": "sha256:3786be5ed1130691ee8813979e86da478531ff25e9e5bbdad85783a222716eba",
+    "index_digest": "sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4",
+    "status_layer_digest": "sha256:e8411d72f4b8d1a32d36a409d255c8e7f71951e6eecb2cbb35b4d27a5ca35348",
+    "status_sha256": "bd99079deff3da2ae452b7a45871630ac4b799195efb39964d88f5e2b6cfe3ea"
+  },
+  "docker_inventory_unchanged": true,
+  "generated_at": "2026-10-12T22:17:32.372306+00:00",
+  "indexes": [
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_InRelease",
+      "sha256": "8996028cc0c3c9b9b587f1e05871211bf499426dccec8ea42bcaccf23d9f8ee5",
+      "size": 126173
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_main_binary-amd64_Packages.lz4",
+      "sha256": "bdb7c408eb3b79ad32583ff785b554a2f8f7a6444f09f6b4ec258febdf947228",
+      "size": 79250
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_multiverse_binary-amd64_Packages.lz4",
+      "sha256": "829641000a3c8f2110e1b51b1da12a8dce3883dad860aaebc8181ea928b50665",
+      "size": 921
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_universe_binary-amd64_Packages.lz4",
+      "sha256": "c5b0a9aca5aa0735132db22fe97f9e18b52a5f443a93bef46cc0ef293c06cd28",
+      "size": 57904
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_InRelease",
+      "sha256": "1e24e6e43e609de401dfeede9724139b8ab76a8a688fc39327fb40fdd45efddd",
+      "size": 126125
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_main_binary-amd64_Packages.lz4",
+      "sha256": "bc2850f1d85618263800d25d81ad0871915d071a889cb96100535136f092f6a8",
+      "size": 2851340
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_multiverse_binary-amd64_Packages.lz4",
+      "sha256": "c2c7e8898c8ecf892483b74771cc148974eb26bbf6f2bc636233020c6b39c8a2",
+      "size": 102231
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_restricted_binary-amd64_Packages.lz4",
+      "sha256": "505ff423de1751a70872fc0c3f7c768db90d65a85525b1a9fe8cdfb1b47935ab",
+      "size": 3705963
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_universe_binary-amd64_Packages.lz4",
+      "sha256": "eb1274135d00a12e974d9dc1a49af1abeb9f5c996aff65e061fa0825e9787cd1",
+      "size": 3618729
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble_InRelease",
+      "sha256": "cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0",
+      "size": 255850
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages.lz4",
+      "sha256": "5440959b1be383eee0871228f9a97a15f50e5ecf8ac726f3aa53b2c6903bcdf2",
+      "size": 2950155
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble_multiverse_binary-amd64_Packages.lz4",
+      "sha256": "9541f08c9d7b3b6c13064f51b47507222a9b92eea3e84155b92c5246a857a558",
+      "size": 530633
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble_restricted_binary-amd64_Packages.lz4",
+      "sha256": "94382ed0c9be97b6bdca794b26180b577b9b4aec27a3c648a95ca1629b551c54",
+      "size": 195876
+    },
+    {
+      "file": "archive.ubuntu.com_ubuntu_dists_noble_universe_binary-amd64_Packages.lz4",
+      "sha256": "0aa71c66135f20a4aa760fa788a42846a41c8628b6720d82f768b51b5c2d3895",
+      "size": 31234980
+    },
+    {
+      "file": "packages.ros.org_ros2_ubuntu_dists_noble_InRelease",
+      "sha256": "db99881d367f1fd10ab83f1bd2e1faeac4acf8fdbccbcf4fad01f1b008af0776",
+      "size": 4679
+    },
+    {
+      "file": "packages.ros.org_ros2_ubuntu_dists_noble_main_binary-amd64_Packages.lz4",
+      "sha256": "11f932be95b5b68eb282efac19a4183b309b7ee1ecc189e9de7c89f40ffa5f4f",
+      "size": 3413344
+    },
+    {
+      "file": "packages.ros.org_ros2_ubuntu_dists_noble_main_source_Sources.lz4",
+      "sha256": "b0a8323f20f9795012ec9ea4c8265346b33b0f0dd0fd6cc3b0bd53e1a23a6cd6",
+      "size": 3650857
+    },
+    {
+      "file": "security.ubuntu.com_ubuntu_dists_noble-security_InRelease",
+      "sha256": "0762124ebfc6d9149d7838baabf15bb48461dce96d7d3aa462c0426e91a2767a",
+      "size": 126127
+    },
+    {
+      "file": "security.ubuntu.com_ubuntu_dists_noble-security_main_binary-amd64_Packages.lz4",
+      "sha256": "03871b205f0b3ccb75fca67c89e68d7a030534ed2d47b38de1571bed914e1cca",
+      "size": 2316573
+    },
+    {
+      "file": "security.ubuntu.com_ubuntu_dists_noble-security_multiverse_binary-amd64_Packages.lz4",
+      "sha256": "2604e1872d78c008a126d8a6adc112996ca13ea41c517bf0d61d9eca353bb422",
+      "size": 92530
+    },
+    {
+      "file": "security.ubuntu.com_ubuntu_dists_noble-security_restricted_binary-amd64_Packages.lz4",
+      "sha256": "0beba4947eb5e081cc45f4ce4dd7ba88c1f56b4a88162b74502d60ef51724c2d",
+      "size": 3517259
+    },
+    {
+      "file": "security.ubuntu.com_ubuntu_dists_noble-security_universe_binary-amd64_Packages.lz4",
+      "sha256": "2f42a8fb43f99fb81fb92e748a1f0a93c78f7081f03446e3f2667fcbf4ea2b49",
+      "size": 2579940
+    }
+  ],
+  "native_amd64_acceptance": false,
+  "phases": [
+    {
+      "candidate": "/Users/williserdman/Documents/projects/drone_sim-console/.superpowers/sdd/2026-10-10-portable-local-console/amd64-lock-resolution/artifacts-direct.amd64.candidate.delta",
+      "candidate_sha256": "5dc0c3ef68106fe3d075e5826c38a335c414a79ffd8c222b99359e2447209623",
+      "downloads_verified": true,
+      "phase": "artifacts-direct",
+      "roots": [
+        "python3-venv=3.12.3-0ubuntu2.1",
+        "python3.12-venv=3.12.3-1ubuntu0.17",
+        "python3-pip-whl=24.0+dfsg-1ubuntu1.3",
+        "python3-setuptools-whl=68.1.2-2ubuntu1.2",
+        "python3-wheel=0.42.0-2",
+        "zstd=1.5.5+dfsg2-2build1.1",
+        "ros-jazzy-rosbag2=0.26.11-1noble.20261006.034645",
+        "ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.143733"
+      ],
+      "selected_count": 15,
+      "selected_download_bytes": 17696872
+    },
+    {
+      "candidate": "/Users/williserdman/Documents/projects/drone_sim-console/.superpowers/sdd/2026-10-10-portable-local-console/amd64-lock-resolution/ffmpeg-packages.amd64.candidate.lock",
+      "candidate_sha256": "2048c831d649fde6dd167f20709706cddf6c93bb1d09dcbb7ccafa452b9de71d",
+      "downloads_verified": true,
+      "phase": "artifacts-ffmpeg",
+      "roots": [
+        "ffmpeg=7:6.1.1-3ubuntu5"
+      ],
+      "selected_count": 146,
+      "selected_download_bytes": 107778832
+    },
+    {
+      "candidate": "/Users/williserdman/Documents/projects/drone_sim-console/.superpowers/sdd/2026-10-10-portable-local-console/amd64-lock-resolution/harmonic-packages.amd64.candidate.lock",
+      "candidate_sha256": "6bb600d901816d3733a0e5e46eca413edc715aff93a6ede40c4fbcd5849c3192",
+      "downloads_verified": true,
+      "phase": "gazebo-harmonic",
+      "roots": [
+        "ros-jazzy-ros-gz=1.0.24-1noble.20261006.041805",
+        "ros-jazzy-ros-gz-bridge=1.0.24-1noble.20260920.234644",
+        "ros-jazzy-ros-gz-image=1.0.24-1noble.20260921.023911",
+        "ros-jazzy-ros-gz-interfaces=1.0.24-1noble.20260911.110630",
+        "ros-jazzy-ros-gz-sim=1.0.24-1noble.20261006.035056",
+        "ros-jazzy-gz-sim-vendor=0.0.13-1noble.20260905.073557",
+        "ros-jazzy-sdformat-vendor=0.0.14-1noble.20260905.033543",
+        "zstd=1.5.5+dfsg2-2build1.1"
+      ],
+      "selected_count": 803,
+      "selected_download_bytes": 556722278
+    },
+    {
+      "candidate": "/Users/williserdman/Documents/projects/drone_sim-console/.superpowers/sdd/2026-10-10-portable-local-console/amd64-lock-resolution/viewer-packages.amd64.candidate.lock",
+      "candidate_sha256": "d29308041de14bb20d97208c0a647de1277655139ab292beadf69a1b327e3cbb",
+      "downloads_verified": true,
+      "phase": "viewer",
+      "roots": [
+        "dbus-bin=1.14.10-4ubuntu4.1",
+        "dbus-daemon=1.14.10-4ubuntu4.1",
+        "dbus-session-bus-common=1.14.10-4ubuntu4.1",
+        "dbus-x11=1.14.10-4ubuntu4.1",
+        "fonts-urw-base35=20200910-8",
+        "ieee-data=20220827.1",
+        "libcares2=1.27.0-1.0ubuntu1",
+        "libfontenc1=1:1.1.8-1build1",
+        "libgs-common=10.02.1~dfsg1-0ubuntu7.9",
+        "libgs10-common=10.02.1~dfsg1-0ubuntu7.9",
+        "libgs10=10.02.1~dfsg1-0ubuntu7.9",
+        "libid3tag0=0.15.1b-14build1",
+        "libidn12=1.42-1ubuntu0.1",
+        "libijs-0.35=0.35-15.1build1",
+        "libimlib2t64=1.12.1-1.1build2",
+        "libjbig2dec0=0.20-1ubuntu0.24.04.1",
+        "liblzo2-2=2.10-2build4",
+        "libnode109=18.19.1+dfsg-6ubuntu5",
+        "libobrender32v5=3.6.1-12build5",
+        "libobt2v5=3.6.1-12build5",
+        "libpangoxft-1.0-0=1.52.1+ds-1build1",
+        "libpaper1=1.1.29build1",
+        "libspectre1=0.2.12-1build2",
+        "libstartup-notification0=0.12-6build3",
+        "libvncclient1=0.9.14+dfsg-1ubuntu0.2",
+        "libvncserver1=0.9.14+dfsg-1ubuntu0.2",
+        "libxcomposite1=1:0.4.5-1build3",
+        "libxdamage1=1:1.1.6-1build1",
+        "libxfont2=1:2.0.6-1+deb13u1build0.24.04.2",
+        "libxkbfile1=1:1.1.0-1build4",
+        "libxmuu1=2:1.1.3-3build2",
+        "libxtst6=2:1.2.3-1.1build1",
+        "libxxf86dga1=2:1.1.5-1build1",
+        "net-tools=2.10-0.1ubuntu4.4",
+        "node-acorn=8.8.1+ds+~cs25.17.7-2",
+        "node-busboy=1.6.0+~cs2.6.0-2",
+        "node-cjs-module-lexer=1.2.3+dfsg-1",
+        "node-undici=5.26.3+dfsg1+~cs23.10.12-2",
+        "node-xtend=4.0.2-3",
+        "nodejs=18.19.1+dfsg-6ubuntu5",
+        "novnc=1:1.3.0-2",
+        "openbox=3.6.1-12build5",
+        "poppler-data=0.4.12-1",
+        "python-babel-localedata=2.10.3-3build1",
+        "python3-babel=2.10.3-3build1",
+        "python3-certifi=2023.11.17-1",
+        "python3-chardet=5.2.0+dfsg-1",
+        "python3-debtcollector=2.5.0-3",
+        "python3-deprecated=1.2.14-1",
+        "python3-dnspython=2.6.1-1ubuntu1",
+        "python3-eventlet=0.35.2-0ubuntu1.1",
+        "python3-greenlet=3.0.3-0ubuntu5.1",
+        "python3-idna=3.6-2ubuntu0.2",
+        "python3-iso8601=1.0.2-1",
+        "python3-jwcrypto=1.5.4-1",
+        "python3-monotonic=1.6-2",
+        "python3-msgpack=1.0.3-3build2",
+        "python3-netaddr=0.8.0-2ubuntu1",
+        "python3-netifaces=0.11.0-2build3",
+        "python3-novnc=1:1.3.0-2",
+        "python3-oslo.config=1:9.4.0-0ubuntu1",
+        "python3-oslo.context=1:5.5.0-0ubuntu1",
+        "python3-oslo.i18n=6.3.0-0ubuntu1",
+        "python3-oslo.log=5.5.1-0ubuntu1",
+        "python3-oslo.serialization=5.4.0-0ubuntu1",
+        "python3-oslo.utils=7.1.0-0ubuntu1",
+        "python3-pbr=5.11.1-0ubuntu1",
+        "python3-pyasyncore=1.0.2-2",
+        "python3-pyinotify=0.9.6-2ubuntu1",
+        "python3-requests=2.31.0+dfsg-1ubuntu1.2",
+        "python3-rfc3986=2.0.0-2",
+        "python3-stevedore=1:5.1.0-0ubuntu1",
+        "python3-typing-extensions=4.10.0-1",
+        "python3-urllib3=2.0.7-1ubuntu0.7",
+        "python3-websockify=0.10.0+dfsg1-5build2",
+        "python3-wrapt=1.15.0-2build3",
+        "tcl8.6=8.6.14+dfsg-1build1",
+        "tcl=8.6.14build1",
+        "tk8.6=8.6.14-1build1",
+        "tk=8.6.14build1",
+        "ucf=3.0043+nmu1",
+        "websockify=0.10.0+dfsg1-5build2",
+        "x11-utils=7.7+6build2",
+        "x11-xkb-utils=7.7+8build2",
+        "x11vnc=0.9.16-10",
+        "xauth=1:1.1.2-1build1",
+        "xfonts-encodings=1:1.0.5-0ubuntu2",
+        "xfonts-utils=1:7.7+6build3",
+        "xserver-common=2:21.1.12-1ubuntu1.8",
+        "xvfb=2:21.1.12-1ubuntu1.8"
+      ],
+      "selected_count": 90,
+      "selected_download_bytes": 45921782
+    }
+  ],
+  "run_directory": "/Users/williserdman/Documents/projects/drone_sim-console/.superpowers/sdd/2026-10-10-portable-local-console/amd64-lock-resolution/runs/20261012T221228Z-50964",
+  "utility_architecture": "aarch64"
+}

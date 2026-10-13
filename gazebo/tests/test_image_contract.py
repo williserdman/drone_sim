@@ -10,6 +10,9 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "gazebo/Dockerfile"
 PACKAGE_LOCK = ROOT / "gazebo/harmonic-packages.lock"
+AMD64_PACKAGE_LOCK_SHA256 = (
+    "6bb600d901816d3733a0e5e46eca413edc715aff93a6ede40c4fbcd5849c3192"
+)
 PROJECT = ROOT / "gazebo/pyproject.toml"
 IMAGE_TEST = ROOT / "gazebo/tests/test_gazebo_image"
 OGRE_WORKER_PATCH = ROOT / "gazebo/patches/gz-rendering8-inline-workers.patch"
@@ -19,13 +22,13 @@ BASE = (
     "sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4"
 )
 DIRECT_PACKAGES = {
-    "ros-jazzy-ros-gz": "1.0.22-1noble.20260616.074726",
-    "ros-jazzy-ros-gz-bridge": "1.0.22-1noble.20260615.142443",
-    "ros-jazzy-ros-gz-image": "1.0.22-1noble.20260615.145009",
-    "ros-jazzy-ros-gz-interfaces": "1.0.22-1noble.20260615.112415",
-    "ros-jazzy-ros-gz-sim": "1.0.22-1noble.20260615.173223",
-    "ros-jazzy-gz-sim-vendor": "0.0.10-1noble.20260604.111001",
-    "ros-jazzy-sdformat-vendor": "0.0.11-1noble.20260604.104102",
+    "ros-jazzy-ros-gz": "1.0.24-1noble.20261006.041805",
+    "ros-jazzy-ros-gz-bridge": "1.0.24-1noble.20260920.234644",
+    "ros-jazzy-ros-gz-image": "1.0.24-1noble.20260921.023911",
+    "ros-jazzy-ros-gz-interfaces": "1.0.24-1noble.20260911.110630",
+    "ros-jazzy-ros-gz-sim": "1.0.24-1noble.20261006.035056",
+    "ros-jazzy-gz-sim-vendor": "0.0.13-1noble.20260905.073557",
+    "ros-jazzy-sdformat-vendor": "0.0.14-1noble.20260905.033543",
     "zstd": "1.5.5+dfsg2-2build1.1",
 }
 UPGRADED_BASE_PACKAGES = {

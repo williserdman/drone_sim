@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 import yaml
 
@@ -127,7 +131,7 @@ def test_viewer_desktop_is_reconnectable_and_uses_matching_gazebo_runtime() -> N
     assert dockerfile.startswith(
         "FROM drone-sim-gazebo-runtime:phase3 AS viewer\n"
     )
-    assert "viewer-packages.arm64.lock" in dockerfile
+    assert "viewer-packages.${TARGETARCH}.lock" in dockerfile
     assert (
         "COPY gazebo/local-viewer/operator.html /usr/share/novnc/operator.html"
         in dockerfile
@@ -148,17 +152,92 @@ def test_viewer_desktop_is_reconnectable_and_uses_matching_gazebo_runtime() -> N
     for package in ("xvfb", "openbox", "x11vnc", "novnc", "websockify"):
         assert any(item.startswith(f"{package}=") for item in viewer_lock)
 
+    amd_lock = VIEWER_ROOT / "viewer-packages.amd64.lock"
+    assert amd_lock.read_bytes() == (
+        VIEWER_ROOT / "viewer-packages.arm64.lock"
+    ).read_bytes()
 
-def test_local_build_selects_native_arm64_and_all_runtime_images_deterministically() -> None:
-    from orchestration.local_build import EXPECTED_PLATFORM, IMAGE_REFS, RUNTIME_SERVICES as BUILD_SERVICES
+
+def test_local_build_selects_host_native_platform_and_all_runtime_images_deterministically() -> None:
+    from orchestration.local_build import IMAGE_REFS, RUNTIME_SERVICES as BUILD_SERVICES
 
     script = LOCAL_BUILD.read_text(encoding="utf-8")
 
-    assert EXPECTED_PLATFORM == "linux/arm64"
     assert set(BUILD_SERVICES) == RUNTIME_SERVICES
     assert len(IMAGE_REFS) == 8
     assert IMAGE_REFS[-1] == "drone-sim-gazebo-viewer:local"
     assert "python -m orchestration.local_build" in script
+
+
+def test_metadata_verified_amd64_lock_candidates_are_applied_exactly() -> None:
+    expected = {
+        ROOT / "artifacts/ffmpeg-packages.lock": "2048c831d649fde6dd167f20709706cddf6c93bb1d09dcbb7ccafa452b9de71d",
+        ROOT / "gazebo/harmonic-packages.lock": "6bb600d901816d3733a0e5e46eca413edc715aff93a6ede40c4fbcd5849c3192",
+        ROOT / "gazebo/local-viewer/viewer-packages.amd64.lock": "d29308041de14bb20d97208c0a647de1277655139ab292beadf69a1b327e3cbb",
+    }
+
+    for path, digest in expected.items():
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+
+    artifacts = (ROOT / "artifacts/Dockerfile").read_text(encoding="utf-8")
+    gazebo = (ROOT / "gazebo/Dockerfile").read_text(encoding="utf-8")
+    assert "ros-jazzy-rosbag2=0.26.11-1noble.20261006.034645" in artifacts
+    assert (
+        "ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.143733"
+        in artifacts
+    )
+    assert (
+        "ROSBAG2_PACKAGE_ARM64="
+        "ros-jazzy-rosbag2=0.26.11-1noble.20261006.034453"
+        in artifacts
+    )
+    assert (
+        "ROSBAG2_STORAGE_MCAP_PACKAGE_ARM64="
+        "ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.095159"
+        in artifacts
+    )
+    assert 'case "${TARGETARCH}" in' in artifacts
+    assert "DRONE_SIM_APT_PACKAGE_LOCK_FILE=" in artifacts
+    for package in (
+        "ros-jazzy-ros-gz=1.0.24-1noble.20261006.041805",
+        "ros-jazzy-ros-gz-bridge=1.0.24-1noble.20260920.234644",
+        "ros-jazzy-ros-gz-image=1.0.24-1noble.20260921.023911",
+        "ros-jazzy-ros-gz-interfaces=1.0.24-1noble.20260911.110630",
+        "ros-jazzy-ros-gz-sim=1.0.24-1noble.20261006.035056",
+        "ros-jazzy-gz-sim-vendor=0.0.13-1noble.20260905.073557",
+        "ros-jazzy-sdformat-vendor=0.0.14-1noble.20260905.033543",
+    ):
+        assert package in gazebo
+
+
+def test_amd64_lock_resolution_evidence_and_resolver_are_retained() -> None:
+    summary = json.loads(
+        (ROOT / "docs/amd64-lock-resolution-summary.json").read_text(encoding="utf-8")
+    )
+    phases = {item["phase"]: item for item in summary["phases"]}
+
+    assert summary["apt_architecture"] == "amd64"
+    assert summary["native_amd64_acceptance"] is False
+    assert summary["docker_inventory_unchanged"] is True
+    assert len(summary["indexes"]) == 22
+    assert phases["artifacts-ffmpeg"]["candidate_sha256"] == (
+        "2048c831d649fde6dd167f20709706cddf6c93bb1d09dcbb7ccafa452b9de71d"
+    )
+    assert phases["gazebo-harmonic"]["candidate_sha256"] == (
+        "6bb600d901816d3733a0e5e46eca413edc715aff93a6ede40c4fbcd5849c3192"
+    )
+    assert phases["viewer"]["candidate_sha256"] == (
+        "d29308041de14bb20d97208c0a647de1277655139ab292beadf69a1b327e3cbb"
+    )
+
+    help_result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/resolve-amd64-locks.py"), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    assert "--skip-downloads" in help_result.stdout
 
 
 def test_local_build_has_a_read_only_reuse_check_and_ignored_atomic_record() -> None:

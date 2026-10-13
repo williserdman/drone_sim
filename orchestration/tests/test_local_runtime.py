@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from artifacts.qgc_operator import MavlinkIdentity
 from orchestration.host_config import HostFacts
@@ -60,3 +61,30 @@ def test_local_runtime_build_calls_python_builder_with_shared_workstation(
     assert runtime.build() == {"ok": True}
     assert calls == [(tmp_path.resolve(), host, workstation)]
     assert "DRONE_SIM_WORKSTATION_LOCK_HELD" not in __import__("os").environ
+
+
+def test_local_runtime_accepts_native_amd64_daemon_for_amd64_host(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import orchestration.local_runtime as local_runtime
+
+    host = FakeHost(tmp_path / "state")
+    runtime = LocalRuntime(tmp_path, host=host)
+    runtime._run = lambda _command: SimpleNamespace(
+        returncode=0,
+        stdout='{"OSType":"linux","Architecture":"x86_64","NCPU":6,"MemTotal":12884901888}',
+        stderr="",
+    )
+    monkeypatch.setattr(
+        local_runtime,
+        "check_build",
+        lambda _project, _host: {"ok": True, "reasons": []},
+    )
+
+    result = runtime.checks(active=True)
+
+    daemon = next(
+        row for row in result["checks"] if row["name"] == "Local Linux runtime"
+    )
+    assert daemon["ok"] is True
+    assert result["provenance"]["ok"] is True

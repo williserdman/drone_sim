@@ -1,8 +1,17 @@
 FROM ros:jazzy-ros-base@sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4 AS runtime
 
 ARG TARGETARCH
+ARG ROSBAG2_PACKAGE=ros-jazzy-rosbag2=0.26.11-1noble.20261006.034645
+ARG ROSBAG2_STORAGE_MCAP_PACKAGE=ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.143733
+ARG ROSBAG2_PACKAGE_ARM64=ros-jazzy-rosbag2=0.26.11-1noble.20261006.034453
+ARG ROSBAG2_STORAGE_MCAP_PACKAGE_ARM64=ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.095159
 
-RUN apt-get update \
+RUN case "${TARGETARCH}" in \
+        amd64) direct_packages="$ROSBAG2_PACKAGE $ROSBAG2_STORAGE_MCAP_PACKAGE" ;; \
+        arm64) direct_packages="$ROSBAG2_PACKAGE_ARM64 $ROSBAG2_STORAGE_MCAP_PACKAGE_ARM64" ;; \
+        *) printf 'unsupported target architecture: %s\n' "${TARGETARCH}" >&2; exit 2 ;; \
+    esac \
+    && apt-get update \
     && apt-get install --yes --no-install-recommends \
         python3-venv=3.12.3-0ubuntu2.1 \
         python3.12-venv=3.12.3-1ubuntu0.17 \
@@ -10,8 +19,17 @@ RUN apt-get update \
         python3-setuptools-whl=68.1.2-2ubuntu1.2 \
         python3-wheel=0.42.0-2 \
         zstd=1.5.5+dfsg2-2build1.1 \
-        ros-jazzy-rosbag2=0.26.11-1noble.20261006.034453 \
-        ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.095159 \
+        ${direct_packages} \
+    && mkdir -p /etc/drone_sim \
+    && printf '%s\n' \
+        python3-venv=3.12.3-0ubuntu2.1 \
+        python3.12-venv=3.12.3-1ubuntu0.17 \
+        python3-pip-whl=24.0+dfsg-1ubuntu1.3 \
+        python3-setuptools-whl=68.1.2-2ubuntu1.2 \
+        python3-wheel=0.42.0-2 \
+        zstd=1.5.5+dfsg2-2build1.1 \
+        ${direct_packages} \
+        > /etc/drone_sim/artifacts-direct-packages.lock \
     && rm -rf /var/lib/apt/lists/*
 
 COPY artifacts/ffmpeg-packages.lock /etc/drone_sim/ffmpeg-packages.amd64.lock
@@ -71,7 +89,7 @@ FROM runtime AS test
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/drone_sim/venv
 ENV DRONE_SIM_REQUIRE_ROS_TESTS=1
-ENV DRONE_SIM_APT_PACKAGE_LOCK="python3-venv=3.12.3-0ubuntu2.1,python3.12-venv=3.12.3-1ubuntu0.17,python3-pip-whl=24.0+dfsg-1ubuntu1.3,python3-setuptools-whl=68.1.2-2ubuntu1.2,python3-wheel=0.42.0-2,zstd=1.5.5+dfsg2-2build1.1,ros-jazzy-rosbag2=0.26.11-1noble.20261006.034453,ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.095159"
+ENV DRONE_SIM_APT_PACKAGE_LOCK_FILE=/etc/drone_sim/artifacts-direct-packages.lock
 ENV DRONE_SIM_FFMPEG_APT_PACKAGE_LOCK=/etc/drone_sim/ffmpeg-packages.lock
 ENV DRONE_SIM_TEST_RUN_VOLUME=/test-run-volume
 ENV PYTEST_ADDOPTS="--basetemp=/test-run-volume/pytest"

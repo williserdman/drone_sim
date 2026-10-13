@@ -428,7 +428,8 @@ def test_ardupilot_starts_after_gazebo_service_without_dependency_cycle() -> Non
 
 
 def test_phase2_profile_remains_exactly_the_original_seven_services() -> None:
-    assert set(_compose_document(profile="phase2")["services"]) == {
+    phase2_services = _compose_document(profile="phase2")["services"]
+    assert set(phase2_services) == {
         "orchestration-runtime",
         "artifacts-runtime",
         "synthetic-companion",
@@ -437,3 +438,4 @@ def test_phase2_profile_remains_exactly_the_original_seven_services() -> None:
         "synthetic-electromagnet",
         "synthetic-scorekeeper",
     }
+    assert "gazebo-viewer" not in phase2_services

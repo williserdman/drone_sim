@@ -44,6 +44,12 @@ resources as a substitute for public physical truth.
   downstream-patched ArduPilot Gazebo integration. Its moving-pad controller
   drives a world-fixed prismatic rail with joint velocity; it never resets the
   deck pose or attaches a landed vehicle.
+- [Dockerfile](Dockerfile) selects the complete pinned Harmonic package delta
+  for Docker's native `TARGETARCH`. [local-viewer/Dockerfile](local-viewer/Dockerfile)
+  selects the matching ARM64 or AMD64 desktop package lock. The AMD64 locks are
+  metadata/solver verified against signed indexes; native AMD64 installation,
+  compilation, and runtime acceptance remain pending. The resolver and compact
+  checksum evidence are linked from the [runbook](../docs/runbook.md#native-local-image-build).
 
 ## Interfaces
 

@@ -47,6 +47,42 @@ runtime import closure; adding a new mission module may require updating it.
 
 ## Build runtime images
 
+### Native local image build
+
+The local builder supports native `linux/arm64` and `linux/amd64` engines. It
+derives the target from the detected host and accepts Docker's ARM64 aliases
+`arm64` and `aarch64`, and AMD64 aliases `amd64` and `x86_64`. Use a local
+engine from the configured provider. Remote `DOCKER_HOST` or context endpoints,
+TLS endpoint overrides, emulation, and a conflicting `DOCKER_DEFAULT_PLATFORM`
+are rejected before Compose build or simulation preparation.
+
+Run the same commands on each native workstation:
+
+```bash
+./scripts/local-build.sh --build
+./scripts/local-build.sh --check
+```
+
+The build holds the shared workstation lease, builds the seven Phase 3 runtime
+services and then the local Gazebo viewer, verifies all eight actual image
+architectures and identities, and publishes one schema-1 record. The read-only
+check never rewrites an old record. Keep at least 4 CPUs and 8 GiB memory, with
+6 CPUs and 12 GiB recommended, plus the existing 8 GiB free-disk minimum.
+
+The AMD64 apt locks were resolved with
+[`scripts/resolve-amd64-locks.py`](../scripts/resolve-amd64-locks.py). The tool
+uses the pinned ARM64 ROS image only as an apt utility, selects AMD64 in an
+isolated package database, validates signed Ubuntu and ROS indexes, downloads
+every selected archive, and checks its metadata SHA-256. See the
+[resolution report](amd64-lock-resolution.md) and
+[signed-index inventory](amd64-lock-resolution-summary.json). This proves the
+metadata and solver result. Native AMD64 package scripts, compilation, image
+inspection, and runtime behavior still require the two commands above on an
+AMD64 workstation.
+
+The unattended/cloud workflow remains a seven-image build. It does not build or
+depend on the local QGC/Gazebo viewer image.
+
 ### Local Mac console
 
 Use the PR #3 based checkout with native arm64 Colima and QGroundControl at

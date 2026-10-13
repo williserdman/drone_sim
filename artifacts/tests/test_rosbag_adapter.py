@@ -2028,6 +2028,20 @@ def test_real_jazzy_endpoint_shape_rejects_wrong_recorder_topic_type(tmp_path):
 def test_test_image_apt_dependencies_match_recorded_exact_versions():
     if os.environ.get("DRONE_SIM_REQUIRE_ROS_TESTS") != "1":
         pytest.skip("apt dependency lock is verified in the artifact test image")
+    architecture = subprocess.check_output(
+        ["dpkg", "--print-architecture"], text=True
+    ).strip()
+    ros_versions = {
+        "amd64": (
+            "0.26.11-1noble.20261006.034645",
+            "0.26.11-1noble.20260911.143733",
+        ),
+        "arm64": (
+            "0.26.11-1noble.20261006.034453",
+            "0.26.11-1noble.20260911.095159",
+        ),
+    }
+    rosbag2_version, storage_version = ros_versions[architecture]
     expected = {
         "python3-venv": "3.12.3-0ubuntu2.1",
         "python3.12-venv": "3.12.3-1ubuntu0.17",
@@ -2035,14 +2049,14 @@ def test_test_image_apt_dependencies_match_recorded_exact_versions():
         "python3-setuptools-whl": "68.1.2-2ubuntu1.2",
         "python3-wheel": "0.42.0-2",
         "zstd": "1.5.5+dfsg2-2build1.1",
-        "ros-jazzy-rosbag2": "0.26.11-1noble.20261006.034453",
-        "ros-jazzy-rosbag2-storage-mcap": "0.26.11-1noble.20260911.095159",
+        "ros-jazzy-rosbag2": rosbag2_version,
+        "ros-jazzy-rosbag2-storage-mcap": storage_version,
     }
-    recorded_lock = os.environ.get("DRONE_SIM_APT_PACKAGE_LOCK")
-    assert recorded_lock is not None, "artifact test image must record its apt package lock"
+    lock_file = os.environ.get("DRONE_SIM_APT_PACKAGE_LOCK_FILE")
+    assert lock_file is not None, "artifact test image must record its apt package lock"
     recorded = dict(
         item.split("=", 1)
-        for item in recorded_lock.split(",")
+        for item in Path(lock_file).read_text(encoding="utf-8").splitlines()
     )
     installed = {
         package: subprocess.check_output(

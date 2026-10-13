@@ -4,19 +4,26 @@ ARG TARGETARCH
 
 COPY gazebo/local-viewer/viewer-packages.arm64.lock \
     /etc/drone_sim/viewer-packages.arm64.lock
-RUN test "${TARGETARCH}" = "arm64" \
+COPY gazebo/local-viewer/viewer-packages.amd64.lock \
+    /etc/drone_sim/viewer-packages.amd64.lock
+RUN case "${TARGETARCH}" in \
+        amd64|arm64) ;; \
+        *) printf 'unsupported target architecture: %s\n' "${TARGETARCH}" >&2; exit 2 ;; \
+    esac \
+    && cp "/etc/drone_sim/viewer-packages.${TARGETARCH}.lock" \
+        /etc/drone_sim/viewer-packages.lock \
     && dpkg-query -W -f='${binary:Package}=${Version}\n' \
         | sed -E 's/:(amd64|arm64)=/=/g' \
         | sort > /tmp/packages-before-viewer \
     && apt-get update \
-    && xargs --arg-file=/etc/drone_sim/viewer-packages.arm64.lock \
+    && xargs --arg-file=/etc/drone_sim/viewer-packages.lock \
         apt-get install --yes --no-install-recommends \
     && dpkg-query -W -f='${binary:Package}=${Version}\n' \
         | sed -E 's/:(amd64|arm64)=/=/g' \
         | sort > /tmp/packages-after-viewer \
     && comm -13 /tmp/packages-before-viewer /tmp/packages-after-viewer \
         | sort > /tmp/viewer-installed-delta \
-    && sort /etc/drone_sim/viewer-packages.arm64.lock \
+    && sort /etc/drone_sim/viewer-packages.lock \
         > /tmp/viewer-expected-delta \
     && diff --unified \
         /tmp/viewer-expected-delta /tmp/viewer-installed-delta \

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -16,7 +17,6 @@ from .host_integration import HostIntegration, resolve_host
 from .workstation import Workstation
 
 
-EXPECTED_PLATFORM = "linux/arm64"
 RUNTIME_SERVICES = (
     "orchestration-runtime",
     "artifacts-runtime",
@@ -53,6 +53,19 @@ _INPUT_PATHS = (
     "ros_ws",
     "scorekeeper",
 )
+_ARCHITECTURE_ALIASES = {
+    "aarch64": "arm64",
+    "arm64": "arm64",
+    "amd64": "amd64",
+    "x86_64": "amd64",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _DockerState:
+    context: str
+    endpoint: str
+    platform: str
 
 
 def _check_output(command: Sequence[str], **kwargs: Any) -> str:
@@ -65,6 +78,112 @@ def _revision(project_directory: Path) -> str:
         stderr=subprocess.DEVNULL,
         text=True,
     ).strip()
+
+
+def _target_platform(host: HostIntegration) -> str:
+    platform = host.facts.image_platform
+    if platform not in {"linux/arm64", "linux/amd64"}:
+        raise RuntimeError(f"host selected unsupported image platform {platform}")
+    return platform
+
+
+def _platform(os_type: object, architecture: object) -> str:
+    if not isinstance(os_type, str) or not isinstance(architecture, str):
+        raise RuntimeError("Docker engine returned invalid platform metadata")
+    normalized = _ARCHITECTURE_ALIASES.get(architecture.lower())
+    if os_type.lower() != "linux" or normalized is None:
+        raise RuntimeError(f"Docker engine has platform {os_type}/{architecture}")
+    return f"linux/{normalized}"
+
+
+def _context_document(context: str) -> Mapping[str, object]:
+    raw = json.loads(
+        _check_output(
+            ["docker", "context", "inspect", context],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    )
+    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
+        raise RuntimeError("Docker context inspection returned invalid metadata")
+    return raw[0]
+
+
+def _docker_state(host: HostIntegration) -> _DockerState:
+    target_platform = _target_platform(host)
+    shown_context = _check_output(
+        ["docker", "context", "show"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+    configured_context = os.environ.get("DOCKER_CONTEXT", "").strip()
+    context = configured_context or shown_context
+    if not context:
+        raise RuntimeError("Docker context is unavailable")
+    if configured_context and shown_context != configured_context:
+        raise RuntimeError("Docker context selection does not match DOCKER_CONTEXT")
+
+    document = _context_document(context)
+    endpoints = document.get("Endpoints")
+    if not isinstance(endpoints, dict):
+        raise RuntimeError("Docker context has no endpoint metadata")
+    docker_endpoint = endpoints.get("docker")
+    if not isinstance(docker_endpoint, dict):
+        raise RuntimeError("Docker context has no Docker endpoint")
+    context_host = docker_endpoint.get("Host")
+    if not isinstance(context_host, str) or not context_host:
+        raise RuntimeError("Docker context has an invalid Docker endpoint")
+
+    configured_host = os.environ.get("DOCKER_HOST", "").strip()
+    endpoint = context_host if configured_context else configured_host or context_host
+    if not endpoint.startswith("unix://"):
+        raise RuntimeError(
+            "local Docker endpoint is required; effective endpoint is remote"
+        )
+
+    tls_environment = tuple(
+        name
+        for name in ("DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH")
+        if os.environ.get(name, "").strip()
+    )
+    if (
+        tls_environment
+        or docker_endpoint.get("SkipTLSVerify") is True
+        or bool(document.get("TLSMaterial"))
+    ):
+        raise RuntimeError(
+            "local Docker endpoint cannot use TLS environment or context material"
+        )
+
+    if host.facts.provider == "colima" and context != "colima":
+        raise RuntimeError(
+            f"host provider colima requires Docker context colima; found {context}"
+        )
+    if host.facts.provider not in {"colima", "docker", "docker-desktop"}:
+        raise RuntimeError(f"host selected unsupported Docker provider {host.facts.provider}")
+
+    configured_platform = os.environ.get("DOCKER_DEFAULT_PLATFORM", "").strip()
+    if configured_platform and configured_platform != target_platform:
+        raise RuntimeError(
+            "DOCKER_DEFAULT_PLATFORM selects "
+            f"{configured_platform}, expected native {target_platform}"
+        )
+
+    info = json.loads(
+        _check_output(
+            ["docker", "info", "--format", "{{json .}}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    )
+    if not isinstance(info, dict):
+        raise RuntimeError("Docker engine returned invalid information")
+    platform = _platform(info.get("OSType"), info.get("Architecture"))
+    if platform != target_platform:
+        raise RuntimeError(
+            f"Docker engine has platform {platform}, expected native {target_platform}"
+        )
+    return _DockerState(context=context, endpoint=endpoint, platform=platform)
 
 
 def runtime_input_digest(project_directory: Path) -> str:
@@ -114,7 +233,7 @@ def _inspect_image(image_ref: str, revision: str) -> dict[str, object]:
             text=True,
         )
     )[0]
-    platform = f'{document["Os"]}/{document["Architecture"]}'
+    platform = _platform(document["Os"], document["Architecture"])
     if image_ref == "drone-sim-companion-runtime:phase3":
         labels = document.get("Config", {}).get("Labels") or {}
         if labels.get("org.opencontainers.image.comp2026.revision") != revision:
@@ -132,35 +251,34 @@ def _inspect_image(image_ref: str, revision: str) -> dict[str, object]:
 def check_build(
     project_directory: Path, host: HostIntegration
 ) -> dict[str, object]:
-    """Inspect the existing ARM64 image set without changing it."""
-    del host  # Task 7 uses host facts when extending the platform gate.
+    """Inspect the existing native image set without changing it."""
     root = project_directory.resolve()
     revision = _revision(root)
     tree_digest = runtime_input_digest(root)
+    target_platform = _target_platform(host)
     record_path = root / ".local-runtime/build.json"
     reasons: list[str] = []
+    docker_state: _DockerState | None = None
     try:
-        docker_context: str | None = _check_output(
-            ["docker", "context", "show"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        docker_context = None
-        reasons.append("Docker context is unavailable")
-    try:
-        server_platform: str | None = _check_output(
-            ["docker", "info", "--format", "{{.OSType}}/{{.Architecture}}"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        if server_platform == "linux/aarch64":
-            server_platform = EXPECTED_PLATFORM
-        if server_platform != EXPECTED_PLATFORM:
-            reasons.append(f"Docker engine has platform {server_platform}")
-    except (OSError, subprocess.CalledProcessError):
+        docker_state = _docker_state(host)
+        docker_context: str | None = docker_state.context
+        server_platform: str | None = docker_state.platform
+    except (
+        OSError,
+        RuntimeError,
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+    ) as error:
+        try:
+            docker_context = _check_output(
+                ["docker", "context", "show"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip() or None
+        except (OSError, subprocess.CalledProcessError):
+            docker_context = None
         server_platform = None
-        reasons.append("Docker engine is unavailable")
+        reasons.append(str(error) or "Docker engine is unavailable")
     try:
         record: Mapping[str, object] | None = json.loads(
             record_path.read_text(encoding="utf-8")
@@ -173,7 +291,7 @@ def check_build(
         reasons.append(f"local image build record is unreadable: {error}")
 
     current_images: list[dict[str, object]] = []
-    for image_ref in IMAGE_REFS:
+    for image_ref in IMAGE_REFS if docker_state is not None else ():
         try:
             inspection = _inspect_image(image_ref, revision)
         except (
@@ -191,7 +309,7 @@ def check_build(
                 reasons.append(f"local image is missing or unreadable: {image_ref}")
             continue
         current_images.append(inspection)
-        if inspection["os_architecture"] != EXPECTED_PLATFORM:
+        if inspection["os_architecture"] != target_platform:
             reasons.append(
                 f'local image has platform {inspection["os_architecture"]}: {image_ref}'
             )
@@ -204,8 +322,8 @@ def check_build(
             reasons.append("runtime build inputs changed since the local image build")
         if record.get("docker_context") != docker_context:
             reasons.append("Docker context changed since the local image build")
-        if record.get("target_platform") != EXPECTED_PLATFORM:
-            reasons.append("local image build record is not for linux/arm64")
+        if record.get("target_platform") != target_platform:
+            reasons.append(f"local image build record is not for {target_platform}")
         if record.get("images") != current_images:
             reasons.append("local image identities changed since the build record")
     return {
@@ -235,27 +353,16 @@ def build_images(
     host: HostIntegration,
     workstation: Workstation,
 ) -> None:
-    """Build and record the eight legacy ARM64 runtime images under one lease."""
+    """Build and record the eight native runtime images under one lease."""
     root = project_directory.resolve()
     with workstation.hold(allow_nested=True):
+        target_platform = _target_platform(host)
+        docker_state = _docker_state(host)
         revision = _revision(root)
         tree_digest = runtime_input_digest(root)
-        try:
-            architecture = _check_output(
-                ["docker", "version", "--format", "{{.Server.Arch}}"],
-                text=True,
-            ).strip()
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise RuntimeError(
-                "local build requires a running arm64 Docker engine"
-            ) from error
-        if architecture not in {"arm64", "aarch64"}:
-            raise RuntimeError(
-                f"local build requires an arm64 Docker engine; found {architecture}"
-            )
         environment = {
             **os.environ,
-            "DOCKER_DEFAULT_PLATFORM": EXPECTED_PLATFORM,
+            "DOCKER_DEFAULT_PLATFORM": target_platform,
             "SIM_COMP2026_REVISION": revision,
         }
         _run(
@@ -282,19 +389,21 @@ def build_images(
             )
         images = [_inspect_image(image_ref, revision) for image_ref in IMAGE_REFS]
         for image in images:
-            if image["os_architecture"] != EXPECTED_PLATFORM:
+            if image["os_architecture"] != target_platform:
                 raise RuntimeError(
-                    f'image {image["image"]} has platform {image["os_architecture"]}, expected {EXPECTED_PLATFORM}'
+                    f'image {image["image"]} has platform {image["os_architecture"]}, expected {target_platform}'
                 )
-        docker_context = _check_output(
-            ["docker", "context", "show"], text=True
-        ).strip()
+        final_docker_state = _docker_state(host)
+        if final_docker_state != docker_state:
+            raise RuntimeError(
+                "Docker context, endpoint, or platform changed during the build"
+            )
         record = {
             "schema_version": 1,
             "source_revision": revision,
             "source_tree_sha256": tree_digest,
-            "docker_context": docker_context,
-            "target_platform": EXPECTED_PLATFORM,
+            "docker_context": docker_state.context,
+            "target_platform": target_platform,
             "images": images,
         }
         record_directory = root / ".local-runtime"
