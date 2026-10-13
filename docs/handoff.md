@@ -11,8 +11,8 @@ imported Comp2026 source and history, historical run evidence, QGC selection, an
 existing action files remain preserved. The complete dated results are in the
 [portable-console verification record](verification/2026-10-10-portable-local-console.md).
 
-The final supported software gate passed 2,974 tests with 42 explicit capability
-skips in the Linux harness. Configured mypy passed 13 source files, the browser
+The final supported software gate at `81c538c` passed 2,986 tests with 42 explicit
+capability skips in the Linux harness. Configured mypy passed 13 source files, the browser
 Prepare/Stop/Run Again and reconnect check passed, and the separate imported
 Comp2026 process passed 684 tests. The portability diff did not change
 `companion/comp2026` or mission configuration bytes.
@@ -28,9 +28,10 @@ blocked.
 All eight `linux/arm64` images built and checked on Apple Silicon at committed
 source `19b499c`. The build compiled the native Gazebo plugins and passed all five
 plugin CTests. Dated raw logs and build records remain under
-`.local-runtime/verification/2026-10-10-portable-local-console/`. Documentation
-and final-review commits require one final matching cached build/check before
-handoff; they do not justify another runtime session against the historical tag.
+`.local-runtime/verification/2026-10-10-portable-local-console/`. The
+[final handoff receipt](../.local-runtime/verification/2026-10-10-portable-local-console/final-handoff.json)
+identifies the later source revision, matching build/check, and idle console
+restart. The prepared-session evidence below remains tied to `19b499c`.
 
 Actual configured diagnostic `95bc1701-a129-4d3f-9e88-f741a213d4e2` exercised
 native QGC 5.0.8, the real UDP bridge, all eight containers, fresh onboard camera,

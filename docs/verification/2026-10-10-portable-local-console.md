@@ -8,7 +8,7 @@ not close current portable-console gaps.
 
 | Target | Recorded environment | Source and build evidence | Native result | Outstanding gaps |
 | --- | --- | --- | --- | --- |
-| macOS 26.6.2, Apple M-series ARM64 | Darwin 25.6.0; 10 host CPUs; 32 GiB RAM; Colima 0.10.3 using Apple virtualization; Docker client 29.6.1 and server 29.5.2; Compose 5.2.0; QGC 5.0.8 universal ARM64/x86-64 | Eight-image `linux/arm64` build and check passed at `19b499c96e60a75456443354c0018b207d712c8e`: [build log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-build-19b499c.log), [check log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-check-19b499c.log), and [build record](../../.local-runtime/verification/2026-10-10-portable-local-console/build-19b499c.json). Documentation and final-review commits require a final matching cached rebuild/check before handoff. | Configured diagnostic `95bc1701-a129-4d3f-9e88-f741a213d4e2`: genuine QGC launch and bidirectional transport, fresh camera, real noVNC RFB connection, `PREPARED` after 15 minutes 20 seconds, and supported Stop/verified cleanup. See the [Prepare response](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepare-19b499c.json), [live session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-live-19b499c.json), [prepared session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepared-19b499c.json), [final session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-final-19b499c.json), [cleanup inventory](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-cleanup-resources-19b499c.log), and [manifest](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-manifest-19b499c.json). No aircraft command was sent. | Native action selection and click, Start/Abort, touchdown/disarm, takeover, stale-action rejection, Comp2026 flight, scoring, artifact acceptance, and native tlog remain pending. |
+| macOS 26.6.2, Apple M-series ARM64 | Darwin 25.6.0; 10 host CPUs; 32 GiB RAM; Colima 0.10.3 using Apple virtualization; Docker client 29.6.1 and server 29.5.2; Compose 5.2.0; QGC 5.0.8 universal ARM64/x86-64 | Eight-image `linux/arm64` build and check passed at `19b499c96e60a75456443354c0018b207d712c8e`: [build log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-build-19b499c.log), [check log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-check-19b499c.log), and [build record](../../.local-runtime/verification/2026-10-10-portable-local-console/build-19b499c.json). The later matching build and idle console restart are recorded separately in the [handoff receipt](../../.local-runtime/verification/2026-10-10-portable-local-console/final-handoff.json). | Configured diagnostic `95bc1701-a129-4d3f-9e88-f741a213d4e2`: genuine QGC launch and bidirectional transport, fresh camera, real noVNC RFB connection, `PREPARED` after 15 minutes 20 seconds, and supported Stop/verified cleanup. See the [Prepare response](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepare-19b499c.json), [live session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-live-19b499c.json), [prepared session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepared-19b499c.json), [final session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-final-19b499c.json), [cleanup inventory](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-cleanup-resources-19b499c.log), and [manifest](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-manifest-19b499c.json). No aircraft command was sent. | Native action selection and click, Start/Abort, touchdown/disarm, takeover, stale-action rejection, Comp2026 flight, scoring, artifact acceptance, and native tlog remain pending. |
 | macOS 13+, Intel x86-64 | No machine available. | Source tests cover the host adapter; no native build. | Not run. | Native eight-image AMD64 build/check, QGC, Prepare, flight, and cleanup. |
 | Ubuntu 24.04 desktop, ARM64 | No machine available. | Source tests cover native Linux discovery. | Not run. | Architecture-matched QGC metadata/install, native build/check, Prepare, flight, and cleanup. |
 | Ubuntu 24.04 desktop, x86-64 | No machine available. | AMD64 package candidates were resolved from signed indexes, downloaded, and checksum-verified; this did not execute AMD64 code. | Not run. | Native package scripts, compilation, eight-image build/check, QGC, Prepare, flight, and cleanup. |
@@ -19,18 +19,26 @@ support matrix.
 
 ## Supported software gates
 
-The final corrected source contents were committed as `19b499c`. The Linux
-harness reported base revision `745bba5` plus the tracked correction because the
-gate ran immediately before that commit.
+The final portability corrections were committed as `81c538c`. The Linux
+harness reported base revision `19fa037` plus the tracked corrections because
+the gate ran immediately before that commit. The [final fix report](../../.local-runtime/verification/2026-10-10-portable-local-console/final-fix-report.md)
+retains the commands and output; the [scoped review](../../.local-runtime/verification/2026-10-10-portable-local-console/final-rereview.md)
+confirms both findings were resolved and no new issue was found.
 
 ```text
 scripts/test-linux.sh orchestration/tests artifacts/tests companion/tests \
   electromagnet/tests gazebo/tests ardupilot_sitl/tests scorekeeper/tests tests -q
-2974 passed, 42 skipped in 59.53s
+2986 passed, 42 skipped in 62.77s
 
 uv run --locked mypy
 Success: no issues found in 13 source files
 
+```
+
+The browser and imported mission source were unchanged by the final fixes.
+Their preceding successful gates remain:
+
+```text
 uv run --with playwright python tests/browser/check_console_views.py
 PASS: native-QGC guidance, Prepare/Stop/Run Again requests, desktop reconnect,
 and disconnected view indicators
@@ -59,6 +67,15 @@ The 42 Linux skips are explicit capability gates for dependencies unavailable
 inside the nested test container. Native results above are recorded separately.
 
 ## ARM64 build and prepared-session evidence
+
+The final handoff uses the same build and check commands below. Its exact
+source revision, eight image identities, and idle console restart are recorded
+in the [handoff receipt](../../.local-runtime/verification/2026-10-10-portable-local-console/final-handoff.json),
+[build output](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-build-final.log),
+[check output](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-check-final.log),
+and [build record](../../.local-runtime/verification/2026-10-10-portable-local-console/build-final.json).
+The historical run below remains evidence for `19b499c`; a later image build
+does not upgrade its flight or artifact outcome.
 
 The exact native build commands and results were:
 
