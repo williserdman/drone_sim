@@ -245,7 +245,7 @@ Software verification and independent review passed at `7c0241a`: 239 affected L
 - Adds `RunController.start(..., on_before_inventory: Callable[[], None] | None = None)` after runtime freeze/media final status and before Docker log capture or artifact inventory. This callback stops run transport and manifest log writers, while the native lease-only helper stays alive through verified teardown. A callback failure prevents accepting mutable evidence.
 - Produces the existing intervention/vehicle observation files unchanged, plus visible transport failure status. No new MAVLink parser, command constructor, ACK/retry path, or learned peer.
 
-- [ ] **Write RED byte/race tests** using real loopback TCP and both direct-UDP and queued transport fixtures. Preserve existing MAVLink frame/source tests; add buffered COMMAND_LONG and other command frames, fragmented TCP, interleaved observations, foreign sender, helper EOF during flight, and reconnect after verified same-run recovery. Assert:
+- [x] **Write RED byte/race tests** using real loopback TCP and both direct-UDP and queued transport fixtures. Preserve existing MAVLink frame/source tests; add buffered COMMAND_LONG and other command frames, fragmented TCP, interleaved observations, foreign sender, helper EOF during flight, and reconnect after verified same-run recovery. Assert:
 
   ```python
   # test_finalize_discards_command_already_buffered_in_transport
@@ -258,10 +258,12 @@ Software verification and independent review passed at `7c0241a`: 239 affected L
   assert compose_stop_calls == []
   ```
 
-- [ ] **Run RED:** `uv run --locked pytest orchestration/tests/test_gcs_bridge.py orchestration/tests/test_operator_session.py -q`.
-- [ ] **Implement transport injection and finalization guard.** Keep parsing, exact FC/QGC identity, intervention persistence, and TCP connection ownership in the bridge worker. Recheck the existing finalization signal immediately before each `tcp.sendall`, including queued frames. Drop pending frames at finalization or disconnect; no replay after transport replacement. Open the run transport after successful action publication in the configuration-ready callback, before Compose startup; move bridge construction out of the earlier allocation callback. Close only project-owned transport resources. Wire adapter errors into existing connection observations without converting them into aircraft commands or a score verdict.
+- [x] **Run RED:** `uv run --locked pytest orchestration/tests/test_gcs_bridge.py orchestration/tests/test_operator_session.py -q`.
+- [x] **Implement transport injection and finalization guard.** Keep parsing, exact FC/QGC identity, intervention persistence, and TCP connection ownership in the bridge worker. Recheck the existing finalization signal immediately before each `tcp.sendall`, including queued frames. Drop pending frames at finalization or disconnect; no replay after transport replacement. Open the run transport after successful action publication in the configuration-ready callback, before Compose startup; move bridge construction out of the earlier allocation callback. Close only project-owned transport resources. Wire adapter errors into existing connection observations without converting them into aircraft commands or a score verdict.
 - [ ] **Run GREEN**, the actual WSL pipe/UDP round trip from Task 4, and configured mypy. Retain evidence of no command writes after finalization under controlled queue barriers, not a sleep-based race test.
-- [ ] **Update bridge ownership documentation and LEDGER.** Commit: `Preserve MAVLink authority across portable host transports`.
+- [x] **Update bridge ownership documentation and LEDGER.** Commit: `Preserve MAVLink authority across portable host transports`.
+
+Software verification and scoped review passed at `e9573f8`: the affected Linux gate passed 125 tests, the correction gate passed 18 bridge/WSL tests, and configured mypy passed. Native Windows/WSL round-trip acceptance remains pending.
 
 ### Task 7: Build and verify eight native ARM64 or AMD64 images
 
