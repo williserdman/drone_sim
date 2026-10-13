@@ -21,10 +21,16 @@ dependencies described below. GPU acceleration is optional.
 ```bash
 uv sync --locked
 uv run --locked drone-sim --help
+uv run --locked pytest orchestration/tests/test_cli.py -q
 docker version
 docker compose version
-make test-unit
 ```
+
+These commands provide a quick cross-platform CLI and installation check. The
+complete supported source gate runs in the Linux harness described in
+[Test without a full flight](#test-without-a-full-flight). It supplies Linux
+`/proc`, anonymous-file, and FFmpeg descriptor behavior, so macOS developers do
+not need to interpret those expected host limitations as product failures.
 
 ### Comp2026 mission source
 
@@ -965,16 +971,25 @@ native-state corroboration, manifest hashing, and cleanup.
 ## Test without a full flight
 
 ```bash
-# Existing quick subset: orchestration, artifacts, and ROS schema contracts.
-make test-unit
+# Quick cross-platform CLI sanity.
+uv run --locked pytest orchestration/tests/test_cli.py -q
 
-# Broader host suite across all seven modules; ROS-only cases may skip.
-uv run --locked pytest orchestration/tests artifacts/tests companion/tests \
-  ardupilot_sitl/tests gazebo/tests electromagnet/tests scorekeeper/tests tests/contracts -q
+# Complete supported source suite, including Linux filesystem behavior.
+scripts/test-linux.sh orchestration/tests artifacts/tests companion/tests \
+  electromagnet/tests gazebo/tests ardupilot_sitl/tests scorekeeper/tests tests -q
+
+# Configured typing and browser behavior.
+uv run --locked mypy
+uv run --with playwright python tests/browser/check_console_views.py
 ```
 
-Neither command establishes real flight behavior. For infrastructure integration
-(these commands build/run Docker containers and are slower):
+Run imported Comp2026 tests in a separate process so their module namespace does
+not collide with the top-level companion tests. The exact current command and
+result are retained in the
+[portable-console verification record](verification/2026-10-10-portable-local-console.md#supported-software-gates).
+
+These commands do not establish real flight behavior. For infrastructure
+integration (these commands build/run Docker containers and are slower):
 
 ```bash
 docker compose --profile foundation build foundation

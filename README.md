@@ -19,7 +19,9 @@ validated run bundle establish what actually happened.
 test and matching image-build evidence. Native QGC command routing and flight
 acceptance remain pending. Earlier configured-descent, calibration, and reload
 results apply to their recorded revisions. See [current status](docs/handoff.md)
-for exact evidence and remaining checks.
+for exact evidence and remaining checks. The dated
+[portable-console verification record](docs/verification/2026-10-10-portable-local-console.md)
+separates software, native workstation, and pending platform results.
 
 ## Platform support
 
@@ -30,7 +32,7 @@ Windows controller.
 
 | Target | Source-level status | Native acceptance |
 | --- | --- | --- |
-| macOS 13+, Apple Silicon | Implemented and covered by focused tests | Task 9 pending for the assembled revision |
+| macOS 13+, Apple Silicon | Implemented; full software gate and native ARM64 image build/check passed | Real QGC transport, noVNC, camera, Prepare, and Stop passed; flight actions remain pending |
 | macOS 13+, Intel | Implemented | Pending on Intel hardware |
 | Ubuntu 24.04 desktop, ARM64 or x86-64 | Implemented | Desktop QGC and runtime acceptance pending |
 | Windows 11 x86-64, Ubuntu 24.04 in WSL2 | Implemented, including the bounded Windows helper | Windows PowerShell 5.1, NTFS, UDP, NAT, and mirrored-network acceptance pending |
@@ -72,11 +74,13 @@ From the repository root, with Python 3.12+ and `uv` available:
 ```bash
 uv sync --locked
 uv run --locked drone-sim --help
-make test-unit
+uv run --locked pytest orchestration/tests/test_cli.py -q
 ```
 
-This checks the host tooling; it does **not** launch a flight or prove ROS/Gazebo
-integration. The [runbook](docs/runbook.md) explains the remaining prerequisites.
+This is a quick cross-platform CLI check. It does **not** launch a flight or
+prove ROS/Gazebo integration. Run the complete supported software suite through
+the Linux harness in the [runbook](docs/runbook.md#test-without-a-full-flight),
+which supplies the Linux descriptor and FFmpeg behavior that macOS lacks.
 
 Once the runtime images are ready, the normal flight command is:
 

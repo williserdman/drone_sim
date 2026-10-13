@@ -3,135 +3,71 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-## Local console and QGC control work — 2026-10-10
+## Portable local console — 2026-10-12
 
-The local console work is implemented on `feature/local-simulation-console` in
-`/Users/williserdman/Documents/projects/drone_sim-console`. The original checkout
-and cloud evidence are preserved. The shared `upstream` remote points to
-`williserdman/drone_sim`.
+The assembled console is implemented on `feature/local-simulation-console` in
+`/Users/williserdman/Documents/projects/drone_sim-console`. The original checkout,
+imported Comp2026 source and history, historical run evidence, QGC selection, and
+existing action files remain preserved. The complete dated results are in the
+[portable-console verification record](verification/2026-10-10-portable-local-console.md).
 
-Task 8 now assembles the macOS, Ubuntu desktop, and Windows/WSL2 host paths in
-the production console. One host and workstation flow through runtime, session,
-controller, publication, transport, and cleanup. WSL browser launch probes the
-Windows-visible loopback URL after the HTTP listener is ready. The console shows
-host/provider facts, exact native action paths, and automatic QGC/browser launch
-failures without creating a flight action. Run manifests include the allowlisted
-host integration log with a final bridge-observed connection/vehicle snapshot
-through `cleanup_pending`; post-manifest cleanup stays in session and native
-ownership receipts. This snapshot is not a native QGC tlog or evidence of a
-human action click.
+The final supported software gate passed 2,974 tests with 42 explicit capability
+skips in the Linux harness. Configured mypy passed 13 source files, the browser
+Prepare/Stop/Run Again and reconnect check passed, and the separate imported
+Comp2026 process passed 684 tests. The portability diff did not change
+`companion/comp2026` or mission configuration bytes.
 
-This is source-level status. No Task 8 simulator image was built or retagged,
-no retained resource was cleaned, no QGC preference/action selection or token
-ledger was changed, and no new native flight ran. Task 9 owns the available Mac
-build and native acceptance. Intel macOS, Ubuntu ARM64/x86-64 desktop, Windows
-PowerShell 5.1, NTFS, Windows UDP, WSL NAT, WSL mirrored networking, and native
-AMD64 remain pending. The supplemental macOS PowerShell checks are not Windows
-results.
+The retained pre-Task 9 run `79c1661c-ee24-441b-84e4-ffea8b937552` was finalized
+through supported Stop before image tags changed. Cleanup published its honest
+incomplete artifact and closed-media receipts, removed only its exact containers,
+network, and labeled volume, and left the bundle `INTERRUPTED`. Two focused fixes
+now keep active cleanup visible as `FINALIZING` and keep a terminal session
+terminal after verified cleanup on console restart. An uncertain cleanup remains
+blocked.
 
-Start with `uv run --locked drone-sim console`, then use the
-[local Mac workflow](runbook.md#local-mac-console): select a world/preset,
-and select Prepare. Prepare allocates a run-bound action token, writes the
-immutable configuration and action bytes, publishes a run-named JSON file under
-QGC's active `savePath/MavlinkActions`, and then opens or focuses QGC before the
-simulator starts. The console shows the exact published path.
+All eight `linux/arm64` images built and checked on Apple Silicon at committed
+source `19b499c`. The build compiled the native Gazebo plugins and passed all five
+plugin CTests. Dated raw logs and build records remain under
+`.local-runtime/verification/2026-10-10-portable-local-console/`. Documentation
+and final-review commits require one final matching cached build/check before
+handoff; they do not justify another runtime session against the historical tag.
 
-In QGC 5.0.8, open **Application Settings > Fly View > MAVLink Actions > Fly
-View Actions**, reopen that page if the file list is stale, and select the exact
-run-named file shown by the console. Use **Start selected mission** and **Abort
-and recover** in QGC. For Operator Wait, use Start first, then select GUIDED and
-arm in QGC. Browser viewer focus, RFB connection, and camera-view freshness are
-observations; native vehicle, clock, calibration, and producer readiness govern
-admission. **Stop simulation** finalizes evidence and tears down infrastructure;
-it does not land the aircraft. Run Again remains unavailable until cleanup is
-complete and then creates a new run ID, action token, and action file. Presets
-retain their configured timing: Configured Descent needs about 15 wall minutes
-of warmup at 0.1 RTF, followed by a five-minute run.
+Actual configured diagnostic `95bc1701-a129-4d3f-9e88-f741a213d4e2` exercised
+native QGC 5.0.8, the real UDP bridge, all eight containers, fresh onboard camera,
+and a genuine noVNC RFB browser connection. It reached `PREPARED` after 15 minutes
+20 seconds. That delay is the configured 90-second private native epoch at 0.1
+RTF, not a stalled startup. QGC traffic was fresh, the aircraft was disarmed and
+landed in STABILIZE, and no flight command was sent. Supported Stop ended the run
+as `ABORTED: prepared_cancelled`; closed media and exact resource cleanup were
+verified, while native QGC remained running. The no-flight manifest correctly
+records missing final videos, an invalid zero-clock rosbag, and score 0/100.
 
-The assembled QGC control revision `eae3377` passed **2,785 tests** in the
-supported Linux harness, with **41 explicit capability skips** for ROS/Jazzy,
-built Gazebo/plugin checks, image-specific FFmpeg checks, and nested Docker
-access. The separate imported competition suite passed **684 tests**. Browser
-Prepare, Stop, Run Again, QGC guidance, reconnect, and stale-view checks passed.
-Configured mypy passed nine files, and focused helper, inspector, and operation
-checks passed three files. The initial Linux failure was fixed by resolving
-`mavlogdump.py` from the active Python environment; the complete rerun passed.
+The active QGC action selection remains `esp32_servo_action.json`, whose SHA-256
+is unchanged. Prepare published a separate run-named file and did not select it.
+The normal QGC launch updated runtime INI bytes, so whole-file settings byte
+identity is not claimed. The run's manifest-included host log records only the
+allowlisted host, publication, ownership, and final bridge fields.
 
-All eight runtime images were built and checked from clean `eae3377` on
-`linux/arm64` in Colima. Host prerequisite checks passed with 6 CPUs, 11.7 GiB
-RAM, free required ports, sufficient disk space, and no leftover simulation
-containers. The current source and image identities are recorded in
-`.local-runtime/build.json`; documentation commits require the supported rebuild
-and check before another Prepare.
+The Apple Silicon row is verified for image build/check, QGC launch and transport,
+noVNC, camera, Prepare, and Stop. It is not a flight acceptance pass. Native
+selection of the published file, Start/Abort, command admission and ACKs,
+touchdown/disarm, stale-action rejection, takeover, precision-target loss,
+scoring, artifact acceptance, a native tlog, and Comp2026 remain pending. Earlier
+configured-descent run `1edbaa7f-88d8-42db-bd95-d6e21e009a00` and competition
+run `cad25c37-be37-4704-a247-1867904c3072` remain historical simulator evidence;
+they do not close the current native-QGC gates.
 
-Ordinary competition landing now freshly verifies the full precision profile,
-verifies `PLND_ENABLED=0`, confirms touchdown, and verifies restoration to `1`
-before phase success. Existing disarm confirmation remains separate and
-`PLND_STRICT=2` stays unchanged. Native LAND/Pause revokes onboard control, and
-later GUIDED does not reopen it. These behaviors have software coverage; live
-parameter switching, physical descent, and precision-policy preservation still
-require native acceptance.
+No additional machine was available. Intel macOS, Ubuntu ARM64/x86-64 desktop,
+native AMD64 compilation and eight-image acceptance, Windows 11, Windows
+PowerShell 5.1, NTFS/registry faults, WSL filesystem identity, default NAT,
+mirrored networking, fixed-peer UDP, helper crash/reconnect, and native Windows
+QGC remain pending. AMD64 signed-index resolution, apt simulation, archive
+checksums, and software tests are not native execution results.
 
-**Standards review:** no documented violations. Repeated host lifecycle wiring
-is a nonblocking maintenance observation; a broader coordinator refactor is
-deferred. **Spec review:** the tool-discovery defect is fixed and re-reviewed.
-Native QGC selection, actual command routing/ACKs, configured descent and repeat,
-competition landing/progression, Abort, LAND/Pause takeover, Operator Wait, and
-acquired precision-target loss remain unrun. There are **zero new native flight
-runs** for this QGC workflow, so no new run IDs, physical outcomes, scores,
-artifact-validity results, full-competition pass, or catalog-flight pass are
-claimed. Task 7 remains open for that evidence.
-
-Native desktop control is blocked by macOS Accessibility permission; screen
-capture was also unavailable at the earlier check. The pending choice is to
-grant those permissions or perform the native QGC clicks manually. The active
-QGC selection remains `custom_missions.json`, with preserved SHA-256
-`5d7b983c72cb27a839a082621b867cd851da5170bc6f2b30889f9038ca315ea2`.
-The console can be used with manual QGC interaction. Use the
-[inspection procedure](runbook.md#inspect-qgc-control-evidence) to retain a
-genuine native tlog before final inventory when collecting acceptance evidence.
-
-The acceptance evidence below used the earlier browser Start/Abort workflow. It
-remains evidence for simulator behavior but does not establish the new native QGC
-selection or routing path.
-
-Actual configured-descent acceptance passed at clean `680345e`, run
-`1edbaa7f-88d8-42db-bd95-d6e21e009a00`: takeoff to 1.5 m, hold, LAND and disarm;
-independent score **100/100**; all artifacts valid; cleanup complete. Both camera
-streams and ground truth contain exactly 600 samples from 50 ms through 30 s.
-Independent acceptance verified externally captured source revisions and all
-eight image IDs. Evidence remains in that run's directory under `runs/`.
-
-Actual competition control verification used clean `2ca879d`, run
-`cad25c37-be37-4704-a247-1867904c3072`. Prepare and Start passed; the aircraft
-was airborne when Abort Flight was clicked. Guarded recovery entered LAND but
-held near 4.65 m armed. After the onboard policy window, the console correctly
-reported failed recovery without confirmed landing, kept all views live, and
-showed physical outcome Not established. Separate Stop finalized
-`ABORTED: simulation_stop`; cleanup completed. Recordings are retained and valid,
-but the interrupted full-mission bag is invalid and score is incomplete 0/150.
-Successful competition recovery, a complete competition mission, and the full
-eleven-preset flight sweep are **not** established by this check. Flight guards
-and mission parameters were preserved; this console does not force a landing.
-
-Other actual checks covered mouse orbit, entity selection/read-only inspection,
-prepared cancellation, a prepared/disarmed hold longer than 61 simulated seconds,
-browser reconnect, Start retry without a second admission, viewer loss during
-flight, viewer recovery, and fresh Run Again identities. Historical failures and
-fixes are retained in [the implementation ledger](LEDGER.md).
-
-The supported Linux suite at `bf7e16c` passed **2,557 tests**, with 41 explicit
-capability skips. Subsequent recovery changes passed 120 focused tests. Configured
-mypy passed all nine host files; actual ROS adapter checks passed 14 tests;
-Chrome checks passed reconnect, readiness guidance, recovery status and terminal
-elapsed-time behavior. The named-volume recording spool supports Linux
-`O_TMPFILE`; verified closed media is published before the volume is removed.
-Failed publication preserves the volume and blocks another run.
-
-**Earlier browser-workflow review:** no unresolved material code or console
-specification findings; repeated companion host composition remained a
-maintenance observation. The physical competition recovery limitation
-above remains visible and is not a successful-flight claim.
+Use `uv run --locked drone-sim console` and follow the
+[local console workflow](runbook.md#local-mac-console). Prepare and flight Start
+remain separate. Start, Abort, takeover, and aircraft commands stay in native
+QGC. Stop finalizes infrastructure and does not command a landing.
 
 ## Cloud branch checkpoint
 
