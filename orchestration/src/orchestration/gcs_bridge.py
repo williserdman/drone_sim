@@ -15,6 +15,8 @@ from typing import Any
 from pymavlink.dialects.v20 import ardupilotmega as mavlink
 from pymavlink import mavutil
 
+from .host_integration import DatagramTransport, HostTransportError
+
 
 _INTERVENTION_TYPES = {
     "SET_MODE", "RC_CHANNELS_OVERRIDE", "MANUAL_CONTROL", "PARAM_SET",
@@ -28,15 +30,29 @@ _FLIGHT_CONTROLLER_SOURCE = (1, 1)
 
 
 class GcsBridge:
-    def __init__(self, run_directory: Path, *, tcp_port: int = 5762, qgc_port: int = 14550) -> None:
+    def __init__(
+        self,
+        run_directory: Path,
+        *,
+        transport: DatagramTransport,
+        tcp_port: int = 5762,
+    ) -> None:
         self.run_directory = run_directory
+        self.transport = transport
         self.tcp_port = tcp_port
-        self.qgc_port = qgc_port
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._transport_lock = threading.Lock()
+        self._transport_closed = False
         self._thread: threading.Thread | None = None
-        self._state: dict[str, Any] = {"connected": False, "detail": "waiting for SITL", "last_telemetry_wall_time": None,
-                                      "last_qgc_wall_time": None}
+        self._state: dict[str, Any] = {
+            "connected": False,
+            "detail": "waiting for SITL",
+            "qgc_connected": True,
+            "qgc_detail": "QGC datagram transport open",
+            "last_telemetry_wall_time": None,
+            "last_qgc_wall_time": None,
+        }
 
     def start(self) -> None:
         if self._thread is not None:
@@ -46,8 +62,31 @@ class GcsBridge:
 
     def stop(self) -> None:
         self._stop.set()
+        close_error = self._close_transport()
         if self._thread is not None:
             self._thread.join(timeout=4)
+            if self._thread.is_alive():
+                raise RuntimeError("GCS bridge worker did not stop")
+        self._update(
+            connected=False,
+            detail="GCS link closed",
+            qgc_connected=False,
+            qgc_detail="QGC datagram transport closed",
+        )
+        if close_error is not None:
+            raise close_error
+
+    def _close_transport(self) -> HostTransportError | None:
+        with self._transport_lock:
+            if self._transport_closed:
+                return None
+            self._transport_closed = True
+        try:
+            self.transport.close()
+        except HostTransportError as error:
+            self._update(qgc_connected=False, qgc_detail=str(error))
+            return error
+        return None
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -55,7 +94,12 @@ class GcsBridge:
         stamp = result["last_telemetry_wall_time"]
         result["fresh"] = stamp is not None and time.time() - stamp < 5 and result["connected"]
         qgc_stamp = result["last_qgc_wall_time"]
-        result["qgc_fresh"] = qgc_stamp is not None and time.time() - qgc_stamp < 10 and result["fresh"]
+        result["qgc_fresh"] = (
+            qgc_stamp is not None
+            and time.time() - qgc_stamp < 10
+            and result["fresh"]
+            and result["qgc_connected"]
+        )
         return result
 
     def _update(self, **values: Any) -> None:
@@ -105,29 +149,36 @@ class GcsBridge:
             self._update(landed_state=message.landed_state)
 
     def _run(self) -> None:
-        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp.bind(("127.0.0.1", 0))
-        udp.setblocking(False)
         try:
             while not self._stop.is_set():
                 try:
                     with socket.create_connection(("127.0.0.1", self.tcp_port), timeout=2) as tcp:
                         tcp.settimeout(1)
                         self._update(connected=True, detail="connected to SITL GCS channel")
-                        self._relay(tcp, udp)
+                        self._relay(tcp)
                 except (OSError, ValueError) as error:
                     self._update(connected=False, detail=str(error))
                     self._stop.wait(1)
         finally:
-            udp.close()
-            self._update(connected=False, detail="GCS link closed")
+            close_error = self._close_transport()
+            self._update(
+                connected=False,
+                detail="GCS link closed",
+                qgc_connected=False,
+                qgc_detail=(
+                    str(close_error)
+                    if close_error is not None
+                    else "QGC datagram transport closed"
+                ),
+            )
 
-    def _relay(self, tcp: socket.socket, udp: socket.socket) -> None:
+    def _relay(self, tcp: socket.socket) -> None:
         incoming = mavlink.MAVLink(None)
         outgoing = mavlink.MAVLink(None)
         incoming.robust_parsing = outgoing.robust_parsing = True
+        transport_active = True
         while not self._stop.is_set():
-            readable, _, _ = select.select([tcp, udp], [], [], 0.2)
+            readable, _, _ = select.select([tcp], [], [], 0.05)
             if tcp in readable:
                 data = tcp.recv(65536)
                 if not data:
@@ -135,15 +186,40 @@ class GcsBridge:
                 for message in incoming.parse_buffer(data) or []:
                     if message.get_type() != "BAD_DATA":
                         self._observe(message)
-                        udp.sendto(message.get_msgbuf(), ("127.0.0.1", self.qgc_port))
-            if udp in readable:
-                data, peer = udp.recvfrom(65536)
-                if peer != ("127.0.0.1", self.qgc_port):
+                        if transport_active:
+                            try:
+                                self.transport.send(bytes(message.get_msgbuf()))
+                            except HostTransportError as error:
+                                transport_active = False
+                                self._update(
+                                    qgc_connected=False,
+                                    qgc_detail=str(error),
+                                )
+            if not transport_active:
+                continue
+            try:
+                datagram = self.transport.receive(0.05)
+            except HostTransportError as error:
+                transport_active = False
+                self._update(qgc_connected=False, qgc_detail=str(error))
+                continue
+            if datagram is None:
+                continue
+            for message in outgoing.parse_buffer(datagram) or []:
+                if message.get_type() == "BAD_DATA":
                     continue
-                for message in outgoing.parse_buffer(data) or []:
-                    if message.get_type() != "BAD_DATA":
-                        self._update(last_qgc_wall_time=time.time())
-                        if (self.run_directory / ".control/finalize-request.json").exists():
-                            continue
-                        self._record_intervention(message)
-                        tcp.sendall(message.get_msgbuf())
+                self._update(last_qgc_wall_time=time.time())
+                if self._finalizing():
+                    continue
+                self._record_intervention(message)
+                # Finalization can begin while persistence is in progress. The
+                # command boundary must therefore be checked again at the last
+                # possible point before every TCP write.
+                if self._finalizing():
+                    continue
+                tcp.sendall(bytes(message.get_msgbuf()))
+
+    def _finalizing(self) -> bool:
+        return self._stop.is_set() or (
+            self.run_directory / ".control/finalize-request.json"
+        ).exists()

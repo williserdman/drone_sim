@@ -210,11 +210,41 @@ class OperatorSession:
                             qgc_action_sha256=publication.sha256,
                         )
                         self._save()
-                        self._bridge = GcsBridge(_directory)
-                        self._bridge.start()
+                    transport = self.host.open_datagrams(
+                        self.workstation.owned(),
+                        config.run_id,
+                        publication,
+                    )
+                    try:
+                        bridge = GcsBridge(_directory, transport=transport)
+                        bridge.start()
+                    except BaseException:
+                        transport.close()
+                        raise
+                    with self._lock:
+                        self._bridge = bridge
                     self.host.open_qgc(installation)
 
                 with (self.state_directory / "owner.log").open("w") as events:
+                    def before_inventory() -> None:
+                        failure: BaseException | None = None
+                        with self._lock:
+                            bridge = self._bridge
+                        if bridge is not None:
+                            try:
+                                bridge.stop()
+                            except BaseException as error:
+                                failure = error
+                        try:
+                            events.flush()
+                            events.close()
+                        except BaseException as error:
+                            failure = failure or error
+                        if failure is not None:
+                            raise RuntimeError(
+                                "operator writers did not quiesce before inventory"
+                            ) from failure
+
                     self.controller.event_stream = events
                     result = self.controller.start(source, launch_mode="operator",
                         preparation_wall_seconds=preparation_wall_seconds,
@@ -222,6 +252,7 @@ class OperatorSession:
                         on_run_identified=identified,
                         on_allocated=allocated,
                         on_configuration_ready=configuration_ready,
+                        on_before_inventory=before_inventory,
                         operator_control_factory=self.qgc_action_store.allocate)
                 if self._bridge:
                     self._bridge.stop()

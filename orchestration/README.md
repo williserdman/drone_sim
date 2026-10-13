@@ -81,8 +81,9 @@ local origin, and per-server token. The CLI uses
 Prepare records the native active-run identity before it allocates an action
 token or a run directory. After the controller writes immutable configuration,
 a separate callback publishes the retained action bytes under QGC's configured
-save path and opens or focuses QGC. Publication precedes Compose startup. A
-publication failure retains the run identity and starts no simulator.
+save path. After publication is verified, it opens the run datagram transport,
+starts the GCS bridge, and opens or focuses QGC. These steps precede Compose
+startup. A publication failure retains the run identity and starts no simulator.
 
 Host lifecycle adds `PREPARED` and `STARTING_MISSION`. Preparation requires fresh,
 advancing Gazebo observations and fresh disarmed companion preflight. The
@@ -183,11 +184,20 @@ application and version. It does not prove the source provenance of a custom
 build. Native ARM64 launch acceptance remains pending.
 
 [`gcs_bridge.py`](src/orchestration/gcs_bridge.py) forwards the dedicated SITL GCS
-MAVLink connection to native QGC, preserves wire frames, and inventories manual
-control commands under `logs/docker/`. It originates no mission commands and
-stops forwarding commands once finalization is requested. The companion still
-owns automatic flight and guarded recovery. Recovery facts do not imply runtime
-shutdown; the separate stop action invokes existing finalization.
+MAVLink connection through the host's injected datagram transport, preserves
+wire frames, and inventories manual control commands under `logs/docker/`. The
+bridge is the only MAVLink parser on this path. It originates no mission
+commands, ACKs, retries, or replay and checks finalization immediately before
+every SITL TCP write. A datagram failure marks QGC disconnected while healthy
+simulation services continue under the existing lifecycle policy.
+
+After runtime freeze and the artifacts-final status, the controller invokes a
+pre-inventory boundary. The operator session stops the bridge, closes its run
+transport, and closes its host log writer before Docker log capture and artifact
+inventory. Failure to quiesce rejects artifact finalization. The native lease
+helper remains alive through Compose teardown, exact media cleanup proof, and
+owner clearance. The manifest and terminal notification still precede Compose
+teardown.
 
 The [local console workflow](../docs/runbook.md#local-mac-console) defines the
 operator commands, port and spool requirements, and view semantics.

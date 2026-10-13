@@ -781,6 +781,7 @@ class RunController:
         on_allocated: Callable[[str, Path], None] | None = None,
         on_run_identified: Callable[[str], None] | None = None,
         on_configuration_ready: Callable[[RunConfig, Path], None] | None = None,
+        on_before_inventory: Callable[[], None] | None = None,
         operator_control_factory: Callable[[str], QgcActionMaterial] | None = None,
         launch_mode: str | None = None,
         preparation_wall_seconds: int | None = None,
@@ -794,6 +795,7 @@ class RunController:
                 on_allocated=on_allocated,
                 on_run_identified=on_run_identified,
                 on_configuration_ready=on_configuration_ready,
+                on_before_inventory=on_before_inventory,
                 operator_control_factory=operator_control_factory,
                 launch_mode=launch_mode,
                 preparation_wall_seconds=preparation_wall_seconds,
@@ -809,6 +811,7 @@ class RunController:
         on_allocated: Callable[[str, Path], None] | None = None,
         on_run_identified: Callable[[str], None] | None = None,
         on_configuration_ready: Callable[[RunConfig, Path], None] | None = None,
+        on_before_inventory: Callable[[], None] | None = None,
         operator_control_factory: Callable[[str], QgcActionMaterial] | None = None,
         launch_mode: str | None = None,
         preparation_wall_seconds: int | None = None,
@@ -1256,6 +1259,40 @@ class RunController:
 
                 emit_event("log_capture_starting")
                 close_event_log()
+
+                if on_before_inventory is not None:
+                    try:
+                        on_before_inventory()
+                    except Exception as exc:
+                        reason = (
+                            "pre_inventory_quiescence_failed:"
+                            f"{type(exc).__name__}"
+                        )
+                        primary = primary or TerminalCause(
+                            "pre_inventory_quiescence", reason
+                        )
+                        lifecycle = replace(
+                            lifecycle,
+                            state=LifecycleState.FAILED,
+                            pending_terminal=None,
+                            reason=reason,
+                        )
+                        final_status = self._status(
+                            lifecycle,
+                            primary=primary,
+                            diagnostics=tuple(diagnostics),
+                        )
+                        try:
+                            store.write_operator_status(final_status)
+                        except Exception:
+                            pass
+                        return RunResult(
+                            config.run_id,
+                            "FAILED",
+                            reason,
+                            None,
+                        )
+
                 try:
                     capture = self.log_capture_factory(
                         run_directory=run_directory,

@@ -125,15 +125,34 @@ class TransitionRuntime:
         }
 
 
+class FakeTransport:
+    def __init__(self, events):
+        self.events = events
+        self.closed = False
+
+    def close(self):
+        if not self.closed:
+            self.events.append("transport-close")
+            self.closed = True
+
+
 class FakeBridge:
-    def __init__(self, _directory):
+    def __init__(self, _directory, *, transport):
+        self.transport = transport
         self.started = False
+
+        self.transport.events.append("bridge-constructed")
 
     def start(self):
         self.started = True
 
+        self.transport.events.append("bridge-start")
+
     def stop(self):
+        if self.started:
+            self.transport.events.append("bridge-stop")
         self.started = False
+        self.transport.close()
 
     def status(self):
         return {"fresh": False, "qgc_fresh": False, "detail": "stale telemetry"}
@@ -172,7 +191,14 @@ class PrepareHost:
 
     def publish_actions(self, material, installation, lease):
         del installation, lease
-        return publish_posix(material, self.action_directory)
+        receipt = publish_posix(material, self.action_directory)
+        self.events.append("publish")
+        return receipt
+
+    def open_datagrams(self, lease, run_id, publication):
+        del lease, run_id, publication
+        self.events.append("transport-open")
+        return FakeTransport(self.events)
 
     def open_qgc(self, installation):
         del installation
@@ -181,13 +207,21 @@ class PrepareHost:
 
 
 class PrepareController:
-    def __init__(self, output_root: Path, run_ids, *, teardown_failure=False):
+    def __init__(
+        self,
+        output_root: Path,
+        run_ids,
+        *,
+        teardown_failure=False,
+        events=None,
+    ):
         self.output_root = output_root
         self.run_ids = iter(run_ids)
         self.event_stream = None
         self.compose_attempts = 0
         self.configs = []
         self.teardown_failure = teardown_failure
+        self.events = events if events is not None else []
 
     def start(self, source, **kwargs):
         def identify():
@@ -211,6 +245,7 @@ class PrepareController:
         write_resolved_config(directory, config)
         kwargs["on_configuration_ready"](config, directory)
         self.compose_attempts += 1
+        self.events.append("compose-up")
         self.configs.append(config)
         StatusStore(self.output_root).write_operator_status(
             OperatorStatus(
@@ -225,6 +260,9 @@ class PrepareController:
                 ),
             )
         )
+        self.events.append("artifacts-final")
+        kwargs["on_before_inventory"]()
+        self.events.append("inventory")
         return RunResult(config.run_id, "ABORTED", "prepared_cancelled", None)
 
     def status(self, run_id, _output_root):
@@ -356,7 +394,7 @@ def test_prepare_publishes_actions_before_qgc_launch_and_run_again_is_fresh(tmp_
         UUID("00000000-0000-4000-8000-000000000602"),
     )
     output_root = tmp_path / "runs"
-    controller = PrepareController(output_root, run_ids)
+    controller = PrepareController(output_root, run_ids, events=host.events)
     session = OperatorSession(
         ROOT,
         state_directory=tmp_path / "session",
@@ -379,7 +417,20 @@ def test_prepare_publishes_actions_before_qgc_launch_and_run_again_is_fresh(tmp_
     assert hashlib.sha256(first_path.read_bytes()).hexdigest() == first_config.operator_control.actions_sha256
     assert (output_root / first_config.run_id / "configuration/qgc-actions.json").read_bytes() == first_path.read_bytes()
     assert existing.read_bytes() == b"user action file\n"
-    assert host.events == ["settings", "open-qgc"]
+    assert host.events[:9] == [
+        "settings",
+        "publish",
+        "transport-open",
+        "bridge-constructed",
+        "bridge-start",
+        "open-qgc",
+        "compose-up",
+        "artifacts-final",
+        "bridge-stop",
+    ]
+    assert host.events.index("transport-open") < host.events.index("compose-up")
+    assert host.events.index("bridge-stop") < host.events.index("inventory")
+    assert host.events.index("transport-close") < host.events.index("inventory")
 
     session.prepare(
         preset_id="configured-descent",
@@ -631,7 +682,7 @@ def test_qgc_admission_does_not_depend_on_browser_heartbeat(tmp_path, monkeypatc
         qgc_action_path=str(tmp_path / "QGroundControl/MavlinkActions" / config.operator_actions.published_name),
     )
     session._worker = SimpleNamespace(is_alive=lambda: True)
-    session._bridge = FakeBridge(directory)
+    session._bridge = FakeBridge(directory, transport=FakeTransport([]))
     monkeypatch.setattr("orchestration.operator_session.urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()))
 
     snapshot = session.snapshot()

@@ -133,6 +133,13 @@ reported as stale but cannot block an otherwise eligible QGC action. Losing the
 viewer during flight leaves healthy flight services running. Reopen the console
 to reconnect and inspect them.
 
+QGC transport status is separate from SITL telemetry and the streamed desktop.
+If the native datagram transport fails, the console reports QGC disconnected
+while healthy simulation services continue. Stop Simulation still uses the
+normal bounded finalization path; it does not create a landing or recovery
+command. At finalization, the console closes the run transport and its host log
+writer after runtime and media closure, before the manifest inventory begins.
+
 The local artifacts service uses a run-scoped **Docker named volume** for its
 recording spool because both the macOS shared directory and this Colima writable
 container layer reject `O_TMPFILE`. Closed media is published to the host evidence

@@ -313,7 +313,11 @@ attachment and lift.
 
 Finalization is a file-backed handshake: a finalize request leads to publisher
 quiescence, a runtime-frozen marker, closed artifacts and an artifacts-final
-record, then the host's terminal manifest/commit marker. Read the
+record. The host then stops the run-owned QGC bridge and datagram transport and
+closes manifest log writers before Docker log capture or artifact inventory.
+Failure at this boundary prevents a manifest commit. The lease-only native
+helper stays alive for verified Compose and media cleanup. The terminal manifest
+and notification remain before Compose teardown. Read the
 [orchestration](../orchestration/README.md) and [artifacts](../artifacts/README.md)
 guides before changing this ordering. A landed vehicle is not a terminal run.
 

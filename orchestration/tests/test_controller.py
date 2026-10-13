@@ -784,6 +784,55 @@ def test_allocation_callback_precedes_compose_startup(tmp_path):
     assert trace.index("allocation callback") < trace.index("compose up")
 
 
+def test_preinventory_callback_follows_runtime_freeze_and_artifact_final_status(
+    tmp_path,
+):
+    event_stream = io.StringIO()
+    controller, trace, _clock, _holder = _controller(
+        tmp_path, event_stream=event_stream
+    )
+
+    result = controller.start(
+        _template(tmp_path),
+        on_before_inventory=lambda: (
+            trace.append("quiesce writers"),
+            event_stream.close(),
+        ),
+    )
+
+    assert result.state == "COMPLETED"
+    assert trace.index("wait runtime-frozen") < trace.index("wait artifacts-final")
+    assert trace.index("wait artifacts-final") < trace.index("quiesce writers")
+    assert trace.index("quiesce writers") < trace.index("capture logs")
+    assert trace.index("quiesce writers") < trace.index("validate")
+    assert not any(
+        item.kind == "observability"
+        for item in StatusStore(tmp_path / "runs")
+        .read_operator_status(RUN_ID)
+        .diagnostics
+    )
+
+
+def test_preinventory_callback_failure_rejects_mutable_evidence(tmp_path):
+    controller, trace, _clock, _holder = _controller(tmp_path)
+
+    result = controller.start(
+        _template(tmp_path),
+        on_before_inventory=lambda: (_ for _ in ()).throw(
+            RuntimeError("transport would not quiesce")
+        ),
+    )
+
+    assert result.state == "FAILED"
+    assert result.reason == "pre_inventory_quiescence_failed:RuntimeError"
+    assert result.manifest_path is None
+    assert "wait artifacts-final" in trace
+    assert "capture logs" not in trace
+    assert "validate" not in trace
+    assert "commit manifest" not in trace
+    assert "compose down" in trace
+
+
 def test_run_identity_is_durable_before_allocation_side_effects(tmp_path):
     from contextlib import contextmanager
     from artifacts.qgc_operator import MavlinkIdentity
