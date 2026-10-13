@@ -342,3 +342,7 @@ Ruling: Task 8 audits and preserves controller.py and test_controller.py unchang
 
 - Task 8 review correction adds a fixed-schema `bridge_observation` to the manifest host log before bridge shutdown. It records only bridge-observed SITL/QGC connection and vehicle fields, then writes `cleanup_pending` and closes before inventory. It does not claim command admission, a native QGC tlog or click, physical outcome, or score. A failed observation still stops the bridge, closes the log, and prevents inventory.
 - The console now gives automatic QGC launch refusal precedence over populated bridge startup detail. Native browser launch failure has separate remediation with the manual loopback console URL. Focused operator-session coverage passed 20 tests, the production-shaped Playwright regression passed, and configured mypy passed 13 source files. Native QGC and platform acceptance remain Task 9 gates.
+
+### Portable console milestone, 2026-10-12
+
+Task 8 passed scoped review at `535371e`. Final bridge observations are captured before transport shutdown and artifact inventory; launch failures remain visible with manual remediation. The correction gate passed 20 operator-session tests, Playwright, and configured mypy. Task 9 now owns full supported software regression, retained-run cleanup, native ARM image build/check, and the available Mac prepared-session checks. The user confirmed no additional machine is available; native Windows/WSL and AMD64 acceptance remain pending.
