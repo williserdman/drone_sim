@@ -668,7 +668,12 @@ class OperatorSession:
             directory = Path(result["run_directory"])
             try:
                 status = self.controller.status(run_id, directory.parent)
-                if result["state"] not in {"ORPHANED", "INTERRUPTED", "BUILDING"} and self._active():
+                if result["state"] not in {
+                    "ORPHANED",
+                    "INTERRUPTED",
+                    "FINALIZING",
+                    "BUILDING",
+                } and self._active():
                     result["state"] = status.state
                     result["reason"] = status.reason
                 from artifacts.operator_protocol import OperatorProtocol

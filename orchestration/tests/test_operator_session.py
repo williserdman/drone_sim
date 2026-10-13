@@ -831,6 +831,67 @@ def test_run_identity_receipt_survives_failure_before_directory_allocation(
     assert finished["cleanup"] == "complete"
 
 
+def test_orphan_stop_reports_finalizing_while_cleanup_worker_is_active(tmp_path):
+    run_id = "00000000-0000-4000-8000-000000000610"
+    output_root = tmp_path / "runs"
+    config = resolve_run_config(
+        ROOT / "config/configured-descent-run.json",
+        run_id_factory=lambda: UUID(run_id),
+        launch_mode="operator",
+        output_root=output_root,
+    )
+    directory = StatusStore(output_root).allocate(run_id)
+    write_resolved_config(directory, config)
+    StatusStore(output_root).write_operator_status(
+        OperatorStatus(run_id, "READY", "", None)
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Workstation:
+        @contextmanager
+        def hold(self, **_kwargs):
+            entered.set()
+            release.wait(3)
+            raise RuntimeError("end focused cleanup")
+            yield
+
+    class Controller:
+        def status(self, owned_run_id, owned_output_root):
+            assert owned_run_id == run_id
+            assert owned_output_root == output_root
+            return RunResult(run_id, "READY", "", None)
+
+        def abort(self, owned_run_id, owned_output_root, *, reason):
+            assert owned_run_id == run_id
+            assert owned_output_root == output_root
+            assert reason == "prepared_cancelled"
+
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=SimpleNamespace(),
+        controller=Controller(),
+        workstation=Workstation(),
+    )
+    session._record.update(
+        state="ORPHANED",
+        run_id=run_id,
+        run_directory=str(directory),
+        cleanup="pending",
+    )
+
+    stopping = session.stop(run_id=run_id)
+
+    try:
+        assert entered.wait(2)
+        assert stopping["state"] == "FINALIZING"
+    finally:
+        release.set()
+        _wait_for_worker(session)
+
+
 @pytest.mark.parametrize(
     ("lifecycle_state", "expected_cleanup", "expected_finish"),
     (("CREATED", "complete", True), ("STARTING", "incomplete", False)),
