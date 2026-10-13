@@ -10,6 +10,23 @@ The local console work is implemented on `feature/local-simulation-console` in
 and cloud evidence are preserved. The shared `upstream` remote points to
 `williserdman/drone_sim`.
 
+Task 8 now assembles the macOS, Ubuntu desktop, and Windows/WSL2 host paths in
+the production console. One host and workstation flow through runtime, session,
+controller, publication, transport, and cleanup. WSL browser launch probes the
+Windows-visible loopback URL after the HTTP listener is ready. The console shows
+host/provider facts, exact native action paths, and automatic QGC/browser launch
+failures without creating a flight action. Run manifests include the allowlisted
+host integration log through `cleanup_pending`; post-manifest cleanup stays in
+session and native ownership receipts.
+
+This is source-level status. No Task 8 simulator image was built or retagged,
+no retained resource was cleaned, no QGC preference/action selection or token
+ledger was changed, and no new native flight ran. Task 9 owns the available Mac
+build and native acceptance. Intel macOS, Ubuntu ARM64/x86-64 desktop, Windows
+PowerShell 5.1, NTFS, Windows UDP, WSL NAT, WSL mirrored networking, and native
+AMD64 remain pending. The supplemental macOS PowerShell checks are not Windows
+results.
+
 Start with `uv run --locked drone-sim console`, then use the
 [local Mac workflow](runbook.md#local-mac-console): select a world/preset,
 and select Prepare. Prepare allocates a run-bound action token, writes the

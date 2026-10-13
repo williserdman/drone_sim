@@ -78,10 +78,14 @@ function render(snapshot) {
   if (snapshot.preflight && !snapshot.preflight.ready && (waiting || state === "PREPARED" || state === "STARTING_MISSION")) detail += ` ${snapshot.preflight.reasons.join("; ")}`;
   text("flight-detail", detail || "Select a preset, prepare the simulation, then use the run-bound actions in QGroundControl.");
   text("run-id", snapshot.run_id ? snapshot.run_id.slice(0, 8) : "No active run");
+  const host = snapshot.host || {};
+  const hostNames = {wsl2: "WSL2", macos: "macOS", linux: "Linux", amd64: "AMD64", arm64: "ARM64", "docker-desktop": "Docker Desktop", colima: "Colima", docker: "Docker"};
+  text("host-platform", [host.kind, host.machine, host.provider].filter(Boolean).map((item) => hostNames[item] || item).join(" · ") || "Host platform unavailable");
   ["world", "preset", "calibration", "preparation-limit"].forEach((id) => { $(id).disabled = active || busy; });
   const cleanupReady = !snapshot.run_id || snapshot.cleanup === "complete";
-  $("prepare").disabled = active || busy || !cleanupReady; $("build").disabled = active || busy;
-  $("stop").disabled = !active || ["BUILDING", "FINALIZING"].includes(state) || busy;
+  const cleanupRecovery = Boolean(snapshot.run_id) && terminal.has(state) && !cleanupReady;
+  $("prepare").disabled = active || busy || !cleanupReady; $("build").disabled = active || busy || !cleanupReady;
+  $("stop").disabled = (!active && !cleanupRecovery) || ["BUILDING", "FINALIZING"].includes(state) || busy;
   show("again", terminal.has(state) && Boolean(snapshot.run_id)); $("again").disabled = busy || !cleanupReady;
   if (snapshot.error || snapshot.observation_error) error(snapshot.error || snapshot.observation_error);
   renderChecks(snapshot.checks);
@@ -103,7 +107,8 @@ function render(snapshot) {
   show("camera-empty", !snapshot.run_id || cameraFailed);
   const stamp = views.camera?.native_timestamp_ns;
   text("camera-stamp", stamp == null ? "Native sensor time —" : `Native sensor time ${(stamp / 1e9).toFixed(2)} s`);
-  text("qgc-status", vehicle.qgc_fresh ? "QGC connected · live vehicle telemetry" : vehicle.fresh ? "SITL connected · waiting for QGC" : vehicle.detail || "Native macOS window");
+  const qgcLaunchDetail = snapshot.qgc_launch?.opened === false ? snapshot.qgc_launch.detail : "";
+  text("qgc-status", vehicle.qgc_fresh ? "QGC connected · live vehicle telemetry" : vehicle.fresh ? "SITL connected · waiting for QGC" : vehicle.qgc_detail || vehicle.detail || qgcLaunchDetail || `Native ${hostNames[host.kind] || "host"} window`);
   text("qgc-action-path", snapshot.qgc_action_path || "Prepare a run to publish its action file.");
   text("mode", vehicle.fresh ? vehicle.mode : "—");
   text("armed", vehicle.fresh && typeof vehicle.armed === "boolean" ? (vehicle.armed ? "Armed" : "Disarmed") : "—");

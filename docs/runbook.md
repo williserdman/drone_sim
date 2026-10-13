@@ -31,6 +31,12 @@ make test-unit
 `companion/comp2026` is tracked in this monorepo. A normal clone contains the
 mission source required by the Phase 3 build. Its history before the monorepo
 import remains available through Git.
+The active FM3 remains
+[`src/drone/mock_mission.py`](../companion/comp2026/src/drone/mock_mission.py).
+Simulation adapters remain under
+[`companion/src/drone_sim_companion`](../companion/src/drone_sim_companion/).
+Use the [flight-code map](../companion/README.md#where-to-change-comp-2026-code)
+for ownership and entry points instead of copying mission logic into this guide.
 
 Confirm the source and repository state before building:
 
@@ -85,17 +91,54 @@ depend on the local QGC/Gazebo viewer image.
 
 ### Local Mac console
 
-Use the PR #3 based checkout with native arm64 Colima and QGroundControl at
-`/Applications/QGroundControl.app`. The Linux simulator and desktop run on this
-workstation; no active cloud runner is needed. Keep at least 8 GiB free for
-flight evidence after the image build. Initial native builds require much more
-disk and time; the console reports the actual resources and image identity.
+The same console supports macOS 13 or newer, Ubuntu 24.04 desktop, and Ubuntu
+24.04 under WSL2 on Windows 11 x86-64. Every target needs Python 3.12, locked
+`uv` dependencies, Docker Compose, 8 GiB free for run evidence, at least 4 CPUs
+and 8 GiB RAM, and preferably 6 CPUs and 12 GiB. Install QGroundControl 5.0.8
+using the [QGC installation guide](https://docs.qgroundcontrol.com/Stable_V5.0/en/qgc-user-guide/getting_started/download_and_install.html).
+
+On macOS, install QGC at `/Applications/QGroundControl.app` and start a native
+Colima VM. Use `--arch aarch64` on Apple Silicon or `--arch x86_64` on Intel:
 
 ```bash
 colima start --arch aarch64 --cpu 6 --memory 12 --disk 80
 uv sync --python 3.12 --locked
 uv run --locked drone-sim console
 ```
+
+On Ubuntu 24.04 desktop, install Docker Engine and the Compose plugin from the
+[official Ubuntu instructions](https://docs.docker.com/engine/install/ubuntu/).
+Use the official QGC AppImage on x86-64. On ARM64, select an architecture-matched
+5.0.8 installation with its AppStream metadata in `.local-runtime/host.json`.
+Then run:
+
+```bash
+uv sync --python 3.12 --locked
+./scripts/local-build.sh --build
+./scripts/local-build.sh --check
+uv run --locked drone-sim console
+```
+
+On Windows, install `Ubuntu-24.04` and verify WSL version 2 with the
+[Microsoft WSL commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands).
+Enable Docker Desktop's WSL2 engine and **Resources > WSL Integration** for that
+distribution, following the [Docker WSL guide](https://docs.docker.com/desktop/features/wsl/).
+Do not install a second Docker daemon inside the distribution. Clone the repo
+under the Linux home directory, for example `~/projects/drone_sim`; `/mnt/c`,
+`drvfs`, `9p`, and symlinks into them are rejected for checkout and state paths.
+Install `uv` inside Ubuntu using the
+[official installation guide](https://docs.astral.sh/uv/getting-started/installation/),
+then run the same sync, build, check, and console commands there.
+
+Install native Windows QGC 5.0.8. Its defaults are
+`%ProgramFiles%\QGroundControl\bin\QGroundControl.exe` and
+`%APPDATA%\QGroundControl\QGroundControl.ini`. Windows PowerShell 5.1 must be
+allowed to execute the repository helper. Inspect policy with
+`Get-ExecutionPolicy -List`; do not use an execution-policy bypass, elevation,
+or a service. See [Microsoft's execution-policy reference](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies?view=powershell-5.1).
+If native paths need explicit selection, create the schema-1 host file shown in
+the [orchestration reference](../orchestration/README.md#host-configuration) and
+launch `uv run --locked drone-sim console --host-config .local-runtime/host.json`.
 
 The console uses port 8765. The local overlay publishes Gazebo desktop on 6080,
 onboard camera on 8081, and the dedicated SITL GCS channel on TCP 5762, all on
@@ -214,11 +257,8 @@ and native owner continue to block builds and preparations.
 
 ### Windows QGroundControl prerequisites for WSL2
 
-WSL2 console activation is still pending the final host composition and lifecycle
-transport. The packaged helper, shared lease, and direct WSL adapter exist, but
-the production resolver deliberately continues to reject WSL2 until Task 8 is
-complete.
-Before its native acceptance run, use Windows 11 x86-64 with Ubuntu 24.04 in
+The production console selects the packaged helper on WSL2. Native acceptance
+is still pending. Before that run, use Windows 11 x86-64 with Ubuntu 24.04 in
 WSL2. Keep the checkout, run evidence, session receipts, and token ledger on the
 distribution's Linux ext4 filesystem. Do not use `/mnt/c`, another `drvfs` or
 `9p` mount, or a symlink into one of those mounts for simulator state.
@@ -373,8 +413,9 @@ original mission plan. Ordinary `start` keeps manual operator behavior.
 Use the [flight-code map](../companion/README.md#where-to-change-comp-2026-code)
 to choose the mission, shared controller, or simulation adapter to edit. These
 files are tracked in `drone_sim`; commit them on the same feature branch.
-The local console currently supports Apple Silicon macOS with Colima. The
-requested Linux and Windows-through-WSL2 console paths are not implemented yet.
+The local console source supports the matrix documented above. Native Intel Mac,
+Linux desktop, and Windows/WSL acceptance remain pending and must not be inferred
+from focused software tests.
 
 1. Edit the source and run tests that cover the changed behavior. For example,
    these tests cover automatic sequencing and mission phase outcomes:

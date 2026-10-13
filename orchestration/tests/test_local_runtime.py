@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from artifacts.qgc_operator import MavlinkIdentity
 from orchestration.host_config import HostFacts
-from orchestration.host_integration import LaunchResult, QgcInstallation
+from orchestration.host_integration import HostIssue, LaunchResult, QgcInstallation
 from orchestration.local_runtime import LocalRuntime
 
 
@@ -21,6 +21,9 @@ class FakeHost:
             MavlinkIdentity(255, 190),
         )
         self.opened = []
+
+    def preflight(self, _paths):
+        return ()
 
     def inspect_qgc(self) -> QgcInstallation:
         return self.installation
@@ -88,3 +91,49 @@ def test_local_runtime_accepts_native_amd64_daemon_for_amd64_host(
     )
     assert daemon["ok"] is True
     assert result["provenance"]["ok"] is True
+
+
+def test_checks_report_selected_host_and_runtime_provider(tmp_path: Path, monkeypatch) -> None:
+    import orchestration.local_runtime as local_runtime
+
+    host = FakeHost(tmp_path / "state")
+    host.facts = HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop")
+    runtime = LocalRuntime(tmp_path, host=host)
+    runtime._run = lambda _command: SimpleNamespace(
+        returncode=0,
+        stdout='{"OSType":"linux","Architecture":"x86_64","NCPU":6,"MemTotal":12884901888}',
+        stderr="",
+    )
+    monkeypatch.setattr(local_runtime, "check_build", lambda *_args: {"ok": True, "reasons": []})
+
+    result = runtime.checks(active=True)
+
+    assert result["host"] == {
+        "kind": "wsl2",
+        "machine": "amd64",
+        "image_platform": "linux/amd64",
+        "provider": "docker-desktop",
+    }
+
+
+def test_checks_report_host_policy_and_interop_prerequisite_failures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    host = FakeHost(tmp_path / "state")
+    host.preflight = lambda _paths: (
+        HostIssue(
+            "helper_policy_blocked",
+            "Windows PowerShell policy blocked the packaged helper",
+        ),
+    )
+    runtime = LocalRuntime(tmp_path, host=host)
+    monkeypatch.setattr("orchestration.local_runtime.shutil.which", lambda _name: None)
+
+    result = runtime.checks(active=True)
+
+    check = next(row for row in result["checks"] if row["name"] == "Host integration")
+    assert check == {
+        "name": "Host integration",
+        "ok": False,
+        "detail": "helper_policy_blocked: Windows PowerShell policy blocked the packaged helper",
+    }

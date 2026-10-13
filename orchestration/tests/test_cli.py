@@ -309,3 +309,39 @@ def test_suite_cli_prints_final_result_and_preserves_exit(tmp_path,monkeypatch,s
     result=json.loads(output.getvalue().splitlines()[-1])
     assert result['result_type']=='suite_result' and result['state']==state and result['exit_code']==exit_code
     assert seen==[(tmp_path/'config/ci-suite.json',tmp_path/'runs')]
+
+
+def test_console_command_forwards_explicit_host_config(monkeypatch, tmp_path):
+    calls = []
+    host_config = tmp_path / "host.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "orchestration.console.serve_console",
+        lambda project, **kwargs: calls.append((project, kwargs)),
+    )
+
+    assert main(["console", "--host-config", str(host_config), "--no-browser"]) == 0
+
+    assert calls == [
+        (
+            tmp_path.resolve(),
+            {"port": 8765, "open_browser": False, "host_config": host_config.resolve()},
+        )
+    ]
+
+
+def test_production_host_resolver_enables_wsl2(monkeypatch, tmp_path):
+    import orchestration.host_integration as host_integration
+    from orchestration._adapters.wsl_host import WslHost
+    from orchestration.host_config import HostConfig, HostFacts
+
+    config = HostConfig(platform="auto", qgc_executable=None, qgc_settings_file=None)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
+    monkeypatch.setattr(host_integration, "load_host_config", lambda *_args: config)
+    monkeypatch.setattr(
+        host_integration,
+        "detect_host",
+        lambda _config: HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop"),
+    )
+
+    assert isinstance(host_integration.resolve_host(tmp_path), WslHost)

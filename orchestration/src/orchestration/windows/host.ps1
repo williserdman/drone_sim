@@ -142,8 +142,15 @@ function Assert-RequestPayload {
             Assert-Installation $Payload.installation 'open_qgc installation'
         }
         'open_browser' {
-            Assert-ExactProperties $Payload @('url') 'open_browser payload'
+            Assert-ExactProperties $Payload @('url', 'probe_timeout_ms') 'open_browser payload'
             Assert-StringProperty $Payload 'url' 'open_browser payload'
+            if (
+                ($Payload.probe_timeout_ms -isnot [int] -and $Payload.probe_timeout_ms -isnot [long]) -or
+                [long] $Payload.probe_timeout_ms -lt 1 -or
+                [long] $Payload.probe_timeout_ms -gt 10000
+            ) {
+                Throw-ProtocolError 'open_browser payload field probe_timeout_ms must be an integer from 1 through 10000'
+            }
         }
         'open_transport' {
             Assert-ExactProperties $Payload @('run_id', 'publication') 'open_transport payload'
@@ -272,6 +279,25 @@ function Invoke-Request {
             $uri = $null
             if (-not [Uri]::TryCreate([string] $Payload.url, [UriKind]::Absolute, [ref] $uri) -or ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https')) {
                 Throw-ProtocolError 'Browser URL must be absolute HTTP or HTTPS'
+            }
+            $response = $null
+            try {
+                $probe = [Net.HttpWebRequest]::Create($uri)
+                $probe.Method = 'GET'
+                $probe.Timeout = [int] $Payload.probe_timeout_ms
+                $probe.ReadWriteTimeout = [int] $Payload.probe_timeout_ms
+                $probe.AllowAutoRedirect = $false
+                $response = $probe.GetResponse()
+                $status = [int] $response.StatusCode
+                if ($status -lt 200 -or $status -ge 400) {
+                    throw "console URL returned HTTP $status"
+                }
+            }
+            catch {
+                throw "Windows could not reach $($uri.AbsoluteUri) through loopback within $($Payload.probe_timeout_ms) ms. Check WSL localhost forwarding or mirrored-network settings. $($_.Exception.Message)"
+            }
+            finally {
+                if ($null -ne $response) { $response.Dispose() }
             }
             $start = New-Object Diagnostics.ProcessStartInfo
             $start.FileName = $uri.AbsoluteUri

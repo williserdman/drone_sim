@@ -2,6 +2,7 @@ from dataclasses import replace
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import hashlib
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -14,7 +15,12 @@ from orchestration.operator_session import OperatorSession
 from orchestration.config import resolve_run_config, write_resolved_config
 from orchestration.controller import RunResult
 from orchestration.host_config import HostFacts
-from orchestration.host_integration import LaunchResult, QgcInstallation
+from orchestration.host_integration import (
+    HostHelperInfo,
+    LaunchResult,
+    PublicationReceipt,
+    QgcInstallation,
+)
 from orchestration.qgc_actions import QgcActionStore
 from orchestration.qgc_publication import publish_posix
 from orchestration.status_store import OperatorStatus, StatusStore, TerminalCause
@@ -185,6 +191,9 @@ class PrepareHost:
             version="5.0.8",
             source=QGC_SOURCE,
         )
+
+    def helper_info(self):
+        return None
 
     def acquire_native_lease(self):
         return nullcontext(SimpleNamespace())
@@ -477,6 +486,193 @@ def test_failed_action_publication_retains_identity_without_launching_qgc(tmp_pa
     assert snapshot["cleanup"] == "complete"
     assert host.events == ["settings"]
     assert controller.compose_attempts == 0
+
+
+def test_native_publication_mismatch_never_starts_compose(tmp_path, monkeypatch):
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+    published = tmp_path / "QGroundControl" / "MavlinkActions"
+    published.mkdir(parents=True)
+
+    class MismatchingHost(PrepareHost):
+        def publish_actions(self, material, installation, lease):
+            receipt = super().publish_actions(material, installation, lease)
+            return PublicationReceipt(receipt.native_path, receipt.filename, "f" * 64)
+
+    host = MismatchingHost(published, tmp_path / "qgc-state")
+    controller = PrepareController(
+        tmp_path / "runs",
+        [UUID("00000000-0000-4000-8000-000000000609")],
+    )
+    store = QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE)
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=store,
+        host=host,
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="99999999-9999-4999-8999-999999999999",
+    )
+    _wait_for_worker(session)
+    consumed_token = 1
+    next_material = store.allocate("00000000-0000-4000-8000-000000000610")
+
+    assert controller.compose_attempts == 0
+    assert (tmp_path / "runs" / "00000000-0000-4000-8000-000000000609").exists()
+    assert next_material.descriptor.attempt_token > consumed_token
+    assert session.snapshot()["cleanup"] == "complete"
+
+
+def test_native_publication_path_mismatch_never_starts_compose(tmp_path, monkeypatch):
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+    published = tmp_path / "QGroundControl" / "MavlinkActions"
+    published.mkdir(parents=True)
+
+    class MismatchingPathHost(PrepareHost):
+        def publish_actions(self, material, installation, lease):
+            receipt = super().publish_actions(material, installation, lease)
+            return PublicationReceipt(
+                str(tmp_path / "other" / receipt.filename),
+                receipt.filename,
+                receipt.sha256,
+            )
+
+    controller = PrepareController(
+        tmp_path / "runs",
+        [UUID("00000000-0000-4000-8000-000000000612")],
+    )
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=MismatchingPathHost(published, tmp_path / "qgc-state"),
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    )
+    _wait_for_worker(session)
+
+    assert controller.compose_attempts == 0
+    assert "native path" in session.snapshot()["error"]
+
+
+def test_qgc_launch_refusal_is_visible_without_stopping_prepare(tmp_path, monkeypatch):
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+    published = tmp_path / "QGroundControl" / "MavlinkActions"
+    published.mkdir(parents=True)
+
+    class LaunchRefusedHost(PrepareHost):
+        def open_qgc(self, installation):
+            del installation
+            self.events.append("open-qgc")
+            return LaunchResult(False, "desktop declined the launch request")
+
+    host = LaunchRefusedHost(published, tmp_path / "qgc-state")
+    controller = PrepareController(
+        tmp_path / "runs",
+        [UUID("00000000-0000-4000-8000-000000000613")],
+        events=host.events,
+    )
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=host,
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    )
+    _wait_for_worker(session)
+
+    snapshot = session.snapshot()
+    assert controller.compose_attempts == 1
+    assert snapshot["qgc_launch"] == {
+        "opened": False,
+        "detail": "desktop declined the launch request",
+    }
+
+
+def test_host_evidence_is_allowlisted_and_closed_before_inventory(tmp_path, monkeypatch):
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+    published = tmp_path / "QGroundControl" / "MavlinkActions"
+    published.mkdir(parents=True)
+
+    class EvidenceHost(PrepareHost):
+        def helper_info(self):
+            return HostHelperInfo("1", "a" * 64)
+
+        def inspect_qgc(self):
+            self.events.append("settings")
+            return QgcInstallation(
+                executable=r"C:\Program Files\QGroundControl\bin\QGroundControl.exe",
+                settings_file=r"C:\Users\pilot\AppData\Roaming\QGroundControl\QGroundControl.ini",
+                save_path=r"C:\Users\pilot\Documents\QGroundControl",
+                version="5.0.8",
+                source=QGC_SOURCE,
+            )
+
+        def publish_actions(self, material, installation, lease):
+            del lease
+            self.events.append("publish")
+            return PublicationReceipt(
+                rf"{installation.save_path}\MavlinkActions\{material.published_name}",
+                material.published_name,
+                hashlib.sha256(material.action_bytes).hexdigest(),
+            )
+
+    host = EvidenceHost(published, tmp_path / "qgc-state")
+    host.facts = HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop")
+    controller = PrepareController(
+        tmp_path / "runs",
+        [UUID("00000000-0000-4000-8000-000000000611")],
+        events=host.events,
+    )
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=host,
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    )
+    _wait_for_worker(session)
+
+    evidence_path = (
+        tmp_path
+        / "runs/00000000-0000-4000-8000-000000000611/logs/docker/host-integration.jsonl"
+    )
+    rows = [json.loads(line) for line in evidence_path.read_text().splitlines()]
+    assert rows[-1] == {"event": "ownership", "state": "cleanup_pending"}
+    assert rows[0] == {
+        "event": "host",
+        "platform": "wsl2",
+        "provider": "docker-desktop",
+        "image_platform": "linux/amd64",
+        "transport": "windows-helper-udp",
+    }
+    assert any(row.get("event") == "qgc" and row["version"] == "5.0.8" for row in rows)
+    assert any(row.get("event") == "helper" and row["source_sha256"] == "a" * 64 for row in rows)
+    assert any(row.get("event") == "publication" and row["native_path"].endswith(".json") for row in rows)
+    assert all("environment" not in row and "credential" not in row for row in rows)
+    with pytest.raises(ValueError, match="closed"):
+        session._host_evidence.write("ownership", state="after_inventory")
 
 
 def test_native_owner_clear_failure_keeps_session_cleanup_incomplete(

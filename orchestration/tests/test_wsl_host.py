@@ -414,5 +414,8 @@ def test_launch_operations_use_short_lived_helpers(tmp_path: Path) -> None:
 
     assert host.open_qgc(INSTALLATION).opened is True
     assert host.open_browser("http://127.0.0.1:8080/").opened is True
+    assert browser.requests == [
+        ("open_browser", {"url": "http://127.0.0.1:8080/", "probe_timeout_ms": 5000})
+    ]
     assert qgc.closed is True
     assert browser.closed is True

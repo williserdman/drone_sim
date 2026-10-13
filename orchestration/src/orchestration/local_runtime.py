@@ -77,6 +77,22 @@ class LocalRuntime:
         def add(name: str, ok: bool, detail: str) -> None:
             rows.append({"name": name, "ok": ok, "detail": detail})
 
+        issues = self.host.preflight(
+            (
+                self.project_directory,
+                self.project_directory / "runs",
+                self.host.state_directory,
+            )
+        )
+        add(
+            "Host integration",
+            not issues,
+            (
+                "; ".join(f"{issue.code}: {issue.message}" for issue in issues)
+                if issues
+                else f"{self.host.facts.kind} host integration is available"
+            ),
+        )
         add("Docker", shutil.which("docker") is not None, "Docker CLI must be installed")
         daemon_ok = False
         try:
@@ -141,7 +157,18 @@ class LocalRuntime:
         add("Matching runtime images", provenance.get("ok") is True,
             "source and image identity match" if provenance.get("ok") is True
             else "Build matching images to continue. Details are under Source & image identity.")
-        return {"ok": all(row["ok"] for row in rows), "checks": rows, "provenance": provenance}
+        facts = self.host.facts
+        return {
+            "ok": all(row["ok"] for row in rows),
+            "host": {
+                "kind": facts.kind,
+                "machine": facts.machine,
+                "image_platform": facts.image_platform,
+                "provider": facts.provider,
+            },
+            "checks": rows,
+            "provenance": provenance,
+        }
 
     def open_qgc(self) -> LaunchResult:
         installation = self.host.inspect_qgc()

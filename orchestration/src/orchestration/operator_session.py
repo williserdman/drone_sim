@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
+import stat
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, TextIO
 from urllib.request import urlopen
 from uuid import UUID, uuid4
 
@@ -20,7 +23,7 @@ from .catalog import PresetCatalog, Preset
 from .config import RunConfig, load_run_config
 from .controller import RunController
 from .gcs_bridge import GcsBridge
-from .host_integration import HostIntegration, resolve_host
+from .host_integration import HostIntegration, LaunchResult, resolve_host
 from .local_runtime import LocalRuntime
 from .operator_readiness import preflight_snapshot
 from .qgc_actions import QgcActionStore
@@ -45,6 +48,44 @@ def _tail(path: Path, maximum: int = 16384) -> str:
             return source.read(maximum).decode(errors="replace")
     except FileNotFoundError:
         return ""
+
+
+class _HostEvidenceLog:
+    _FIELDS = {
+        "host": frozenset({"platform", "provider", "image_platform", "transport"}),
+        "ownership": frozenset({"state"}),
+        "qgc": frozenset({"executable", "settings_file", "save_path", "version"}),
+        "helper": frozenset({"version", "source_sha256"}),
+        "publication": frozenset({"native_path", "filename", "sha256"}),
+    }
+
+    def __init__(self, run_directory: Path) -> None:
+        directory = run_directory / "logs/docker"
+        directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+        metadata = directory.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError("host evidence directory is unsafe")
+        self.path = directory / "host-integration.jsonl"
+        self._stream: TextIO | None = self.path.open("x", encoding="utf-8")
+        os.chmod(self.path, 0o600)
+
+    def write(self, event: str, **fields: str) -> None:
+        if self._stream is None:
+            raise ValueError("host evidence log is closed")
+        expected = self._FIELDS.get(event)
+        if expected is None or frozenset(fields) != expected:
+            raise ValueError("host evidence fields are not allowlisted")
+        document = {"event": event, **fields}
+        self._stream.write(json.dumps(document, allow_nan=False, separators=(",", ":")) + "\n")
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+
+    def close(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.close()
 
 
 class OperatorSession:
@@ -81,12 +122,15 @@ class OperatorSession:
         self._worker: threading.Thread | None = None
         self._cancel = threading.Event()
         self._bridge: GcsBridge | None = None
+        self._host_evidence: _HostEvidenceLog | None = None
         self._desktop_observation: tuple[str, bool, float] | None = None
         self._record: dict[str, Any] = {"state": "IDLE", "run_id": None, "preset_id": None,
                                          "prepare_request_id": None, "error": "", "cleanup": "not started"}
         self._checks: dict[str, Any] | None = None
         self._checks_context: tuple[int, bool] | None = None
         self._owner_generation = 0
+        self._console_url: str | None = None
+        self._browser_launch = LaunchResult(False, "Browser launch has not been requested")
         receipt = self.state_directory / "session.json"
         if receipt.exists():
             previous = json.loads(receipt.read_text())
@@ -122,6 +166,11 @@ class OperatorSession:
 
     def _active(self) -> bool:
         return self._worker is not None and self._worker.is_alive()
+
+    def set_console_status(self, url: str, launch: LaunchResult) -> None:
+        with self._lock:
+            self._console_url = url
+            self._browser_launch = launch
 
     def _begin_owner(self) -> None:
         """Invalidate prerequisite observations made for an earlier owner."""
@@ -197,11 +246,74 @@ class OperatorSession:
                     material = config.operator_actions
                     if material is None:
                         raise RuntimeError("operator preparation did not allocate QGC actions")
+                    evidence = _HostEvidenceLog(_directory)
+                    facts = self.host.facts
+                    evidence.write(
+                        "host",
+                        platform=facts.kind,
+                        provider=facts.provider,
+                        image_platform=facts.image_platform,
+                        transport=(
+                            "windows-helper-udp"
+                            if facts.kind == "wsl2"
+                            else "loopback-udp"
+                        ),
+                    )
+                    evidence.write("ownership", state="active")
+                    self._host_evidence = evidence
                     installation = self.host.inspect_qgc()
                     publication = self.host.publish_actions(
                         material,
                         installation,
                         self.workstation.owned(),
+                    )
+                    expected_sha256 = hashlib.sha256(material.action_bytes).hexdigest()
+                    expected_native_path = (
+                        ntpath.join(
+                            installation.save_path,
+                            "MavlinkActions",
+                            material.published_name,
+                        )
+                        if self.host.facts.kind == "wsl2"
+                        else str(
+                            Path(installation.save_path)
+                            / "MavlinkActions"
+                            / material.published_name
+                        )
+                    )
+                    if (
+                        publication.filename != material.published_name
+                        or publication.sha256 != expected_sha256
+                        or publication.sha256 != material.descriptor.actions_sha256
+                    ):
+                        raise RuntimeError(
+                            "native QGroundControl action publication does not match the bundled material"
+                        )
+                    if publication.native_path != expected_native_path:
+                        raise RuntimeError(
+                            "native QGroundControl action publication returned an unexpected native path"
+                        )
+                    if self._host_evidence is None:
+                        raise RuntimeError("host evidence log was not created for the allocated run")
+                    self._host_evidence.write(
+                        "qgc",
+                        executable=installation.executable,
+                        settings_file=installation.settings_file,
+                        save_path=installation.save_path,
+                        version=installation.version,
+                    )
+                    helper_info = self.host.helper_info()
+                    if helper_info is not None:
+                        self._host_evidence.write(
+                            "helper",
+                            version=helper_info.version,
+                            source_sha256=helper_info.source_sha256,
+                        )
+                    self._host_evidence.write(
+                        "publication",
+                        native_path=publication.native_path,
+                        filename=publication.filename,
+                        sha256=publication.sha256,
                     )
                     with self._lock:
                         self._record.update(
@@ -223,7 +335,16 @@ class OperatorSession:
                         raise
                     with self._lock:
                         self._bridge = bridge
-                    self.host.open_qgc(installation)
+                    try:
+                        launch = self.host.open_qgc(installation)
+                    except (OSError, RuntimeError, ValueError) as error:
+                        launch = LaunchResult(
+                            False,
+                            f"QGroundControl could not be opened automatically: {error}",
+                        )
+                    with self._lock:
+                        self._record["qgc_launch"] = asdict(launch)
+                        self._save()
 
                 with (self.state_directory / "owner.log").open("w") as events:
                     def before_inventory() -> None:
@@ -235,6 +356,14 @@ class OperatorSession:
                                 bridge.stop()
                             except BaseException as error:
                                 failure = error
+                        if self._host_evidence is not None:
+                            try:
+                                self._host_evidence.write(
+                                    "ownership", state="cleanup_pending"
+                                )
+                                self._host_evidence.close()
+                            except BaseException as error:
+                                failure = failure or error
                         try:
                             events.flush()
                             events.close()
@@ -305,6 +434,8 @@ class OperatorSession:
         finally:
             if self._bridge:
                 self._bridge.stop()
+            if self._host_evidence is not None:
+                self._host_evidence.close()
             with self._lock:
                 self._save()
 
@@ -458,7 +589,24 @@ class OperatorSession:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             result = dict(self._record)
-            result.update(can_start=False, qgc_admission_ready=False, checks=self._checks)
+            facts = getattr(self.host, "facts", None)
+            result.update(
+                can_start=False,
+                qgc_admission_ready=False,
+                checks=self._checks,
+                console_url=self._console_url,
+                browser_launch=asdict(self._browser_launch),
+                host=(
+                    {
+                        "kind": facts.kind,
+                        "machine": facts.machine,
+                        "image_platform": facts.image_platform,
+                        "provider": facts.provider,
+                    }
+                    if facts is not None
+                    else {}
+                ),
+            )
             run_id = result.get("run_id")
             if run_id is None:
                 return result
@@ -526,8 +674,18 @@ class OperatorSession:
                     return self._checks
 
     def open_qgc(self) -> dict[str, Any]:
-        result = self.host.open_qgc(self.host.inspect_qgc())
-        return {"opened": result.opened, "detail": result.detail}
+        try:
+            result = self.host.open_qgc(self.host.inspect_qgc())
+        except (OSError, RuntimeError, ValueError) as error:
+            result = LaunchResult(
+                False,
+                f"QGroundControl could not be opened automatically: {error}",
+            )
+        document = asdict(result)
+        with self._lock:
+            self._record["qgc_launch"] = document
+            self._save()
+        return document
 
     def build(self) -> dict[str, Any]:
         with self._lock:

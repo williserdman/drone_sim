@@ -119,6 +119,22 @@ action receipt; cleanup of a failure before publication does not require one.
 Native ownership clears only after exact Compose resources and media cleanup are
 verified.
 
+The console composition root resolves one `HostIntegration` and constructs one
+`Workstation`. It passes both through prerequisite checks, image builds,
+preparation, transport, controller finalization, and cleanup. On WSL2, the HTTP
+server answers on `127.0.0.1` before the helper probes the same URL from Windows
+and opens the native browser. Browser launch, Gazebo viewer connection, camera
+freshness, QGC transport, command admission, physical outcome, score, and
+artifact validity remain separate facts.
+
+Each prepared run includes `logs/docker/host-integration.jsonl`. Its fixed
+records contain only platform/provider, QGC paths/version, transport kind,
+helper identity when present, publication path/digest, and ownership
+transitions. The final record is `cleanup_pending`. The operator closes this
+writer with the bridge and run transport before artifact inventory. Compose and
+media cleanup plus native owner clearance occur later and remain in mutable
+session/native receipts outside the manifest.
+
 `launch_mode: operator` keeps native Gazebo physics and private camera observations
 live while holding initial mission commands. Host `PREPARED` requires advancing
 fresh preflight facts and an observed disarmed healthy vehicle. Its independent

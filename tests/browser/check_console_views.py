@@ -32,11 +32,15 @@ class Session:
         return {'state':self.state, 'run_id':self.run_id, 'cleanup':self.cleanup,
                 'can_start':False,
                 'qgc_admission_ready':False,
-                'qgc_action_path':(f'/tmp/QGroundControl/MavlinkActions/drone-sim-{self.run_id}.json'
+                'host': {'kind':'wsl2','machine':'amd64','image_platform':'linux/amd64','provider':'docker-desktop'},
+                'browser_launch': {'opened': True, 'detail': 'opened'},
+                'qgc_launch': {'opened': False, 'detail': 'Open QGC manually from the Windows Start menu.'},
+                'console_url': 'http://127.0.0.1:8765',
+                'qgc_action_path':(f'C:\\Users\\pilot\\QGroundControl\\MavlinkActions\\drone-sim-{self.run_id}.json'
                                    if self.run_id else None),
                 'preflight': {'ready': False, 'reasons': ['waiting for disarmed preflight']},
                 'views': {'gazebo': {'available':self.connected, 'connected':bool(self.observations)}, 'camera': {'fresh':self.connected}, 'qgc':{}}}
-    def checks(self): return {'checks':[], 'ok':True}
+    def checks(self): return {'checks':[{'name':'QGroundControl','ok':False,'detail':'Install exact QGroundControl 5.0.8 and create its settings file.'}], 'ok':False, 'host':self.snapshot()['host']}
     def results(self): return {}
     def prepare(self, **request):
         self.run_index += 1
@@ -44,11 +48,17 @@ class Session:
         self.cleanup = 'pending'
         self.actions.append(('prepare', request))
         return self.snapshot()
+    def build(self):
+        self.actions.append(('build', {}))
+        return self.snapshot()
     def stop(self, **request):
         assert request == {'run_id': self.run_id}
         self.actions.append(('stop', request))
-        self.state = 'ABORTED'
-        self.cleanup = 'complete'
+        if self.state == 'FAILED' and self.cleanup != 'complete':
+            self.state = 'FINALIZING'
+        else:
+            self.state = 'ABORTED'
+            self.cleanup = 'complete'
         return self.snapshot()
     def viewer_status(self, **observation):
         self.observations.append(observation)
@@ -85,12 +95,18 @@ def main():
             assert 'Fly View Actions' in guidance
             assert 'Start selected mission' in guidance
             assert not page.locator('#manual-note').is_visible()
+            expect(page.locator('#host-platform')).to_have_text('WSL2 · AMD64 · Docker Desktop')
+            expect(page.locator('#qgc-status')).to_have_text('Open QGC manually from the Windows Start menu.')
+            expect(page.locator('#checks')).to_contain_text('Install exact QGroundControl 5.0.8')
+            page.locator('#build').click()
+            page.wait_for_timeout(100)
+            assert session.actions == [('build', {})]
             page.locator('#preset').select_option('operator-wait')
             assert page.locator('#manual-note').is_visible()
             assert 'GUIDED' in page.locator('#manual-note').inner_text()
             page.locator('#prepare').click()
             expect(page.locator('#session-state')).to_have_text('preparing')
-            first_prepare = session.actions[0]
+            first_prepare = session.actions[1]
             assert first_prepare[0] == 'prepare'
             assert first_prepare[1]['preset_id'] == 'operator-wait'
             assert first_prepare[1]['preparation_wall_seconds'] == 1800
@@ -98,7 +114,7 @@ def main():
             assert session.run_id == '11111111-1111-4111-8111-111111111111'
             session.state='PREPARED'
             expect(page.locator('#session-state')).to_have_text('prepared', timeout=4000)
-            assert '/tmp/QGroundControl/MavlinkActions/drone-sim-11111111-1111-4111-8111-111111111111.json' in page.locator('#qgc-action-path').inner_text()
+            assert r'C:\Users\pilot\QGroundControl\MavlinkActions\drone-sim-11111111-1111-4111-8111-111111111111.json' in page.locator('#qgc-action-path').inner_text()
             session.connected=True
             expect(page.locator('#gazebo-status')).to_have_text('Live', timeout=7000)
             assert any(visits), f'Gazebo did not reconnect when runtime became available: {visits}'
@@ -117,17 +133,37 @@ def main():
             expect(page.locator('#session-state')).to_have_text('running', timeout=4000)
             page.locator('#stop').click()
             expect(page.locator('#session-state')).to_have_text('aborted')
-            assert session.actions[1] == ('stop', {'run_id':'11111111-1111-4111-8111-111111111111'})
+            assert session.actions[2] == ('stop', {'run_id':'11111111-1111-4111-8111-111111111111'})
             assert page.locator('#again').is_visible()
             page.locator('#again').click()
             expect(page.locator('#session-state')).to_have_text('preparing')
-            second_prepare = session.actions[2]
+            second_prepare = session.actions[3]
             assert second_prepare[0] == 'prepare'
             assert second_prepare[1]['preset_id'] == 'operator-wait'
             UUID(second_prepare[1]['request_id'])
             assert second_prepare[1]['request_id'] != first_prepare[1]['request_id']
             assert session.run_id == '22222222-2222-4222-8222-222222222222'
-            assert [action for action, _request in session.actions] == ['prepare', 'stop', 'prepare']
+            assert [action for action, _request in session.actions] == ['build', 'prepare', 'stop', 'prepare']
+
+            session.state='FAILED'
+            session.cleanup='incomplete'
+            expect(page.locator('#session-state')).to_have_text('failed', timeout=4000)
+            assert page.locator('#stop').is_enabled()
+            assert page.locator('#prepare').is_disabled()
+            assert page.locator('#build').is_disabled()
+            assert page.locator('#again').is_disabled()
+            page.locator('#stop').click()
+            expect(page.locator('#session-state')).to_have_text('finalizing')
+            assert session.actions[-1] == ('stop', {'run_id':'22222222-2222-4222-8222-222222222222'})
+            assert page.locator('#prepare').is_disabled()
+            assert page.locator('#build').is_disabled()
+            assert page.locator('#again').is_disabled()
+            session.state='INTERRUPTED'
+            session.cleanup='complete'
+            expect(page.locator('#session-state')).to_have_text('interrupted', timeout=4000)
+            assert page.locator('#prepare').is_enabled()
+            assert page.locator('#build').is_enabled()
+            assert page.locator('#again').is_enabled()
             print('PASS: native-QGC guidance, Prepare/Stop/Run Again requests, desktop reconnect, and disconnected view indicators')
             browser.close()
     finally:

@@ -35,8 +35,8 @@ validates; it does not infer physical success from a command or log message.
 - [`host_integration.py`](src/orchestration/host_integration.py) defines the
   native QGC discovery, publication, launch, lease, and datagram contracts.
   [`_adapters/posix_host.py`](src/orchestration/_adapters/posix_host.py) provides
-  the macOS and native Linux implementation. WSL2 resolution remains disabled
-  until the Windows helper is connected.
+  the macOS and native Linux implementation. [`_adapters/wsl_host.py`](src/orchestration/_adapters/wsl_host.py)
+  connects WSL2 to the packaged Windows helper.
 - [`qgc_actions.py`](src/orchestration/qgc_actions.py) allocates durable
   run-bound QGC attempt tokens and renders the two native Fly View actions.
   [`qgc_publication.py`](src/orchestration/qgc_publication.py) publishes the
@@ -178,10 +178,10 @@ closing its datagram transport leaves its control pipe and mutex alive for
 finalization and verified cleanup. `HostHelperInfo` exposes the active helper's
 validated version and packaged-source digest, or a harmless short-lived probe
 when no lease is held. Recovery never replays datagrams or resumes a mission.
-The production host resolver still keeps WSL2 disabled until Task 8 enables the
-adapter in the final composition and completes its lifecycle transport. Native Windows 11, Windows PowerShell
-5.1, and WSL2 NAT and mirrored-network verification remain required acceptance
-gates.
+The production resolver selects this adapter on WSL2. It probes the
+Windows-visible loopback console URL before it asks Windows to open a browser.
+Native Windows 11, Windows PowerShell 5.1, and WSL2 NAT and mirrored-network
+verification remain required acceptance gates.
 
 The QGC baseline is 5.0.8 with system ID 255 and component ID 190. macOS discovery checks
 the selected application bundle's full version metadata. Linux accepts the
@@ -242,9 +242,9 @@ passing them through POSIX path handling. Simulator state paths have different
 semantics: WSL checkouts, run evidence, session state, and token state must
 resolve onto the distribution's ext4 filesystem. Windows mounts exposed as
 `drvfs` or `9p`, other filesystems, and symlinks into those mounts are rejected.
-The production resolver currently rejects WSL2 with a specific unavailable
-integration error. Task 8 enables it after the packaged Windows modules are
-connected through the bounded helper protocol and shared lifecycle.
+Pass `drone-sim console --host-config PATH` to select an explicit file. The
+console resolves one host and one workstation, then injects those same objects
+through its runtime, session, and controller.
 
 The CLI consumes templates such as [`config/default-run.json`](../config/default-run.json).
 The resolved configuration selects one immutable service ownership topology; the

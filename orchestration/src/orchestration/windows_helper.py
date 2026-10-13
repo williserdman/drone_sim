@@ -656,7 +656,7 @@ def _validate_request_payload(operation: str, payload: Mapping[str, object]) -> 
             "sha256": str,
         },
         "open_qgc": {"installation": Mapping},
-        "open_browser": {"url": str},
+        "open_browser": {"url": str, "probe_timeout_ms": int},
         "open_transport": {"run_id": str, "publication": Mapping},
         "close_transport": {},
         "release_lease": {},
@@ -693,6 +693,8 @@ def _validate_request_payload(operation: str, payload: Mapping[str, object]) -> 
         selected = urlparse(str(payload["url"]))
         if selected.scheme not in {"http", "https"} or not selected.netloc:
             raise ValueError("browser URL must be absolute HTTP or HTTPS")
+        if type(payload["probe_timeout_ms"]) is not int or not 1 <= int(payload["probe_timeout_ms"]) <= 10_000:
+            raise ValueError("browser probe_timeout_ms must be an integer from 1 through 10000")
 
 
 def _nonempty_string(value: object, label: str) -> str:

@@ -35,6 +35,7 @@ def _parser() -> argparse.ArgumentParser:
     console = commands.add_parser("console", help="open the local simulation console")
     console.add_argument("--port", type=int, default=8765)
     console.add_argument("--no-browser", action="store_true")
+    console.add_argument("--host-config")
     prepare = commands.add_parser("prepare", help="prepare one approved preset without starting flight")
     prepare.add_argument("--preset", default="configured-descent")
     prepare.add_argument("--request-id")
@@ -88,7 +89,17 @@ def main(
     try:
         if arguments.command == "console":
             from .console import serve_console
-            serve_console(Path.cwd().resolve(), port=arguments.port, open_browser=not arguments.no_browser)
+            host_config = (
+                Path(arguments.host_config).expanduser().resolve()
+                if arguments.host_config
+                else None
+            )
+            serve_console(
+                Path.cwd().resolve(),
+                port=arguments.port,
+                open_browser=not arguments.no_browser,
+                host_config=host_config,
+            )
             return 0
         if arguments.command in {"prepare", "start-mission", "abort-flight", "stop"}:
             body: dict[str, Any]

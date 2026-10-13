@@ -7,13 +7,18 @@ import json
 from pathlib import Path
 import secrets
 import threading
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
-import webbrowser
 
 from .catalog import PresetCatalog
+from .controller import RunController
+from .host_integration import LaunchResult, resolve_host
+from .local_runtime import LocalRuntime
+from .operator_session import OperatorSession
+from .workstation import Workstation
 
 
 class ConsoleServer(ThreadingHTTPServer):
@@ -149,15 +154,74 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._json({"error": str(error)}, 409)
 
 
-def serve_console(project_directory: Path, *, port: int = 8765, open_browser: bool = True) -> None:
-    from .operator_session import OperatorSession
+def _console_is_serving(url: str) -> bool:
+    try:
+        with urlopen(f"{url}/api/bootstrap", timeout=0.25) as response:
+            return response.status == 200
+    except (OSError, URLError, ValueError):
+        return False
 
-    session = OperatorSession(project_directory)
+
+def _open_browser_after_ready(host: Any, session: Any, url: str) -> None:
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if _console_is_serving(url):
+            try:
+                result = host.open_browser(url)
+            except (OSError, RuntimeError, ValueError) as error:
+                result = LaunchResult(
+                    False,
+                    f"Could not open the native browser: {error}. Open {url} manually.",
+                )
+            session.set_console_status(url, result)
+            return
+        threading.Event().wait(0.05)
+    session.set_console_status(
+        url,
+        LaunchResult(False, f"Console readiness probe timed out. Open {url} manually."),
+    )
+
+
+def serve_console(
+    project_directory: Path,
+    *,
+    port: int = 8765,
+    open_browser: bool = True,
+    host_config: Path | None = None,
+) -> None:
+    project_directory = project_directory.resolve()
+    host = resolve_host(project_directory, host_config)
+    workstation = Workstation(host)
+    runtime = LocalRuntime(
+        project_directory,
+        host=host,
+        workstation=workstation,
+    )
+    controller = RunController(
+        project_directory=project_directory,
+        workstation=workstation,
+    )
+    session = OperatorSession(
+        project_directory,
+        runtime=runtime,
+        controller=controller,
+        host=host,
+        workstation=workstation,
+    )
     server = ConsoleServer(("127.0.0.1", port), session)
     url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"Simulation console: {url}", flush=True)
+    session.set_console_status(
+        url,
+        LaunchResult(False, "Browser launch is disabled" if not open_browser else "Browser launch pending"),
+    )
     if open_browser:
-        webbrowser.open(url)
+        threading.Thread(
+            target=_open_browser_after_ready,
+            args=(host, session, url),
+            name="console-browser-launch",
+            daemon=True,
+        ).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

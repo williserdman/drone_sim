@@ -453,16 +453,18 @@ def test_qgc_system_id_uses_general_then_legacy_then_default(tmp_path: Path) -> 
         assert host.inspect_qgc().source == QGC_SOURCE
 
 
-def test_resolver_keeps_wsl_unavailable_until_windows_adapter(
+def test_resolver_selects_windows_adapter_for_wsl2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from orchestration._adapters.wsl_host import WslHost
+
     config = HostConfig("wsl2", None, None)
     facts = HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop")
     monkeypatch.setattr(host_integration_module, "load_host_config", lambda *_args: config)
     monkeypatch.setattr(host_integration_module, "detect_host", lambda _config: facts)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
 
-    with pytest.raises(ValueError, match="not available yet"):
-        host_integration_module.resolve_host(tmp_path)
+    assert isinstance(host_integration_module.resolve_host(tmp_path), WslHost)
 
 
 def test_mac_open_command_focuses_selected_existing_application(tmp_path: Path) -> None:

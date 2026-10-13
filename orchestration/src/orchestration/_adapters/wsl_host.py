@@ -280,7 +280,9 @@ class WslHost:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("browser URL must be an absolute HTTP or HTTPS URL")
-        result = self._short_request("open_browser", {"url": url})
+        result = self._short_request(
+            "open_browser", {"url": url, "probe_timeout_ms": 5000}
+        )
         return LaunchResult(_boolean(result, "opened"), _string(result, "detail"))
 
     def open_datagrams(

@@ -23,27 +23,31 @@ for exact evidence and remaining checks.
 
 ## Platform support
 
-The local console currently targets Apple Silicon macOS with Colima and native
-QGroundControl. The simulator services run in Linux containers, but the local
-launcher, QGC settings lookup, and image builds still contain Mac and ARM64
-assumptions. The existing Linux/cloud unattended workflow has separate
-[build and run instructions](docs/runbook.md#existing-unattended-image-build).
+The console resolves macOS, Ubuntu desktop, or Ubuntu 24.04 under WSL2. It uses
+native QGroundControl 5.0.8 and native `linux/arm64` or `linux/amd64` container
+images. Windows runs the Python controller inside WSL; it does not run a native
+Windows controller.
 
-The requested portability target is macOS, Linux, and Windows through WSL2,
-with native QGC and browser views of Gazebo and the camera. Linux and WSL2
-console support is not implemented or verified yet. The
-[portability design](docs/superpowers/specs/2026-10-10-portable-local-console-design.md)
-defines the approved host integration and verification requirements. The
-[implementation plan](docs/superpowers/plans/2026-10-10-portable-local-console.md)
-is ready for review.
+| Target | Source-level status | Native acceptance |
+| --- | --- | --- |
+| macOS 13+, Apple Silicon | Implemented and covered by focused tests | Task 9 pending for the assembled revision |
+| macOS 13+, Intel | Implemented | Pending on Intel hardware |
+| Ubuntu 24.04 desktop, ARM64 or x86-64 | Implemented | Desktop QGC and runtime acceptance pending |
+| Windows 11 x86-64, Ubuntu 24.04 in WSL2 | Implemented, including the bounded Windows helper | Windows PowerShell 5.1, NTFS, UDP, NAT, and mirrored-network acceptance pending |
 
-## Local Mac flight console
+Windows ARM64 and emulated or remote container runtimes are outside the initial
+matrix. The [runbook](docs/runbook.md#local-mac-console) gives exact setup and
+recovery steps. The [handoff](docs/handoff.md) keeps native results separate
+from software tests and historical flights.
 
-From this checkout, with native macOS QGroundControl installed:
+## Local flight console
+
+From this checkout, after completing the platform setup in the runbook:
 
 ```bash
-colima start --arch aarch64 --cpu 6 --memory 12 --disk 80
 uv sync --python 3.12 --locked
+./scripts/local-build.sh --build
+./scripts/local-build.sh --check
 uv run --locked drone-sim console
 ```
 
@@ -58,7 +62,8 @@ Preparation keeps the aircraft disarmed and does not consume the mission budget.
 **Stop simulation** finalizes and stops the runtime; it does not request a
 landing. **Run again** waits for cleanup and prepares a fresh run, token, and
 action file. See the [console workflow](docs/runbook.md#local-mac-console) for
-prerequisites, Operator Wait guidance, CLI controls, and evidence paths.
+macOS, Ubuntu, and WSL2 prerequisites, Operator Wait guidance, CLI controls,
+recovery, and evidence paths.
 
 ## First local check
 

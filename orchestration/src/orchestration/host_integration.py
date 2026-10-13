@@ -11,7 +11,6 @@ from uuid import UUID
 from artifacts.qgc_operator import MavlinkIdentity
 
 from .host_config import (
-    HostConfigurationError,
     HostFacts,
     detect_host,
     load_host_config,
@@ -157,10 +156,9 @@ def resolve_host(
     config = load_host_config(project_directory, config_path)
     facts = detect_host(config)
     if facts.kind == "wsl2":
-        raise HostConfigurationError(
-            "WSL2 native QGroundControl integration is not available yet; "
-            "run the console on macOS or native Ubuntu until the Windows helper is enabled"
-        )
+        from ._adapters.wsl_host import WslHost
+
+        return WslHost(project_directory, config, facts)
     from ._adapters.posix_host import PosixHost
 
     return PosixHost(project_directory, config, facts)
