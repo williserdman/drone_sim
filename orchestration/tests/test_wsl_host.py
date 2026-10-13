@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import socket
+import time
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
 from artifacts.qgc_operator import MavlinkIdentity
 from orchestration._adapters.wsl_host import WslHost
+from orchestration.gcs_bridge import GcsBridge
 from orchestration.host_config import HostConfig, HostFacts
 from orchestration.host_integration import (
     ControllerIdentity,
@@ -237,7 +241,22 @@ def test_recovery_uses_replacement_helper_after_old_helper_exits(
             }
         }
     )
-    replacement = FakeHelper()
+    stale_command = mavlink.MAVLink_command_long_message(
+        1, 1, 400, 0, 1, 0, 0, 0, 0, 0, 0
+    ).pack(mavlink.MAVLink(None, srcSystem=255, srcComponent=190))
+    first.received.append(stale_command)
+    replacement = FakeHelper(
+        {
+            "register_controller": {
+                "active_run_id": RUN_ID,
+                "recovery_required": True,
+            },
+            "open_transport": {
+                "local_port": 49152,
+                "peer": "127.0.0.1:14550",
+            },
+        }
+    )
     host = _host(tmp_path, [first, replacement])
     identity = ControllerIdentity(
         UUID("22222222-2222-4222-8222-222222222222"),
@@ -262,15 +281,46 @@ def test_recovery_uses_replacement_helper_after_old_helper_exits(
         "release_lease",
     ]
 
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(3)
+    run_directory = tmp_path / "run"
     with host.acquire_native_lease() as replacement_lease:
         assert first.closed is True
-        replacement_lease.register_controller(identity, pristine=False)
+        assert replacement_lease.register_controller(
+            identity, pristine=False
+        ) == ControllerRegistration(RUN_ID, True)
         replacement_lease.verify_resume(RUN_ID, receipt)
+        transport = host.open_datagrams(replacement_lease, RUN_ID, receipt)
+        bridge = GcsBridge(
+            run_directory,
+            transport=transport,
+            tcp_port=listener.getsockname()[1],
+        )
+        bridge.start()
+        connection, _ = listener.accept()
+        connection.settimeout(0.2)
+        with pytest.raises(socket.timeout):
+            connection.recv(4096)
+        heartbeat = mavlink.MAVLink_heartbeat_message(
+            2, 3, 0, 0, 3, 3
+        ).pack(mavlink.MAVLink(None, srcSystem=1, srcComponent=1))
+        connection.sendall(heartbeat)
+        deadline = time.monotonic() + 2
+        while replacement.sent != [heartbeat] and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert replacement.sent == [heartbeat]
+        bridge.stop()
+        connection.close()
+    listener.close()
 
     assert [operation for operation, _ in replacement.requests] == [
         "acquire_lease",
         "register_controller",
         "verify_resume",
+        "open_transport",
+        "close_transport",
         "release_lease",
     ]
     assert first.requests[1][1] == {
@@ -291,6 +341,8 @@ def test_recovery_uses_replacement_helper_after_old_helper_exits(
             "sha256": receipt.sha256,
         },
     }
+    assert replacement.requests[3][1] == replacement.requests[2][1]
+    assert first.received == [stale_command]
 
 
 def test_publication_uses_lease_helper_and_exact_material(tmp_path: Path) -> None:

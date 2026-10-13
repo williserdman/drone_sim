@@ -44,6 +44,7 @@ class GcsBridge:
         self._lock = threading.Lock()
         self._transport_lock = threading.Lock()
         self._transport_closed = False
+        self._transport_failed = threading.Event()
         self._thread: threading.Thread | None = None
         self._state: dict[str, Any] = {
             "connected": False,
@@ -87,6 +88,14 @@ class GcsBridge:
             self._update(qgc_connected=False, qgc_detail=str(error))
             return error
         return None
+
+    def _fail_transport(self, error: HostTransportError) -> None:
+        self._transport_failed.set()
+        close_error = self._close_transport()
+        detail = str(error)
+        if close_error is not None and close_error is not error:
+            detail = f"{detail}; transport close failed: {close_error}"
+        self._update(qgc_connected=False, qgc_detail=detail)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -176,7 +185,6 @@ class GcsBridge:
         incoming = mavlink.MAVLink(None)
         outgoing = mavlink.MAVLink(None)
         incoming.robust_parsing = outgoing.robust_parsing = True
-        transport_active = True
         while not self._stop.is_set():
             readable, _, _ = select.select([tcp], [], [], 0.05)
             if tcp in readable:
@@ -186,22 +194,17 @@ class GcsBridge:
                 for message in incoming.parse_buffer(data) or []:
                     if message.get_type() != "BAD_DATA":
                         self._observe(message)
-                        if transport_active:
+                        if not self._transport_failed.is_set():
                             try:
                                 self.transport.send(bytes(message.get_msgbuf()))
                             except HostTransportError as error:
-                                transport_active = False
-                                self._update(
-                                    qgc_connected=False,
-                                    qgc_detail=str(error),
-                                )
-            if not transport_active:
+                                self._fail_transport(error)
+            if self._transport_failed.is_set():
                 continue
             try:
                 datagram = self.transport.receive(0.05)
             except HostTransportError as error:
-                transport_active = False
-                self._update(qgc_connected=False, qgc_detail=str(error))
+                self._fail_transport(error)
                 continue
             if datagram is None:
                 continue

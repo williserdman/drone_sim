@@ -84,6 +84,27 @@ class BarrierTransport(QueuedTransport):
         self.release.set()
 
 
+class FailThenReplayTransport(QueuedTransport):
+    """Expose a command if the bridge touches a failed transport again."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed = threading.Event()
+        self.receive_calls = 0
+
+    def receive(self, timeout_s: float) -> bytes | None:
+        self.receive_calls += 1
+        if self.receive_calls == 1:
+            self.failed.set()
+            raise HostTransportError("helper EOF")
+        try:
+            item = self.incoming.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
+        assert isinstance(item, bytes)
+        return item
+
+
 def test_single_owner_relays_exact_frames_and_records_each_intervention_once(tmp_path):
     listener = _listener()
     qgc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -129,24 +150,48 @@ def test_single_owner_relays_exact_frames_and_records_each_intervention_once(tmp
     assert [payload for payload, _peer in relayed] == controller_frames
     peer = relayed[-1][1]
 
-    foreign_observations = b"".join(
-        (
-            _frame(
-                mavlink.MAVLink_heartbeat_message(2, 3, 0, 0, 3, 3),
-                system=42,
-                component=1,
-            ),
-            _frame(
-                mavlink.MAVLink_global_position_int_message(
-                    2, 0, 0, 0, 999_000, 0, 0, 0, 0
+    _wait_until(lambda: "landed_state" in bridge.status())
+    controller_status = bridge.status()
+    assert controller_status["mode"] == "GUIDED"
+    assert controller_status["armed"] is True
+    assert controller_status["relative_altitude_m"] == 12.5
+    assert controller_status["landed_state"] == 2
+    controller_freshness = controller_status["last_telemetry_wall_time"]
+
+    foreign_frames = []
+    for system, component in ((42, 1), (1, 191)):
+        foreign_frames.extend(
+            (
+                _frame(
+                    mavlink.MAVLink_heartbeat_message(2, 3, 0, 0, 3, 3),
+                    system=system,
+                    component=component,
                 ),
-                system=1,
-                component=191,
-            ),
+                _frame(
+                    mavlink.MAVLink_global_position_int_message(
+                        2, 0, 0, 0, 999_000, 0, 0, 0, 0
+                    ),
+                    system=system,
+                    component=component,
+                ),
+                _frame(
+                    mavlink.MAVLink_extended_sys_state_message(0, 1),
+                    system=system,
+                    component=component,
+                ),
+            )
         )
-    )
+    foreign_observations = b"".join(foreign_frames)
     connection.sendall(foreign_observations)
-    assert b"".join(qgc.recvfrom(4096)[0] for _ in range(2)) == foreign_observations
+    assert b"".join(
+        qgc.recvfrom(4096)[0] for _ in foreign_frames
+    ) == foreign_observations
+    filtered_status = bridge.status()
+    assert filtered_status["mode"] == "GUIDED"
+    assert filtered_status["armed"] is True
+    assert filtered_status["relative_altitude_m"] == 12.5
+    assert filtered_status["landed_state"] == 2
+    assert filtered_status["last_telemetry_wall_time"] == controller_freshness
 
     command = _frame(
         mavlink.MAVLink_command_long_message(
@@ -341,4 +386,38 @@ def test_transport_failure_marks_qgc_disconnected_but_keeps_observing_sitl(tmp_p
 
     bridge.stop()
     connection.close()
+    listener.close()
+
+
+def test_failed_transport_stays_disabled_across_sitl_reconnect(tmp_path):
+    listener = _listener()
+    transport = FailThenReplayTransport()
+    bridge = GcsBridge(
+        tmp_path,
+        transport=transport,
+        tcp_port=listener.getsockname()[1],
+    )
+    bridge.start()
+    first_connection, _ = listener.accept()
+    assert transport.failed.wait(2)
+    assert bridge.status()["qgc_connected"] is False
+
+    first_connection.close()
+    replacement_connection, _ = listener.accept()
+    replacement_connection.settimeout(0.2)
+    command = _frame(
+        mavlink.MAVLink_command_long_message(
+            1, 1, 400, 0, 1, 0, 0, 0, 0, 0, 0
+        ),
+        system=255,
+        component=190,
+    )
+    transport.incoming.put(command)
+
+    with pytest.raises(socket.timeout):
+        replacement_connection.recv(4096)
+    assert transport.receive_calls == 1
+
+    bridge.stop()
+    replacement_connection.close()
     listener.close()
