@@ -605,7 +605,24 @@ def test_qgc_launch_refusal_is_visible_without_stopping_prepare(tmp_path, monkey
 
 
 def test_host_evidence_is_allowlisted_and_closed_before_inventory(tmp_path, monkeypatch):
-    monkeypatch.setattr("orchestration.operator_session.GcsBridge", FakeBridge)
+    class ObservedBridge(FakeBridge):
+        def status(self):
+            self.transport.events.append("bridge-status")
+            return {
+                "connected": True,
+                "detail": "connected to SITL GCS channel",
+                "qgc_connected": True,
+                "qgc_detail": "QGC datagram transport open",
+                "fresh": True,
+                "qgc_fresh": True,
+                "armed": False,
+                "mode": "GUIDED",
+                "relative_altitude_m": 3.25,
+                "landed_state": 2,
+                "untrusted_extra": "must not be persisted",
+            }
+
+    monkeypatch.setattr("orchestration.operator_session.GcsBridge", ObservedBridge)
     published = tmp_path / "QGroundControl" / "MavlinkActions"
     published.mkdir(parents=True)
 
@@ -660,6 +677,19 @@ def test_host_evidence_is_allowlisted_and_closed_before_inventory(tmp_path, monk
     )
     rows = [json.loads(line) for line in evidence_path.read_text().splitlines()]
     assert rows[-1] == {"event": "ownership", "state": "cleanup_pending"}
+    assert rows[-2] == {
+        "event": "bridge_observation",
+        "sitl_connected": True,
+        "sitl_detail": "connected to SITL GCS channel",
+        "vehicle_telemetry_fresh": True,
+        "qgc_connected": True,
+        "qgc_detail": "QGC datagram transport open",
+        "qgc_traffic_fresh": True,
+        "armed": False,
+        "mode": "GUIDED",
+        "relative_altitude_m": 3.25,
+        "landed_state": 2,
+    }
     assert rows[0] == {
         "event": "host",
         "platform": "wsl2",
@@ -671,8 +701,57 @@ def test_host_evidence_is_allowlisted_and_closed_before_inventory(tmp_path, monk
     assert any(row.get("event") == "helper" and row["source_sha256"] == "a" * 64 for row in rows)
     assert any(row.get("event") == "publication" and row["native_path"].endswith(".json") for row in rows)
     assert all("environment" not in row and "credential" not in row for row in rows)
+    assert all("untrusted_extra" not in row for row in rows)
+    assert host.events.index("artifacts-final") < host.events.index("bridge-status")
+    assert host.events.index("bridge-status") < host.events.index("bridge-stop")
+    assert host.events.index("bridge-stop") < host.events.index("inventory")
     with pytest.raises(ValueError, match="closed"):
         session._host_evidence.write("ownership", state="after_inventory")
+
+
+def test_bridge_observation_failure_still_stops_and_closes_before_inventory(
+    tmp_path, monkeypatch
+):
+    class FailedObservationBridge(FakeBridge):
+        def status(self):
+            self.transport.events.append("bridge-status")
+            raise RuntimeError("bridge observation unavailable")
+
+    monkeypatch.setattr(
+        "orchestration.operator_session.GcsBridge", FailedObservationBridge
+    )
+    published = tmp_path / "QGroundControl" / "MavlinkActions"
+    published.mkdir(parents=True)
+    run_id = UUID("00000000-0000-4000-8000-000000000614")
+    host = PrepareHost(published, tmp_path / "qgc-state")
+    controller = PrepareController(tmp_path / "runs", [run_id], events=host.events)
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=PrepareRuntime(),
+        controller=controller,
+        qgc_action_store=QgcActionStore(tmp_path / "qgc-state", QGC_SOURCE),
+        host=host,
+    )
+
+    session.prepare(
+        preset_id="configured-descent",
+        request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    )
+    _wait_for_worker(session)
+
+    assert session.snapshot()["state"] == "FAILED"
+    assert host.events.index("bridge-status") < host.events.index("bridge-stop")
+    assert "inventory" not in host.events
+    rows = [
+        json.loads(line)
+        for line in (
+            tmp_path / "runs" / str(run_id) / "logs/docker/host-integration.jsonl"
+        ).read_text().splitlines()
+    ]
+    assert rows[-1] == {"event": "ownership", "state": "cleanup_pending"}
+    with pytest.raises(ValueError, match="closed"):
+        session._host_evidence.write("ownership", state="after_failure")
 
 
 def test_native_owner_clear_failure_keeps_session_cleanup_incomplete(

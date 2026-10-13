@@ -57,6 +57,18 @@ class _HostEvidenceLog:
         "qgc": frozenset({"executable", "settings_file", "save_path", "version"}),
         "helper": frozenset({"version", "source_sha256"}),
         "publication": frozenset({"native_path", "filename", "sha256"}),
+        "bridge_observation": frozenset({
+            "sitl_connected",
+            "sitl_detail",
+            "vehicle_telemetry_fresh",
+            "qgc_connected",
+            "qgc_detail",
+            "qgc_traffic_fresh",
+            "armed",
+            "mode",
+            "relative_altitude_m",
+            "landed_state",
+        }),
     }
 
     def __init__(self, run_directory: Path) -> None:
@@ -69,7 +81,7 @@ class _HostEvidenceLog:
         self._stream: TextIO | None = self.path.open("x", encoding="utf-8")
         os.chmod(self.path, 0o600)
 
-    def write(self, event: str, **fields: str) -> None:
+    def write(self, event: str, **fields: Any) -> None:
         if self._stream is None:
             raise ValueError("host evidence log is closed")
         expected = self._FIELDS.get(event)
@@ -79,6 +91,33 @@ class _HostEvidenceLog:
         self._stream.write(json.dumps(document, allow_nan=False, separators=(",", ":")) + "\n")
         self._stream.flush()
         os.fsync(self._stream.fileno())
+
+    def write_bridge_observation(self, status: dict[str, Any]) -> None:
+        armed = status.get("armed")
+        mode = status.get("mode")
+        altitude = status.get("relative_altitude_m")
+        landed_state = status.get("landed_state")
+        self.write(
+            "bridge_observation",
+            sitl_connected=status.get("connected") is True,
+            sitl_detail=str(status.get("detail", "")),
+            vehicle_telemetry_fresh=status.get("fresh") is True,
+            qgc_connected=status.get("qgc_connected") is True,
+            qgc_detail=str(status.get("qgc_detail", "")),
+            qgc_traffic_fresh=status.get("qgc_fresh") is True,
+            armed=armed if type(armed) is bool else None,
+            mode=mode if isinstance(mode, str) else None,
+            relative_altitude_m=(
+                altitude
+                if isinstance(altitude, (int, float)) and not isinstance(altitude, bool)
+                else None
+            ),
+            landed_state=(
+                landed_state
+                if isinstance(landed_state, int) and not isinstance(landed_state, bool)
+                else None
+            ),
+        )
 
     def close(self) -> None:
         stream, self._stream = self._stream, None
@@ -351,17 +390,31 @@ class OperatorSession:
                         failure: BaseException | None = None
                         with self._lock:
                             bridge = self._bridge
+                            evidence = self._host_evidence
                         if bridge is not None:
+                            try:
+                                if evidence is None:
+                                    raise RuntimeError(
+                                        "host evidence log is unavailable for final bridge observation"
+                                    )
+                                # status() is an in-memory, lock-bounded projection. Capture it
+                                # while the transport still reflects its final live state.
+                                evidence.write_bridge_observation(bridge.status())
+                            except BaseException as error:
+                                failure = error
                             try:
                                 bridge.stop()
                             except BaseException as error:
-                                failure = error
-                        if self._host_evidence is not None:
+                                failure = failure or error
+                        if evidence is not None:
                             try:
-                                self._host_evidence.write(
+                                evidence.write(
                                     "ownership", state="cleanup_pending"
                                 )
-                                self._host_evidence.close()
+                            except BaseException as error:
+                                failure = failure or error
+                            try:
+                                evidence.close()
                             except BaseException as error:
                                 failure = failure or error
                         try:

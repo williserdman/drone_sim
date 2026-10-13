@@ -33,13 +33,20 @@ class Session:
                 'can_start':False,
                 'qgc_admission_ready':False,
                 'host': {'kind':'wsl2','machine':'amd64','image_platform':'linux/amd64','provider':'docker-desktop'},
-                'browser_launch': {'opened': True, 'detail': 'opened'},
+                'browser_launch': {'opened': False, 'detail': 'native browser launch was refused'},
                 'qgc_launch': {'opened': False, 'detail': 'Open QGC manually from the Windows Start menu.'},
                 'console_url': 'http://127.0.0.1:8765',
                 'qgc_action_path':(f'C:\\Users\\pilot\\QGroundControl\\MavlinkActions\\drone-sim-{self.run_id}.json'
                                    if self.run_id else None),
                 'preflight': {'ready': False, 'reasons': ['waiting for disarmed preflight']},
-                'views': {'gazebo': {'available':self.connected, 'connected':bool(self.observations)}, 'camera': {'fresh':self.connected}, 'qgc':{}}}
+                'views': {'gazebo': {'available':self.connected, 'connected':bool(self.observations)},
+                          'camera': {'fresh':self.connected},
+                          'qgc': {'connected': False, 'detail': 'waiting for SITL',
+                                  'qgc_connected': True,
+                                  'qgc_detail': 'QGC datagram transport open',
+                                  'last_telemetry_wall_time': None,
+                                  'last_qgc_wall_time': None,
+                                  'fresh': False, 'qgc_fresh': False}}}
     def checks(self): return {'checks':[{'name':'QGroundControl','ok':False,'detail':'Install exact QGroundControl 5.0.8 and create its settings file.'}], 'ok':False, 'host':self.snapshot()['host']}
     def results(self): return {}
     def prepare(self, **request):
@@ -97,6 +104,8 @@ def main():
             assert not page.locator('#manual-note').is_visible()
             expect(page.locator('#host-platform')).to_have_text('WSL2 · AMD64 · Docker Desktop')
             expect(page.locator('#qgc-status')).to_have_text('Open QGC manually from the Windows Start menu.')
+            expect(page.locator('#browser-launch-remediation')).to_contain_text('native browser launch was refused')
+            expect(page.locator('#browser-launch-remediation')).to_contain_text('http://127.0.0.1:8765')
             expect(page.locator('#checks')).to_contain_text('Install exact QGroundControl 5.0.8')
             page.locator('#build').click()
             page.wait_for_timeout(100)

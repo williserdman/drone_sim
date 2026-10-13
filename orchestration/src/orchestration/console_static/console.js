@@ -88,6 +88,12 @@ function render(snapshot) {
   $("stop").disabled = (!active && !cleanupRecovery) || ["BUILDING", "FINALIZING"].includes(state) || busy;
   show("again", terminal.has(state) && Boolean(snapshot.run_id)); $("again").disabled = busy || !cleanupReady;
   if (snapshot.error || snapshot.observation_error) error(snapshot.error || snapshot.observation_error);
+  const browserLaunch = snapshot.browser_launch || {};
+  const browserLaunchFailed = browserLaunch.opened === false && Boolean(snapshot.console_url);
+  text("browser-launch-remediation", browserLaunchFailed
+    ? `${browserLaunch.detail || "The native browser did not open automatically."} Manual console URL: ${snapshot.console_url}`
+    : "");
+  show("browser-launch-remediation", browserLaunchFailed);
   renderChecks(snapshot.checks);
   if (snapshot.run_id && snapshot.run_id !== shownRun) {
     shownRun = snapshot.run_id;
@@ -107,8 +113,10 @@ function render(snapshot) {
   show("camera-empty", !snapshot.run_id || cameraFailed);
   const stamp = views.camera?.native_timestamp_ns;
   text("camera-stamp", stamp == null ? "Native sensor time —" : `Native sensor time ${(stamp / 1e9).toFixed(2)} s`);
-  const qgcLaunchDetail = snapshot.qgc_launch?.opened === false ? snapshot.qgc_launch.detail : "";
-  text("qgc-status", vehicle.qgc_fresh ? "QGC connected · live vehicle telemetry" : vehicle.fresh ? "SITL connected · waiting for QGC" : vehicle.qgc_detail || vehicle.detail || qgcLaunchDetail || `Native ${hostNames[host.kind] || "host"} window`);
+  const qgcLaunchDetail = snapshot.qgc_launch?.opened === false
+    ? snapshot.qgc_launch.detail || "QGroundControl did not open automatically. Open it manually."
+    : "";
+  text("qgc-status", vehicle.qgc_fresh ? "QGC connected · live vehicle telemetry" : qgcLaunchDetail || (vehicle.fresh ? "SITL connected · waiting for QGC" : vehicle.qgc_detail || vehicle.detail || `Native ${hostNames[host.kind] || "host"} window`));
   text("qgc-action-path", snapshot.qgc_action_path || "Prepare a run to publish its action file.");
   text("mode", vehicle.fresh ? vehicle.mode : "—");
   text("armed", vehicle.fresh && typeof vehicle.armed === "boolean" ? (vehicle.armed ? "Armed" : "Disarmed") : "—");

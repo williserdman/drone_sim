@@ -130,10 +130,13 @@ artifact validity remain separate facts.
 Each prepared run includes `logs/docker/host-integration.jsonl`. Its fixed
 records contain only platform/provider, QGC paths/version, transport kind,
 helper identity when present, publication path/digest, and ownership
-transitions. The final record is `cleanup_pending`. The operator closes this
-writer with the bridge and run transport before artifact inventory. Compose and
-media cleanup plus native owner clearance occur later and remain in mutable
-session/native receipts outside the manifest.
+transitions. Immediately before bridge shutdown, a fixed `bridge_observation`
+record captures the bridge-observed SITL/QGC connection and vehicle telemetry
+fields. It does not establish command admission, a native QGC action click, a
+physical outcome, or a score. The final record is `cleanup_pending`. The
+operator closes this writer with the bridge and run transport before artifact
+inventory. Compose and media cleanup plus native owner clearance occur later
+and remain in mutable session/native receipts outside the manifest.
 
 `launch_mode: operator` keeps native Gazebo physics and private camera observations
 live while holding initial mission commands. Host `PREPARED` requires advancing

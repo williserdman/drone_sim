@@ -16,8 +16,10 @@ controller, publication, transport, and cleanup. WSL browser launch probes the
 Windows-visible loopback URL after the HTTP listener is ready. The console shows
 host/provider facts, exact native action paths, and automatic QGC/browser launch
 failures without creating a flight action. Run manifests include the allowlisted
-host integration log through `cleanup_pending`; post-manifest cleanup stays in
-session and native ownership receipts.
+host integration log with a final bridge-observed connection/vehicle snapshot
+through `cleanup_pending`; post-manifest cleanup stays in session and native
+ownership receipts. This snapshot is not a native QGC tlog or evidence of a
+human action click.
 
 This is source-level status. No Task 8 simulator image was built or retagged,
 no retained resource was cleaned, no QGC preference/action selection or token
