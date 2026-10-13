@@ -8,7 +8,7 @@ not close current portable-console gaps.
 
 | Target | Recorded environment | Source and build evidence | Native result | Outstanding gaps |
 | --- | --- | --- | --- | --- |
-| macOS 26.6.2, Apple M-series ARM64 | Darwin 25.6.0; 10 host CPUs; 32 GiB RAM; Colima 0.10.3 using Apple virtualization; Docker client 29.6.1 and server 29.5.2; Compose 5.2.0; QGC 5.0.8 universal ARM64/x86-64 | Eight-image `linux/arm64` build and check passed at `19b499c96e60a75456443354c0018b207d712c8e`. Raw records are under `.local-runtime/verification/2026-10-10-portable-local-console/`. Documentation and final-review commits require a final matching cached rebuild/check before handoff. | Configured diagnostic `95bc1701-a129-4d3f-9e88-f741a213d4e2`: genuine QGC launch and bidirectional transport, fresh camera, real noVNC RFB connection, `PREPARED` after 15 minutes 20 seconds, and supported Stop/verified cleanup. No aircraft command was sent. | Native action selection and click, Start/Abort, touchdown/disarm, takeover, stale-action rejection, Comp2026 flight, scoring, artifact acceptance, and native tlog remain pending. |
+| macOS 26.6.2, Apple M-series ARM64 | Darwin 25.6.0; 10 host CPUs; 32 GiB RAM; Colima 0.10.3 using Apple virtualization; Docker client 29.6.1 and server 29.5.2; Compose 5.2.0; QGC 5.0.8 universal ARM64/x86-64 | Eight-image `linux/arm64` build and check passed at `19b499c96e60a75456443354c0018b207d712c8e`: [build log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-build-19b499c.log), [check log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-check-19b499c.log), and [build record](../../.local-runtime/verification/2026-10-10-portable-local-console/build-19b499c.json). Documentation and final-review commits require a final matching cached rebuild/check before handoff. | Configured diagnostic `95bc1701-a129-4d3f-9e88-f741a213d4e2`: genuine QGC launch and bidirectional transport, fresh camera, real noVNC RFB connection, `PREPARED` after 15 minutes 20 seconds, and supported Stop/verified cleanup. See the [Prepare response](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepare-19b499c.json), [live session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-live-19b499c.json), [prepared session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepared-19b499c.json), [final session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-final-19b499c.json), [cleanup inventory](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-cleanup-resources-19b499c.log), and [manifest](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-manifest-19b499c.json). No aircraft command was sent. | Native action selection and click, Start/Abort, touchdown/disarm, takeover, stale-action rejection, Comp2026 flight, scoring, artifact acceptance, and native tlog remain pending. |
 | macOS 13+, Intel x86-64 | No machine available. | Source tests cover the host adapter; no native build. | Not run. | Native eight-image AMD64 build/check, QGC, Prepare, flight, and cleanup. |
 | Ubuntu 24.04 desktop, ARM64 | No machine available. | Source tests cover native Linux discovery. | Not run. | Architecture-matched QGC metadata/install, native build/check, Prepare, flight, and cleanup. |
 | Ubuntu 24.04 desktop, x86-64 | No machine available. | AMD64 package candidates were resolved from signed indexes, downloaded, and checksum-verified; this did not execute AMD64 code. | Not run. | Native package scripts, compilation, eight-image build/check, QGC, Prepare, flight, and cleanup. |
@@ -60,8 +60,22 @@ inside the nested test container. Native results above are recorded separately.
 
 ## ARM64 build and prepared-session evidence
 
-The matching `19b499c` build compiled the native Gazebo plugins, passed all five
-plugin CTests, and `./scripts/local-build.sh --check` exited zero with `ok:true`.
+The exact native build commands and results were:
+
+```text
+./scripts/local-build.sh --build
+exit 0; compiled the native Gazebo plugins; 5/5 plugin CTests passed; ok:true
+
+./scripts/local-build.sh --check
+exit 0; ok:true; source, Colima context, linux/arm64 platform, and all eight
+image IDs matched the published build record
+```
+
+The [build log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-build-19b499c.log),
+[check log](../../.local-runtime/verification/2026-10-10-portable-local-console/arm64-check-19b499c.log),
+and [schema-1 build record](../../.local-runtime/verification/2026-10-10-portable-local-console/build-19b499c.json)
+retain the complete output. The matching `19b499c` build compiled the native
+Gazebo plugins and passed all five plugin CTests.
 The build record identified Colima and `linux/arm64` with source tree SHA-256
 `729aeeb66b64d7dad85efb5d07d8e3a4a2a25aedf5b57e0a81e261162ab564c1`.
 
@@ -79,6 +93,28 @@ The build record identified Colima and `linux/arm64` with source tree SHA-256
 Prepare allocated attempt token 3 and published
 `drone-sim-95bc1701-a129-4d3f-9e88-f741a213d4e2.json` with SHA-256
 `c293014104cf64e8477ad77b488b9da9510ac68f83cf6f04cc6b60f7af38e787`.
+The exact native console lifecycle commands were:
+
+```text
+uv run --locked drone-sim console --no-browser
+Simulation console: http://127.0.0.1:8765
+
+uv run --locked drone-sim prepare --preset configured-descent \
+  --preparation-wall-seconds 1800
+exit 0; state PREPARING; request c2d3c129-1fa0-47b6-b32e-9dbc25175b96
+
+uv run --locked drone-sim stop 95bc1701-a129-4d3f-9e88-f741a213d4e2
+exit 0; cancellation accepted while the response still reflected PREPARED;
+the first poll less than one second later recorded ABORTED, prepared_cancelled,
+cleanup complete, and no remaining resources
+```
+
+The retained session evidence is the [console log](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-console-19b499c.log),
+[Prepare response](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepare-19b499c.json),
+[live session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-live-19b499c.json),
+[prepared session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-prepared-19b499c.json),
+[Stop response](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-stop-19b499c.json),
+and [final session](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-session-final-19b499c.json).
 QGC 5.0.8 opened as a real native process and exchanged traffic with the
 dedicated SITL GCS channel. The session reported QGC fresh, `STABILIZE`,
 disarmed, landed, and zero relative altitude. A headless Chrome session opened
@@ -99,6 +135,13 @@ containers, the network, and the labeled volume were removed, and native QGC
 remained running. Because no mission started, `artifacts-final.json` records
 `complete:false`, missing videos, and an invalid zero-clock rosbag. Successful
 media ownership cleanup does not make those flight artifacts valid.
+
+The [artifact-final receipt](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-artifacts-final-19b499c.json),
+[closed-media receipt](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-media-published-19b499c.json),
+[empty resource inventory](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-cleanup-resources-19b499c.log),
+[manifest](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-manifest-19b499c.json),
+and [final host observation](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-host-integration-19b499c.jsonl)
+retain these separate outcomes.
 
 The immutable manifest records `ABORTED`, reason `prepared_cancelled`, score
 0/100, and those three incomplete paths. Its final pre-inventory host observation
@@ -147,9 +190,11 @@ ports remain bound to `127.0.0.1`. Host evidence uses a fixed allowlist rather
 than an environment dump. The shared Workstation owns lease/publication paths;
 no legacy production publisher or lease caller was reintroduced.
 
-Raw local logs, JSON snapshots, build records, and endpoint checks are retained
-under `.local-runtime/verification/2026-10-10-portable-local-console/`. The
-implementation decision inventory is
-`.local-runtime/verification/2026-10-10-portable-local-console/implementation-decisions.md`.
+Additional retained evidence includes the [Linux gate](../../.local-runtime/verification/2026-10-10-portable-local-console/linux-final.log),
+[mypy output](../../.local-runtime/verification/2026-10-10-portable-local-console/mypy-final.log),
+[browser gate](../../.local-runtime/verification/2026-10-10-portable-local-console/browser.log),
+[separate Comp2026 gate](../../.local-runtime/verification/2026-10-10-portable-local-console/comp2026.log),
+[real noVNC check](../../.local-runtime/verification/2026-10-10-portable-local-console/mac-novnc-playwright-19b499c.log),
+and the [implementation decision inventory](../../.local-runtime/verification/2026-10-10-portable-local-console/implementation-decisions.md).
 Run bundles remain under `runs/<run_id>/`; this verification did not append to
 any previously finalized bundle.
