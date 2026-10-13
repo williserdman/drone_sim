@@ -177,12 +177,15 @@ class OperatorSession:
                 _uuid(previous["run_id"])
                 self._record = previous
                 run_directory = previous.get("run_directory")
-                if run_directory is None:
-                    self._record["state"] = "ORPHANED"
-                else:
+                if run_directory is not None:
                     directory = Path(run_directory)
                     if directory != self.project_directory / "runs" / previous["run_id"]:
                         raise ValueError("session receipt belongs to another output directory")
+                if previous.get("state") in _TERMINAL and previous.get("cleanup") == "complete":
+                    pass
+                elif run_directory is None:
+                    self._record["state"] = "ORPHANED"
+                else:
                     try:
                         state = self.controller.status(previous["run_id"], directory.parent).state
                         self._record["state"] = state if state in _TERMINAL else "ORPHANED"

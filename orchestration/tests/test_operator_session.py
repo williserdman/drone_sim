@@ -892,6 +892,83 @@ def test_orphan_stop_reports_finalizing_while_cleanup_worker_is_active(tmp_path)
         _wait_for_worker(session)
 
 
+def test_restart_preserves_terminal_session_after_verified_cleanup(tmp_path):
+    run_id = "00000000-0000-4000-8000-000000000611"
+    output_root = ROOT / "runs"
+    run_directory = output_root / run_id
+    state_directory = tmp_path / "session"
+    state_directory.mkdir()
+    (state_directory / "session.json").write_text(json.dumps({
+        "state": "INTERRUPTED",
+        "run_id": run_id,
+        "run_directory": str(run_directory),
+        "preset_id": "configured-descent",
+        "prepare_request_id": "55555555-5555-4555-8555-555555555556",
+        "error": "previous owner stopped",
+        "cleanup": "complete",
+    }))
+
+    class Controller:
+        def status(self, owned_run_id, owned_output_root):
+            assert owned_run_id == run_id
+            assert owned_output_root == output_root
+            return RunResult(run_id, "READY", "", None)
+
+    runtime = Runtime()
+    session = OperatorSession(
+        ROOT,
+        state_directory=state_directory,
+        runtime=runtime,
+        controller=Controller(),
+    )
+
+    assert session.snapshot()["state"] == "INTERRUPTED"
+    try:
+        preparing = session.prepare(
+            preset_id="configured-descent",
+            request_id="55555555-5555-4555-8555-555555555557",
+        )
+        assert preparing["state"] == "PREPARING"
+        assert runtime.entered.wait(2)
+    finally:
+        runtime.release.set()
+        _wait_for_worker(session)
+
+
+def test_restart_blocks_uncertain_session_without_verified_cleanup(tmp_path):
+    run_id = "00000000-0000-4000-8000-000000000612"
+    output_root = ROOT / "runs"
+    run_directory = output_root / run_id
+    state_directory = tmp_path / "session"
+    state_directory.mkdir()
+    (state_directory / "session.json").write_text(json.dumps({
+        "state": "INTERRUPTED",
+        "run_id": run_id,
+        "run_directory": str(run_directory),
+        "preset_id": "configured-descent",
+        "prepare_request_id": "55555555-5555-4555-8555-555555555558",
+        "error": "previous owner stopped",
+        "cleanup": "incomplete",
+    }))
+
+    controller = SimpleNamespace(
+        status=lambda _run_id, _root: RunResult(run_id, "READY", "", None)
+    )
+    session = OperatorSession(
+        ROOT,
+        state_directory=state_directory,
+        runtime=Runtime(),
+        controller=controller,
+    )
+
+    assert session.snapshot()["state"] == "ORPHANED"
+    with pytest.raises(RuntimeError, match="active"):
+        session.prepare(
+            preset_id="configured-descent",
+            request_id="55555555-5555-4555-8555-555555555559",
+        )
+
+
 @pytest.mark.parametrize(
     ("lifecycle_state", "expected_cleanup", "expected_finish"),
     (("CREATED", "complete", True), ("STARTING", "incomplete", False)),
