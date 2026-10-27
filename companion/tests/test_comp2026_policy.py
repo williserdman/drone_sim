@@ -39,7 +39,12 @@ def test_builds_exact_pinned_simulation_policy(tmp_path):
     assert policy.flight_custom_version == b"92b0cd78"
     assert policy.parameter_expectations["PLND_TIMEOUT"] == 0.5
     assert policy.parameter_expectations["FLTMODE_CH"] == 7
+    assert policy.parameter_expectations["FLTMODE1"] == 0
+    assert policy.parameter_expectations["FLTMODE4"] == 4
+    assert policy.parameter_expectations["FLTMODE6"] == 5
     assert policy.parameter_expectations["RNGFND1_TYPE"] == 100
+    assert policy.parameter_expectations["RNGFND1_MIN_CM"] == 5
+    assert policy.parameter_expectations["RNGFND1_MAX_CM"] == 4000
     assert dict(policy.telemetry_intervals_us)[0] == 100_000
     assert policy.startup_timeout_s == 1800.0
     assert len(policy.evidence_sha256) == 64

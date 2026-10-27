@@ -4012,12 +4012,12 @@ def test_comp2026_never_writes_quiescence_with_a_surviving_worker() -> None:
     assert "quiescence" not in events
 
 
-def test_production_comp2026_host_invokes_actual_upstream_phases(tmp_path, monkeypatch):
+@pytest.mark.parametrize("landed_confirmed", [True, False])
+def test_production_comp2026_host_invokes_actual_upstream_phases(tmp_path, monkeypatch, landed_confirmed):
     """ROS/lifecycle composition reaches upstream code, including FM2's landing."""
     monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / 'comp2026/src'))
     actual_runner = importlib.import_module('drone_sim_companion.comp2026_runner')
     actual_runner.mission_functions()
-    actual_tracker = importlib.import_module('drone.control.mission_info')
     upstream_modules = {name: module for name, module in sys.modules.items()
                         if name == 'drone' or name.startswith('drone.')}
     allow_write = threading.Event()
@@ -4030,6 +4030,9 @@ def test_production_comp2026_host_invokes_actual_upstream_phases(tmp_path, monke
     for name, module in upstream_modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setitem(sys.modules, 'drone_sim_companion.comp2026_runner', actual_runner)
+    events = []
+    monkeypatch.setattr(sys.modules["rclpy.node"].Node, "create_publisher",
+                        lambda *args, **kwargs: SimpleNamespace(publish=events.append))
     # Device adapters are deterministic. FM1, FM2 and FM3 themselves are real.
     monkeypatch.setattr(upstream_modules['drone.mock_mission'], 'pickup_sequence', lambda *args: False)
     points = {key: SimpleNamespace(lat=1.0, long=2.0, alt=10.0)
@@ -4041,6 +4044,7 @@ def test_production_comp2026_host_invokes_actual_upstream_phases(tmp_path, monke
     vehicle._master = SimpleNamespace(mav=SimpleNamespace(statustext_send=lambda *args: None))
     vehicle.armed = True
     control_type = sys.modules['drone_sim_companion.comp2026_control'].SimulationCompetitionControl
+    monkeypatch.setattr(control_type, "wait_for_landed", lambda self: landed_confirmed)
     original_init = control_type.__init__
     def initialize(control, **options):
         original_init(control, **options)
@@ -4057,12 +4061,21 @@ def test_production_comp2026_host_invokes_actual_upstream_phases(tmp_path, monke
     config = RuntimeConfig(run_id=RUN_ID, run_directory=tmp_path, mission='comp2026_auto',
                            course_path=tmp_path / 'course.yaml', scenario_path=tmp_path / 'scenario.yaml',
                            max_wall_seconds=10, finalization_wall_seconds=1)
-    assert runtime_node._run_comp2026(config) == 0
+    assert runtime_node._run_comp2026(config) == (0 if landed_confirmed else 1)
     assert calls.count('takeoff') == 3
     assert calls.count('land') == 3
     assert calls.count('drop') == 1
     assert calls.count('climb') == 2  # Both actual upstream FM3 failure branches.
     assert any(isinstance(value, MissionCommandDeliveredStatus) for value in statuses)
+
+    home_events = [(event.phase, event.state) for event in events if event.phase == "HOME"]
+    assert home_events == ([('HOME', 'STARTED'), ('HOME', 'DISARMED'), ('HOME', 'COMPLETE')]
+                           if landed_confirmed else [('HOME', 'STARTED')])
+    assert any(isinstance(value, runtime_node.MissionFinishedStatus) for value in statuses) is landed_confirmed
+    failures = [value.reason for value in statuses if isinstance(value, RuntimeFailureStatus)]
+    assert failures == ([] if landed_confirmed else [
+        'original comp2026 mission failed in HOME: upstream attempt returned without fresh landed and disarmed telemetry'
+    ])
 
 
 def test_comp2026_takeover_stops_worker_without_reentering_admission(tmp_path, monkeypatch):
