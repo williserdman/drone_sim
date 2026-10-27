@@ -9,6 +9,7 @@ import ntpath
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -657,7 +658,7 @@ class OperatorSession:
                 with self._lock:
                     self._record.update(state="INTERRUPTED", cleanup="complete" if cleanup_verified else "incomplete",
                         remaining_resources=remaining, error="Owner was interrupted; retained evidence has no new terminal validity claim.")
-        except (OSError, RuntimeError, ValueError) as error:
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
             with self._lock:
                 self._record.update(state="ORPHANED", cleanup="incomplete", error=str(error))
         finally:

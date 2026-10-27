@@ -30,7 +30,9 @@ without failure. The 58 protocol-file tests and 590 focused firmware tests pass.
 The failed run's empty media spool was archived before removal. Supported Stop
 then completed cleanup without fabricating a manifest. Orphan recovery now
 skips its receipt wait only after a successful empty exact-project inventory;
-39 operator-session tests pass and the real retained-run recovery completed.
+40 operator-session tests pass, including Docker inspection timeout recovery.
+The real retained-run recovery completed. All eight ARM64 images built at
+`8001353` with the official 4.6.3 source and a matching source/image check.
 
 The supported Linux suite passed 3,029 tests with 44 capability skips. Configured
 mypy passed. Final image-build, live 4.6.3 preparation, view, and cleanup

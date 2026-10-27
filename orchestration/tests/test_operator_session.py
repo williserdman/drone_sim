@@ -4,6 +4,7 @@ import ntpath
 from pathlib import Path
 import hashlib
 import json
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -1204,11 +1205,12 @@ def test_orphan_cleanup_distinguishes_precompose_failure_from_missing_media_rece
         ([(0, b'{"Service":"artifacts-runtime","State":"running"}')], True, True, 1, "INTERRUPTED", "complete"),
         ([(0, b'{"Service":"artifacts-runtime","State":"running"}\n{"Service":"gazebo-runtime","State":"running"}'), (0, b"[]")], False, True, 1, "INTERRUPTED", "complete"),
         ([(1, b"")], False, True, 0, "ORPHANED", "incomplete"),
+        ([subprocess.TimeoutExpired(["docker", "compose", "ps"], 5)], False, True, 0, "ORPHANED", "incomplete"),
         ([(0, b"invalid")], False, True, 0, "ORPHANED", "incomplete"),
         ([(0, b"{}")], False, True, 0, "ORPHANED", "incomplete"),
         ([(0, b"[null]")], False, True, 0, "ORPHANED", "incomplete"),
     ],
-    ids=["absent", "absent-empty-output", "retained-media", "active-publishes", "active-disappears", "inspection-fails", "invalid-json", "invalid-row", "invalid-array"],
+    ids=["absent", "absent-empty-output", "retained-media", "active-publishes", "active-disappears", "inspection-fails", "inspection-times-out", "invalid-json", "invalid-row", "invalid-array"],
 )
 def test_orphan_cleanup_waits_only_while_exact_project_can_publish(
     tmp_path, monkeypatch, inventories, publish_receipt, media_absent,
@@ -1255,7 +1257,10 @@ def test_orphan_cleanup_waits_only_while_exact_project_can_publish(
         def ps(self, timeout):
             assert 0 < timeout <= 5
             events.append("ps")
-            returncode, output = pending.pop(0) if pending else (0, b"[]")
+            result = pending.pop(0) if pending else (0, b"[]")
+            if isinstance(result, subprocess.TimeoutExpired):
+                raise result
+            returncode, output = result
             return SimpleNamespace(returncode=returncode, output=output)
 
         def down(self, _timeout):
@@ -1283,7 +1288,7 @@ def test_orphan_cleanup_waits_only_while_exact_project_can_publish(
         workstation=Workstation(),
     )
     session._record.update(
-        state="ORPHANED", run_id=run_id, run_directory=str(directory), cleanup="incomplete",
+        state="FINALIZING", run_id=run_id, run_directory=str(directory), cleanup="incomplete",
     )
 
     session._cleanup_orphan()
@@ -1291,6 +1296,9 @@ def test_orphan_cleanup_waits_only_while_exact_project_can_publish(
     assert len(waits) == expected_waits
     assert session._record["state"] == expected_state
     assert session._record["cleanup"] == expected_cleanup
+    persisted = json.loads((tmp_path / "session/session.json").read_text())
+    assert persisted["state"] == expected_state
+    assert persisted["cleanup"] == expected_cleanup
     assert lease.finished is (expected_cleanup == "complete")
     assert receipt.exists() is publish_receipt
     assert not (directory / "manifest.json").exists()
