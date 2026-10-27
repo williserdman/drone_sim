@@ -34,14 +34,28 @@ retired Ubuntu versions explicitly against signed current indexes. Both
 architectures' solver results and every selected archive checksum are verified.
 The exact ROS versions, pinned bases, firmware, and mission source stay fixed.
 See the [current package audit](package-lock-resolution-summary.json).
-Native Desktop build and prepared-session verification are in progress. See the
+All eight native ARM64 images built successfully at `da92bdd`, and the supported
+source/image check passed on Docker Desktop. All five Gazebo plugin CTests and
+3,017 Linux tests passed, with 42 capability skips. The real console connected
+native QGC, the interactive Gazebo desktop, and fresh onboard camera frames.
+The aircraft remained disarmed and landed. That first session was interrupted
+when Desktop was manually paused at 71.8 native seconds, before its 90-second
+warmup finished. After resuming Desktop, supported Stop published closed-media
+evidence and completed cleanup. The interrupted bundle is retained without a
+flight-validity claim.
+
+The final source/image identities, fresh prepared-session result, viewer
+interaction, and cleanup outcome are recorded in the
+[repair verification receipt](../.local-runtime/verification/2026-10-27-desktop-build/final-handoff.json).
+No flight acceptance is implied by startup and cleanup checks. See the
 [build diagnosis](../.local-runtime/verification/2026-10-26-docker-desktop/cold-build-report.md)
 and [failed build log](../.local-runtime/verification/2026-10-26-docker-desktop/build.log)
 for the initial failure. Repair evidence is retained under
 `.local-runtime/verification/2026-10-27-desktop-build/`.
 
-Colima verification below remains historical evidence. Desktop source/image and
-live-console results are kept in the [migration verification receipt](../.local-runtime/verification/2026-10-26-docker-desktop/final-handoff.json).
+Colima verification below remains historical evidence. The
+[initial host migration receipt](../.local-runtime/verification/2026-10-26-docker-desktop/final-handoff.json)
+records the earlier install and uninstall work, before the successful repair.
 Migration findings and check commands are recorded in
 [the ledger](LEDGER.md#docker-desktop-migration-2026-10-26).
 

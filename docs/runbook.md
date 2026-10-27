@@ -101,7 +101,8 @@ The resolver writes candidates and evidence under
 repository. Review the successful run's `resolution-summary.json`, compare
 its candidate locks with their repository counterparts, and apply the reviewed
 changes. The artifacts direct-package candidate lists pins from
-`artifacts/Dockerfile`; update those explicitly if they changed. Keep the lock
+`artifacts/Dockerfile`; update those explicitly if they changed, along with
+matching common pins in the other runtime Dockerfiles. Keep the lock
 contract tests and recorded checksums consistent, then build and check images
 with the commands above. Ordinary builds never refresh dependencies themselves.
 
