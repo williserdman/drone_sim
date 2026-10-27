@@ -179,6 +179,24 @@ def _same_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
     )
 
 
+def _same_snapshot_except_ctime(
+    first: os.stat_result, second: os.stat_result
+) -> bool:
+    return all(
+        getattr(first, field) == getattr(second, field)
+        for field in _SNAPSHOT_FIELDS
+        if field != "st_ctime_ns"
+    )
+
+
+def _snapshot_difference(first: os.stat_result, second: os.stat_result) -> str:
+    return ", ".join(
+        f"{field}={getattr(first, field)}->{getattr(second, field)}"
+        for field in _SNAPSHOT_FIELDS
+        if getattr(first, field) != getattr(second, field)
+    ) or "unchanged metadata"
+
+
 def _same_identity(first: os.stat_result, second: os.stat_result) -> bool:
     return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
 
@@ -288,7 +306,10 @@ def _read_json_object_and_metadata_at(
                 if not _same_identity(before, opened)
                 else ProtocolIOError
             )
-            raise error_type(f"protocol file {name!r} changed while opening")
+            raise error_type(
+                f"protocol file {name!r} changed while opening: "
+                f"{_snapshot_difference(before, opened)}"
+            )
         if opened.st_size > max_bytes:
             raise ProtocolIOError(f"protocol file {name!r} is too large")
 
@@ -316,8 +337,15 @@ def _read_json_object_and_metadata_at(
                     f"protocol file {name!r} changed while reading"
                 )
             raise ProtocolIOError(f"protocol file {name!r} changed while reading")
-        if not _same_snapshot(opened, after) or not _same_snapshot(after, named_after):
-            raise ProtocolIOError(f"protocol file {name!r} changed while reading")
+        if (
+            not _same_snapshot_except_ctime(opened, after)
+            or not _same_snapshot_except_ctime(after, named_after)
+        ):
+            raise ProtocolIOError(
+                f"protocol file {name!r} changed while reading: "
+                f"read: {_snapshot_difference(opened, after)}; "
+                f"named: {_snapshot_difference(after, named_after)}"
+            )
 
         _check_deadline(deadline_check)
         document = _decode_json_object(payload, f"protocol file {name!r}")
@@ -337,11 +365,42 @@ def _read_json_object_and_metadata_at(
                 )
             raise ProtocolIOError(f"protocol file {name!r} changed while reading")
         if (
-            not _same_snapshot(after, decoded)
-            or not _same_snapshot(decoded, verified)
-            or not _same_snapshot(verified, named_decoded)
+            not _same_snapshot_except_ctime(after, decoded)
+            or not _same_snapshot_except_ctime(decoded, verified)
+            or not _same_snapshot_except_ctime(verified, named_decoded)
         ):
-            raise ProtocolIOError(f"protocol file {name!r} changed while reading")
+            raise ProtocolIOError(
+                f"protocol file {name!r} changed while reading: "
+                f"decode: {_snapshot_difference(after, decoded)}; "
+                f"verify: {_snapshot_difference(decoded, verified)}; "
+                f"named: {_snapshot_difference(verified, named_decoded)}"
+            )
+        if any(
+            snapshot.st_ctime_ns != opened.st_ctime_ns
+            for snapshot in (after, named_after, decoded, verified, named_decoded)
+        ):
+            # Host security attributes can change ctime on Desktop bind mounts.
+            # Accept only identical bytes under one additional fully stable read.
+            _check_deadline(deadline_check)
+            stable_before = os.fstat(descriptor)
+            _check_deadline(deadline_check)
+            stable_payload = os.pread(descriptor, len(payload) + 1, 0)
+            _check_deadline(deadline_check)
+            stable_after = os.fstat(descriptor)
+            stable_named = _inspect_existing(directory_fd, name)
+            if (
+                stable_payload != payload
+                or stable_named is None
+                or not _same_snapshot_except_ctime(verified, stable_before)
+                or not _same_snapshot(stable_before, stable_after)
+                or not _same_snapshot(stable_after, stable_named)
+            ):
+                raise ProtocolIOError(
+                    f"protocol file {name!r} changed while reading: "
+                    "ctime revalidation did not retain stable bytes and metadata; "
+                    f"verify: {_snapshot_difference(stable_before, stable_after)}"
+                )
+            verified = stable_after
         _check_deadline(deadline_check)
         return document, verified
     except ProtocolIOError as error:

@@ -428,7 +428,7 @@ def test_roll_requests_partial_import_during_warmup_before_initial_command(
                     "ATC_RAT_RLL_P",
                     "ATC_RAT_RLL_I",
                     "ATC_RAT_RLL_D",
-                    "ATC_ACC_R_MAX",
+                    "ATC_ACCEL_R_MAX",
                 )
             ):
                 message_listeners["PARAM_VALUE"](

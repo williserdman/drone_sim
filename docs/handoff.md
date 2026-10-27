@@ -3,6 +3,41 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
+## ArduCopter 4.6.3 and Desktop startup repair, 2026-10-27
+
+The current source pins `Copter-4.6.3` at
+`92b0cd788ec29406f26c6f9c31d5ceedbd1cc538`. All 54 configured parameter
+assignments were checked against that release's generated metadata. Landing
+speed, rangefinder limits, and acceleration limits retain their physical values
+in the release's units. Stream-rate and horizontal-position parameter names
+also match 4.6.3. The old 4.7 rangefinder patch is unnecessary and is no longer
+applied. The build checks the unmodified 4.6.3 enum and production update loop.
+
+Historical calibration bundles remain readable in their original names and
+units. Current calibration writers and runtime imports use the 4.6.3 contract.
+Firmware, base-parameter, and exact-image checks prevent importing an old 4.7
+calibration into this runtime. Retained starting gains need a new 4.6.3 flight
+validation; prior accepted flights are not current acceptance.
+
+The fresh Desktop run `7519dca8-a63e-4270-9e62-30ac1299ce6d` failed before
+preparation because delayed macOS security metadata changed an immutable
+readiness file's ctime. A sustained reproduction failed after 92,416 reads at
+15.014 seconds with unchanged contents, inode, size, and mtime. The reader now
+allows only post-open ctime drift after an additional identical-byte read under
+stable metadata. All other integrity checks remain strict. The fixed Desktop
+probe observed the same delayed transition across 163,487 reads over 35 seconds
+without failure. The 58 protocol-file tests and 590 focused firmware tests pass.
+The failed run's empty media spool was archived before removal. Supported Stop
+then completed cleanup without fabricating a manifest. Orphan recovery now
+skips its receipt wait only after a successful empty exact-project inventory;
+39 operator-session tests pass and the real retained-run recovery completed.
+
+The supported Linux suite passed 3,029 tests with 44 capability skips. Configured
+mypy passed. Final image-build, live 4.6.3 preparation, view, and cleanup
+results and exact identities are recorded in the
+[4.6.3 verification receipt](../.local-runtime/verification/copter-4.6.3/final-handoff.json).
+No flight or calibration acceptance is implied by a disarmed startup check.
+
 ## Docker Desktop migration — 2026-10-26
 
 The current Mac workflow uses Docker Desktop. The eight Compose services,

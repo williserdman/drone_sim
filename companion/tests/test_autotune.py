@@ -27,7 +27,7 @@ def test_roll_gain_artifact_records_only_the_saved_autotune_values(
             "ATC_RAT_RLL_I": 0.041,
             "ATC_RAT_RLL_D": 0.0011,
             "ATC_ANG_RLL_P": 4.25,
-            "ATC_ACC_R_MAX": 72000.0,
+            "ATC_ACCEL_R_MAX": 72000.0,
         },
     )
 
@@ -39,7 +39,7 @@ def test_roll_gain_artifact_records_only_the_saved_autotune_values(
         "ATC_RAT_RLL_P 0.041\n"
         "ATC_RAT_RLL_I 0.041\n"
         "ATC_RAT_RLL_D 0.0011\n"
-        "ATC_ACC_R_MAX 72000\n"
+        "ATC_ACCEL_R_MAX 72000\n"
     )
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
@@ -110,7 +110,7 @@ def test_roll_autotune_activates_returns_and_uses_native_land_before_export() ->
         "ATC_RAT_RLL_P": 0.0477,
         "ATC_RAT_RLL_I": 0.0477,
         "ATC_RAT_RLL_D": 0.000375,
-        "ATC_ACC_R_MAX": 2483.7,
+        "ATC_ACCEL_R_MAX": 2483.7,
     }
     transition = observe(8, mode="LOITER", armed=True, aux_ack=True)
     assert transition.state.phase is autotune.Phase.WAIT_GAIN_ACTIVATION
@@ -212,7 +212,7 @@ def test_action_executor_writes_the_post_disarm_parameters(tmp_path: Path) -> No
                 "ATC_RAT_RLL_P": 0.041,
                 "ATC_RAT_RLL_I": 0.041,
                 "ATC_RAT_RLL_D": 0.0011,
-                "ATC_ACC_R_MAX": 72000.0,
+                "ATC_ACCEL_R_MAX": 72000.0,
             }
             self.mode = "STABILIZE"
             self.armed = False
@@ -262,7 +262,7 @@ def test_action_executor_writes_the_post_disarm_parameters(tmp_path: Path) -> No
             "ATC_RAT_RLL_P": 0.041,
             "ATC_RAT_RLL_I": 0.041,
             "ATC_RAT_RLL_D": 0.0011,
-            "ATC_ACC_R_MAX": 72000.0,
+            "ATC_ACCEL_R_MAX": 72000.0,
         },
     )
 
@@ -299,12 +299,12 @@ def test_saved_gains_come_from_one_coherent_dataflash_parameter_record(
         Message(1, "ATC_RAT_RLL_P", 0.0675),
         Message(1, "ATC_RAT_RLL_I", 0.0675),
         Message(1, "ATC_RAT_RLL_D", 0.0018),
-        Message(1, "ATC_ACC_R_MAX", 1100.0),
+        Message(1, "ATC_ACCEL_R_MAX", 1100.0),
         Message(2, "ATC_ANG_RLL_P", 13.197),
         Message(2, "ATC_RAT_RLL_P", 0.0477),
         Message(2, "ATC_RAT_RLL_I", 0.0477),
         Message(2, "ATC_RAT_RLL_D", 0.000375),
-        Message(2, "ATC_ACC_R_MAX", 2483.7),
+        Message(2, "ATC_ACCEL_R_MAX", 2483.7),
     ]
 
     class Connection:
@@ -322,7 +322,7 @@ def test_saved_gains_come_from_one_coherent_dataflash_parameter_record(
         "ATC_RAT_RLL_P": 0.0477,
         "ATC_RAT_RLL_I": 0.0477,
         "ATC_RAT_RLL_D": 0.000375,
-        "ATC_ACC_R_MAX": 2483.7,
+        "ATC_ACCEL_R_MAX": 2483.7,
     }
 
 
@@ -377,7 +377,7 @@ def test_dataflash_snapshot_rejects_gains_that_do_not_match_activated_profile(
         "ATC_RAT_RLL_P": 0.0477,
         "ATC_RAT_RLL_I": 0.0477,
         "ATC_RAT_RLL_D": 0.000375,
-        "ATC_ACC_R_MAX": 2483.7,
+        "ATC_ACCEL_R_MAX": 2483.7,
     }
     saved = {**activated, "ATC_RAT_RLL_D": 0.0005}
 
@@ -477,7 +477,7 @@ def test_roll_gain_artifact_rejects_unpromotable_values(
         "ATC_RAT_RLL_P": 0.041,
         "ATC_RAT_RLL_I": 0.041,
         "ATC_RAT_RLL_D": 0.0011,
-        "ATC_ACC_R_MAX": 72000.0,
+        "ATC_ACCEL_R_MAX": 72000.0,
     }
     for name, value in changes.items():
         if value is None:
@@ -548,7 +548,7 @@ def test_roll_gain_activation_requires_ack_exact_status_and_fresh_complete_profi
         "ATC_RAT_RLL_P": 0.0477,
         "ATC_RAT_RLL_I": 0.0477,
         "ATC_RAT_RLL_D": 0.000375,
-        "ATC_ACC_R_MAX": 2483.7,
+        "ATC_ACCEL_R_MAX": 2483.7,
     }
     observation = {
         "mode": "LOITER",

@@ -20,17 +20,17 @@ CALIBRATION_PARAMETERS = (
     "ATC_RAT_RLL_P",
     "ATC_RAT_RLL_I",
     "ATC_RAT_RLL_D",
-    "ATC_ACC_R_MAX",
+    "ATC_ACCEL_R_MAX",
     "ATC_ANG_PIT_P",
     "ATC_RAT_PIT_P",
     "ATC_RAT_PIT_I",
     "ATC_RAT_PIT_D",
-    "ATC_ACC_P_MAX",
+    "ATC_ACCEL_P_MAX",
     "ATC_ANG_YAW_P",
     "ATC_RAT_YAW_P",
     "ATC_RAT_YAW_I",
     "ATC_RAT_YAW_FLTE",
-    "ATC_ACC_Y_MAX",
+    "ATC_ACCEL_Y_MAX",
 )
 
 

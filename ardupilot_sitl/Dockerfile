@@ -25,17 +25,15 @@ RUN dpkg-query -W -f='${binary:Package}=${Version}\n' \
 
 FROM upstream-${TARGETARCH} AS source
 
-ARG ARDUPILOT_COMMIT=1511f27194f1dcc3728270883047bdf022b3fd53
-COPY ardupilot_sitl/patches/0001-sitl-json-rangefinder-bitmasks.patch /tmp/0001-sitl-json-rangefinder-bitmasks.patch
+ARG ARDUPILOT_COMMIT=92b0cd788ec29406f26c6f9c31d5ceedbd1cc538
 COPY ardupilot_sitl/tests/check_sim_json_rangefinders.py /tmp/check_sim_json_rangefinders.py
-RUN test "${ARDUPILOT_COMMIT}" = "1511f27194f1dcc3728270883047bdf022b3fd53" \
+RUN test "${ARDUPILOT_COMMIT}" = "92b0cd788ec29406f26c6f9c31d5ceedbd1cc538" \
     && git init /opt/ardupilot-src \
     && cd /opt/ardupilot-src \
     && git remote add origin https://github.com/ArduPilot/ardupilot.git \
     && git fetch --depth=1 origin "${ARDUPILOT_COMMIT}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${ARDUPILOT_COMMIT}" \
-    && git apply /tmp/0001-sitl-json-rangefinder-bitmasks.patch \
     && python3 /tmp/check_sim_json_rangefinders.py --source-root /opt/ardupilot-src \
     && git submodule update --init --recursive \
     && git submodule status --recursive > /opt/ardupilot-submodules.txt \
@@ -52,7 +50,6 @@ COPY --from=build /opt/ardupilot-src/build/sitl/bin/arducopter /opt/ardupilot/bi
 COPY --from=source /opt/ardupilot-src/COPYING.txt /opt/ardupilot/COPYING.txt
 COPY --from=source /opt/ardupilot-revision.txt /opt/ardupilot/revision.txt
 COPY --from=source /opt/ardupilot-submodules.txt /opt/ardupilot/submodules.txt
-COPY --from=source /tmp/0001-sitl-json-rangefinder-bitmasks.patch /opt/ardupilot/patches/0001-sitl-json-rangefinder-bitmasks.patch
 COPY ardupilot_sitl/src /opt/drone_sim/ardupilot_sitl/src
 COPY artifacts/src /opt/drone_sim/artifacts/src
 COPY ardupilot_sitl/params /opt/drone_sim/ardupilot/params
@@ -60,7 +57,7 @@ COPY ardupilot_sitl/provenance /opt/drone_sim/ardupilot/provenance
 
 ENV PYTHONPATH=/opt/drone_sim/ardupilot_sitl/src:/opt/drone_sim/artifacts/src
 LABEL org.opencontainers.image.source="https://github.com/ArduPilot/ardupilot.git" \
-      org.opencontainers.image.revision="1511f27194f1dcc3728270883047bdf022b3fd53" \
+      org.opencontainers.image.revision="92b0cd788ec29406f26c6f9c31d5ceedbd1cc538" \
       org.opencontainers.image.licenses="GPL-3.0-or-later"
 
 ENTRYPOINT ["python3", "-m", "drone_sim_ardupilot.runtime_node"]

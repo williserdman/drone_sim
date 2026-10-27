@@ -851,7 +851,7 @@ assuming the host parameter file reached the container:
 ```bash
 BIN="runs/$RUN_ID/ardupilot_sitl/logs/00000001.BIN"
 uv run --locked mavlogdump.py --types PARM --format csv "$BIN" \
-  | rg 'LAND_SPD_MS|PLND_|ATC_ANG_RLL_P|ATC_RAT_RLL_|ATC_RAT_PIT_|ATC_ACC_R_MAX'
+  | rg 'LAND_SPEED|PLND_|ATC_ANG_RLL_P|ATC_RAT_RLL_|ATC_RAT_PIT_|ATC_ACCEL_R_MAX'
 uv run --locked mavlogdump.py --types ATT,PL --format csv "$BIN" \
   > "/tmp/$RUN_ID-att-pl.csv"
 ```
@@ -894,11 +894,12 @@ competition acceptance check.
 ### Moving-pad landing
 
 Read the [current flight evidence](handoff.md#moving-pad-verification) before a demo.
-The EKF3 moving run passed independent acceptance with 100/100 and full recordings.
+The historical Copter 4.7 EKF3 moving run passed independent acceptance with
+100/100 and full recordings. Copter 4.6.3 flight validation is pending.
 A separate stationary flight landed but its recording failed on a missing pad
 contact sample. That intermittent evidence-stream failure remains unresolved.
 The current moving-only experiment selects stock `AHRS_EKF_TYPE=3`, native
-precision `PLND_EST_TYPE=1`, and the original `PSC_NE_POS_P=1`. It retains
+precision `PLND_EST_TYPE=1`, and the original `PSC_POSXY_P=1`. It retains
 option 5 and 40 ms lag with exposure-stamped target messages. EKF3 avoids the
 diagnosed SIM attitude delta-velocity frame error. Native LAND controls the
 accepted moving descent; the camera and pad speed were unchanged.

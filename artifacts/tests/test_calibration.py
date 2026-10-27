@@ -28,17 +28,17 @@ def gains() -> dict[str, float]:
         "ATC_RAT_RLL_P": 0.08,
         "ATC_RAT_RLL_I": 0.08,
         "ATC_RAT_RLL_D": 0.004,
-        "ATC_ACC_R_MAX": 1000.0,
+        "ATC_ACCEL_R_MAX": 1000.0,
         "ATC_ANG_PIT_P": 8.5,
         "ATC_RAT_PIT_P": 0.09,
         "ATC_RAT_PIT_I": 0.09,
         "ATC_RAT_PIT_D": 0.005,
-        "ATC_ACC_P_MAX": 1100.0,
+        "ATC_ACCEL_P_MAX": 1100.0,
         "ATC_ANG_YAW_P": 6.0,
         "ATC_RAT_YAW_P": 0.18,
         "ATC_RAT_YAW_I": 0.018,
         "ATC_RAT_YAW_FLTE": 2.5,
-        "ATC_ACC_Y_MAX": 300.0,
+        "ATC_ACCEL_Y_MAX": 300.0,
     }
 
 
@@ -140,7 +140,7 @@ def test_reads_one_post_disarm_saved_epoch_with_axis_timestamp_spread(
 def test_rejects_mixed_save_epochs(tmp_path: Path) -> None:
     values = gains()
     current = saved_epoch(values)
-    missing_name = "ATC_ACC_Y_MAX"
+    missing_name = "ATC_ACCEL_Y_MAX"
     current = [
         message
         for message in current
@@ -220,9 +220,24 @@ def test_preserves_zero_baseline_yaw_d(tmp_path: Path) -> None:
     assert baseline["ATC_RAT_YAW_D"] == 0.0
 
 
-def test_rejects_changed_preserved_parameter(tmp_path: Path) -> None:
-    write_parameter_evidence(tmp_path, post_yaw_d=0.001)
-    write_calibration_parameters(tmp_path, RUN_ID, gains())
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("post_yaw_d", [0.0, 0.001])
+def test_checks_preserved_parameters_for_current_and_historical_calibrations(
+    tmp_path: Path, historical: bool, post_yaw_d: float
+) -> None:
+    write_parameter_evidence(tmp_path, post_yaw_d=post_yaw_d)
+    artifact = write_calibration_parameters(tmp_path, RUN_ID, gains())
+    messages = saved_epoch(gains())
+    expected = gains()
+    if historical:
+        # Historical 4.7 evidence keeps its exact names and units; inspection
+        # must not relabel that calibration as a 4.6.3 result.
+        for path in (artifact, tmp_path / "logs/companion.jsonl"):
+            path.write_text(path.read_text().replace("ATC_ACCEL_", "ATC_ACC_"))
+        for message in messages:
+            if message.message_type == "PARM":
+                message.fields["Name"] = message.fields["Name"].replace("ATC_ACCEL_", "ATC_ACC_")
+        expected = {name.replace("ATC_ACCEL_", "ATC_ACC_"): value for name, value in expected.items()}
     payload = (tmp_path / "ardupilot_sitl/autotune.parm").read_bytes()
     config = tmp_path / "configuration/run.json"
     config.parent.mkdir(parents=True)
@@ -253,8 +268,19 @@ def test_rejects_changed_preserved_parameter(tmp_path: Path) -> None:
         ],
     }))
 
-    with pytest.raises(ValueError, match="preserved"):
-        validate_calibration_artifact(
-            tmp_path,
-            connection_factory=lambda _path: Connection(saved_epoch(gains())),
-        )
+    if post_yaw_d:
+        with pytest.raises(ValueError, match="preserved"):
+            validate_calibration_artifact(
+                tmp_path, connection_factory=lambda _path: Connection(messages)
+            )
+    else:
+        assert validate_calibration_artifact(
+            tmp_path, connection_factory=lambda _path: Connection(messages)
+        ) == expected
+        assert read_calibration_baseline(tmp_path) == preserved()
+
+
+def test_current_calibration_writer_rejects_historical_parameter_units(tmp_path: Path) -> None:
+    historical = {name.replace("ATC_ACCEL_", "ATC_ACC_"): value for name, value in gains().items()}
+    with pytest.raises(ValueError, match="parameter names"):
+        write_calibration_parameters(tmp_path, RUN_ID, historical)

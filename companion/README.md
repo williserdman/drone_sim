@@ -203,6 +203,9 @@ does not claim flight-controller acknowledgement or an observed mode change.
 execution readiness after passive readiness, matching RUNNING, and public clock.
 This releases physics during operator waiting without issuing a flight command.
 The whole sequence must finish landed/disarmed to publish mission success.
+The current simulation contract pins Copter 4.6.3, packed version `0x040603FF`,
+and custom revision bytes `92b0cd78`. Parameter readback uses that release's
+names and units, including `LAND_SPEED` in cm/s and `ATC_ACCEL_*_MAX` in cdeg/s².
 Every mission host consuming accepted calibration verifies all 15 gains and
 the profile's effective baseline before its first flight command. Version-2
 imports include scenario precision settings; legacy profiles use their preserved
@@ -282,12 +285,12 @@ The companion's expected profile is a live command gate, while the two SITL
 parameter files remain the launch inputs. A focused test merges those inputs and
 requires the gated values to match, preventing silent drift between them.
 The current moving-only experiment requires `AHRS_EKF_TYPE=3`, restoring
-native precision `PLND_EST_TYPE=1` and the original `PSC_NE_POS_P=1` while
+native precision `PLND_EST_TYPE=1` and the original `PSC_POSXY_P=1` while
 retaining `PLND_OPTIONS=5` and `PLND_LAG=0.04`. Missing or mismatched values
 block readiness and flight commands. EKF3 avoids the diagnosed SIM attitude
-delta-velocity frame error; native LAND still owns tracking and descent. This
-profile completed a 0.5 m/s moving landing with 100/100 and independent artifact
-acceptance. The stationary control also landed, but a later contact-stream fault
+delta-velocity frame error; native LAND still owns tracking and descent. The
+historical Copter 4.7 profile completed a 0.5 m/s moving landing with 100/100
+and independent artifact acceptance. Copter 4.6.3 flight validation is pending. The stationary control also landed, but a later contact-stream fault
 invalidated that bundle. See the [flight evidence and limits](../docs/handoff.md#moving-pad-verification).
 
 ## Entry points and implementation seams

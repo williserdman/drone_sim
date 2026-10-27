@@ -26,7 +26,7 @@ from .calibration_gate import calibration_parameters as _effective_calibration_p
 
 MOVING_PRECISION_PARAMETERS = {
     "AHRS_EKF_TYPE": 3.0,
-    "LAND_SPD_MS": 0.50,
+    "LAND_SPEED": 50,
     "PLND_ENABLED": 1.0,
     "PLND_TYPE": 1.0,
     "PLND_LAG": 0.04,
@@ -38,7 +38,7 @@ MOVING_PRECISION_PARAMETERS = {
     "PLND_ALT_MIN": 0.75,
     "PLND_ALT_MAX": 8.0,
     "PLND_OPTIONS": 5.0,
-    "PSC_NE_POS_P": 1.0,
+    "PSC_POSXY_P": 1.0,
 }
 
 

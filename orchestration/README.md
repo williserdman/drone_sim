@@ -104,7 +104,11 @@ orphaned owner blocks another preparation. Exact-run recovery can enter only to
 inspect and clean the retained run. It clears native ownership after Compose
 reports no run resources and closed media publication is verified. A failure
 before Compose starts has no media spool and uses its durable `CREATED` state as
-the no-start proof.
+the no-start proof. During orphan recovery, a successful empty inventory from
+the exact run's Compose project ends the artifacts-final wait because no
+container can publish that receipt. Nonempty projects retain the bounded wait;
+failed or malformed inspection leaves cleanup incomplete. Teardown, remaining
+resource checks, and media-volume absence still gate native owner clearance.
 
 The builder derives `linux/arm64` or `linux/amd64` from the resolved host. It
 requires a local Unix-socket Docker endpoint, the host's selected provider, and
@@ -296,6 +300,8 @@ An `autotune` run receives a host-generated `calibration_profile` in its resolve
 configuration before Compose starts. The version-2 profile binds the shared physics of `iris_flight`,
 `iris_moving_pad`, and `iris_competition`, each exact model digest, the base
 parameter file, ArduPilot revision and immutable Gazebo/SITL image IDs. The
+current firmware is Copter 4.6.3; imports from historical 4.7 runs fail these
+identity checks. Current gain allowlists use `ATC_ACCEL_*_MAX` in cdeg/s². The
 configured, descent, hover, roll and competition consumers may declare
 `calibration.source_run_directory`; relative paths resolve from the template.
 Before allocating the new run, orchestration independently accepts the source at

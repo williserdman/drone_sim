@@ -18,7 +18,7 @@ ROLL_GAINS = {
     "ATC_RAT_RLL_P": 0.041,
     "ATC_RAT_RLL_I": 0.041,
     "ATC_RAT_RLL_D": 0.0011,
-    "ATC_ACC_R_MAX": 72000.0,
+    "ATC_ACCEL_R_MAX": 72000.0,
 }
 
 
@@ -144,17 +144,23 @@ def write_roll_artifact(run_directory: Path, values: dict[str, float]) -> None:
     log.write_bytes(b"dataflash")
 
 
+@pytest.mark.parametrize("historical", [False, True])
 def test_roll_gain_artifact_matches_one_native_save(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, historical: bool
 ) -> None:
     write_roll_artifact(tmp_path, ROLL_GAINS)
-    messages = native_save(ROLL_GAINS)
+    expected = dict(ROLL_GAINS)
+    if historical:
+        path = tmp_path / "ardupilot_sitl/autotune-roll.parm"
+        path.write_text(path.read_text().replace("ATC_ACCEL_R_MAX", "ATC_ACC_R_MAX"))
+        expected["ATC_ACC_R_MAX"] = expected.pop("ATC_ACCEL_R_MAX")
+    messages = native_save(expected)
     monkeypatch.setattr(
         "artifacts.diagnostic_acceptance.mavutil.mavlink_connection",
         lambda _path: Connection(messages),
     )
 
-    assert validate_roll_gain_artifact(tmp_path) == ROLL_GAINS
+    assert validate_roll_gain_artifact(tmp_path) == expected
 
 
 @pytest.mark.parametrize(

@@ -155,6 +155,9 @@ transport or creating output devices. The current contract requires:
 `DroneControl` passes an optional DroneKit vehicle class through to `connect`.
 The default omits that keyword and preserves hardware behavior. The parent
 simulation composition supplies its simulation-only parameter retry adapter.
+The shared precision-landing defaults use Copter 4.6.3 `LAND_SPEED=50` in cm/s.
+This source setting does not establish the installed firmware on real hardware;
+its version and parameter readback still require the deployment checks below.
 
 `LiveComponentFactories.telemetry_startup_mode` defaults to `complete`. That
 mode preserves the full configure-and-collect proof before QGC listener

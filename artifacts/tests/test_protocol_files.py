@@ -487,6 +487,122 @@ def test_read_rejects_file_changed_during_read(
         read_json_object_at(directory_fd, "state.json")
 
 
+def _change_only_access_metadata(target: Path) -> None:
+    before = target.stat()
+    os.utime(target, ns=(before.st_atime_ns + 1_000_000_000, before.st_mtime_ns))
+    after = target.stat()
+    assert after.st_ctime_ns != before.st_ctime_ns
+    assert all(
+        getattr(before, field) == getattr(after, field)
+        for field in protocol_files._SNAPSHOT_FIELDS
+        if field != "st_ctime_ns"
+    )
+
+
+def test_read_rejects_ctime_only_change_before_open(
+    directory_fd, tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "state.json"
+    target.write_text('{"ready":true}')
+    real_inspect = protocol_files._inspect_existing
+
+    def inspect_then_annotate(fd, name):
+        metadata = real_inspect(fd, name)
+        _change_only_access_metadata(target)
+        return metadata
+
+    monkeypatch.setattr(protocol_files, "_inspect_existing", inspect_then_annotate)
+
+    with pytest.raises(
+        ProtocolIOError, match="changed while opening: st_ctime_ns="
+    ):
+        read_json_object_at(directory_fd, "state.json")
+
+
+@pytest.mark.parametrize("phase", ["read", "decode", "verify"])
+def test_read_verifies_unchanged_bytes_after_ctime_only_change(
+    directory_fd, tmp_path: Path, monkeypatch, phase: str
+):
+    target = tmp_path / "state.json"
+    target.write_text('{"ready":true}')
+    real_read = os.read
+    real_pread = os.pread
+    real_loads = protocol_files.json.loads
+    changed = False
+    verification_reads = 0
+
+    def annotate(at_phase):
+        nonlocal changed
+        if phase == at_phase and not changed:
+            _change_only_access_metadata(target)
+            changed = True
+
+    def read_then_annotate(descriptor, size):
+        payload = real_read(descriptor, size)
+        annotate("read")
+        return payload
+
+    def decode_then_annotate(*args, **kwargs):
+        document = real_loads(*args, **kwargs)
+        annotate("decode")
+        return document
+
+    def verify_then_annotate(descriptor, size, offset):
+        nonlocal verification_reads
+        verification_reads += 1
+        payload = real_pread(descriptor, size, offset)
+        annotate("verify")
+        return payload
+
+    monkeypatch.setattr(os, "read", read_then_annotate)
+    monkeypatch.setattr(os, "pread", verify_then_annotate)
+    monkeypatch.setattr(protocol_files.json, "loads", decode_then_annotate)
+
+    assert read_json_object_at(directory_fd, "state.json") == {"ready": True}
+    assert changed
+    assert verification_reads == 2
+
+
+@pytest.mark.parametrize("mutation", ["content", "ctime"])
+def test_read_rejects_changes_during_ctime_revalidation(
+    directory_fd, tmp_path: Path, monkeypatch, mutation: str
+):
+    target = tmp_path / "state.json"
+    target.write_text('{"version":1}')
+    real_read = os.read
+    real_pread = os.pread
+    changed = False
+    verification_reads = 0
+
+    def read_then_annotate(descriptor, size):
+        nonlocal changed
+        payload = real_read(descriptor, size)
+        if not changed:
+            _change_only_access_metadata(target)
+            changed = True
+        return payload
+
+    def verify_then_change(descriptor, size, offset):
+        nonlocal verification_reads
+        verification_reads += 1
+        payload = real_pread(descriptor, size, offset)
+        if verification_reads == 2:
+            if mutation == "content":
+                before = target.stat()
+                target.write_text('{"version":2}')
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+            else:
+                _change_only_access_metadata(target)
+        return payload
+
+    monkeypatch.setattr(os, "read", read_then_annotate)
+    monkeypatch.setattr(os, "pread", verify_then_change)
+
+    with pytest.raises(ProtocolIOError, match="changed while reading"):
+        read_json_object_at(directory_fd, "state.json")
+    assert verification_reads == 2
+
+
 @pytest.mark.parametrize("mutation", ["replace", "content", "mode"])
 def test_read_rejects_file_changed_during_json_decoding(
     directory_fd,

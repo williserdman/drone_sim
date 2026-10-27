@@ -23,7 +23,7 @@ def _range_masks(header: str) -> list[str]:
     masks = []
     for index in range(1, 7):
         match = re.search(
-            rf"^\s*RNG_{index}\s*=\s*(0x[0-9A-Fa-f]+ULL)",
+            rf"^\s*RNG_{index}\s*=\s*(0x[0-9A-Fa-f]+ULL|1U\s*<<\s*\d+)\s*,",
             header,
             flags=re.MULTILINE,
         )
@@ -52,7 +52,7 @@ def main() -> int:
 
         int main() {{
             struct {{ float rng[6]; }} state{{{{11, 22, 33, 44, 55, 66}}}};
-            const uint64_t masks[6] = {{{', '.join(masks)}}};
+            const uint64_t masks[6] = {{RNG_1, RNG_2, RNG_3, RNG_4, RNG_5, RNG_6}};
             float rangefinder_m[10];
             for (uint8_t source = 0; source < 6; source++) {{
                 std::fill_n(rangefinder_m, 10, -1.0f);

@@ -49,8 +49,9 @@ The pinned UART parser treats `tcp:0.0.0.0:<port>` as port zero, falling back to
 
 The upstream JSON backend exchanges servo outputs and simulated sensor/dynamics
 data with `gazebo-runtime:9002` over UDP. Sensor replies retain
-`no_time_sync=true` and `no_lockstep=false`; loss of the Gazebo exchange must
-prevent free-running simulation progress. Broader ownership and ordering are in the
+`no_time_sync=true`. Copter 4.6.3 waits for JSON state by default and ignores the
+additional `no_lockstep=false` field. Loss of the Gazebo exchange must prevent
+free-running simulation progress. Broader ownership and ordering are in the
 [architecture guide](../docs/architecture.md).
 
 The module provides its own structured child output, readiness fact, DataFlash
@@ -68,19 +69,14 @@ that SITL exited, and it always attempts to close the protocol.
 
 ## Constraints worth knowing
 
-- The image freezes ArduPilot `Copter-4.7.0` at commit
-  `1511f27194f1dcc3728270883047bdf022b3fd53` and builds only `waf copter`.
-  Before compilation, the image applies upstream commit
-  `8fa852b498bf6a2862c78ba688eb72b907d69e65` as a checked-in downstream
-  patch. It corrects the pinned JSON backend's `rng_1`–`rng_6` bitmask mapping
-  without changing Git HEAD or the eight-byte firmware revision
-  `1511f271`. The build executes
+- The image freezes ArduPilot `Copter-4.6.3` at commit
+  `92b0cd788ec29406f26c6f9c31d5ceedbd1cc538` and builds only `waf copter`.
+  The source needs no downstream rangefinder patch. The build executes
   [check_sim_json_rangefinders.py](tests/check_sim_json_rangefinders.py)
-  against the patched source before `waf`.
+  against the upstream enum and update loop for all six rangefinder keys.
   Supply-chain details live in
   [ardupilot.json](provenance/ardupilot.json) and
-  [LICENSE.ArduPilot.txt](provenance/LICENSE.ArduPilot.txt); the runtime image
-  also retains the exact patch under `/opt/ardupilot/patches`.
+  [LICENSE.ArduPilot.txt](provenance/LICENSE.ArduPilot.txt).
 - ARM64 build dependencies use an exact package delta against the pinned ROS
   base. If Ubuntu retires a pinned package version, use the explicit
   [lock refresh procedure](../docs/runbook.md#native-local-image-build).
@@ -92,8 +88,12 @@ that SITL exited, and it always attempts to close the protocol.
 - The parameter overlay deliberately preserves normal prearm checks. Its small
   accelerometer calibration offsets come from upstream SITL defaults; do not
   replace them with force-arm behavior.
-- Copter 4.7 uses `LAND_SPD_MS`, not legacy `LAND_SPEED`. Parameter edits require
-  rebuilding the image because the overlay is copied at build time.
+- Copter 4.6.3 uses `LAND_SPEED` in cm/s, `RNGFND1_MIN_CM` and
+  `RNGFND1_MAX_CM` in cm, and `ATC_ACCEL_*_MAX` in cdeg/s². The overlays
+  preserve the prior physical values with these names and units. Parameter
+  edits require rebuilding the image because the overlays are copied at build time.
+  Retained gains came from a Copter 4.7 flight and need fresh 4.6.3 validation.
+  Calibration imports must match the current firmware revision and image identity.
 - The overlay is also the single source for the fast, guarded precision-landing
   profile. `PLND_OPTIONS` retains the normal final descent speed while the
   companion filters measurements and owns hold/reacquire policy. Do not tune a
@@ -111,7 +111,7 @@ that SITL exited, and it always attempts to close the protocol.
 - A frozen `moving_pad_v1` scenario passes both files to ArduCopter's
   comma-separated `--defaults` argument. The current moving-only experiment
   selects stock `AHRS_EKF_TYPE=3` and native precision `PLND_EST_TYPE=1`, with
-  `PLND_OPTIONS=5`, `PLND_LAG=0.04`, and the original `PSC_NE_POS_P=1`.
+  `PLND_OPTIONS=5`, `PLND_LAG=0.04`, and the original `PSC_POSXY_P=1`.
   Against the earlier Kalman moving run, only the aircraft estimator changes.
   This changes attitude/navigation estimation throughout the flight. Other
   scenarios keep the base profile. The companion reads back every expected
@@ -126,8 +126,8 @@ that SITL exited, and it always attempts to close the protocol.
 - Offline diagnosis found that the pinned `AHRS_EKF_TYPE=10` path returns body
   delta velocity through the NED interface consumed by precision landing.
   Native Kalman landing is affected. The EKF3 experiment avoids that return
-  path. Stationary and moving flights landed; the moving bundle passed
-  independent acceptance. See the [native-estimator findings and limits](../docs/handoff.md#native-estimator-findings).
+  path. Historical Copter 4.7 stationary and moving flights landed; the moving
+  bundle passed independent acceptance. Those flights do not validate 4.6.3. See the [native-estimator findings and limits](../docs/handoff.md#native-estimator-findings).
 - ArduPilot's JSON resend message is a recoverable upstream retry diagnostic,
   not by itself peer-loss evidence.
 - The private `work/failure.json` file remains a child-process diagnostic. It is

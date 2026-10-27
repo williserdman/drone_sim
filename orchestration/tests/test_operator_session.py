@@ -1195,6 +1195,112 @@ def test_orphan_cleanup_distinguishes_precompose_failure_from_missing_media_rece
     assert lease.finished is expected_finish
 
 
+@pytest.mark.parametrize(
+    ("inventories", "publish_receipt", "media_absent", "expected_waits", "expected_state", "expected_cleanup"),
+    [
+        ([(0, b"[]")], False, True, 0, "INTERRUPTED", "complete"),
+        ([(0, b"")], False, True, 0, "INTERRUPTED", "complete"),
+        ([(0, b"[]")], False, False, 0, "INTERRUPTED", "incomplete"),
+        ([(0, b'{"Service":"artifacts-runtime","State":"running"}')], True, True, 1, "INTERRUPTED", "complete"),
+        ([(0, b'{"Service":"artifacts-runtime","State":"running"}\n{"Service":"gazebo-runtime","State":"running"}'), (0, b"[]")], False, True, 1, "INTERRUPTED", "complete"),
+        ([(1, b"")], False, True, 0, "ORPHANED", "incomplete"),
+        ([(0, b"invalid")], False, True, 0, "ORPHANED", "incomplete"),
+        ([(0, b"{}")], False, True, 0, "ORPHANED", "incomplete"),
+        ([(0, b"[null]")], False, True, 0, "ORPHANED", "incomplete"),
+    ],
+    ids=["absent", "absent-empty-output", "retained-media", "active-publishes", "active-disappears", "inspection-fails", "invalid-json", "invalid-row", "invalid-array"],
+)
+def test_orphan_cleanup_waits_only_while_exact_project_can_publish(
+    tmp_path, monkeypatch, inventories, publish_receipt, media_absent,
+    expected_waits, expected_state, expected_cleanup,
+):
+    run_id = "00000000-0000-4000-8000-000000000610"
+    output_root = tmp_path / "runs"
+    config = resolve_run_config(
+        ROOT / "config/configured-descent-run.json",
+        run_id_factory=lambda: UUID(run_id),
+        launch_mode="operator",
+        output_root=output_root,
+    )
+    store = StatusStore(output_root)
+    directory = store.allocate(run_id)
+    write_resolved_config(directory, config)
+    store.write_operator_status(OperatorStatus(run_id, "FINALIZING", "", None))
+    receipt = directory / ".status/artifacts-final.json"
+    events = []
+    waits = []
+    pending = list(inventories)
+
+    class Lease:
+        finished = False
+
+        def finish_run(self, owned_run_id, *, verified_cleanup):
+            assert owned_run_id == run_id
+            assert verified_cleanup is True
+            self.finished = True
+
+    lease = Lease()
+
+    class Workstation:
+        @contextmanager
+        def hold(self, *, recovery_run_id=None, **_kwargs):
+            assert recovery_run_id == run_id
+            yield lease
+
+    class Compose:
+        def __init__(self, **kwargs):
+            assert kwargs["run_id"] == run_id
+            assert kwargs["run_directory"] == directory
+
+        def ps(self, timeout):
+            assert 0 < timeout <= 5
+            events.append("ps")
+            returncode, output = pending.pop(0) if pending else (0, b"[]")
+            return SimpleNamespace(returncode=returncode, output=output)
+
+        def down(self, _timeout):
+            events.append("down")
+            return SimpleNamespace(returncode=0)
+
+        def media_cleanup_verified(self, _timeout):
+            events.append("media")
+            return media_absent
+
+    def wait(seconds):
+        waits.append(seconds)
+        assert len(waits) <= expected_waits, "waited for a receipt with no verified publisher"
+        assert events[-1] == "ps"
+        if publish_receipt:
+            receipt.write_text("{}")
+
+    monkeypatch.setattr("orchestration._adapters.compose.ComposeRuntime", Compose)
+    monkeypatch.setattr("orchestration.operator_session.time.sleep", wait)
+    session = OperatorSession(
+        ROOT,
+        state_directory=tmp_path / "session",
+        runtime=SimpleNamespace(remaining_resources=lambda: []),
+        controller=SimpleNamespace(),
+        workstation=Workstation(),
+    )
+    session._record.update(
+        state="ORPHANED", run_id=run_id, run_directory=str(directory), cleanup="incomplete",
+    )
+
+    session._cleanup_orphan()
+
+    assert len(waits) == expected_waits
+    assert session._record["state"] == expected_state
+    assert session._record["cleanup"] == expected_cleanup
+    assert lease.finished is (expected_cleanup == "complete")
+    assert receipt.exists() is publish_receipt
+    assert not (directory / "manifest.json").exists()
+    if expected_state == "ORPHANED":
+        assert "down" not in events
+    else:
+        assert events[0] == "ps"
+        assert events[-3:] == ["down", "ps", "media"]
+
+
 def test_run_again_requires_complete_cleanup(tmp_path):
     session = OperatorSession(ROOT, state_directory=tmp_path, runtime=Runtime())
     session._record.update(

@@ -27,7 +27,7 @@ from drone.mock_mission import PrecisionMissionPolicy
 from drone.sensors.lidar.clearance import ClearanceCalibration
 
 
-ARDUPILOT_REVISION = "1511f27194f1dcc3728270883047bdf022b3fd53"
+ARDUPILOT_REVISION = "92b0cd788ec29406f26c6f9c31d5ceedbd1cc538"
 HOME = MissionHome(37.4003371, -122.0800351, 0.195)
 EARTH_RADIUS_M = 6_378_137.0
 EXPECTED_SELECTORS = {
@@ -37,7 +37,7 @@ EXPECTED_SELECTORS = {
 }
 EXPECTED_PARAMETERS = MappingProxyType(
     {
-        "LAND_SPD_MS": 0.50,
+        "LAND_SPEED": 50,
         "PLND_ENABLED": 1,
         "PLND_TYPE": 1,
         "PLND_LAG": 0.08,
@@ -54,25 +54,25 @@ EXPECTED_PARAMETERS = MappingProxyType(
         "FLTMODE1": 0,
         "FLTMODE4": 4,
         "FLTMODE6": 5,
-        "RNGFND1_MIN": 0.05,
-        "RNGFND1_MAX": 40,
+        "RNGFND1_MIN_CM": 5,
+        "RNGFND1_MAX_CM": 4000,
         "RNGFND1_TYPE": 100,
     }
 )
 BASE_PARAMETER_NAMES = frozenset(EXPECTED_PARAMETERS) - {
     "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
-    "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
+    "RNGFND1_MIN_CM", "RNGFND1_MAX_CM", "RNGFND1_TYPE",
 }
 
 
 class SimulationAutopilotVersionContract(AutopilotVersionContract):
-    """Exact version contract for the pinned Copter 4.7 SITL image only."""
+    """Exact version contract for the pinned Copter 4.6.3 SITL image only."""
 
     def __post_init__(self) -> None:
-        if self.firmware_label != "ArduCopter 4.7.0":
-            raise ValueError("simulation firmware must be pinned ArduCopter 4.7.0")
-        if self.flight_sw_version != 0x040700FF:
-            raise ValueError("simulation flight_sw_version does not identify Copter 4.7.0")
+        if self.firmware_label != "ArduCopter 4.6.3":
+            raise ValueError("simulation firmware must be pinned ArduCopter 4.6.3")
+        if self.flight_sw_version != 0x040603FF:
+            raise ValueError("simulation flight_sw_version does not identify Copter 4.6.3")
         if self.flight_custom_version != ARDUPILOT_REVISION[:8].encode("ascii"):
             raise ValueError("simulation flight_custom_version does not match pinned source")
         if not isinstance(self.evidence_reference, str) or ARDUPILOT_REVISION not in self.evidence_reference:
@@ -213,7 +213,7 @@ def build_competition_policy(
 
     provenance_path = root / "ardupilot_sitl/provenance/ardupilot.json"
     provenance = _read_object(provenance_path, "ArduPilot provenance")
-    if provenance.get("tag") != "Copter-4.7.0" or provenance.get("revision") != ARDUPILOT_REVISION:
+    if provenance.get("tag") != "Copter-4.6.3" or provenance.get("revision") != ARDUPILOT_REVISION:
         raise ValueError("ArduPilot provenance does not match competition policy")
     parameter_path = root / "ardupilot_sitl/params/descent.parm"
     _parameter_file(parameter_path, BASE_PARAMETER_NAMES)
@@ -222,7 +222,7 @@ def build_competition_policy(
         competition_parameter_path,
         frozenset((
             "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
-            "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
+            "RNGFND1_MIN_CM", "RNGFND1_MAX_CM", "RNGFND1_TYPE",
         )),
     )
     model_path = root / "gazebo/resources/models/iris_competition/model.sdf"
@@ -268,8 +268,8 @@ def build_competition_policy(
         for message_id in (0, 1, 30, 33, 65, 132, 242, 245)
     )
     flight_profile = FlightProfile(
-        profile_id="competition-sitl-copter-4.7-v1", raw_sha256=evidence_sha256,
-        firmware="ArduCopter 4.7.0", qgc_source=qgc, companion_target=companion,
+        profile_id="competition-sitl-copter-4.6.3-v1", raw_sha256=evidence_sha256,
+        firmware="ArduCopter 4.6.3", qgc_source=qgc, companion_target=companion,
         flight_controller=fc, freshness_bounds=freshness, rc_health_max_age=0.5,
         rc_channel=7, rc_mode_bands=(
             RCModeBand("stabilize", 801, 1230, "STABILIZE"),
@@ -285,8 +285,8 @@ def build_competition_policy(
     )
     telemetry = TelemetryStartupPolicy(60.0, 120.0, 5.0, 0.05, 2, 0.25)
     version = SimulationAutopilotVersionContract(
-        "ArduCopter 4.7.0", 0x040700FF, b"1511f271",
-        f"pinned SITL source {ARDUPILOT_REVISION}; ArduCopter/version.h FIRMWARE_VERSION 4,7,0,OFFICIAL",
+        "ArduCopter 4.6.3", 0x040603FF, b"92b0cd78",
+        f"pinned SITL source {ARDUPILOT_REVISION}; ArduCopter/version.h FIRMWARE_VERSION 4,6,3,OFFICIAL",
     )
     clearance = ClearanceCalibration((0.0, 0.0, 1.0), (0.3, 0.0, -0.1), True, math.radians(8), 0.5, 0.05, True)
     release = ReleaseStabilityConfig(2.0, 10.0, 0.10, 0.10, math.radians(8), math.radians(8), 0.15, 0.15, 0.05, 0.10, 0.05, 0.20)

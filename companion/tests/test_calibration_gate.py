@@ -67,12 +67,12 @@ def test_gate_requires_every_effective_parameter():
 
 
 def test_gate_accepts_float32_readback_tolerance():
-    gate = CalibrationGate({"ATC_ACC_R_MAX": 123456.789})
+    gate = CalibrationGate({"ATC_ACCEL_R_MAX": 123456.789})
 
-    gate.observe("ATC_ACC_R_MAX", 123456.79)
+    gate.observe("ATC_ACCEL_R_MAX", 123456.79)
 
     assert gate.ready
-    assert gate.snapshot() == {"ATC_ACC_R_MAX": 123456.79}
+    assert gate.snapshot() == {"ATC_ACCEL_R_MAX": 123456.79}
 
 
 def test_gate_records_first_mismatch_as_terminal_failure():

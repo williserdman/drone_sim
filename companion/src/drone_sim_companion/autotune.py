@@ -21,7 +21,7 @@ ROLL_GAIN_PARAMETERS = (
     "ATC_RAT_RLL_P",
     "ATC_RAT_RLL_I",
     "ATC_RAT_RLL_D",
-    "ATC_ACC_R_MAX",
+    "ATC_ACCEL_R_MAX",
 )
 
 

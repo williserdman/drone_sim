@@ -58,8 +58,8 @@ def test_competition_parameters_map_native_rc7_slots() -> None:
         "FLTMODE1": "0",
         "FLTMODE4": "4",
         "FLTMODE6": "5",
-        "RNGFND1_MIN": "0.05",
-        "RNGFND1_MAX": "40",
+        "RNGFND1_MIN_CM": "5",
+        "RNGFND1_MAX_CM": "4000",
         "RNGFND1_TYPE": "100",
     }
 
@@ -69,7 +69,7 @@ def test_descent_parameters_disable_rc_flight_mode_override() -> None:
 
 
 def test_descent_parameters_enable_passive_extended_status_readiness() -> None:
-    assert _descent_parameters()["MAV1_EXT_STAT"] == "1"
+    assert _descent_parameters()["SR0_EXT_STAT"] == "1"
 
 
 def test_descent_parameters_enable_mavlink_precision_landing() -> None:
@@ -87,7 +87,7 @@ def test_descent_parameters_use_each_accurate_stationary_target_measurement() ->
     assert _descent_parameters()["PLND_EST_TYPE"] == "0"
 
 
-def test_descent_parameters_use_promoted_roll_autotune_gains() -> None:
+def test_descent_parameters_preserve_physical_roll_gain_baseline() -> None:
     parameters = _descent_parameters()
 
     assert {
@@ -97,14 +97,14 @@ def test_descent_parameters_use_promoted_roll_autotune_gains() -> None:
             "ATC_RAT_RLL_P",
             "ATC_RAT_RLL_I",
             "ATC_RAT_RLL_D",
-            "ATC_ACC_R_MAX",
+            "ATC_ACCEL_R_MAX",
         )
     } == {
         "ATC_ANG_RLL_P": "13.1974",
         "ATC_RAT_RLL_P": "0.0503722",
         "ATC_RAT_RLL_I": "0.0503722",
         "ATC_RAT_RLL_D": "0.000375",
-        "ATC_ACC_R_MAX": "2547.76",
+        "ATC_ACCEL_R_MAX": "254776",
     }
 
 
@@ -140,7 +140,7 @@ def test_descent_parameters_use_fast_guarded_precision_landing_profile() -> None
     assert {
         name: float(parameters[name])
         for name in (
-            "LAND_SPD_MS",
+            "LAND_SPEED",
             "PLND_LAG",
             "PLND_XY_DIST_MAX",
             "PLND_TIMEOUT",
@@ -149,7 +149,7 @@ def test_descent_parameters_use_fast_guarded_precision_landing_profile() -> None
         )
     } == pytest.approx(
         {
-            "LAND_SPD_MS": 0.50,
+            "LAND_SPEED": 50,
             "PLND_LAG": 0.08,
             "PLND_XY_DIST_MAX": 0.50,
             "PLND_TIMEOUT": 0.50,
@@ -263,7 +263,7 @@ def test_moving_profile_overlays_ekf3_and_native_precision_estimator(tmp_path: P
         "PLND_OPTIONS": "5",
         "PLND_EST_TYPE": "1",
         "PLND_LAG": "0.04",
-        "PSC_NE_POS_P": "1",
+        "PSC_POSXY_P": "1",
     }
 
 
@@ -395,23 +395,12 @@ def test_gazebo_resolution_rejects_non_ipv4_result() -> None:
         resolve_gazebo_address("gazebo-runtime", resolver=lambda _name: "not-an-address")
 
 
-def test_ardupilot_provenance_binds_rangefinder_backport() -> None:
+def test_ardupilot_provenance_binds_unmodified_copter_4_6_3() -> None:
     module_root = Path(__file__).parents[1]
-    project_root = module_root.parent
-    patch_path = module_root / "patches/0001-sitl-json-rangefinder-bitmasks.patch"
-    patch_digest = hashlib.sha256(patch_path.read_bytes()).hexdigest()
     provenance = json.loads(
         (module_root / "provenance/ardupilot.json").read_text(encoding="utf-8")
     )
 
-    assert provenance["revision"] == "1511f27194f1dcc3728270883047bdf022b3fd53"
-    assert provenance["downstream_patches"] == [
-        {
-            "path": str(patch_path.relative_to(project_root)),
-            "sha256": "6b60ae6105e8c736c298243f6124204b97f4ae2daeccf2ebd627ac8aabd91218",
-            "upstream_commit": "8fa852b498bf6a2862c78ba688eb72b907d69e65",
-            "upstream_pull_request": "https://github.com/ArduPilot/ardupilot/pull/33342",
-            "license": "GPL-3.0-or-later",
-        }
-    ]
-    assert patch_digest == provenance["downstream_patches"][0]["sha256"]
+    assert provenance["tag"] == "Copter-4.6.3"
+    assert provenance["revision"] == "92b0cd788ec29406f26c6f9c31d5ceedbd1cc538"
+    assert provenance["downstream_patches"] == []

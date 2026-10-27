@@ -171,7 +171,7 @@ def test_low_takeoff_target_cannot_succeed_at_ground_altitude():
         ("PLND_OPTIONS", 4.0, 5.0),
         ("AHRS_EKF_TYPE", 10.0, 3.0),
         ("PLND_EST_TYPE", 0.0, 1.0),
-        ("PSC_NE_POS_P", 4.0, 1.0),
+        ("PSC_POSXY_P", 4.0, 1.0),
     ],
 )
 def test_moving_profile_mismatch_emits_zero_flight_commands(parameter_name, actual, expected):
@@ -242,7 +242,7 @@ def test_calibration_readback_mismatch_emits_zero_flight_commands():
 
 
 def test_calibration_readback_accepts_float32_rounding_and_emits_verified_event_once():
-    expected = {"ATC_ACC_R_MAX": 123456.789}
+    expected = {"ATC_ACCEL_R_MAX": 123456.789}
     host, vehicle, protocol = host_for(
         [{"tool": "set_mode", "args": {"mode": "GUIDED"}}],
         calibration_parameters=expected,
@@ -250,7 +250,7 @@ def test_calibration_readback_accepts_float32_rounding_and_emits_verified_event_
     host.observe(Telemetry(0, heartbeat=True, mode="STABILIZE", armed=False,
                            landed=True, prearm_checks_healthy=True))
     host.observe(Telemetry(
-        0, parameter_name="ATC_ACC_R_MAX", parameter_value=123456.79,
+        0, parameter_name="ATC_ACCEL_R_MAX", parameter_value=123456.79,
     ))
     host.tick(0, mission_running=True)
     host.tick(1, mission_running=True)
@@ -260,7 +260,7 @@ def test_calibration_readback_accepts_float32_rounding_and_emits_verified_event_
                 if event["event"] == "calibration_parameters_verified"]
     assert len(verified) == 1
     assert verified[0]["fields"] == {
-        "stage": "pre_arm", "parameters": {"ATC_ACC_R_MAX": 123456.79},
+        "stage": "pre_arm", "parameters": {"ATC_ACCEL_R_MAX": 123456.79},
     }
     assert vehicle.commands == [(CommandKind.SET_GUIDED, None)]
     assert protocol.statuses["mission-execution-ready"]["ready"] is True
@@ -297,7 +297,7 @@ def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
 
     assert {name: effective[name] for name in MOVING_PRECISION_PARAMETERS} == {
         "AHRS_EKF_TYPE": 3.0,
-        "LAND_SPD_MS": 0.50,
+        "LAND_SPEED": 50,
         "PLND_ENABLED": 1.0,
         "PLND_TYPE": 1.0,
         "PLND_LAG": 0.04,
@@ -309,7 +309,7 @@ def test_companion_expected_profile_matches_effective_base_and_moving_overlay():
         "PLND_ALT_MIN": 0.75,
         "PLND_ALT_MAX": 8.0,
         "PLND_OPTIONS": 5.0,
-        "PSC_NE_POS_P": 1.0,
+        "PSC_POSXY_P": 1.0,
     }
     assert {name: effective[name] for name in MOVING_PRECISION_PARAMETERS} == MOVING_PRECISION_PARAMETERS
 

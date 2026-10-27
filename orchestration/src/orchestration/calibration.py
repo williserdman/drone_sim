@@ -201,12 +201,12 @@ def freeze_calibration_import(
             settings.update(_parameters(overlay))
         effective = dict(frozen_profile["baseline_parameters"])
         for name in settings:
-            if name in effective or name.startswith("PLND_") or name == "LAND_SPD_MS" or (
-                consumer_scenario == "moving_pad_v1" and name in {"AHRS_EKF_TYPE", "PSC_NE_POS_P"}
+            if name in effective or name.startswith("PLND_") or name == "LAND_SPEED" or (
+                consumer_scenario == "moving_pad_v1" and name in {"AHRS_EKF_TYPE", "PSC_POSXY_P"}
             ) or (
                 consumer_scenario == "competition_v1" and name in {
                     "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
-                    "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
+                    "RNGFND1_MIN_CM", "RNGFND1_MAX_CM", "RNGFND1_TYPE",
                 }
             ):
                 effective[name] = settings[name]

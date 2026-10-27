@@ -152,7 +152,7 @@ class MavlinkAdapter:
         if command is CommandKind.SET_GUIDED:
             command_id = mavlink.MAV_CMD_DO_SET_MODE
             parameters[0] = mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
-            parameters[1] = 4  # Copter GUIDED custom mode, frozen for Copter-4.7.0.
+            parameters[1] = 4  # Copter GUIDED custom mode, frozen for Copter-4.6.3.
         elif command is CommandKind.ARM:
             command_id = mavlink.MAV_CMD_COMPONENT_ARM_DISARM
             parameters[0] = 1

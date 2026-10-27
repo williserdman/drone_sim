@@ -607,7 +607,34 @@ class OperatorSession:
                 deadline = time.monotonic() + config.finalization_wall_seconds
                 while (not failed_before_compose and time.monotonic() < deadline
                        and not (directory / ".status/artifacts-final.json").exists()):
-                    time.sleep(0.5)
+                    remaining_wait = deadline - time.monotonic()
+                    if remaining_wait <= 0:
+                        break
+                    inventory = compose.ps(min(5, remaining_wait))
+                    if inventory.returncode != 0:
+                        raise RuntimeError("could not inspect exact run containers during recovery")
+                    try:
+                        decoded = inventory.output.decode("utf-8")
+                        try:
+                            rows = json.loads(decoded or "[]")
+                            rows = rows if isinstance(rows, list) else [rows]
+                        except json.JSONDecodeError:
+                            rows = [json.loads(line) for line in decoded.splitlines() if line.strip()]
+                        if any(
+                            not isinstance(row, dict)
+                            or not isinstance(row.get("Service"), str)
+                            or not row["Service"]
+                            or not isinstance(row.get("State"), str)
+                            for row in rows
+                        ):
+                            raise ValueError("invalid container row")
+                    except (UnicodeError, ValueError) as error:
+                        raise RuntimeError("could not inspect exact run containers during recovery") from error
+                    if not rows:
+                        break
+                    remaining_wait = deadline - time.monotonic()
+                    if remaining_wait > 0:
+                        time.sleep(min(0.5, remaining_wait))
                 result = compose.down(20)
                 remaining = self.runtime.remaining_resources()
                 project = compose.ps(5)

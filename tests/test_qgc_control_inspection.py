@@ -52,7 +52,7 @@ STIMULUS_REQUEST_TEXT = (
     "orientation { x: 0 y: 0 z: 0 w: 1 }"
 )
 PROFILE = {
-    "LAND_SPD_MS": 0.50,
+    "LAND_SPEED": 50,
     "PLND_ENABLED": 1.0,
     "PLND_TYPE": 1.0,
     "PLND_EST_TYPE": 0.0,

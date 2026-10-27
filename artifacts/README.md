@@ -167,7 +167,10 @@ parameter artifact at `ardupilot_sitl/autotune.parm`. It validates exactly 15
 roll, pitch, and yaw values, extracts one post-disarm native save from DataFlash,
 and compares the artifact with ordered live parameter evidence. Roll and pitch
 I equal P; yaw I equals 0.1 times P. Yaw D and the other preserved controller
-settings are recorded separately and may be zero.
+settings are recorded separately and may be zero. Current writers use Copter
+4.6.3 `ATC_ACCEL_*_MAX` values in cdeg/s². Historical 4.7 artifacts remain
+readable with their original `ATC_ACC_*_MAX` names and units. Inspection does
+not authorize importing those gains into a different firmware runtime.
 
 `validate_calibration_artifact()` requires the completed calibration mission,
 manifest inventory, DataFlash save, activation readback, post-disarm readback,
@@ -225,7 +228,12 @@ moving-pad replay semantics remain unchanged.
   defined in the [architecture guide](../docs/architecture.md#shared-communication-guarantees).
   Its advisory lock is not a security boundary against a hostile process with
   the same filesystem permissions.
-- Reads retain strict stat/open/read/decode snapshot validation. The operator
+- Reads retain strict stat/open/read/decode snapshot validation. A post-open
+  ctime-only change triggers one additional complete byte comparison, bracketed
+  by stable metadata and a matching named path. This handles delayed macOS
+  security attributes on Docker Desktop bind mounts. Content, identity, link,
+  mode, size, and mtime changes remain fatal, as does initial stat/open drift.
+  Any metadata change during the additional read also fails. The operator
   protocol retries only mutable preflight observations when those checks prove
   that a regular file inode was atomically replaced during the read. Immutable
   controls, same-inode mutation, malformed content, symlinks, hardlinks, and

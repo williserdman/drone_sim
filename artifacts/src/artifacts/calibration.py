@@ -42,17 +42,23 @@ CALIBRATION_PARAMETERS = (
     "ATC_RAT_RLL_P",
     "ATC_RAT_RLL_I",
     "ATC_RAT_RLL_D",
-    "ATC_ACC_R_MAX",
+    "ATC_ACCEL_R_MAX",
     "ATC_ANG_PIT_P",
     "ATC_RAT_PIT_P",
     "ATC_RAT_PIT_I",
     "ATC_RAT_PIT_D",
-    "ATC_ACC_P_MAX",
+    "ATC_ACCEL_P_MAX",
     "ATC_ANG_YAW_P",
     "ATC_RAT_YAW_P",
     "ATC_RAT_YAW_I",
     "ATC_RAT_YAW_FLTE",
-    "ATC_ACC_Y_MAX",
+    "ATC_ACCEL_Y_MAX",
+)
+
+# Read historical Copter 4.7 evidence in its original units. Current writers and
+# runtime inputs use CALIBRATION_PARAMETERS; import also binds firmware identity.
+_HISTORICAL_PARAMETERS = tuple(
+    name.replace("ATC_ACCEL_", "ATC_ACC_") for name in CALIBRATION_PARAMETERS
 )
 
 PRESERVED_PARAMETERS = (
@@ -119,7 +125,13 @@ def _finite_parameters(
 
 def validate_calibration_parameters(values: Mapping[str, float]) -> dict[str, float]:
     """Return the canonical 15-value axes-7 calibration mapping."""
-    normalized = _finite_parameters(values, CALIBRATION_PARAMETERS, positive=True)
+    return _validate_calibration_parameters(values, CALIBRATION_PARAMETERS)
+
+
+def _validate_calibration_parameters(
+    values: Mapping[str, float], names: tuple[str, ...]
+) -> dict[str, float]:
+    normalized = _finite_parameters(values, names, positive=True)
     for axis in ("RLL", "PIT"):
         if not math.isclose(
             normalized[f"ATC_RAT_{axis}_I"],
@@ -150,8 +162,11 @@ def read_calibration_parameters(path: Path) -> tuple[str, dict[str, float]]:
     if not lines[1].startswith(prefix) or lines[2] != _AXES_HEADER:
         raise ValueError("calibration parameter artifact has invalid metadata")
     run_id = _canonical_run_id(lines[1][len(prefix) :])
+    parameter_names = tuple(line.split()[0] if line.split() else "" for line in lines[3:])
+    if parameter_names not in (CALIBRATION_PARAMETERS, _HISTORICAL_PARAMETERS):
+        raise ValueError("calibration parameters are missing, extra, or out of order")
     values: dict[str, float] = {}
-    for expected_name, line in zip(CALIBRATION_PARAMETERS, lines[3:], strict=True):
+    for expected_name, line in zip(parameter_names, lines[3:], strict=True):
         fields = line.split()
         if len(fields) != 2 or fields[0] != expected_name:
             raise ValueError("calibration parameters are missing, extra, or out of order")
@@ -159,7 +174,7 @@ def read_calibration_parameters(path: Path) -> tuple[str, dict[str, float]]:
             values[expected_name] = float(fields[1])
         except ValueError as error:
             raise ValueError(f"parameter {expected_name} is not numeric") from error
-    return run_id, validate_calibration_parameters(values)
+    return run_id, _validate_calibration_parameters(values, parameter_names)
 
 
 def write_calibration_parameters(
@@ -218,8 +233,11 @@ def read_saved_calibration_parameters(
     run_directory: Path,
     *,
     connection_factory: Callable[[str], Any] = mavutil.mavlink_connection,
+    parameter_names: tuple[str, ...] = CALIBRATION_PARAMETERS,
 ) -> dict[str, float]:
     """Read the latest complete parameter save associated with native disarm."""
+    if parameter_names not in (CALIBRATION_PARAMETERS, _HISTORICAL_PARAMETERS):
+        raise ValueError("unsupported saved calibration parameter contract")
     log = _selected_dataflash_log(Path(run_directory))
     connection = connection_factory(str(log))
     saved_statuses: set[int] = set()
@@ -248,7 +266,7 @@ def read_saved_calibration_parameters(
                     saved_events.add(timestamp)
             elif message_type == "PARM":
                 name = _text(row.get("Name"))
-                if name not in CALIBRATION_PARAMETERS:
+                if name not in parameter_names:
                     continue
                 value = row.get("Value")
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -270,9 +288,9 @@ def read_saved_calibration_parameters(
         if name in epoch:
             raise ValueError(f"saved DataFlash epoch contains duplicate parameter {name}")
         epoch[name] = value
-    if set(epoch) != set(CALIBRATION_PARAMETERS):
+    if set(epoch) != set(parameter_names):
         raise ValueError("saved DataFlash calibration parameters are incomplete")
-    return validate_calibration_parameters(epoch)
+    return _validate_calibration_parameters(epoch, parameter_names)
 
 
 def read_calibration_baseline(run_directory: Path) -> dict[str, float]:
@@ -290,6 +308,7 @@ def _verified_parameter_stages(run_directory: Path) -> dict[str, dict[str, float
         raise ValueError("companion calibration evidence is not readable") from error
     expected_stages = ("baseline", "activation", "post_disarm")
     stages: dict[str, dict[str, float]] = {}
+    parameter_names = CALIBRATION_PARAMETERS
     last_timestamp = -math.inf
     for line in lines:
         try:
@@ -315,8 +334,10 @@ def _verified_parameter_stages(run_directory: Path) -> dict[str, dict[str, float
         parameters = fields.get("parameters")
         if not isinstance(parameters, dict):
             raise ValueError("companion calibration parameter evidence is invalid")
+        if stage == "baseline" and set(parameters) == set(_HISTORICAL_PARAMETERS + PRESERVED_PARAMETERS):
+            parameter_names = _HISTORICAL_PARAMETERS
         stages[stage] = _finite_parameters(
-            parameters, CALIBRATION_PARAMETERS + PRESERVED_PARAMETERS, positive=False
+            parameters, parameter_names + PRESERVED_PARAMETERS, positive=False
         )
         last_timestamp = float(timestamp)
     if tuple(stages) != expected_stages:
@@ -395,12 +416,13 @@ def validate_calibration_artifact(
     dataflash_relative = _selected_dataflash_log(directory).relative_to(directory).as_posix()
     _require_inventoried_file(directory, manifest, dataflash_relative)
 
+    parameter_names = tuple(artifact_values)
     saved = read_saved_calibration_parameters(
-        directory, connection_factory=connection_factory
+        directory, connection_factory=connection_factory, parameter_names=parameter_names
     )
     stages = _verified_parameter_stages(directory)
-    activation = {name: stages["activation"][name] for name in CALIBRATION_PARAMETERS}
-    post_disarm = {name: stages["post_disarm"][name] for name in CALIBRATION_PARAMETERS}
+    activation = {name: value for name, value in stages["activation"].items() if name not in PRESERVED_PARAMETERS}
+    post_disarm = {name: value for name, value in stages["post_disarm"].items() if name not in PRESERVED_PARAMETERS}
     if not (
         _parameters_match(artifact_values, saved)
         and _parameters_match(artifact_values, activation)

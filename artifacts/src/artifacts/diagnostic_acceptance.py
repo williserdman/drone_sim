@@ -17,8 +17,9 @@ ROLL_GAIN_PARAMETERS = (
     "ATC_RAT_RLL_P",
     "ATC_RAT_RLL_I",
     "ATC_RAT_RLL_D",
-    "ATC_ACC_R_MAX",
+    "ATC_ACCEL_R_MAX",
 )
+_HISTORICAL_ROLL_PARAMETERS = (*ROLL_GAIN_PARAMETERS[:-1], "ATC_ACC_R_MAX")
 
 _ARTIFACT_HEADER = "# Roll gains saved by ArduPilot AutoTune"
 _RUN_ID_PREFIX = "# run_id "
@@ -112,7 +113,10 @@ def _read_roll_artifact(path: Path) -> dict[str, float]:
     except (AttributeError, TypeError, ValueError) as error:
         raise ValueError("roll gain artifact run ID is not canonical") from error
     values: dict[str, float] = {}
-    for name, line in zip(ROLL_GAIN_PARAMETERS, lines[2:], strict=True):
+    parameter_names = tuple(line.split()[0] if line.split() else "" for line in lines[2:])
+    if parameter_names not in (ROLL_GAIN_PARAMETERS, _HISTORICAL_ROLL_PARAMETERS):
+        raise ValueError("roll gains are missing, extra, or out of order")
+    for name, line in zip(parameter_names, lines[2:], strict=True):
         fields = line.split()
         if len(fields) != 2 or fields[0] != name:
             raise ValueError("roll gains are missing, extra, or out of order")
@@ -133,7 +137,9 @@ def _read_roll_artifact(path: Path) -> dict[str, float]:
     return values
 
 
-def _read_native_roll_save(run_directory: Path) -> dict[str, float]:
+def _read_native_roll_save(
+    run_directory: Path, parameter_names: tuple[str, ...]
+) -> dict[str, float]:
     logs = tuple((run_directory / "ardupilot_sitl/logs").glob("*.BIN"))
     if not logs:
         raise ValueError("ArduPilot DataFlash log is missing")
@@ -178,7 +184,7 @@ def _read_native_roll_save(run_directory: Path) -> dict[str, float]:
                     name = name.decode("ascii").rstrip("\0 ")
                 except UnicodeDecodeError:
                     continue
-            if name not in ROLL_GAIN_PARAMETERS:
+            if name not in parameter_names:
                 continue
             value = row.get("Value")
             if (
@@ -203,9 +209,9 @@ def _read_native_roll_save(run_directory: Path) -> dict[str, float]:
         if name in epoch:
             raise ValueError(f"saved DataFlash epoch contains duplicate parameter {name}")
         epoch[name] = value
-    if set(epoch) != set(ROLL_GAIN_PARAMETERS):
+    if set(epoch) != set(parameter_names):
         raise ValueError("saved DataFlash roll gains are incomplete")
-    return {name: epoch[name] for name in ROLL_GAIN_PARAMETERS}
+    return {name: epoch[name] for name in parameter_names}
 
 
 def validate_roll_gain_artifact(run_directory: Path) -> dict[str, float]:
@@ -215,14 +221,14 @@ def validate_roll_gain_artifact(run_directory: Path) -> dict[str, float]:
         artifact = _read_roll_artifact(
             directory / "ardupilot_sitl/autotune-roll.parm"
         )
-        saved = _read_native_roll_save(directory)
+        saved = _read_native_roll_save(directory, tuple(artifact))
     except (OSError, ValueError) as error:
         raise BundleAcceptanceError(f"roll gain artifact is invalid: {error}") from error
     if any(
         not math.isclose(
             artifact[name], saved[name], rel_tol=_REL_TOL, abs_tol=_ABS_TOL
         )
-        for name in ROLL_GAIN_PARAMETERS
+        for name in artifact
     ):
         raise BundleAcceptanceError("roll gain artifact does not match DataFlash save")
     return artifact

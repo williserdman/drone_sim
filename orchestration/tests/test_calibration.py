@@ -56,15 +56,15 @@ def test_calibration_import_binds_consumer_and_effective_overlay(tmp_path, vehic
             name: profile["effective_baseline_parameters"][name]
             for name in (
                 "FLTMODE_CH", "FLTMODE1", "FLTMODE4", "FLTMODE6",
-                "RNGFND1_MIN", "RNGFND1_MAX", "RNGFND1_TYPE",
+                "RNGFND1_MIN_CM", "RNGFND1_MAX_CM", "RNGFND1_TYPE",
             )
         } == {
             "FLTMODE_CH": 7.0,
             "FLTMODE1": 0.0,
             "FLTMODE4": 4.0,
             "FLTMODE6": 5.0,
-            "RNGFND1_MIN": 0.05,
-            "RNGFND1_MAX": 40.0,
+            "RNGFND1_MIN_CM": 5,
+            "RNGFND1_MAX_CM": 4000.0,
             "RNGFND1_TYPE": 100.0,
         }
         assert len(profile["overlay_parameter_sha256s"]) == 1
@@ -127,12 +127,16 @@ def test_freeze_calibration_import_accepts_before_copy_and_binds_exact_bytes(tmp
     assert document["profile"]["profile_sha256"] != profile["profile_sha256"]
 
 
-def test_freeze_calibration_import_rejects_changed_airframe_before_return(tmp_path):
+@pytest.mark.parametrize("field,value", [
+    ("physical_model_sha256", "f" * 64),
+    ("firmware_revision", "1511f27194f1dcc3728270883047bdf022b3fd53"),
+])
+def test_freeze_calibration_import_rejects_incompatible_source_before_return(tmp_path, field, value):
     project = Path(__file__).parents[2]
     source, _profile = _source(tmp_path, project)
     path = source / "configuration/run.json"
     document = json.loads(path.read_text(encoding="utf-8"))
-    document["calibration_profile"]["physical_model_sha256"] = "f" * 64
+    document["calibration_profile"][field] = value
     without_hash = {
         key: value for key, value in document["calibration_profile"].items()
         if key != "profile_sha256"
@@ -142,7 +146,7 @@ def test_freeze_calibration_import_rejects_changed_airframe_before_return(tmp_pa
     ).hexdigest()
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="physical_model_sha256"):
+    with pytest.raises(ValueError, match=field):
         freeze_calibration_import(
             source,
             project_directory=project,

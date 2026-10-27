@@ -19,7 +19,7 @@ def _artifact(run_directory: Path, extra: str = "") -> None:
         "ATC_RAT_RLL_P 0.041\n"
         "ATC_RAT_RLL_I 0.041\n"
         "ATC_RAT_RLL_D 0.0011\n"
-        "ATC_ACC_R_MAX 72000\n"
+        "ATC_ACCEL_R_MAX 72000\n"
         f"{extra}",
         encoding="utf-8",
     )
@@ -55,14 +55,14 @@ def test_promotes_exact_saved_roll_gains_without_changing_pitch(tmp_path: Path) 
     assert "ATC_RAT_RLL_P 0.041" in contents
     assert "ATC_RAT_RLL_I 0.041" in contents
     assert "ATC_RAT_RLL_D 0.0011" in contents
-    assert "ATC_ACC_R_MAX 72000" in contents
+    assert "ATC_ACCEL_R_MAX 72000" in contents
     assert "ATC_RAT_PIT_P 0.0675" in contents
     assert all(contents.count(name) == 1 for name in (
         "ATC_ANG_RLL_P",
         "ATC_RAT_RLL_P",
         "ATC_RAT_RLL_I",
         "ATC_RAT_RLL_D",
-        "ATC_ACC_R_MAX",
+        "ATC_ACCEL_R_MAX",
     ))
 
 

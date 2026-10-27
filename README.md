@@ -23,6 +23,11 @@ for exact evidence and remaining checks. The dated
 [portable-console verification record](docs/verification/2026-10-10-portable-local-console.md)
 separates software, native workstation, and pending platform results.
 
+The simulator now pins **ArduCopter 4.6.3**. Its parameter names and units are
+checked against that release. Historical 4.7 flight and calibration results
+remain evidence for their recorded firmware; they do not validate 4.6.3.
+Calibration imports require matching firmware and runtime images.
+
 ## Platform support
 
 The console resolves macOS, Ubuntu desktop, or Ubuntu 24.04 under WSL2. Use Docker
@@ -48,7 +53,7 @@ prerequisites. QGC, the browser, and the Python console still run on the host.
 
 The Desktop host migration is complete. Ubuntu package locks have been refreshed
 for fresh machines. Check the
-[current build status](docs/handoff.md#docker-desktop-migration--2026-10-26)
+[current build status](docs/handoff.md#arducopter-463-and-desktop-startup-repair-2026-10-27)
 before you prepare a run.
 
 ## Local flight console
@@ -127,7 +132,7 @@ covers rebuilding changed code, running one template, and running the automatic 
 
 [configured-moving-pad-run.json](config/configured-moving-pad-run.json) adds a
 camera-guided landing on a deck traveling at 0.5 m/s. The stock EKF3 profile
-completed two independently accepted moving landings with 100/100 and full
+completed two independently accepted moving landings on Copter 4.7 with 100/100 and full
 90-second recordings. The latest stationary control also passed. An earlier
 intermittent contact-stream fault did not recur, but remains unresolved. Use the
 [moving-pad workflow](docs/runbook.md#moving-pad-landing) for the stationary

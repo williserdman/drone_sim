@@ -165,7 +165,7 @@ def main() -> int:
         signal.signal(signal.SIGINT, request_stop)
         writer.emit(
             "starting",
-            ardupilot_revision="1511f27194f1dcc3728270883047bdf022b3fd53",
+            ardupilot_revision="92b0cd788ec29406f26c6f9c31d5ceedbd1cc538",
             gazebo_endpoint=f"udp://{gazebo_service}:{config.gazebo_port}",
             gazebo_resolved_address=config.gazebo_host,
             mavlink_endpoint=f"tcp://ardupilot-sitl:{config.mavlink_port}",

@@ -80,9 +80,8 @@ proof. The companion's operational clearance path remains the public ROS LiDAR
 sample with its own timestamp and freshness checks. This common plugin wiring
 is part of the calibration airframe fingerprint; the scenario-only ArduPilot
 backend settings are part of the imported effective baseline and live readback.
-The pinned upstream JSON backend mapped these range keys with the wrong bit
-positions. The ArduPilot image applies upstream fix `8fa852b` as an audited
-downstream patch while retaining source and firmware revision `1511f271`; its
+The pinned Copter 4.6.3 JSON backend maps these range keys to bits 7 through 12,
+matching its production update loop. No downstream patch is required. The image
 build executes the extracted production update block against all six keys
 before compiling Copter.
 
@@ -467,10 +466,10 @@ The 15-gain artifact, native gain guards, D and aggression settings, simulated
 deadlines, 900-second recording window, and calibration scoring remain unchanged.
 
 This order matters in the
-[pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune.cpp):
+[pinned AutoTune implementation](https://github.com/ArduPilot/ardupilot/blob/92b0cd788ec29406f26c6f9c31d5ceedbd1cc538/libraries/AC_AutoTune/AC_AutoTune.cpp):
 leaving AUTOTUNE restores original gains; activating tuned gains after that exit
-allows native LAND followed by gain saving at disarm. This sequence has source
-evidence and an independently accepted calibration flight; see
+allows native LAND followed by gain saving at disarm. This sequence has Copter 4.6.3 source
+evidence. The independently accepted calibration flight used Copter 4.7; see
 [current verification](handoff.md). The
 [roll mission](../companion/src/drone_sim_companion/autotune.py) now applies the
 same ordering to its five roll gains. It requires the roll-specific testing and
@@ -498,7 +497,7 @@ physical score, and artifact acceptance remain separate results.
 The artifact contains 15 tuned values: rate P/I/D, angle P, and acceleration
 limit for roll and pitch; rate P/I, error filter, angle P, and acceleration limit
 for yaw. Validation follows the pinned
-[save routine](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_AutoTune/AC_AutoTune_Multi.cpp#L546):
+[save routine](https://github.com/ArduPilot/ardupilot/blob/92b0cd788ec29406f26c6f9c31d5ceedbd1cc538/libraries/AC_AutoTune/AC_AutoTune_Multi.cpp#L384):
 roll/pitch I equals P; yaw I equals 0.1 times P. Yaw D is preserved from the base
 profile and may be zero. Preserved feedforward and other filter settings also
 remain bound to that recorded profile.
@@ -627,7 +626,7 @@ moving-target support; bit 2 preserves final descent speed. Raw estimation
 supplies no target-velocity estimate. These are initial settings to
 verify in simulation, not a validated tuning claim. See
 [ArduPilot's landing documentation](https://ardupilot.org/copter/docs/precision-landing-and-loiter.html)
-and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/1511f27194f1dcc3728270883047bdf022b3fd53/libraries/AC_PrecLand/AC_PrecLand.cpp#L460).
+and the [pinned estimator implementation](https://github.com/ArduPilot/ardupilot/blob/92b0cd788ec29406f26c6f9c31d5ceedbd1cc538/libraries/AC_PrecLand/AC_PrecLand.cpp).
 
 The stationary option-4 diagnostic isolated target-velocity feedforward and
 landed, but does not establish moving-pad support. The next moving flight used
@@ -643,13 +642,14 @@ raw estimation, camera geometry, pad speed, and all loss/handoff rules. The
 stronger horizontal response also affects transit and initial target capture.
 The gain-4 trial tracked through the 90-second window but did not land.
 The current experiment uses stock `AHRS_EKF_TYPE=3` to avoid the diagnosed SIM
-delta-velocity frame error, restores `PLND_EST_TYPE=1` and `PSC_NE_POS_P=1`,
+delta-velocity frame error, restores `PLND_EST_TYPE=1` and `PSC_POSXY_P=1`,
 and retains option 5 and 40 ms lag. The aircraft estimator is also required by
 the preflight readback gate. Native LAND ownership, camera, pad motion, and
-loss/handoff rules stay fixed. Both stationary and moving flights landed; the
+loss/handoff rules stay fixed. Historical Copter 4.7 stationary and moving flights landed; the
 moving run passed physical scoring and independent artifact acceptance. A later
 contact-stream fault invalidated the stationary recording, so repeatability
 remains unproven.
+These recorded flights do not establish Copter 4.6.3 acceptance.
 See the [recorded outcome](handoff.md#moving-pad-verification).
 
 The moving operation must accept coherent target motion instead of applying
