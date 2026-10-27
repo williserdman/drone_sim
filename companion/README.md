@@ -10,18 +10,22 @@ requests, mission events, and durable mission lifecycle evidence.
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
-## Upstream hook review
+## Upstream Comp 2026 baseline
 
-This branch adds optional dependency hooks to upstream Comp 2026 at `95dec510`:
-an injected vehicle, camera source/calibration, scoped mission clock, and delayed
-hardware imports. Aircraft defaults remain available. Mission timers accept
-simulation time zero; persisted waypoint timestamps still use wall time.
+This branch connects upstream `95dec510` to `comp2026_auto`. The changes are
+limited to injected vehicle/camera/clock inputs, delayed hardware imports, and
+the testbench adapter needed to call upstream FM1, FM2 and `mock_mission.fm3`.
+Mission decisions and vision calculations remain upstream's.
 
-Run `uv run --locked pytest companion/comp2026/tests/test_testbench_hooks.py -q`
-to check the hooks. The testbench adapters and diagnostic camera relocation are
-reviewed separately on `integration/comp2026-testbench-adapters`. This hooks-only
-branch does not yet run the full testbench. The remaining guide describes the
-previous testbench implementation and is updated with the adapter changes.
+Build with `./scripts/local-build.sh --build`, start `uv run --locked drone-sim console`,
+and prepare a competition preset. Start and abort the mission through QGC.
+Upstream FM3 has no payload attachment/release implementation. Ordinary LAND
+with the existing `PLND_STRICT=2` profile still needs flight verification.
+
+Only the upstream competition path is in scope. The pristine import also removed
+APIs used by configured precision diagnostics; repairing those and migrating
+their tests is deferred. The remaining sections describe the prior testbench
+implementation. This focused patch does not claim a full-repository test pass.
 
 ## Where to change Comp 2026 code
 
