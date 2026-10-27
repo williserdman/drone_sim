@@ -32,7 +32,19 @@ then completed cleanup without fabricating a manifest. Orphan recovery now
 skips its receipt wait only after a successful empty exact-project inventory;
 40 operator-session tests pass, including Docker inspection timeout recovery.
 The real retained-run recovery completed. All eight ARM64 images built at
-`8001353` with the official 4.6.3 source and a matching source/image check.
+`9b0e59a` with the official 4.6.3 source and a matching source/image check.
+
+Fresh run `1035d8cf-14bb-4ac4-b74b-6e8a19b60aed` reached `PREPARED` with
+healthy preflight and QGC admission readiness. Native DataFlash reports
+`ArduCopter V4.6.3 (92b0cd78)` and matches all 47 loaded flight-parameter
+values. QGC telemetry was fresh in both directions, the onboard camera supplied
+640×480 frames, and Gazebo selection and scroll zoom worked after clicking the
+scene to focus it. The aircraft stayed landed and disarmed; no mission was
+admitted. Supported Stop completed in about five seconds with `ABORTED`,
+`prepared_cancelled`, closed-media verification, and no remaining containers,
+network, or recording volume. Missing mission videos and a zero-clock rosbag
+are expected for this cancelled preparation and do not establish flight acceptance.
+QGC's selected ESP32 action file and its contents remained unchanged.
 
 The supported Linux suite passed 3,029 tests with 44 capability skips. Configured
 mypy passed. Final image-build, live 4.6.3 preparation, view, and cleanup

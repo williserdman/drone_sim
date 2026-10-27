@@ -257,6 +257,8 @@ not close the application.
    again**, which allocates a new run identity, token, and action file.
 
 The streamed Gazebo GUI supports navigation, selection, and read-only inspection.
+Click inside the scene once to give the desktop focus before scrolling to zoom
+or dragging to move the view.
 World mutation controls are excluded. QGC retains its native operator controls;
 manual commands are recorded in `logs/docker/qgc-interventions.jsonl` and flight
 supervisors observe changes in authority. A stale camera image is visibly marked

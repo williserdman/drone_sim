@@ -38,7 +38,7 @@ Windows controller.
 
 | Target | Source-level status | Native acceptance |
 | --- | --- | --- |
-| macOS supported by Docker Desktop, Apple Silicon | Implemented; native ARM64 images | Desktop build, live QGC telemetry, Gazebo, and camera verified; see the handoff for session results |
+| macOS supported by Docker Desktop, Apple Silicon | Implemented; native ARM64 images | Copter 4.6.3 preparation, live QGC telemetry, Gazebo, camera, and cleanup verified; see the handoff |
 | macOS supported by Docker Desktop, Intel | Implemented | Pending on Intel hardware |
 | Ubuntu 24.04 desktop, ARM64 or x86-64 | Implemented | Desktop QGC and runtime acceptance pending |
 | Windows 11 x86-64, Ubuntu 24.04 in WSL2 | Implemented, including the bounded Windows helper | Windows PowerShell 5.1, NTFS, UDP, NAT, and mirrored-network acceptance pending |
