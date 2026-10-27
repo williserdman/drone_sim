@@ -12,7 +12,8 @@ one_over_root_2 = 1 / np.sqrt(2)
 
 
 class CameraManager:
-    def __init__(self) -> None:
+    def __init__(self, *, frame_source=None, calibration_path=None) -> None:
+        self.frame_source = frame_source
         self.marker_size = 100  # millimeters (adjust as needed)
 
         # --- Default Camera Calibration for Raspberry Pi Camera v2 (480p) ---
@@ -28,7 +29,11 @@ class CameraManager:
         self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_250)
 
         # Load calibration data from JSON
-        json_file_path = "src/drone/sensors/camera/calibration.json"
+        json_file_path = (
+            calibration_path
+            if calibration_path is not None
+            else "src/drone/sensors/camera/calibration.json"
+        )
         with open(json_file_path, "r") as file:
             json_data = json.load(file)
 
@@ -73,7 +78,8 @@ class CameraManager:
             if hasattr(cv2, "CAP_PROP_ZOOM"):
                 self.webcam.set(cv2.CAP_PROP_ZOOM, 0)
         """
-        self.webcam = cv2.VideoCapture(0)
+        if frame_source is None:
+            self.webcam = cv2.VideoCapture(0)
         ### ENABLE FOR LOW FOV CAMERA
         # self.webcam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
         # self.webcam.set(cv2.CAP_PROP_EXPOSURE, 40)
@@ -234,6 +240,9 @@ class CameraManager:
 
     def capture_frame(self, quality=4) -> np.ndarray:
         """Capture a BGR frame from the camera and downsample by sample_ratio."""
+
+        if self.frame_source is not None:
+            return self.frame_source.capture_frame(quality=quality)
 
         scale = 1
         if quality == 3:

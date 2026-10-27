@@ -342,3 +342,40 @@ def test_simulation_vehicle_pins_real_pymavlink_discovery_before_dronekit_initia
     assert handler.target_system == 1
     assert encoded_targets == [(1, 1)]
     assert vehicle.armed is False
+
+
+def test_early_fc_observer_precedes_cache_driven_upstream_transition():
+    from drone_sim_companion.flight_authority import ExpectedTransition, FlightAuthorityGate
+    from drone_sim_companion.mission import Telemetry
+
+    vehicle = _simulation_vehicle_type()(Handler())
+    gate = FlightAuthorityGate()
+    gate.observe(Telemetry(1, heartbeat=True, mode='GUIDED', armed=True))
+    gate.admit('a' * 64)
+    with gate.output_transaction(ExpectedTransition(mode='STABILIZE')):
+        pass
+    observed = []
+    def early(_vehicle, name, message):
+        if name == 'HEARTBEAT':
+            observed.append(message.custom_mode)
+            gate.observe(Telemetry(len(observed) + 1, heartbeat=True,
+                                   mode={0: 'STABILIZE', 4: 'GUIDED'}[message.custom_mode], armed=True))
+    vehicle.install_fc_message_observer(early)
+    def upstream_sees_mode(_vehicle, _name, value):
+        if value.name == 'STABILIZE':
+            # The real upstream force_arm_takeoff does this immediately when
+            # its cached armed flag is already true.
+            with gate.output_transaction(ExpectedTransition(mode='GUIDED')):
+                pass
+    vehicle.add_attribute_listener('mode', upstream_sees_mode)
+    for custom_mode in (0, 4):
+        message = sourced_message(mavlink.MAVLink_heartbeat_message(2, 3, 128, custom_mode, 4, 3),
+                                  system_id=1, component_id=1)
+        vehicle.notify_message_listeners('HEARTBEAT', message)
+    assert observed == [0, 4]
+    assert not gate.revoked
+    foreign = sourced_message(mavlink.MAVLink_heartbeat_message(6, 8, 0, 0, 4, 3),
+                              system_id=255, component_id=190)
+    vehicle.notify_message_listeners('HEARTBEAT', foreign)
+    assert observed == [0, 4]
+    vehicle.remove_fc_message_observer(early)

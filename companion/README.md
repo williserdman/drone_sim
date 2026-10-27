@@ -10,6 +10,23 @@ requests, mission events, and durable mission lifecycle evidence.
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
+## Upstream Comp 2026 baseline
+
+This branch connects upstream `95dec510` to `comp2026_auto`. The changes are
+limited to injected vehicle/camera/clock inputs, delayed hardware imports, and
+the testbench adapter needed to call upstream FM1, FM2 and `mock_mission.fm3`.
+Mission decisions and vision calculations remain upstream's.
+
+Build with `./scripts/local-build.sh --build`, start `uv run --locked drone-sim console`,
+and prepare a competition preset. Start and abort the mission through QGC.
+Upstream FM3 has no payload attachment/release implementation. Ordinary LAND
+with the existing `PLND_STRICT=2` profile still needs flight verification.
+
+Only the upstream competition path is in scope. The pristine import also removed
+APIs used by configured precision diagnostics; repairing those and migrating
+their tests is deferred. The remaining sections describe the prior testbench
+implementation. This focused patch does not claim a full-repository test pass.
+
 ## Where to change Comp 2026 code
 
 `comp2026/` is tracked in the parent `drone_sim` repository. Develop and commit

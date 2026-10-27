@@ -1,4 +1,5 @@
-import time
+import time as wall_time
+from .. import timebase as time
 from ..common_types import *
 import json
 from dataclasses import asdict
@@ -34,7 +35,7 @@ class MissonTracker:
             )
             waypoints_data[waypoint_ID] = {
                 "coords": serialized_coords,
-                "loaded_at": time.time(),
+                "loaded_at": wall_time.time(),
             }
 
             # writing to file
@@ -79,7 +80,7 @@ class MissonTracker:
                     if max_age_seconds is not None:
                         if (
                             loaded_at is None
-                            or (time.time() - loaded_at) > max_age_seconds
+                            or (wall_time.time() - loaded_at) > max_age_seconds
                         ):
                             return None
                     coords = waypoint_entry["coords"]
@@ -124,12 +125,12 @@ class MissonTracker:
         return
 
     def end_aux_timer(self) -> float:
-        if self.timer_start:
+        if self.timer_start is not None:
             return time.time() - self.timer_start
         return -1.0
 
     def time_left(self) -> float:
-        if self.mission_begin:
+        if self.mission_begin is not None:
             elapsed = time.time() - self.mission_begin
             return self.mission_time_seconds - elapsed
         return -1.0
