@@ -467,6 +467,70 @@ class _Comp2026ShutdownAdmission:
             return True
 
 
+def _deliver_comp2026_initial_command(
+    *,
+    vehicle: object,
+    vehicle_mode_type: Callable[[str], object],
+    lifecycle: CompanionLifecycle,
+    gate: Comp2026StartGate,
+    attempt_failure: AttemptFailureCoordinator,
+    clock: SimulationClock,
+    mark_delivered: Callable[[], None],
+    shutdown_admission: _Comp2026ShutdownAdmission | None = None,
+) -> bool:
+    delivered = False
+    admission = shutdown_admission or _Comp2026ShutdownAdmission()
+
+    def deliver_at(timestamp_ns: int) -> None:
+        nonlocal delivered
+        if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
+            raise _InitialCommandWindowMissed
+        vehicle.mode = vehicle_mode_type("GUIDED")  # type: ignore[attr-defined]
+        lifecycle.observe_command_delivery(CommandKind.SET_GUIDED, timestamp_ns)
+        gate.mark_command_delivered()
+        mark_delivered()
+        delivered = True
+
+    try:
+        claimed = attempt_failure.finish_success(
+            lambda: admission.run_if_active(
+                lambda: clock.run_at_current_timestamp(deliver_at)
+            )
+        )
+    except _InitialCommandWindowMissed:
+        attempt_failure.fail("initial GUIDED command missed the 50 ms delivery window")
+        return False
+    except Exception as error:
+        attempt_failure.fail(f"initial GUIDED command failed: {error}")
+        return False
+    return claimed and delivered
+
+
+class _InitialCommandWindowMissed(RuntimeError):
+    pass
+
+
+def _comp2026_initial_transport(clock, controller, native_transaction):
+    """Keep the first guarded GUIDED enqueue inside the public clock window."""
+    def transaction(output, before_final):
+        if controller._guided_output_delivery_reported:
+            return native_transaction(output, before_final)
+        result = []
+
+        def enqueue(timestamp_ns):
+            if timestamp_ns > INITIAL_COMMAND_WINDOW_NS:
+                raise _InitialCommandWindowMissed(
+                    "initial GUIDED command missed the 50 ms delivery window"
+                )
+            result.append(native_transaction(output, before_final))
+
+        if not clock.run_at_current_timestamp(enqueue):
+            raise RuntimeError("initial GUIDED command requires the public clock")
+        return result[0]
+
+    return transaction
+
+
 def _comp2026_shutdown_dependency(admission, native_transaction):
     """Hold irreversible runtime shutdown admission through every guarded output."""
     def transaction(operation):
@@ -480,6 +544,31 @@ def _comp2026_shutdown_dependency(admission, native_transaction):
         return result[0]
 
     return transaction
+
+
+def _comp2026_landing_profile_observer(lifecycle: CompanionLifecycle):
+    """Write imported landing-profile transitions to the parent event stream."""
+
+    def observe(transition: object) -> None:
+        generation = getattr(transition, "generation")
+        detail = getattr(transition, "detail")
+        fields = {
+            "parameter": getattr(transition, "parameter"),
+            "action": getattr(transition, "action"),
+            "stage": getattr(transition, "stage"),
+            "value": getattr(transition, "value"),
+        }
+        if generation is not None:
+            fields["generation"] = generation
+        if detail is not None:
+            fields["detail"] = detail
+        lifecycle.emit(
+            "landing_profile_transition",
+            round(float(getattr(transition, "timestamp")) * 1_000_000_000),
+            fields,
+        )
+
+    return observe
 
 
 def comp2026_start_gate_poll_required(
@@ -2174,11 +2263,14 @@ def _create_simulator_camera(
     clock: SimulationClock,
 ) -> Any:
     calibration_path = Path(__file__).with_name("gazebo_camera_calibration.json")
+    mounting_path = Path(__file__).with_name("gazebo_camera_mounting.json")
     manager = camera_manager_type(
         frame_source=frame_source,
         calibration_path=calibration_path,
+        clock=lambda: clock.timestamp_ns,
+        max_exposure_age_ns=250_000_000,
     )
-    return camera_type(100, manager=manager)
+    return camera_type(100, manager=manager, mounting_path=mounting_path)
 
 
 def _comp2026_recovery_failure_detail(outcome: object) -> str | None:
@@ -2209,7 +2301,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
     _enable_dronekit_python312_compatibility()
 
     import rclpy
-    from .comp2026_runner import run_auto_attempt
+    from drone.auto_attempt import run_auto_attempt
     from drone import timebase
     from drone.control.mission_info import MissonTracker
     from drone.sensors.camera._camera_manager import CameraManager
@@ -2465,7 +2557,7 @@ def _run_comp2026(config: RuntimeConfig) -> int:
 
     def mission_event(phase: str, state: str) -> None:
         assert competition_control is not None
-        competition_control.check_active()
+        competition_control.phase_event(phase, state)
         emitter(phase, state)
 
     def run_original_attempt() -> None:
@@ -2475,12 +2567,11 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 return
             assert competition_control is not None
             competition_control.begin_attempt()
-            competition_control.deliver_initial_guided()
+            competition_control.controller.set_guided_mode()
             gate.mark_command_delivered()
             gate.wait_until_ready()
-            competition_control.wait_for_guided()
             assert controller is not None
-            current_home = competition_control.mission_home
+            current_home = controller.mission_home
             home = GPSCoord(current_home.lat, current_home.lon, 0.0)
             waypoints = load_course_waypoints(config.course_path, home)
             camera = _create_simulator_camera(
@@ -2503,12 +2594,10 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     payloads=payloads,
                     waypoints=waypoints,
                     emit=mission_event,
-                    check_active=competition_control.check_active,
-                    confirm_landed=competition_control.wait_for_landed,
+                    precision_policy=policy.precision_policy,
                 )
             if not emitter.home_complete:
                 raise RuntimeError("original attempt returned without HOME/COMPLETE")
-            competition_control.finish_attempt()
             attempt_failure.finish_success(
                 lambda: lifecycle.observe_terminal(
                     MissionState(
@@ -2517,6 +2606,8 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                     )
                 )
             )
+        except _InitialCommandWindowMissed as error:
+            attempt_failure.fail(str(error))
         except Exception as error:
             if shutdown_admission.shutdown_requested:
                 return
@@ -2573,15 +2664,23 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                 endpoint=config.mavlink_endpoint,
                 heartbeat_timeout=config.startup_timeout_seconds,
                 guided_output_delivery_callback=guided_delivered,
-                clock=clock,
-                recovery_clock=recovery_clock,
+                landing_profile_observer=_comp2026_landing_profile_observer(
+                    lifecycle
+                ),
             )
             controller = competition_control.controller
             competition_control.prepare()
-            competition_control.install_output_guard(
-                _comp2026_shutdown_dependency(shutdown_admission, lambda operation: operation())
+            controller.install_output_transactions(
+                dependency_transaction=_comp2026_shutdown_dependency(
+                    shutdown_admission,
+                    competition_control.decoders.output_transaction,
+                ),
+                supervisor_transaction=competition_control.supervisor.output_transaction,
+                transport_transaction=_comp2026_initial_transport(
+                    clock, controller, controller._transport_output_transaction
+                ),
             )
-            payload_client.install_output_transaction(competition_control.actuate)
+            payload_client.install_output_transaction(controller._actuate_guarded)
         except Exception as error:
             attempt_failure.fail(f"DroneKit connection failed: {error}")
         else:
@@ -2626,8 +2725,6 @@ def _run_comp2026(config: RuntimeConfig) -> int:
             and not shutdown_admission.finalizing
         ):
             mission_active = False
-            if competition_control is not None and competition_control.authority.revoked:
-                attempt_failure.fail(competition_control.authority.reason or "flight authority lost")
             if controller is not None and not attempt_failure.failed:
                 calibration.observe_cached(
                     getattr(controller.vehicle, "parameters", {})
@@ -2673,28 +2770,12 @@ def _run_comp2026(config: RuntimeConfig) -> int:
                         mode=mode,
                     )
                 start = operator_control.poll_start(run_state=mission_running)
-                if (
-                    start.command_allowed
-                    and not attempt_failure.failed
-                    and not operator_control.abort_observed
-                    and not competition_control.authority.admitted
-                ):
-                    try:
-                        competition_control.admit(
-                            getattr(start, "admission_sha256", None)
-                            if config.operator_control is not None
-                            else hashlib.sha256(config.run_id.encode()).hexdigest()
-                        )
-                    except Exception as error:
-                        attempt_failure.fail(f"competition flight admission failed: {error}")
                 if start.admitted_now:
                     competition_start_deadline = (
                         time.monotonic() + config.startup_timeout_seconds
                     )
                 mission_active = (
-                    start.command_allowed
-                    and not operator_control.abort_observed
-                    and not attempt_failure.failed
+                    start.command_allowed and not operator_control.abort_observed
                 )
                 if mission_active:
                     gate.accept_running()

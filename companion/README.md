@@ -10,61 +10,49 @@ requests, mission events, and durable mission lifecycle evidence.
 It does **not** own flight stabilization, actuator control, physics, sensor
 truth, direct Gazebo mutation, scoring, or aggregate run finalization.
 
+## Upstream hook review
+
+This branch adds optional dependency hooks to upstream Comp 2026 at `95dec510`:
+an injected vehicle, camera source/calibration, scoped mission clock, and delayed
+hardware imports. Aircraft defaults remain available. Mission timers accept
+simulation time zero; persisted waypoint timestamps still use wall time.
+
+Run `uv run --locked pytest companion/comp2026/tests/test_testbench_hooks.py -q`
+to check the hooks. The testbench adapters and diagnostic camera relocation are
+reviewed separately on `integration/comp2026-testbench-adapters`. This hooks-only
+branch does not yet run the full testbench. The remaining guide describes the
+previous testbench implementation and is updated with the adapter changes.
+
 ## Where to change Comp 2026 code
 
-`comp2026/` contains the upstream source pinned at
-`95dec5105573d1a18b2ad824975d5edf99893006`. The pristine import is on
-`integration/comp2026-upstream-95dec510`; `integration/comp2026-testbench-hooks`
-adds the optional integration hooks. Both branches retain the testbench base
-`0f7d525`. [comp2026-source.json](comp2026-source.json) records the origin,
-commits, upstream tree, file hashes, and allowed hook locations.
+`comp2026/` is tracked in the parent `drone_sim` repository. Develop and commit
+competition flight behavior here so the simulator builds the same source you
+edit. Its imported Git history remains available. Maintaining a separate copy
+of a mission for simulation would let flight behavior diverge.
 
 | Change | Source |
 | --- | --- |
-| Upstream FM1 and FM2 behavior | [`fm1.py`](comp2026/src/drone/missions/fm1.py), [`fm2.py`](comp2026/src/drone/missions/fm2.py) |
-| Upstream FM3 used by the simulator | [`mock_mission.py`](comp2026/src/drone/mock_mission.py) |
-| Testbench attempt sequence | [`comp2026_runner.py`](src/drone_sim_companion/comp2026_runner.py) |
-| Upstream aircraft commands | [`drone_control.py`](comp2026/src/drone/control/drone_control.py) |
-| Testbench admission, output authority, and recovery | [`comp2026_control.py`](src/drone_sim_companion/comp2026_control.py), [`runtime_node.py`](src/drone_sim_companion/runtime_node.py) |
-| Frozen simulator inputs and firmware checks | [`comp2026_policy.py`](src/drone_sim_companion/comp2026_policy.py) |
-| ROS image, range, payload, and clock adapters | [`comp2026_host.py`](src/drone_sim_companion/comp2026_host.py) |
-| Configured diagnostic camera | [`precision_camera/`](src/drone_sim_companion/precision_camera/) |
-| Hook tests and simulator regressions | [`test_testbench_hooks.py`](comp2026/tests/test_testbench_hooks.py), [`tests/`](tests/) |
-| Course geometry and scenario inputs | [`course.yaml`](../config/course.yaml), [`scenario.yaml`](../config/scenario.yaml) |
+| FM1 and FM2 mission behavior | [`comp2026/src/drone/missions/fm1.py`](comp2026/src/drone/missions/fm1.py), [`fm2.py`](comp2026/src/drone/missions/fm2.py) |
+| Active FM3 precision and payload mission | [`comp2026/src/drone/mock_mission.py`](comp2026/src/drone/mock_mission.py) |
+| Complete automatic attempt sequence | [`comp2026/src/drone/auto_attempt.py`](comp2026/src/drone/auto_attempt.py) |
+| Shared aircraft commands, authority, and recovery | [`comp2026/src/drone/control/`](comp2026/src/drone/control/) |
+| Camera, range, and payload interfaces | [`comp2026/src/drone/sensors/`](comp2026/src/drone/sensors/) |
+| Mission and control tests | [`comp2026/tests/`](comp2026/tests/) |
+| ROS inputs, simulation clock, and simulator control composition | [`src/drone_sim_companion/`](src/drone_sim_companion/) and [`tests/`](tests/) |
+| Course geometry and scenario inputs | [`config/course.yaml`](../config/course.yaml), [`config/scenario.yaml`](../config/scenario.yaml) |
 
-`comp2026_auto` calls the actual `drone.missions.fm1.fm1`,
-`drone.missions.fm2.fm2`, and `drone.mock_mission.fm3` functions. The testbench
-runner sequences FM1, FM2, FM3 for marker IDs 3 and 4, then return Home.
-FM2 requests landing and disarm. The runner uses the upstream executable's takeoff setup
-before the first FM3 call. A phase `COMPLETE` event means its function returned;
-the scorer independently determines physical success. Home completion also
-requires fresh landed and disarmed telemetry after the last flight output.
+Despite its name, `mock_mission.py` supplies the active FM3 implementation.
+`drone/missions/fm3.py` is an inactive historical route and raises on invocation.
+The production selector is
+[`_original_mission_functions()`](comp2026/src/drone/auto_attempt.py).
 
-`DroneControl` accepts `vehicle` and `command_listener` keyword arguments.
-The testbench supplies its connected `SimulationVehicle` and sets
-`command_listener=False` to keep QGC admission with one owner.
-`CameraManager` accepts `frame_source` and `calibration_path`; an injected source
-avoids opening a physical camera. `Camera` accepts the injected `manager`.
-LiDAR and GPIO imports occur only when constructing the corresponding device.
-Default hardware constructors remain available. `drone.timebase` uses standard
-time by default and public simulation time inside `timebase.configured(clock)`.
-Persisted waypoint load times and
-expiry retain wall time. The source audit checks unchanged file hashes and the
-protected syntax outside the declared hook functions; hook tests cover the
-injections themselves.
-
-Upstream FM3 prints `simulated drop!!` and has no payload attachment or release
-call. The testbench preserves that behavior and does not infer delivery from a
-return value. Upstream ordinary LAND also retains the existing controller logic.
-The pinned `PLND_STRICT=2` profile may prevent a landing without a precision
-target; the integration does not toggle precision landing around ordinary LAND.
-These are flight-acceptance limitations, not completed mission outcomes.
-
-Configured diagnostics use a separate operation runner and the testbench-owned
-precision camera. A configured descent does not exercise upstream FM1, FM2, or
-FM3. Follow the [QGC development loop](../docs/runbook.md#develop-comp-2026-with-qgc)
-for audit, test, build, and run commands. Full-flight acceptance of the upstream
-integration remains pending; simulator checks do not approve aircraft deployment.
+The `comp2026_auto` simulator host invokes these mission functions through
+`run_auto_attempt()` and supplies simulation adapters. Configured diagnostic
+missions use a separate operation runner, so a configured descent alone does
+not exercise changed FM1, FM2, or FM3 behavior. Read the
+[Comp2026 guide](comp2026/README.md) for aircraft deployment status and follow
+the [QGC development loop](../docs/runbook.md#develop-comp-2026-with-qgc) for local
+iteration. Simulator success does not establish a supported aircraft deployment.
 
 ## Local operator supervision
 
@@ -84,25 +72,27 @@ epoch. Automatic command ownership stays with the configured, Comp2026,
 AutoTune, hover, or controlled-descent host selected by the frozen run.
 
 `Abort Flight` is separate from runtime finalization. A matching durable abort
-request cancels further mission intent once, then invokes the selected host's
-recovery path. Configured missions use `recover_land`; tuning and hover clear
-overrides and select LAND; controlled descent requires fresh armed GUIDED/LAND
-state before sending LAND.
-
-For Comp2026, the testbench closes upstream worker output and stops its mission
-clock. Upstream exception cleanup cannot regain output authority. After the
-worker exits, the testbench can request local LAND using a separate view of the
-accepted public clock. Recovery is bounded by 60 simulated seconds and the
-finalization wall deadline. External takeover, invalid time, or finalization
-interrupts recovery. Recovery success requires fresh landed and disarmed
-telemetry newer than its last flight output. It does not change a failed mission
-result or establish payload delivery.
-
-The companion keeps observation available and records append-only `accepted`,
-`recovering`, `landed_disarmed`, `rejected`, `failed`, or `interrupted` progress.
-A terminal recovery result does not finalize the runtime. Stop Simulation remains
-the distinct finalization action. A rejected command, missing telemetry, timeout,
-QGC authority change, or Stop remains a visible non-success result.
+request cancels further mission intent once, then invokes that host's guarded
+recovery path: configured missions use `recover_land`, Comp2026 uses its mission
+supervisor, tuning and hover clear overrides and select LAND, and controlled
+descent sends LAND only from fresh armed GUIDED/LAND state. Comp2026 claims the
+operator cancellation before it stops the attempt, so cancellation exceptions
+cannot become runtime failures; a genuine failure claimed first retains the
+unattended failure and recovery path. Its stopped mission clock and inputs stay
+closed while a separate view of the authoritative public clock drives recovery;
+an invalid clock, global finalization, or the recovery wall deadline interrupts
+that view. The companion keeps the runtime available while recovery is observed
+and records append-only
+`accepted`, `recovering`, `landed_disarmed`, `rejected`, `failed`, or
+`interrupted` progress. A terminal recovery result does not finalize the
+companion; Stop Simulation remains the distinct finalization action. Landing
+success requires fresh landed and disarmed telemetry, even when the Comp2026
+supervisor reports that its home or local landing sequence completed. A
+supervisor result that yields to the pilot or flight-controller failsafe, lacks
+landing confirmation, or is unknown records failed recovery immediately. A
+rejected command, missing telemetry, timeout, QGC authority change, or Stop
+Simulation remains a visible non-success result rather than fabricated landing
+evidence.
 
 Descriptor-backed runs route project Start 31020 and Abort 31021 through
 [`QgcMissionControl`](src/drone_sim_companion/qgc_control.py). The transport
@@ -164,16 +154,23 @@ RC override, auxiliary command, and parameter writes, including commands
 from dynamically constructed adapters. Heartbeats, command replies, and passive
 telemetry/parameter requests remain available after revocation. Detection occurs
 when the single existing reader processes a new exact-FC heartbeat; the software
-contract does not claim instantaneous takeover between samples. Comp2026 uses
-the same flight-authority gate at the final DroneKit writer and restricts
-mutating output to its mission or recovery owner thread. Its exact-FC authority
-observer runs before DroneKit updates cached vehicle attributes. Every flight
-output, including recovery, requires a heartbeat received at most two wall
-seconds ago. Missing or stale heartbeat evidence revokes authority.
-Finalization closes the writer before teardown, including upstream exception
-cleanup. Passive telemetry
-requests, heartbeats, and command replies remain available. Payload service
-discovery and response waiting occur outside the guarded enqueue transaction.
+contract does not claim instantaneous takeover between samples. Comp2026 keeps
+its stronger RC/failsafe authority classification and adds an irreversible
+finalization check around its actual dependency-output transaction, including
+recovery, payload, and parameter output. Payload service discovery and response
+waiting remain outside this transaction; only the mutating `call_async` enqueue
+is inside the controller's effective authority, supervisor, and shutdown check.
+Raw and diagnostic finalization closes the same writer before teardown, so it
+does not emit a final RC-clear packet.
+
+Comp2026 ordinary LAND is a verified parameter transaction. The controller
+freshly reads the full approved precision profile, writes and verifies
+`PLND_ENABLED=0`, confirms touchdown, and writes and verifies
+`PLND_ENABLED=1`. Every read and set emits a `landing_profile_transition` with
+`parameter`, `action`, `stage`, `value`, tracker `generation`, and public
+mission-relative time. Failed transitions include `detail`; `generation` is
+absent only when enqueue never occurred. These events prove enqueue and FC
+readback, not physical landing success.
 
 ## Configured diagnostic missions
 
@@ -319,15 +316,12 @@ invalidated that bundle. See the [flight evidence and limits](../docs/handoff.md
   controlled-descent policy and its command side-effect boundary.
 - [mavlink_adapter.py](src/drone_sim_companion/mavlink_adapter.py) is the only
   PyMAVLink translation boundary.
-- [precision_camera/](src/drone_sim_companion/precision_camera/) owns configured
-  camera observations, calibration, mounting, and recording. Its algorithms and
-  regression suites were moved from testbench revision `0f7d525`.
 - [moving_vision.py](src/drone_sim_companion/moving_vision.py) owns bounded image
   processing; [moving_precision.py](src/drone_sim_companion/moving_precision.py)
   owns the moving-target policy and returns effects to the flight owner.
 - [comp2026_host.py](src/drone_sim_companion/comp2026_host.py) adapts simulation
   clock, images, range, payload calls, waypoints, events, and failure recovery
-  for the [upstream mission runner](src/drone_sim_companion/comp2026_runner.py).
+  for the bundled [Comp2026 mission](comp2026/README.md).
 - [lifecycle.py](src/drone_sim_companion/lifecycle.py) owns companion readiness,
   terminal mission evidence, and quiescence publication.
 - The shared [runtime status contract](../artifacts/src/artifacts/runtime_status.py)
@@ -421,47 +415,82 @@ completion, failure, and quiescence facts. It never publishes physical truth.
 - The controlled-descent path requires positive command acknowledgements and
   observed vehicle state. Heartbeat and healthy prearm observations are separate
   passive readiness facts, and commands wait for `RUNNING` plus public clock.
-- The upstream source and hook scope are recorded in
-  [comp2026-source.json](comp2026-source.json). Run
-  `uv run --locked python scripts/audit-comp2026-hooks.py` from the repository
-  root after changing the imported source. Mission behavior changes require
-  separate review from dependency-injection hooks.
-- `SimulationCompetitionControl` owns admission, source-filtered native
-  observations, one consumed attempt per run, output authority, and local LAND
-  recovery. It constructs the actual upstream controller with `SimulationVehicle`
-  and `command_listener=False`, leaving command admission to the existing QGC
-  owner. It does not substitute another implementation of flight decisions.
-- The testbench policy verifies the frozen course, scenario, pinned Copter 4.6.3
-  provenance, model, world, and parameter inputs. The image carries these inputs
-  at their repository-relative paths under `/opt/drone_sim`. The runtime verifies
-  the effective calibration before flight.
+- `companion/comp2026` is tracked in this monorepo and supplies the
+  `comp2026_auto` mission. Keep changes there focused and preserve its imported
+  history and provenance. The Docker context admits only its explicit import
+  closure.
+- The `comp2026_auto` host composes the imported observation decoders, source
+  identities, telemetry startup collector, mission supervisor, one-use attempt
+  token, output transactions, home checks, and recovery policy in
+  [comp2026_control.py](src/drone_sim_companion/comp2026_control.py). The
+  fail-closed simulation policy in
+  [comp2026_policy.py](src/drone_sim_companion/comp2026_policy.py) binds those
+  guards to the checked-in course, scenario, ArduPilot provenance and
+  parameters, competition vehicle, and selected competition world. The image
+  carries these files at their repository-relative paths under `/opt/drone_sim`
+  because policy construction verifies their contents before flight.
+  The composition selects MAVLink 2 before opening DroneKit so the first native
+  packet cannot trigger a protocol upgrade that replaces its guarded output
+  queue. Transport guards remain required before any flight command.
+  The policy also reads back the competition rangefinder type and physical
+  limits. Its unchanged startup collector requires source-filtered MAVLink
+  `DISTANCE_SENSOR` cadence from ArduPilot; precision clearance continues to
+  use the independently timestamped ROS LiDAR adapter.
 - Building the Phase 3 companion image requires
-  `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. The label records the parent
-  revision. Source edits require a matching rebuild. The Docker context admits
-  only the explicit runtime import closure; run
-  `python3 -m drone_sim_companion.comp2026_smoke` in the built image after
-  changing that closure.
-- The upstream camera receives Gazebo intrinsics and BGR frames through optional
-  injection hooks. Its image and coordinate math remain upstream behavior.
-  Configured diagnostics use the separate precision camera's verified mounting,
-  atomic observation metadata, and 0.25-second exposure-age limit.
-- `RosLidar.get_sample()` returns a testbench `LidarSample`; upstream mission
-  functions use its scalar `get_distance()` interface. Repeated reads retain
-  frame identity. Invalid, regressed, or older-than-0.5-second evidence fails.
-- Comp2026 startup requires fresh exact-FC healthy disarmed heartbeat, prearm,
-  grounded state, advancing native position time, verified firmware, and the
-  complete calibration cache. Missing or unsafe observations keep admission
-  closed. After matching RUNNING and accepted public time, the testbench repeats
-  ground readiness and enqueues an explicit GUIDED packet by the inclusive
-  50 ms public-time deadline. It then waits for observed GUIDED before entering
-  upstream FM1. The
-  [delivery window](src/drone_sim_companion/lifecycle.py),
+  `SIM_COMP2026_REVISION=$(git rev-parse HEAD)`. Compose
+  leaves the build argument empty when it is not supplied so inactive profiles
+  and noncompanion configuration still resolve; the companion Dockerfile rejects
+  an empty value before package installation or source copies.
+- The hosted `drone.auto_attempt` currently imports FM1 and FM2 from `missions/`
+  but imports FM3 from `drone/mock_mission.py`; do not assume
+  `missions/fm3.py` is the deployed implementation.
+- After changing the import closure, run `python3 -m
+  drone_sim_companion.comp2026_smoke` in the built companion image. It imports
+  the guarded control and policy, deployed camera and LiDAR, and original
+  mission functions without opening devices or executing a mission.
+- That deployed `mock_mission.py` owns payload-marker acquisition and precision
+  landing recovery. It establishes a five-frame earth-fixed target anchor,
+  rejects stale or inconsistent camera/range observations before MAVLink,
+  holds the current position in GUIDED while reacquiring, and permits one
+  return to the 4.572 m search hover before failing closed. It validates the
+  fresh live flight-controller profile before every precision entry and never disarms or
+  requests attachment without confirmed touchdown. Below the configured
+  `PLND_ALT_MIN` of 0.75 m, LAND continues without requiring marker visibility;
+  this avoids treating the marker's normal near-ground exit from the camera
+  view as a recovery event. The exact flight settings are owned by
+  [descent.parm](../ardupilot_sitl/params/descent.parm).
+- The nested camera API returns the marker vector and source exposure timestamp
+  as one observation. The simulator factory supplies the verified 640x480,
+  0.6-radian camera intrinsics and body-FLU mounting from the competition SDF.
+  It checks exposure age against the public simulation clock with a 0.25-second
+  limit. `comp2026_host.py` supplies strictly newer frames, so stale exposure,
+  mismatched dimensions, and camera silence fail readiness.
+- The hosted LiDAR `get_sample()` returns the imported `LidarSample` with the
+  accepted public timestamp, a sequence that changes only for a distinct frame,
+  and an invalidation generation that changes when evidence is revoked.
+  Repeated reads retain their frame identity. Invalid, malformed, regressed, or
+  older-than-0.5-second evidence cannot continue a valid sample sequence;
+  `get_distance()` retains the original scalar compatibility API.
+- Comp2026 startup separates process readiness from permission to enter the
+  original mission. During private warmup, `MissionReadyStatus` waits for a
+  complete fresh safe-ground snapshot, the complete calibration cache, a live
+  DroneKit heartbeat, and observed healthy prearm checks. Missing or stale
+  ground fields remain pending until the startup wall deadline; observed armed,
+  airborne, unhealthy RC, wrong RC slot, or failsafe state fails immediately.
+  The runtime records pending fields only when they change. After RUNNING, it
+  waits for the first accepted public clock before releasing the worker, whose
+  FM1 admission rechecks the full ground guard. Sensor, service,
+  heartbeat, and armability predicates are refreshed atomically and fail closed;
+  downward range expires after 0.5 simulated seconds. The runtime must enqueue
+  guarded GUIDED output and write its durable delivery fact no later than the
+  inclusive 50 ms public-time deadline, then verify acknowledgement and mode
+  before entering the original sequencer. The executable owners are the
+  [delivery window and lifecycle writer](src/drone_sim_companion/lifecycle.py),
   [start gate](src/drone_sim_companion/comp2026_host.py), and
-  [runtime composition](src/drone_sim_companion/runtime_node.py) own this ordering.
-- Phase completion records a returned upstream function. Home completion also
-  waits up to 15 simulated seconds for fresh landed and disarmed telemetry.
-  FM3 payload handling and ordinary LAND under `PLND_STRICT=2` remain current
-  acceptance gaps described above.
+  [runtime composition](src/drone_sim_companion/runtime_node.py); the shared
+  status schema owns the exact
+  [`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
+  fields.
 - Before mission code reads competition inputs, startup verifies the resolved
   `course.yaml` and `scenario.yaml` copies against their SHA-256 digests in
   `run.json`.
@@ -483,19 +512,9 @@ These host tests cover the pure policies, adapters, mission host, and runtime
 composition. They do not prove a live flight; use
 the [runbook](../docs/runbook.md) for image and end-to-end procedures.
 
-Check the upstream hooks, runner, and preserved diagnostic camera regressions:
+Run the bundled mission tests separately:
 
 ```bash
-uv run --locked python scripts/audit-comp2026-hooks.py
-uv run --locked pytest companion/comp2026/tests/test_testbench_hooks.py \
-  companion/tests/test_upstream_comp2026_runner.py -q
-uv run --locked pytest companion/tests/test_precision_camera_body_mapping.py \
-  companion/tests/test_precision_camera_freshness.py \
-  companion/tests/test_precision_camera_recording.py \
-  companion/tests/test_comp2026_camera.py \
-  companion/tests/test_simulator_camera_calibration.py \
-  companion/tests/test_configured_live_loop.py -q
+PYTHONPATH=companion/comp2026/src:companion/comp2026/tests \
+  uv run --locked pytest companion/comp2026/tests -q
 ```
-
-The imported upstream revision contains no original mission test suite. The hook
-tests and testbench regressions do not establish physical flight acceptance.

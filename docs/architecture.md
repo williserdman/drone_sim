@@ -210,23 +210,18 @@ operator application; its manual commands and observed authority changes are
 evidence, not a promise of read-only operation. The Gazebo desktop excludes
 ungoverned world mutation controls.
 
-A valid Abort transfers authority that remains mission-owned into the host's
+A valid Abort transfers authority that remains mission-owned into the existing
 recovery path. External revocation and finalization are never cleared to perform
-recovery. Comp2026 cancels upstream worker output and stops its mission clock
-before recovery. After that worker exits, a separate testbench owner can request
-local LAND using the accepted public clock. The final DroneKit writer checks
-flight authority, owner thread, and shutdown state for every mutating packet.
-The exact-FC authority observer runs before DroneKit updates its cached vehicle
-attributes. Every flight output, including recovery, requires heartbeat evidence
-at most two wall seconds old. Missing or stale evidence revokes authority.
-Upstream exception cleanup uses the same guarded writer.
-
-The payload client holds the output transaction only around the ROS `call_async`
-enqueue. Service discovery and completion waits remain outside it so ROS
-callbacks can progress. Raw and diagnostic hosts also latch finalization at
-their writer before teardown output. A signal handler records a request. The
-owner or next writer admission takes the shared lock: an admitted write may
-finish before finalization returns, and no write starts after the latch.
+recovery. Comp2026 retains its imported RC/pilot/failsafe proof and recovery
+context; an outer shutdown admission now remains held through its actual shared
+dependency writer, including recovery, payload calls, and parameter restoration.
+The payload client holds that effective controller transaction only around the
+ROS `call_async` enqueue; service discovery and completion waits remain outside
+it so ROS callbacks can progress. Raw and diagnostic hosts latch finalization at
+their actual writer before teardown output. A signal handler only records a
+request. The owner or next writer admission takes the shared lock to establish
+irreversible order: a write already admitted under the lock may finish before
+finalization returns, and no write starts after the latch.
 
 ### Existing runtime contracts
 
@@ -245,12 +240,15 @@ production writer. The separate operator consumes this fact before its commands.
 Other missions keep their existing command-delivery gate. See the
 [tool contract](../companion/README.md#configured-diagnostic-missions).
 
-The Comp2026 companion publishes `MissionReadyStatus` after fresh exact-FC
-healthy disarmed heartbeat, prearm, grounded state, and advancing native position
-time are available. Firmware identity and the complete effective calibration
-must also match. Missing or unsafe observations keep admission closed until the
-startup deadline. After matching RUNNING and accepted public time, the testbench
-repeats ground readiness before the first guarded GUIDED command.
+The Comp2026 companion publishes `MissionReadyStatus` only after its real
+MAVLink callbacks provide every fresh safe-ground observation and its full
+calibration cache matches, while DroneKit reports a live heartbeat and healthy
+prearm checks. Missing or stale observations keep the public epoch and mission
+admission closed until the companion startup deadline; positively unsafe
+observations fail admission. Orchestration may publish RUNNING only after this
+durable status. The companion then waits for an accepted public clock before
+releasing the worker, and FM1 admission repeats the full ground check before the
+first guarded GUIDED command.
 
 ROS messages/services define the wire format; the linked module guides identify
 producers, consumers, and their endpoint QoS. Public physical positions use ENU.
@@ -287,57 +285,49 @@ rejects it before server startup. Operators who still need that passive world
 require a separate readiness-contract decision; endpoint presence is not valid
 flight readiness evidence.
 
-The competition source is pinned at upstream `95dec510`. The pristine
-`integration/comp2026-upstream-95dec510` branch retains that tree, while
-`integration/comp2026-testbench-hooks` adds optional dependency injection.
-[comp2026-source.json](../companion/comp2026-source.json) records upstream hashes
-and the hook boundaries. The [source audit](../scripts/audit-comp2026-hooks.py)
-checks unchanged files and protected syntax outside declared hook functions.
-Hook tests cover the changed constructors and time adapter.
-
-The [testbench runner](../companion/src/drone_sim_companion/comp2026_runner.py)
-calls actual upstream FM1, FM2, and `drone.mock_mission.fm3`. The actual upstream
-`DroneControl` receives a `SimulationVehicle`; its automatic command listener is
-disabled so the existing QGC owner controls admission. The
-[testbench controller](../companion/src/drone_sim_companion/comp2026_control.py)
-owns source-filtered native observations, one consumed attempt per run, output
-authority, and recovery. The [simulation policy](../companion/src/drone_sim_companion/comp2026_policy.py)
-binds firmware, course, scenario, model, world, and parameter inputs. These
-modules do not replace upstream mission decisions or authorize aircraft use.
-
-The [runtime](../companion/src/drone_sim_companion/runtime_node.py) enqueues an
-explicit GUIDED packet and completes the durable
+Comp2026 process readiness does not release the original mission worker. The
+[runtime composition](../companion/src/drone_sim_companion/runtime_node.py)
+must enqueue the initial GUIDED command through the imported output guards and complete the durable
 [`MissionCommandDeliveredStatus`](../artifacts/src/artifacts/runtime_status.py)
-write by the inclusive 50 ms public-time limit. The
-[companion lifecycle](../companion/src/drone_sim_companion/lifecycle.py) and
-[start gate](../companion/src/drone_sim_companion/comp2026_host.py) own that
-ordering. A missed deadline, enqueue failure, or status-write error fails the
-attempt. The testbench then requires observed GUIDED before upstream FM1 can
-issue its own startup mode changes. Mission timing uses an injected
-`drone.timebase` context; persisted waypoint expiry retains wall time.
-Paused public time does not advance the
-mission, and cancellation interrupts waiting code.
+write by the inclusive 50 ms public-time limit before the
+[start gate](../companion/src/drone_sim_companion/comp2026_host.py) can release
+that worker. The [companion lifecycle](../companion/src/drone_sim_companion/lifecycle.py)
+owns the executable deadline and status write. A missed deadline, mode-setting
+error, or status-write error fails the attempt and leaves the gate closed.
+The worker then requires the native acknowledgement and observed GUIDED state
+before entering the original sequencer. Its
+[simulation control composition](../companion/src/drone_sim_companion/comp2026_control.py)
+uses real source-filtered telemetry, RC authority, a consumed run-scoped attempt,
+and the observed launch position including AMSL home altitude. Telemetry request
+and firmware checks run before public release; cadence is checked on advancing
+public simulation time after GUIDED. Clock freshness, mission phases and output
+transactions retain the imported controller's guards. The simulation policy
+binds the pinned firmware, course, scenario, model and parameter inputs and does
+not approve physical-aircraft deployment.
 
-The upstream camera receives BGR frames and Gazebo intrinsics through optional
-hooks while retaining its image and coordinate calculations. Configured
-diagnostics instead use [precision_camera](../companion/src/drone_sim_companion/precision_camera/),
-which preserves the earlier testbench's atomic observation metadata, bounded
-exposure age, mounting validation, and recording behavior. Its regression suites
-move with the implementation. `RosLidar` retains timestamped testbench samples
-and supplies the scalar `get_distance()` interface expected by upstream missions.
+For payload precision landing, the camera boundary returns a marker vector and
+its source timestamp atomically; a side-channel timestamp is not sufficient
+freshness evidence. The hosted mission owns the fixed earth-frame target anchor,
+measurement acceptance, LAND/GUIDED hold transitions, and one bounded return to
+the search hover. ArduPilot owns stabilization and descent execution, but only
+accepted observations reach its `LANDING_TARGET` input. No target messages are
+sent during the GUIDED hold. Once LiDAR reports an AGL at or below the overlay's
+`PLND_ALT_MIN`, the companion keeps LAND active and no longer requires marker
+visibility; ArduPilot then owns the final descent and touchdown decision. The
+parameter overlay remains the durable source of flight-controller settings, and
+the companion reads those live settings before every precision LAND. Cached
+parameter observations never satisfy this gate.
 
-Upstream FM2 drops payload 2, then requests LAND and disarm. The testbench follows
-the upstream FM3 executable's takeoff setup before invoking FM3 for IDs 3 and 4.
-FM3 currently prints a simulated drop and has no payload attachment or release
-call. The runner does not add those actions. Phase `COMPLETE` records only that
-a function returned. Home completion additionally waits up to 15 simulated
-seconds for fresh landed and disarmed telemetry newer than the last flight output.
-
-Ordinary LAND retains upstream behavior. The pinned `PLND_STRICT=2` profile may
-prevent touchdown without a precision target; no testbench parameter toggle
-bypasses that behavior. Local LAND recovery is bounded by 60 simulated seconds
-and the finalization wall deadline. Full-flight acceptance, payload delivery,
-score, and artifact validity remain separate pending checks.
+Ordinary Comp2026 landing temporarily disables precision landing through the
+same final-writer authority and shutdown boundary used by flight commands. A
+fresh full-profile read must precede the disable; a newer exact-FC echo must
+verify both `PLND_ENABLED=0` and its later restoration to `1`. Touchdown alone
+cannot clear the owned dirty state. Valid Abort recovery may continue an owned,
+verified disabled descent and restore it, including after touchdown. External
+takeover or finalization sends no later restore bytes. The lifecycle records
+each requested, verified, or failed read/set as `landing_profile_transition` at
+public mission-relative nanoseconds. The event establishes enqueue/readback
+ordering and makes no physical-success claim.
 
 A payload request is intent, not physical success. Electromagnet waits for the
 matching Gazebo confirmation; exact duplicate requests are idempotent and

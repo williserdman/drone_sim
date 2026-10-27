@@ -5,16 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
-from typing import Callable, ClassVar, Protocol
+from typing import TYPE_CHECKING, Callable, ClassVar, Protocol
 
 import numpy as np
 
-@dataclass(frozen=True)
-class LidarSample:
-    distance_m: float
-    timestamp: float
-    sequence: int
-    invalidation_generation: int
+if TYPE_CHECKING:
+    from drone.sensors.lidar.lidar import LidarSample
 
 
 EARTH_RADIUS_M = 6_378_137.0
@@ -296,6 +292,8 @@ class RosLidar:
                 self._pending.append((sim_timestamp_ns, distance_m, sequence))
 
     def get_sample(self) -> LidarSample:
+        from drone.sensors.lidar.lidar import LidarSample
+
         distance_m, timestamp_ns, sequence, invalidation_generation = (
             self._current_values()
         )
@@ -495,7 +493,7 @@ class MissionEventEmitter:
                 self._next_event_id,
                 phase,
                 state,
-                "upstream phase returned; physical outcome is scored independently",
+                "automatic attempt",
             )
             self._next_event_id += 1
             self.last_phase = phase

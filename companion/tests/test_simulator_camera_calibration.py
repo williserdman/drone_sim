@@ -7,15 +7,24 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from drone_sim_companion.precision_camera._camera_manager import CameraManager
-from drone_sim_companion.precision_camera.camera import Camera
+from drone_sim_companion.comp2026_host import SimulationClock
+import drone_sim_companion.runtime_node as runtime_node
 
 
-def test_precision_camera_uses_gazebo_camera_intrinsics() -> None:
-    module = Path(__file__).parents[1] / "src/drone_sim_companion"
-    manager = CameraManager(
+def test_competition_runtime_uses_gazebo_camera_intrinsics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested_source = Path(__file__).parents[1] / "comp2026/src"
+    monkeypatch.syspath_prepend(str(nested_source))
+
+    from drone.sensors.camera._camera_manager import CameraManager
+    from drone.sensors.camera.camera import Camera
+
+    camera = runtime_node._create_simulator_camera(
+        CameraManager,
+        Camera,
         frame_source=object(),
-        calibration_path=module / "gazebo_camera_calibration.json",
+        clock=SimulationClock(),
     )
     rendered_corners = [
         np.array(
@@ -31,7 +40,7 @@ def test_precision_camera_uses_gazebo_camera_intrinsics() -> None:
         )
     ]
 
-    estimated_mm = manager.estimate_pose_3d(
+    estimated_mm = camera.cm.estimate_pose_3d(
         3,
         rendered_corners,
         np.array([[3]], dtype=np.int32),
@@ -46,7 +55,14 @@ def test_precision_camera_uses_gazebo_camera_intrinsics() -> None:
     assert horizontal_error_m < 0.07
 
 
-def test_moving_pad_metadata_maps_verified_sdf_camera_to_body_frd() -> None:
+def test_moving_pad_metadata_maps_verified_sdf_camera_to_body_frd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested_source = Path(__file__).parents[1] / "comp2026/src"
+    monkeypatch.syspath_prepend(str(nested_source))
+    from drone.sensors.camera._camera_manager import CameraManager
+    from drone.sensors.camera.camera import Camera
+
     module = Path(__file__).parents[1] / "src/drone_sim_companion"
     calibration = module / "moving_pad_camera_calibration.json"
     mounting = module / "moving_pad_camera_mounting.json"

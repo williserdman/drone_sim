@@ -10,7 +10,9 @@ ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "companion/comp2026/src"))
 
 from drone import timebase
-from drone_sim_companion.comp2026_policy import MissionHome
+from drone.common_types import MissionHome
+from drone.control.flight_state import SourceIdentity
+from drone.control.listener_runtime import AutopilotVersionContract
 from drone_sim_companion.comp2026_policy import build_competition_policy
 
 
@@ -35,15 +37,38 @@ def resolved_config(tmp_path, **changes):
 def test_builds_exact_pinned_simulation_policy(tmp_path):
     policy = build_competition_policy(resolved_config(tmp_path), clock=timebase.monotonic)
 
-    assert policy.flight_sw_version == 0x040603FF
-    assert policy.flight_custom_version == b"92b0cd78"
+    assert policy.flight_profile.companion_target == SourceIdentity(1, 191)
+    assert policy.flight_profile.flight_controller == SourceIdentity(1, 1)
+    assert policy.flight_profile.firmware == "ArduCopter 4.6.3"
+    assert isinstance(policy.autopilot_version_contract, AutopilotVersionContract)
+    assert policy.autopilot_version_contract.flight_sw_version == 0x040603FF
+    assert policy.autopilot_version_contract.flight_custom_version == b"92b0cd78"
+    assert policy.precision_policy.clearance_calibration is policy.clearance_calibration
+    assert policy.precision_policy is not None
+    assert policy.recovery_policy.clock is timebase.monotonic
     assert policy.parameter_expectations["PLND_TIMEOUT"] == 0.5
     assert policy.parameter_expectations["FLTMODE_CH"] == 7
+    assert policy.parameter_expectations["FLTMODE1"] == 0
+    assert policy.parameter_expectations["FLTMODE4"] == 4
+    assert policy.parameter_expectations["FLTMODE6"] == 5
     assert policy.parameter_expectations["RNGFND1_TYPE"] == 100
-    assert dict(policy.telemetry_intervals_us)[0] == 100_000
+    assert policy.parameter_expectations["RNGFND1_MIN_CM"] == 5
+    assert policy.parameter_expectations["RNGFND1_MAX_CM"] == 4000
+    assert [(band.minimum_pwm, band.maximum_pwm, band.mode) for band in policy.flight_profile.rc_mode_bands] == [
+        (801, 1230, "STABILIZE"),
+        (1491, 1620, "GUIDED"),
+        (1750, 2199, "LOITER"),
+    ]
+    intervals = {request.message_id: request.interval_us for request in policy.flight_profile.telemetry_requests}
+    assert intervals[0] == 100_000
+    assert set(intervals.values()) == {50_000, 100_000}
+    assert policy.flight_profile.freshness_bounds["heartbeat"] == 2.0
+    assert policy.flight_profile.freshness_bounds["mode"] == 2.0
+    assert policy.flight_profile.freshness_bounds["armed"] == 2.0
+    assert policy.telemetry_policy.command_ack_timeout_s == 60.0
+    assert policy.telemetry_policy.collection_timeout_s == 120.0
     assert policy.startup_timeout_s == 1800.0
     assert len(policy.evidence_sha256) == 64
-    assert not hasattr(policy, "precision_policy")
 
 
 def test_evidence_freezes_competition_parameter_overlay(tmp_path):

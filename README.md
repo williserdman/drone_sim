@@ -117,20 +117,13 @@ build images automatically. Do not start with a bare `docker compose up`.
 
 ## Contributing or adding a mission
 
-The competition integration runs the upstream Comp 2026 mission functions pinned
-at `95dec510` in [`companion/comp2026`](companion/comp2026). The testbench owns
-admission, simulation adapters, recovery, scoring, and teardown. Its optional
-hooks preserve upstream mission decisions. The
-[source manifest](companion/comp2026-source.json) records the upstream revision
-and pristine baseline; the [flight-code map](companion/README.md#where-to-change-comp-2026-code)
-identifies the active FM1, FM2, and FM3 functions and the testbench runner.
-Use the [QGC development loop](docs/runbook.md#develop-comp-2026-with-qgc) to audit,
-test, and rebuild before trying a change in a new run.
-
-This upstream FM3 has no payload attachment or release implementation. Its
-printed simulated drop does not establish physical delivery. Full-flight
-acceptance of this integration remains pending. Configured diagnostics retain
-their separate operation runner and precision camera.
+Develop Comp 2026 flight behavior in [`companion/comp2026`](companion/comp2026).
+It is tracked source in this repository, with its earlier Git history preserved.
+Commit those edits on your `drone_sim` feature branch. See the
+[flight-code map](companion/README.md#where-to-change-comp-2026-code) for the
+active FM1, FM2, and FM3 entry points, shared controls, and simulation adapters.
+Use the [QGC development loop](docs/runbook.md#develop-comp-2026-with-qgc) to test
+and rebuild before trying the change in a new run.
 
 For a fixed sequence, copy [configured-descent-run.json](config/configured-descent-run.json)
 and edit its `mission_plan.steps`. The [companion guide](companion/README.md#configured-diagnostic-missions)

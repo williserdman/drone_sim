@@ -3,58 +3,6 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
-## Comp2026 upstream hook integration, 2026-10-27
-
-The competition integration now starts from upstream
-`95dec5105573d1a18b2ad824975d5edf99893006`, tree
-`055768a00c220685e5c91f2be6d684084e9aca32`. The pristine baseline is
-`integration/comp2026-upstream-95dec510` at `0b951641`; the hook branch is
-`integration/comp2026-testbench-hooks`. Both retain testbench base `0f7d525`.
-The [source manifest](../companion/comp2026-source.json) records the full IDs,
-upstream file hashes, and permitted hook locations. The upstream README remains
-unchanged.
-
-The testbench runner invokes actual upstream FM1, FM2, and `mock_mission.fm3`.
-Optional vehicle, clock, and camera injections let those functions run with the
-existing simulator. QGC admission, native/public startup, output authority,
-recovery, evidence, and teardown remain testbench responsibilities. The prior
-imported automatic sequencer, mission supervisor, and precision recovery stack
-are not part of this integration. Earlier verification counts and flight records
-below describe that previous source and do not establish this branch's behavior.
-
-Configured diagnostics retain their existing operation runner. Their precision
-camera and three camera regression suites moved from `0f7d525` into testbench
-ownership. The relocated implementation, metadata, and test bodies matched the
-prior source after import substitution. The focused camera, calibration, and
-configured-loop check passed 74 tests. The source audit passed, and the
-documented hook, runner, control, and policy command passed 40 tests. The new
-local documentation links resolved, and the upstream README matched its pinned
-hash.
-
-Final Linux verification passed 3,114 tests with 44 capability skips. Configured
-mypy passed all 13 selected files. Review cleared the startup ordering,
-heartbeat identity, and telemetry freshness corrections. A separate ARM64
-companion image built and imported the actual upstream missions; its 54 deployed
-Python/JSON source files match this worktree and its installed package includes
-the relocated camera assets. The eight existing runtime image tags still match
-the prior console build. No native Prepare or mission flight was run from this
-integration. Local logs and the rerunnable image check are retained under
-`.local-runtime/comp2026-hooks/`.
-
-Full-flight acceptance remains pending. Upstream FM2 requests ordinary LAND and
-disarm before FM3; the pinned `PLND_STRICT=2` profile may prevent touchdown
-without a precision target. This integration does not toggle precision landing
-around ordinary LAND. FM3 prints `simulated drop!!` and has no attachment or
-release call, so a returned function or phase `COMPLETE` cannot establish payload
-delivery. Home completion additionally requires fresh native landed and disarmed
-observations. Physical outcome, score, and artifact validity need separate
-current-run evidence.
-
-Run the [source and hook checks](runbook.md#develop-comp-2026-with-qgc) before
-building matching images. The existing working console checkout and its images
-remain separate from this integration branch. The prepared-and-stopped 4.6.3 run
-below did not execute this upstream mission integration.
-
 ## ArduCopter 4.6.3 and Desktop startup repair, 2026-10-27
 
 The current source pins `Copter-4.6.3` at
@@ -640,14 +588,13 @@ window; the postflight analyzer therefore rejected inventory validation.
 DataFlash remains diagnostic evidence, not accepted calibration. The unchanged
 bundle is under `runs/diagnostics/20261007-autotune-slow-land/`.
 
-Historical Comp2026 integration repair, 2026-10-07, superseded by the upstream
-integration above: the parent host composed the imported
+Comp2026 integration repair, 2026-10-07: the parent host now composes the imported
 source/authority guards, mission supervisor, output transactions and observed
 home using a simulation-specific policy. The original automatic sequencer
-received the validated precision policy for both FM3 calls. Timestamped LiDAR
-samples and verified camera geometry satisfied that stack's sensor interfaces.
-Competition alone supplied native RC input through the JSON FDM connection and
-loaded the matching mode-channel overlay. Docker packaging included the import
+receives the validated precision policy for both FM3 calls. Timestamped LiDAR
+samples and verified camera geometry satisfy its current sensor interfaces.
+Competition alone supplies native RC input through the JSON FDM connection and
+loads the matching mode-channel overlay. Docker packaging includes the import
 closure and canonical policy resources. Full host/module checks passed 2,349
 tests with 27 skips; imported mission checks passed 1,129. Python compilation,
 lockfile verification and diff checks passed. The native plugin compiled and
@@ -737,10 +684,9 @@ suite processes and its Compose projects exited, and all evidence remains under
 interrupted attempt is not an all-11 demonstration.
 
 Post-integration checks on 2026-10-06 passed 2,265 host/module tests with 27
-skips and 1,126 imported Comp2026 tests. That earlier test suite required
-`--import-mode=prepend` to resolve sibling-test imports. It is not present in the
-current upstream snapshot. The executable changes passed their focused checks
-before that historical integration.
+skips and 1,126 imported Comp2026 tests. Run the imported tests with
+`--import-mode=prepend`; the root import mode cannot resolve their sibling-test
+imports. The executable changes passed their focused checks before integration.
 
 Fresh suite `72cd9035-94f5-42ad-9ee3-c5a2ec798731` from clean `04aa25a`
 finished `FAILED` on 2026-10-06. Calibration run

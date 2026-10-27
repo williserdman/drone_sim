@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import signal
 import sys
@@ -724,8 +725,9 @@ def test_moving_camera_starts_before_flight_and_closes_during_teardown(monkeypat
             trace.append("vision_closed")
             return True
 
-    import drone_sim_companion.precision_camera._camera_manager as manager_module
-    import drone_sim_companion.precision_camera.camera as camera_module
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "comp2026/src"))
+    import drone.sensors.camera._camera_manager as manager_module
+    import drone.sensors.camera.camera as camera_module
     import drone_sim_companion.moving_vision as vision_module
     monkeypatch.setattr(manager_module, "CameraManager", CameraManager)
     monkeypatch.setattr(camera_module, "Camera", Camera)

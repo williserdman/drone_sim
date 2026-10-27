@@ -14,13 +14,17 @@ from typing import Callable, Mapping
 import yaml
 
 from drone import timebase
-
-
-@dataclass(frozen=True)
-class MissionHome:
-    lat: float
-    lon: float
-    amsl_m: float
+from drone.common_types import MissionHome
+from drone.control.flight_profile import FlightProfile, TelemetryRequest
+from drone.control.flight_state import RCModeBand, SourceIdentity
+from drone.control.listener_runtime import (
+    AutopilotVersionContract,
+    TelemetryStartupPolicy,
+)
+from drone.control.mission_supervisor import RecoveryPolicy
+from drone.control.stability import ReleaseStabilityConfig
+from drone.mock_mission import PrecisionMissionPolicy
+from drone.sensors.lidar.clearance import ClearanceCalibration
 
 
 ARDUPILOT_REVISION = "92b0cd788ec29406f26c6f9c31d5ceedbd1cc538"
@@ -61,23 +65,39 @@ BASE_PARAMETER_NAMES = frozenset(EXPECTED_PARAMETERS) - {
 }
 
 
+class SimulationAutopilotVersionContract(AutopilotVersionContract):
+    """Exact version contract for the pinned Copter 4.6.3 SITL image only."""
+
+    def __post_init__(self) -> None:
+        if self.firmware_label != "ArduCopter 4.6.3":
+            raise ValueError("simulation firmware must be pinned ArduCopter 4.6.3")
+        if self.flight_sw_version != 0x040603FF:
+            raise ValueError("simulation flight_sw_version does not identify Copter 4.6.3")
+        if self.flight_custom_version != ARDUPILOT_REVISION[:8].encode("ascii"):
+            raise ValueError("simulation flight_custom_version does not match pinned source")
+        if not isinstance(self.evidence_reference, str) or ARDUPILOT_REVISION not in self.evidence_reference:
+            raise ValueError("simulation version evidence must name the pinned source")
+
+
 @dataclass(frozen=True)
 class CompetitionSimulationPolicy:
-    """Frozen simulator inputs, independent of upstream flight decisions."""
-
     world: str
+    flight_profile: FlightProfile
+    telemetry_policy: TelemetryStartupPolicy
+    autopilot_version_contract: SimulationAutopilotVersionContract
+    clearance_calibration: ClearanceCalibration
+    release_stability: ReleaseStabilityConfig
+    precision_policy: PrecisionMissionPolicy
+    recovery_policy: RecoveryPolicy
+    mission_home_check: Callable[[MissionHome], None]
+    fc_home_position_tolerance_m: float
+    fc_home_altitude_tolerance_m: float
     startup_timeout_s: float
+    telemetry_poll_interval_s: float
     parameter_expectations: Mapping[str, float | int]
     home: MissionHome
-    mission_home_check: Callable[[MissionHome], None]
     course_bounds: Mapping[str, tuple[float, float, float, float]]
     evidence_sha256: str
-    flight_sw_version: int = 0x040603FF
-    flight_custom_version: bytes = b"92b0cd78"
-    telemetry_intervals_us: tuple[tuple[int, int], ...] = (
-        (0, 100_000), (1, 50_000), (30, 50_000), (33, 50_000),
-        (65, 50_000), (132, 50_000), (242, 50_000), (245, 50_000),
-    )
 
 
 def _read_object(path: Path, label: str) -> dict:
@@ -227,12 +247,63 @@ def build_competition_policy(
         if abs(east) > width / 2 or abs(north) > height / 2 or not 0.0 <= home.amsl_m <= 0.5:
             raise ValueError("mission home is outside the configured home zone")
 
+    def recovery_check(_operation: str, home: MissionHome, altitude: float | None) -> None:
+        mission_home_check(home)
+        if altitude is not None and (
+            isinstance(altitude, bool) or not isinstance(altitude, (int, float))
+            or not math.isfinite(float(altitude)) or not 0 <= float(altitude) <= 40
+        ):
+            raise ValueError("recovery altitude is outside the simulated sensor volume")
+
+    freshness = MappingProxyType({
+        "heartbeat": 2.0, "mode": 2.0, "location": 0.5, "velocity": 0.5,
+        "attitude": 0.5, "landed_state": 0.5, "armed": 2.0, "home": 2.0,
+        "rc_input": 0.5, "range": 0.5, "failsafe": 2.0,
+    })
+    qgc = SourceIdentity(255, 190)
+    companion = SourceIdentity(1, 191)
+    fc = SourceIdentity(1, 1)
+    requests = tuple(
+        TelemetryRequest(message_id, 100_000 if message_id == 0 else 50_000)
+        for message_id in (0, 1, 30, 33, 65, 132, 242, 245)
+    )
+    flight_profile = FlightProfile(
+        profile_id="competition-sitl-copter-4.6.3-v1", raw_sha256=evidence_sha256,
+        firmware="ArduCopter 4.6.3", qgc_source=qgc, companion_target=companion,
+        flight_controller=fc, freshness_bounds=freshness, rc_health_max_age=0.5,
+        rc_channel=7, rc_mode_bands=(
+            RCModeBand("stabilize", 801, 1230, "STABILIZE"),
+            RCModeBand("companion", 1491, 1620, "GUIDED"),
+            RCModeBand("pilot", 1750, 2199, "LOITER"),
+        ),
+        heartbeat_type=2, heartbeat_autopilot=3,
+        copter_modes=MappingProxyType({0: "STABILIZE", 4: "GUIDED", 5: "LOITER", 6: "RTL", 9: "LAND"}),
+        failsafe_active_statuses=frozenset((5,)), failsafe_clear_statuses=frozenset((3, 4)),
+        decoder_contract_version=1, decoder_contract_evidence=f"sha256:{evidence_sha256}",
+        decoder_contract_reference=f"ArduPilot {ARDUPILOT_REVISION} simulation telemetry",
+        telemetry_requests=requests,
+    )
+    telemetry = TelemetryStartupPolicy(60.0, 120.0, 5.0, 0.05, 2, 0.25)
+    version = SimulationAutopilotVersionContract(
+        "ArduCopter 4.6.3", 0x040603FF, b"92b0cd78",
+        f"pinned SITL source {ARDUPILOT_REVISION}; ArduCopter/version.h FIRMWARE_VERSION 4,6,3,OFFICIAL",
+    )
+    clearance = ClearanceCalibration((0.0, 0.0, 1.0), (0.3, 0.0, -0.1), True, math.radians(8), 0.5, 0.05, True)
+    release = ReleaseStabilityConfig(2.0, 10.0, 0.10, 0.10, math.radians(8), math.radians(8), 0.15, 0.15, 0.05, 0.10, 0.05, 0.20)
+    precision = PrecisionMissionPolicy(
+        clearance, timebase.monotonic, 0.25, 0.05, 0.05, 0.05, 0.05,
+        5.0, 0.10, 0.05, 4.572, 0.20, 0.20, 1.0, 10.0, 10.0,
+    )
+    recovery = RecoveryPolicy(recovery_check, 60.0, 10.0, timebase.monotonic)
     return CompetitionSimulationPolicy(
-        world=world, startup_timeout_s=float(startup_timeout),
-        parameter_expectations=EXPECTED_PARAMETERS, home=HOME,
-        mission_home_check=mission_home_check, course_bounds=bounds,
-        evidence_sha256=evidence_sha256,
+        world, flight_profile, telemetry, version, clearance, release, precision,
+        recovery, mission_home_check, 2.286, 0.05, float(startup_timeout), 0.05,
+        EXPECTED_PARAMETERS, HOME, bounds, evidence_sha256,
     )
 
 
-__all__ = ["CompetitionSimulationPolicy", "MissionHome", "build_competition_policy"]
+__all__ = [
+    "CompetitionSimulationPolicy",
+    "SimulationAutopilotVersionContract",
+    "build_competition_policy",
+]

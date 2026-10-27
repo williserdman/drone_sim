@@ -22,7 +22,6 @@ class SimulationVehicle(Vehicle):
     def __init__(self, handler):
         super().__init__(handler)
         self._qgc_message_callback = None
-        self._fc_message_observer = None
         self._operator_observations = deque(maxlen=64)
         self._operator_observations_lock = threading.Lock()
         self._params_duration = math.inf
@@ -46,23 +45,8 @@ class SimulationVehicle(Vehicle):
             self._qgc_message_callback(message)
         if not is_flight_controller_message(message):
             return
-        observer = self._fc_message_observer
-        if observer is not None:
-            observer(self, name, message)
         self._observe_operator_fact(name, message)
         super().notify_message_listeners(name, message)
-
-    def install_fc_message_observer(self, callback):
-        """Observe exact-FC evidence before DroneKit exposes updated attributes."""
-        if not callable(callback):
-            raise TypeError("flight-controller observer must be callable")
-        if self._fc_message_observer is not None:
-            raise RuntimeError("flight-controller observer is already installed")
-        self._fc_message_observer = callback
-
-    def remove_fc_message_observer(self, callback):
-        if self._fc_message_observer == callback:
-            self._fc_message_observer = None
 
     def install_qgc_message_callback(self, callback):
         if not callable(callback):

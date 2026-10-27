@@ -34,21 +34,20 @@ not need to interpret those expected host limitations as product failures.
 
 ### Comp2026 mission source
 
-`companion/comp2026` contains upstream revision
-`95dec5105573d1a18b2ad824975d5edf99893006`. The pristine baseline branch is
-`integration/comp2026-upstream-95dec510`; the hook branch is
-`integration/comp2026-testbench-hooks`. The
-[source manifest](../companion/comp2026-source.json) records their provenance.
-The testbench runner calls FM1, FM2, and `drone.mock_mission.fm3` directly.
-Simulation adapters and lifecycle code remain under
+`companion/comp2026` is tracked in this monorepo. A normal clone contains the
+mission source required by the Phase 3 build. Its history before the monorepo
+import remains available through Git.
+The active FM3 remains
+[`src/drone/mock_mission.py`](../companion/comp2026/src/drone/mock_mission.py).
+Simulation adapters remain under
 [`companion/src/drone_sim_companion`](../companion/src/drone_sim_companion/).
 Use the [flight-code map](../companion/README.md#where-to-change-comp-2026-code)
-for ownership and current upstream limitations.
+for ownership and entry points instead of copying mission logic into this guide.
 
 Confirm the source and repository state before building:
 
 ```bash
-uv run --locked python scripts/audit-comp2026-hooks.py
+test -f companion/comp2026/README.md
 git rev-parse HEAD
 git status --short
 ```
@@ -261,8 +260,8 @@ The streamed Gazebo GUI supports navigation, selection, and read-only inspection
 Click inside the scene once to give the desktop focus before scrolling to zoom
 or dragging to move the view.
 World mutation controls are excluded. QGC retains its native operator controls;
-manual commands are recorded in `logs/docker/qgc-interventions.jsonl` and mission
-hosts observe changes in authority. A stale camera image is visibly marked
+manual commands are recorded in `logs/docker/qgc-interventions.jsonl` and flight
+supervisors observe changes in authority. A stale camera image is visibly marked
 and remains separate from the private camera-producer readiness used by QGC
 admission. Closing a browser tab leaves the session owner running; reload the
 console to reconnect. Interrupting the console process asks the active controller
@@ -382,11 +381,6 @@ A dimension that the selected claim does not need is `not_required`; it is not
 reported as passed. The process exits zero only when every dimension required
 for that claim passes.
 
-The `ordinary-land` profile claim checks the earlier testbench's precision-parameter
-transaction. Current upstream Comp2026 LAND does not emit that transaction, so
-its output alone cannot satisfy the claim. `precision-loss` applies to the
-configured moving-pad operation described below.
-
 The reader accepts evidence selected by the committed manifest. It checks the
 immutable run, action, request, and admission bindings before interpreting the
 native MAVLink log, DataFlash log, companion events, landing-profile events, or
@@ -465,9 +459,8 @@ docker run --rm drone-sim-companion-runtime:phase3 \
   python3 -m drone_sim_companion.comp2026_smoke
 ```
 
-This imports the actual upstream FM1, FM2, and FM3 functions plus testbench
-control and policy without opening devices. A nonzero exit identifies a packaging
-failure. Success does not establish flight or payload delivery.
+This imports the original FM1/FM2/FM3 functions without opening devices. A
+nonzero exit identifies a packaging failure; success is not flight evidence.
 
 The manual operator template waits for external GUIDED/arming. The suite supplies
 that operator through the private `operator-wait` Compose profile, retaining the
@@ -484,19 +477,17 @@ The local console source supports the matrix documented above. Native Intel Mac,
 Linux desktop, and Windows/WSL acceptance remain pending and must not be inferred
 from focused software tests.
 
-1. Edit the source, audit the hook scope, and run the relevant regressions:
+1. Edit the source and run tests that cover the changed behavior. For example,
+   these tests cover automatic sequencing and mission phase outcomes:
 
    ```bash
-   uv run --locked python scripts/audit-comp2026-hooks.py
-   uv run --locked pytest companion/comp2026/tests/test_testbench_hooks.py \
-     companion/tests/test_upstream_comp2026_runner.py \
-     companion/tests/test_comp2026_control.py \
-     companion/tests/test_comp2026_policy.py -q
+   PYTHONPATH=companion/comp2026/src:companion/comp2026/tests \
+     uv run --locked pytest companion/comp2026/tests/test_auto_attempt.py \
+       companion/comp2026/tests/test_mission_phase_results.py -q
    ```
 
-   The audit checks pinned file hashes and protected syntax outside the declared
-   hook functions. Review behavior changes separately from injection hooks.
-   Run other affected simulator tests under `companion/tests`.
+   For shared controller or simulator adapter changes, also run the affected
+   tests under `companion/comp2026/tests` or `companion/tests`.
 
 2. After the previous simulation has stopped and cleanup is complete, build
    matching images. From the repository root:
@@ -829,21 +820,32 @@ the mission, what points were awarded, and did the full evidence bundle validate
 Use [the latest documented failure](payload-timestamp-fix.md) as an example of
 150 points coexisting with a failed run.
 
-For `comp2026_auto`, inspect the upstream function output and testbench phase
-and recovery events. A phase `COMPLETE` event records a returned function. Only
-fresh landed and disarmed telemetry can complete the Home lifecycle, and neither
-fact proves a payload was delivered.
+Precision-landing recovery records one compact JSON object per rejected
+observation and state transition. Inspect it without changing the bundle:
 
-Upstream FM2 requests ordinary LAND and disarm before FM3. The current integration
-does not toggle `PLND_ENABLED` around ordinary LAND or recovery. With the pinned
-`PLND_STRICT=2` profile, a missing precision target may prevent touchdown. Inspect
-native mode, altitude, and landed/disarmed evidence if the attempt stops there.
-The prior stack's `landing_profile_transition` and `PRECISION_LANDING` records
-are historical formats, not expected output from this upstream integration.
+```bash
+RUN_ID=replace-with-run-uuid
+rg -n 'PRECISION_LANDING ' "runs/$RUN_ID/logs"
+```
 
-Upstream FM3 prints `simulated drop!!` and has no payload attachment or release
-call. Keep physical attachment, lift, release, score, and artifact validity
-separate when reviewing a run. Full-flight acceptance remains pending.
+The records distinguish tracking, GUIDED hold, reacquisition, the single search
+hover retry, touchdown, and deadline failure. During a GUIDED interval there
+must be no accepted landing-target output.
+
+For Comp2026 ordinary landing, also inspect the durable parameter transaction:
+
+```bash
+rg -n 'landing_profile_transition' "runs/$RUN_ID"
+```
+
+The expected order is a requested and verified fresh read for every approved
+profile parameter, requested and verified `PLND_ENABLED=0`, LAND/touchdown
+evidence, then requested and verified `PLND_ENABLED=1`. A failed event must have
+`detail`. Its generation may be absent only when the request or write never
+reached the guarded enqueue boundary. Event timestamps are public
+mission-relative nanoseconds; add the admitted native epoch before correlating
+them with DataFlash. Keep the live PLND switching proof pending until the Task 7
+native QGC flight captures both lifecycle events and genuine FC evidence.
 
 Inspect the image-baked values recorded by the flight controller rather than
 assuming the host parameter file reached the container:
@@ -1036,18 +1038,10 @@ uv run --locked mypy
 uv run --with playwright python tests/browser/check_console_views.py
 ```
 
-Check the upstream hook boundary and its testbench runner separately from flight
-acceptance:
-
-```bash
-uv run --locked python scripts/audit-comp2026-hooks.py
-uv run --locked pytest companion/comp2026/tests/test_testbench_hooks.py \
-  companion/tests/test_upstream_comp2026_runner.py -q
-```
-
-The pinned upstream revision has no original mission test suite. Counts and
-commands for the previous imported stack in dated verification records remain
-historical evidence.
+Run imported Comp2026 tests in a separate process so their module namespace does
+not collide with the top-level companion tests. The exact current command and
+result are retained in the
+[portable-console verification record](verification/2026-10-10-portable-local-console.md#supported-software-gates).
 
 These commands do not establish real flight behavior. For infrastructure
 integration (these commands build/run Docker containers and are slower):
