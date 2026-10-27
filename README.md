@@ -25,15 +25,16 @@ separates software, native workstation, and pending platform results.
 
 ## Platform support
 
-The console resolves macOS, Ubuntu desktop, or Ubuntu 24.04 under WSL2. It uses
+The console resolves macOS, Ubuntu desktop, or Ubuntu 24.04 under WSL2. Use Docker
+Desktop on macOS and Windows, or Docker Engine on native Ubuntu. It uses
 native QGroundControl 5.0.8 and native `linux/arm64` or `linux/amd64` container
 images. Windows runs the Python controller inside WSL; it does not run a native
 Windows controller.
 
 | Target | Source-level status | Native acceptance |
 | --- | --- | --- |
-| macOS 13+, Apple Silicon | Implemented; full software gate and native ARM64 image build/check passed | Real QGC transport, noVNC, camera, Prepare, and Stop passed; flight actions remain pending |
-| macOS 13+, Intel | Implemented | Pending on Intel hardware |
+| macOS supported by Docker Desktop, Apple Silicon | Implemented; native ARM64 images | Previous Colima checks are historical; see the handoff for Docker Desktop verification |
+| macOS supported by Docker Desktop, Intel | Implemented | Pending on Intel hardware |
 | Ubuntu 24.04 desktop, ARM64 or x86-64 | Implemented | Desktop QGC and runtime acceptance pending |
 | Windows 11 x86-64, Ubuntu 24.04 in WSL2 | Implemented, including the bounded Windows helper | Windows PowerShell 5.1, NTFS, UDP, NAT, and mirrored-network acceptance pending |
 
@@ -41,6 +42,9 @@ Windows ARM64 and emulated or remote container runtimes are outside the initial
 matrix. The [runbook](docs/runbook.md#local-mac-console) gives exact setup and
 recovery steps. The [handoff](docs/handoff.md) keeps native results separate
 from software tests and historical flights.
+
+Docker Desktop manages the Linux VM on macOS; Colima and Lima are no longer
+prerequisites. QGC, the browser, and the Python console still run on the host.
 
 ## Local flight console
 

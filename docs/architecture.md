@@ -127,6 +127,14 @@ and opens the native browser. Browser launch, Gazebo viewer connection, camera
 freshness, QGC transport, command admission, physical outcome, score, and
 artifact validity remain separate facts.
 
+Mac and WSL2 hosts select Docker Desktop; native Linux hosts select Docker Engine.
+The builder checks the effective local Unix endpoint, native Linux architecture,
+and Docker Desktop engine identity when that provider is selected. Context names
+do not establish engine identity. On macOS, Docker Desktop manages the Linux VM
+under the eight-container local stack. The console and QGC remain host processes.
+Changing engines requires completed cleanup on the original engine and a new
+matching build record for the destination engine's image store.
+
 Each prepared run includes `logs/docker/host-integration.jsonl`. Its fixed
 records contain only platform/provider, QGC paths/version, transport kind,
 helper identity when present, publication path/digest, and ownership

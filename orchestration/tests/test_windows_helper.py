@@ -244,13 +244,15 @@ def test_oversized_and_partial_lines_fail_connection(
         sys.executable,
         "-u",
         "-c",
-        f"import sys,time;print({ready!r},flush=True);sys.stdout.write('{{');sys.stdout.flush()",
+        f"import sys;print({ready!r},flush=True);sys.stdin.readline();sys.stdout.write('{{');sys.stdout.flush()",
     ]
     monkeypatch.setattr(helper_module, "_build_helper_command", lambda: command)
     helper = WindowsHelper.start(session_id=SESSION_ID)
-    with pytest.raises(WindowsHelperError, match="partial"):
-        helper.request("probe", {}, timeout_s=0.5)
-    helper.close()
+    try:
+        with pytest.raises(WindowsHelperError, match="partial"):
+            helper.request("probe", {}, timeout_s=0.5)
+    finally:
+        helper.close()
 
 
 @pytest.mark.parametrize("fault", ["mismatch", "duplicate"])

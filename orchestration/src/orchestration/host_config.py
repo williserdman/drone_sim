@@ -22,7 +22,7 @@ _ARCHITECTURE_ALIASES: dict[str, HostMachine] = {
     "x86_64": "amd64",
 }
 _PROVIDERS: dict[HostKind, str] = {
-    "macos": "colima",
+    "macos": "docker-desktop",
     "linux": "docker",
     "wsl2": "docker-desktop",
 }

@@ -178,7 +178,7 @@ class PrepareRuntime:
 
 class PrepareHost:
     def __init__(self, action_directory: Path, state_directory: Path):
-        self.facts = HostFacts("macos", "arm64", "linux/arm64", "colima")
+        self.facts = HostFacts("macos", "arm64", "linux/arm64", "docker-desktop")
         self.state_directory = state_directory
         self.action_directory = action_directory
         self.events = []

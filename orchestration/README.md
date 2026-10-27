@@ -108,12 +108,20 @@ the no-start proof.
 
 The builder derives `linux/arm64` or `linux/amd64` from the resolved host. It
 requires a local Unix-socket Docker endpoint, the host's selected provider, and
-a native Linux daemon with the same architecture. `DOCKER_CONTEXT` has Docker's
+a native Linux daemon with the same architecture. macOS and WSL2 select Docker
+Desktop; native Linux selects Docker Engine. Desktop selection requires the
+effective daemon to report `OperatingSystem: Docker Desktop`, independent of
+the context name. `desktop-linux`, a default local socket, and renamed local
+contexts are supported. A context named for Desktop still fails if its daemon
+belongs to another provider. `DOCKER_CONTEXT` has Docker's
 normal precedence over `DOCKER_HOST`; remote endpoints, active TLS overrides,
 and a conflicting `DOCKER_DEFAULT_PLATFORM` fail before Compose build. A
 successful build inspects all eight local images, including the viewer, before
 atomically publishing the schema-1 build record. The unattended suite continues
 to build and record its seven Phase 3 images without the viewer.
+
+Switching from Colima to Desktop requires a new native build. The read-only
+check rejects the old context or image identities and leaves its record intact.
 
 The resolved host's `state_directory` is the QGC token ledger authority. macOS
 keeps the existing `~/Library/Application Support/drone-sim/qgc/` directory.

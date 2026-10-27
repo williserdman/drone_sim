@@ -27,7 +27,7 @@ def _facts(kind: str = "linux", machine: str = "amd64") -> HostFacts:
         kind=kind,  # type: ignore[arg-type]
         machine=machine,  # type: ignore[arg-type]
         image_platform="linux/amd64" if machine == "amd64" else "linux/arm64",
-        provider="docker" if kind == "linux" else "colima",
+        provider="docker" if kind == "linux" else "docker-desktop",
     )
 
 

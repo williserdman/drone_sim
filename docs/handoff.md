@@ -3,6 +3,31 @@
 [Start here](../README.md) · [Architecture](architecture.md) · [Runbook](runbook.md) ·
 [Contribution rules](../AGENTS.md)
 
+## Docker Desktop migration — 2026-10-26
+
+The current Mac workflow uses Docker Desktop. The eight Compose services,
+native QGC, host console, loopback ports, and native image architectures are
+unchanged. Windows continues to use Docker Desktop through WSL2, and native
+Ubuntu uses Docker Engine. The [runbook](runbook.md#local-mac-console) includes
+Desktop installation, resources, file sharing, and migration steps.
+
+On the available Mac, Docker Desktop 4.97.0 reports `Docker Desktop`, native
+ARM64, 6 CPUs and 12 GiB configured memory under `desktop-linux`. Colima and
+Lima were stopped and uninstalled. Their VM files remain as an inactive backup.
+The interrupted competition run `101d37d3-9524-48da-9042-f07b4810056c` was
+archived before removing its eight stopped containers and independently verified
+empty recording volume on the original engine. Cleanup is complete; no new
+manifest, media-publication receipt, or flight validity claim was created.
+
+The provider change passed 145 focused tests, configured mypy, explicit builder
+mypy, and the browser regression. The full supported Linux suite on Docker
+Desktop passed 3,002 tests with 42 capability skips after correcting a test
+fixture startup race. Independent review has no remaining source findings.
+Colima verification below remains historical evidence. Desktop source/image and
+live-console results are kept in the [migration verification receipt](../.local-runtime/verification/2026-10-26-docker-desktop/final-handoff.json).
+Migration findings and check commands are recorded in
+[the ledger](LEDGER.md#docker-desktop-migration-2026-10-26).
+
 ## Portable local console — 2026-10-12
 
 The assembled console is implemented on `feature/local-simulation-console` in

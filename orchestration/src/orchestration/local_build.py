@@ -158,11 +158,7 @@ def _docker_state(host: HostIntegration) -> _DockerState:
             "local Docker endpoint cannot use TLS environment or context material"
         )
 
-    if host.facts.provider == "colima" and context != "colima":
-        raise RuntimeError(
-            f"host provider colima requires Docker context colima; found {context}"
-        )
-    if host.facts.provider not in {"colima", "docker", "docker-desktop"}:
+    if host.facts.provider not in {"docker", "docker-desktop"}:
         raise RuntimeError(f"host selected unsupported Docker provider {host.facts.provider}")
 
     configured_platform = os.environ.get("DOCKER_DEFAULT_PLATFORM", "").strip()
@@ -181,6 +177,14 @@ def _docker_state(host: HostIntegration) -> _DockerState:
     )
     if not isinstance(info, dict):
         raise RuntimeError("Docker engine returned invalid information")
+    if (
+        host.facts.provider == "docker-desktop"
+        and info.get("OperatingSystem") != "Docker Desktop"
+    ):
+        raise RuntimeError(
+            "host provider docker-desktop requires Docker Desktop; "
+            f"effective Docker engine reports {info.get('OperatingSystem')!r}"
+        )
     platform = _platform(info.get("OSType"), info.get("Architecture"))
     if platform != target_platform:
         raise RuntimeError(

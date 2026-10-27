@@ -280,8 +280,8 @@ def test_wsl1_is_rejected_instead_of_classified_as_wsl2(
 @pytest.mark.parametrize(
     ("system", "machine", "release", "kind", "normalized", "image", "provider"),
     [
-        ("Darwin", "x86_64", "25.0.0", "macos", "amd64", "linux/amd64", "colima"),
-        ("Darwin", "aarch64", "25.0.0", "macos", "arm64", "linux/arm64", "colima"),
+        ("Darwin", "x86_64", "25.0.0", "macos", "amd64", "linux/amd64", "docker-desktop"),
+        ("Darwin", "aarch64", "25.0.0", "macos", "arm64", "linux/arm64", "docker-desktop"),
         ("Linux", "AMD64", "6.8.0-generic", "linux", "amd64", "linux/amd64", "docker"),
         ("Linux", "arm64", "6.8.0-generic", "linux", "arm64", "linux/arm64", "docker"),
     ],

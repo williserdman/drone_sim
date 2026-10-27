@@ -47,9 +47,12 @@ class _Workstation:
         yield
 
 
-def _host(platform: str = "linux/arm64", *, provider: str = "colima"):
+def _host(
+    platform: str = "linux/arm64", *, provider: str = "docker-desktop",
+    kind: str | None = None,
+):
     machine = "arm64" if platform == "linux/arm64" else "amd64"
-    kind = "macos" if provider == "colima" else "linux"
+    kind = kind or ("macos" if provider == "docker-desktop" else "linux")
     return SimpleNamespace(
         facts=SimpleNamespace(
             image_platform=platform,
@@ -96,7 +99,7 @@ def _write_build_record(
     revision: str,
     platform: str,
     *,
-    context: str = "colima",
+    context: str = "desktop-linux",
 ) -> Path:
     record_path = root / ".local-runtime/build.json"
     record_path.parent.mkdir()
@@ -120,8 +123,10 @@ def _docker_output(
     revision: str,
     *,
     architecture: str = "aarch64",
-    context: str = "colima",
-    endpoint: str = "unix:///Users/test/.colima/default/docker.sock",
+    context: str = "desktop-linux",
+    endpoint: str = "unix:///Users/test/.docker/run/docker.sock",
+    operating_system: object = "Docker Desktop",
+    daemon_name: str = "docker-desktop",
     skip_tls_verify: bool = False,
     tls_material: object | None = None,
     missing_image: str | None = None,
@@ -150,7 +155,10 @@ def _docker_output(
             )
         if command[1:3] == ["info", "--format"]:
             return json.dumps(
-                {"OSType": "linux", "Architecture": architecture, "Name": context}
+                {
+                    "OSType": "linux", "Architecture": architecture,
+                    "Name": daemon_name, "OperatingSystem": operating_system,
+                }
             )
         if command[1:3] == ["image", "inspect"]:
             image = command[-1]
@@ -355,7 +363,7 @@ def test_check_build_preserves_record_schema_and_eight_image_order(
         "schema_version": 1,
         "source_revision": revision,
         "source_tree_sha256": runtime_input_digest(tmp_path),
-        "docker_context": "colima",
+        "docker_context": "desktop-linux",
         "target_platform": "linux/arm64",
         "images": images,
     }
@@ -377,8 +385,8 @@ def test_check_build_preserves_record_schema_and_eight_image_order(
     ("platform", "daemon_architecture", "provider", "context", "endpoint"),
     [
         (
-            "linux/arm64", "arm64", "colima", "colima",
-            "unix:///Users/test/.colima/default/docker.sock",
+            "linux/arm64", "arm64", "docker-desktop", "desktop-linux",
+            "unix:///Users/test/.docker/run/docker.sock",
         ),
         (
             "linux/arm64", "aarch64", "docker", "default",
@@ -419,6 +427,8 @@ def test_check_build_accepts_native_docker_architecture_aliases(
             architecture=daemon_architecture,
             context=context,
             endpoint=endpoint,
+            operating_system="Ubuntu 24.04.1 LTS" if provider == "docker" else "Docker Desktop",
+            daemon_name="linux-workstation" if provider == "docker" else "docker-desktop",
         ),
     )
 
@@ -430,13 +440,209 @@ def test_check_build_accepts_native_docker_architecture_aliases(
     assert result["current_platform"] == platform
 
 
+@pytest.mark.parametrize(
+    ("context", "endpoint", "configured_host"),
+    [
+        ("desktop-linux", "unix:///Users/test/.docker/run/docker.sock", None),
+        ("default", "unix:///var/run/docker.sock", None),
+        ("local-simulator", "unix:///Users/test/.docker/run/docker.sock", None),
+        ("saved-remote", "ssh://builder@example.invalid", "unix:///var/run/docker.sock"),
+    ],
+)
+def test_desktop_identity_is_independent_of_local_context_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context: str, endpoint: str,
+    configured_host: str | None,
+) -> None:
+    import orchestration.local_build as local_build
+
+    revision = _committed_fixture(tmp_path)
+    record = _write_build_record(
+        tmp_path, local_build, revision, "linux/arm64", context=context
+    )
+    before = record.read_bytes()
+    if configured_host is not None:
+        monkeypatch.setenv("DOCKER_HOST", configured_host)
+    monkeypatch.setattr(
+        local_build, "_check_output",
+        _docker_output(local_build, revision, context=context, endpoint=endpoint),
+    )
+
+    result = local_build.check_build(tmp_path, _host())
+
+    assert result["ok"] is True
+    assert result["current_context"] == context
+    assert record.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("context", "endpoint", "operating_system", "daemon_name", "configured_host"),
+    [
+        ("desktop-linux", "unix:///var/run/docker.sock", "Ubuntu 24.04.1 LTS", "docker-desktop", None),
+        ("desktop-linux", "unix:///var/run/docker.sock", None, "docker-desktop", None),
+        (
+            "colima", "unix:///Users/test/.colima/default/docker.sock",
+            "Ubuntu 24.04.1 LTS", "colima", None,
+        ),
+        (
+            "desktop-linux", "unix:///Users/test/.colima/default/docker.sock",
+            "Ubuntu 24.04.1 LTS", "colima", None,
+        ),
+        (
+            "desktop-linux", "unix:///Users/test/.docker/run/docker.sock",
+            "Ubuntu 24.04.1 LTS", "colima",
+            "unix:///Users/test/.colima/default/docker.sock",
+        ),
+    ],
+)
+def test_desktop_provider_rejects_other_engines_before_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context: str, endpoint: str,
+    operating_system: object, daemon_name: str, configured_host: str | None,
+) -> None:
+    import orchestration.local_build as local_build
+
+    revision = _committed_fixture(tmp_path)
+    record = _write_build_record(
+        tmp_path, local_build, revision, "linux/arm64", context=context
+    )
+    before = record.read_bytes()
+    if configured_host is not None:
+        monkeypatch.setenv("DOCKER_HOST", configured_host)
+    monkeypatch.setattr(
+        local_build, "_check_output",
+        _docker_output(
+            local_build, revision, context=context, endpoint=endpoint,
+            operating_system=operating_system, daemon_name=daemon_name,
+        ),
+    )
+    monkeypatch.setattr(
+        local_build, "_run",
+        lambda *_args, **_kwargs: pytest.fail("non-Desktop engine reached build"),
+    )
+
+    result = local_build.check_build(tmp_path, _host())
+
+    assert result["ok"] is False
+    assert any("requires Docker Desktop" in reason for reason in result["reasons"])
+    assert result["images"] == []
+    with pytest.raises(RuntimeError, match="requires Docker Desktop"):
+        local_build.build_images(tmp_path, _host(), _Workstation())
+    assert record.read_bytes() == before
+
+
+def test_old_colima_build_record_cannot_be_reused_on_desktop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import orchestration.local_build as local_build
+
+    revision = _committed_fixture(tmp_path)
+    record = _write_build_record(
+        tmp_path, local_build, revision, "linux/arm64", context="colima"
+    )
+    before = record.read_bytes()
+    monkeypatch.setattr(
+        local_build, "_check_output", _docker_output(local_build, revision)
+    )
+
+    result = local_build.check_build(tmp_path, _host())
+
+    assert result["ok"] is False
+    assert "Docker context changed since the local image build" in result["reasons"]
+    assert record.read_bytes() == before
+
+
+def test_wsl2_accepts_desktop_engine_on_local_distribution_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import orchestration.local_build as local_build
+
+    revision = _committed_fixture(tmp_path)
+    _write_build_record(
+        tmp_path, local_build, revision, "linux/amd64", context="default"
+    )
+    monkeypatch.setattr(
+        local_build, "_check_output",
+        _docker_output(
+            local_build, revision, architecture="x86_64", context="default",
+            endpoint="unix:///var/run/docker.sock",
+        ),
+    )
+
+    result = local_build.check_build(tmp_path, _host("linux/amd64", kind="wsl2"))
+
+    assert result["ok"] is True
+
+
+@pytest.mark.parametrize("platform", ["linux/arm64", "linux/amd64"])
+def test_desktop_build_publishes_unchanged_native_record_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    import orchestration.local_build as local_build
+
+    revision = _committed_fixture(tmp_path)
+    monkeypatch.setattr(
+        local_build, "_check_output",
+        _docker_output(
+            local_build, revision, architecture=platform.split("/")[1],
+            context="local-simulator",
+        ),
+    )
+    builds: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setattr(
+        local_build, "_run",
+        lambda command, **kwargs: builds.append((list(command), kwargs["env"])),
+    )
+
+    local_build.build_images(tmp_path, _host(platform), _Workstation())
+
+    record = json.loads((tmp_path / ".local-runtime/build.json").read_text())
+    assert record == {
+        "schema_version": 1,
+        "source_revision": revision,
+        "source_tree_sha256": runtime_input_digest(tmp_path),
+        "docker_context": "local-simulator",
+        "target_platform": platform,
+        "images": _image_rows(local_build, platform),
+    }
+    assert len(builds) == 2
+    assert builds[0][0][-7:] == list(local_build.RUNTIME_SERVICES)
+    assert builds[1][0][-1] == "gazebo-viewer"
+    assert all(env["DOCKER_DEFAULT_PLATFORM"] == platform for _, env in builds)
+    assert local_build.check_build(tmp_path, _host(platform))["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("options", "reason"),
+    [
+        ({"skip_tls_verify": True}, "TLS environment or context material"),
+        ({"tls_material": {"docker": ["ca.pem"]}}, "TLS environment or context material"),
+        ({"architecture": "x86_64"}, "expected native linux/arm64"),
+    ],
+)
+def test_desktop_provider_retains_tls_and_native_daemon_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, object],
+    reason: str,
+) -> None:
+    import orchestration.local_build as local_build
+
+    revision = _committed_fixture(tmp_path)
+    monkeypatch.setattr(
+        local_build, "_check_output", _docker_output(local_build, revision, **options)
+    )
+
+    result = local_build.check_build(tmp_path, _host())
+
+    assert result["ok"] is False
+    assert any(reason in item for item in result["reasons"])
+    assert result["images"] == []
+
+
 def test_environment_cannot_hide_remote_daemon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import orchestration.local_build as local_build
 
     revision = _committed_fixture(tmp_path)
-    monkeypatch.setenv("DOCKER_CONTEXT", "colima")
+    monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
     monkeypatch.delenv("DOCKER_HOST", raising=False)
     monkeypatch.setattr(
         local_build,
@@ -444,7 +650,7 @@ def test_environment_cannot_hide_remote_daemon(
         _docker_output(
             local_build,
             revision,
-            context="colima",
+            context="desktop-linux",
             endpoint="ssh://builder@example.invalid",
         ),
     )
@@ -470,7 +676,7 @@ def test_explicit_local_context_overrides_ambient_remote_docker_host(
 
     revision = _committed_fixture(tmp_path)
     _write_build_record(tmp_path, local_build, revision, "linux/arm64")
-    monkeypatch.setenv("DOCKER_CONTEXT", "colima")
+    monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
     monkeypatch.setenv("DOCKER_HOST", "tcp://remote.example.invalid:2376")
     monkeypatch.setattr(
         local_build,

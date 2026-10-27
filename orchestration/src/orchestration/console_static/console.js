@@ -79,7 +79,7 @@ function render(snapshot) {
   text("flight-detail", detail || "Select a preset, prepare the simulation, then use the run-bound actions in QGroundControl.");
   text("run-id", snapshot.run_id ? snapshot.run_id.slice(0, 8) : "No active run");
   const host = snapshot.host || {};
-  const hostNames = {wsl2: "WSL2", macos: "macOS", linux: "Linux", amd64: "AMD64", arm64: "ARM64", "docker-desktop": "Docker Desktop", colima: "Colima", docker: "Docker"};
+  const hostNames = {wsl2: "WSL2", macos: "macOS", linux: "Linux", amd64: "AMD64", arm64: "ARM64", "docker-desktop": "Docker Desktop", docker: "Docker"};
   text("host-platform", [host.kind, host.machine, host.provider].filter(Boolean).map((item) => hostNames[item] || item).join(" · ") || "Host platform unavailable");
   ["world", "preset", "calibration", "preparation-limit"].forEach((id) => { $(id).disabled = active || busy; });
   const cleanupReady = !snapshot.run_id || snapshot.cleanup === "complete";

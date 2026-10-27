@@ -97,20 +97,49 @@ depend on the local QGC/Gazebo viewer image.
 
 ### Local Mac console
 
-The same console supports macOS 13 or newer, Ubuntu 24.04 desktop, and Ubuntu
+The same console supports macOS supported by the installed Docker Desktop
+release, Ubuntu 24.04 desktop, and Ubuntu
 24.04 under WSL2 on Windows 11 x86-64. Every target needs Python 3.12, locked
 `uv` dependencies, Docker Compose, 8 GiB free for run evidence, at least 4 CPUs
 and 8 GiB RAM, and preferably 6 CPUs and 12 GiB. Install QGroundControl 5.0.8
 using the [QGC installation guide](https://docs.qgroundcontrol.com/Stable_V5.0/en/qgc-user-guide/getting_started/download_and_install.html).
 
-On macOS, install QGC at `/Applications/QGroundControl.app` and start a native
-Colima VM. Use `--arch aarch64` on Apple Silicon or `--arch x86_64` on Intel:
+On macOS, install QGC at `/Applications/QGroundControl.app` and install
+[Docker Desktop for your Mac's architecture](https://docs.docker.com/desktop/setup/install/mac-install/).
+Open Docker Desktop and complete its first-run setup. In **Settings > Resources**,
+allocate at least 4 CPUs and 8 GiB RAM, preferably 6 CPUs and 12 GiB RAM, and
+allow at least 80 GiB of virtual disk capacity for images, caches, and recordings.
+These are capacity settings; the host also needs sufficient free disk space.
+Docker Desktop manages its own Linux VM, so no Colima or Lima installation is
+needed. Choose native ARM64 images on Apple Silicon and native AMD64 on Intel.
 
 ```bash
-colima start --arch aarch64 --cpu 6 --memory 12 --disk 80
+open -a Docker
+docker context use desktop-linux
+docker info
 uv sync --python 3.12 --locked
 uv run --locked drone-sim console
 ```
+
+Wait for Docker Desktop to report that its engine is running before the Docker
+commands. The normal context is `desktop-linux`; the builder also accepts a
+default or renamed local context when its effective engine is Docker Desktop.
+Remove stale `DOCKER_HOST` or `DOCKER_CONTEXT` shell overrides if they select the
+old engine. Remote endpoints, TLS overrides, and emulated image architectures
+remain unsupported. The console reports a mismatch instead of switching engines.
+
+Keep the checkout and run directories in a directory shared with Docker Desktop.
+`/Users` is shared by default on macOS. If using another location, add it under
+**Settings > Resources > File sharing**. The existing loopback port mappings work
+through Docker Desktop; host networking is not required.
+
+When migrating an existing installation, finish the old run with **Stop
+simulation** while its original engine is available. Confirm cleanup is complete
+before stopping Colima or selecting Docker Desktop. An empty new engine does not
+prove cleanup of the old engine. Preserve the old VM until any needed evidence
+has been published. Docker Desktop has a separate image and volume store, so run
+`./scripts/local-build.sh --build` and `--check` there before preparing a new run.
+Do not copy or edit the old build record to make it match the new engine.
 
 On Ubuntu 24.04 desktop, install Docker Engine and the Compose plugin from the
 [official Ubuntu instructions](https://docs.docker.com/engine/install/ubuntu/).
@@ -226,8 +255,9 @@ command. At finalization, the console closes the run transport and its host log
 writer after runtime and media closure, before the manifest inventory begins.
 
 The local artifacts service uses a run-scoped **Docker named volume** for its
-recording spool because both the macOS shared directory and this Colima writable
-container layer reject `O_TMPFILE`. Closed media is published to the host evidence
+recording spool. Earlier Colima checks found that the macOS shared directory and
+the container writable layer rejected `O_TMPFILE`; Docker Desktop retains the
+native Linux volume contract. Closed media is published to the host evidence
 directory before recorder finalization is reported. Do not replace the spool
 with a macOS bind mount or remove it while recording/finalizing.
 Cleanup removes the volume only after verified publication; if publication fails,

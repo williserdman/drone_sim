@@ -121,7 +121,7 @@ def test_checks_report_selected_host_and_runtime_provider(tmp_path: Path, monkey
 @pytest.mark.parametrize(
     "facts",
     [
-        HostFacts("macos", "arm64", "linux/arm64", "colima"),
+        HostFacts("macos", "arm64", "linux/arm64", "docker-desktop"),
         HostFacts("linux", "amd64", "linux/amd64", "docker"),
         HostFacts("wsl2", "amd64", "linux/amd64", "docker-desktop"),
     ],
