@@ -9,8 +9,6 @@ class RelativePosition:
 
 @dataclass
 class RelPosComplete:
-    """Body-frame metres in forward, right, down (FRD) order."""
-
     x: float
     y: float
     z: float
@@ -28,10 +26,3 @@ class GPSCoord:
     lat: float
     long: float
     alt: float
-
-
-@dataclass(frozen=True)
-class MissionHome:
-    lat: float
-    lon: float
-    amsl_m: float

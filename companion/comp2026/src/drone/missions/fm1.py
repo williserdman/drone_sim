@@ -11,43 +11,19 @@ from ..control.mission_info import MissonTracker
 from .utils import log, warn
 
 
-def _require_takeoff_success(result: object) -> None:
-    if result is None or (type(result) is int and result == 0):
-        return
-    raise RuntimeError("FM1 takeoff was not confirmed")
+def fm1(mt: MissonTracker, controller: DroneControl, cruise_alt: int, L: GPSCoord):
+    log("fm1: rise 30ft horizontally", controller.vehicle._master)
+    controller.force_arm_takeoff(cruise_alt)
+    # controller.takeoff(cruise_alt)
 
-
-def _require_legacy_success(result: object, operation: str) -> None:
-    if type(result) is int and result == 0:
-        return
-    raise RuntimeError(f"FM1 {operation} was not confirmed")
-
-
-def fm1(
-    mt: MissonTracker, controller: DroneControl, cruise_alt: int, L: GPSCoord
-) -> bool:
-    controller.check_permission()
-    log(
-        f"fm1: taking off to configured altitude {cruise_alt} m",
-        controller.vehicle._master,
-    )
-    _require_takeoff_success(controller.force_arm_takeoff(cruise_alt))
-
-    controller.check_permission()
     log("fm1: transiting to waypoint L", controller.vehicle._master)
-    _require_legacy_success(
-        controller.goto_waypoint(GPSCoord(L.lat, L.long, cruise_alt)),
-        "navigation",
-    )
+    controller.goto_waypoint(GPSCoord(L.lat, L.long, cruise_alt))
 
-    controller.check_permission()
-    _require_legacy_success(controller.ordinary_land(), "landing")
-
-    controller.check_permission()
-    _require_legacy_success(controller.disarm(), "disarm")
+    controller.simple_land()
+    controller.disarm()
 
     log(
         "fm1: landed at L, awaiting flagger and judge approval to start fm2",
         controller.vehicle._master,
     )
-    return True
+    return
