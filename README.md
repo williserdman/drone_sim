@@ -46,10 +46,10 @@ from software tests and historical flights.
 Docker Desktop manages the Linux VM on macOS; Colima and Lima are no longer
 prerequisites. QGC, the browser, and the Python console still run on the host.
 
-The Desktop host migration is complete, but the clean simulator image build is
-currently blocked by unavailable Ubuntu package pins. See the
+The Desktop host migration is complete. Ubuntu package locks have been refreshed
+for fresh machines. Check the
 [current build status](docs/handoff.md#docker-desktop-migration--2026-10-26)
-before trying a new run.
+before you prepare a run.
 
 ## Local flight console
 

@@ -1,0 +1,687 @@
+{
+  "amd64": {
+    "apt_architecture": "amd64",
+    "base": {
+      "architecture": "amd64",
+      "child_manifest_digest": "sha256:bab7e640bf79cd84957e4e18fcba7d87efc3385b4e3f36a32eeca01638e43206",
+      "config_digest": "sha256:3786be5ed1130691ee8813979e86da478531ff25e9e5bbdad85783a222716eba",
+      "index_digest": "sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4",
+      "status_layer_digest": "sha256:e8411d72f4b8d1a32d36a409d255c8e7f71951e6eecb2cbb35b4d27a5ca35348",
+      "status_sha256": "bd99079deff3da2ae452b7a45871630ac4b799195efb39964d88f5e2b6cfe3ea"
+    },
+    "docker_inventory_unchanged": true,
+    "generated_at": "2026-10-27T03:22:06.344972+00:00",
+    "indexes": [
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_InRelease",
+        "sha256": "fd745120d851e35c46cb2a91ca8d5297daa58faf277f4cc0ea43cc339aaa6747",
+        "size": 126173
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_main_binary-amd64_Packages.lz4",
+        "sha256": "bdb7c408eb3b79ad32583ff785b554a2f8f7a6444f09f6b4ec258febdf947228",
+        "size": 79250
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_multiverse_binary-amd64_Packages.lz4",
+        "sha256": "829641000a3c8f2110e1b51b1da12a8dce3883dad860aaebc8181ea928b50665",
+        "size": 921
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-backports_universe_binary-amd64_Packages.lz4",
+        "sha256": "c5b0a9aca5aa0735132db22fe97f9e18b52a5f443a93bef46cc0ef293c06cd28",
+        "size": 57904
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_InRelease",
+        "sha256": "c607e7ab2685b82c6d37a57261f8413d68c82b01a6a4225e1c6292fcb95691b4",
+        "size": 126125
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_main_binary-amd64_Packages.lz4",
+        "sha256": "6af5a3b78144c49c5b40475c2581f2122f6160168060924515e99bd621c6fd69",
+        "size": 2905665
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_multiverse_binary-amd64_Packages.lz4",
+        "sha256": "c2c7e8898c8ecf892483b74771cc148974eb26bbf6f2bc636233020c6b39c8a2",
+        "size": 102231
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_restricted_binary-amd64_Packages.lz4",
+        "sha256": "f8bd542b63cb148d13f97383574ba7f0a61bf1be7f6d7ba4402923f5c4c33c80",
+        "size": 3785323
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble-updates_universe_binary-amd64_Packages.lz4",
+        "sha256": "f760e1c48f69ae755186f9b8cbbe005dc7ac2a9c1a67479263cab607ba9337a2",
+        "size": 3626594
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble_InRelease",
+        "sha256": "cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0",
+        "size": 255850
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages.lz4",
+        "sha256": "5440959b1be383eee0871228f9a97a15f50e5ecf8ac726f3aa53b2c6903bcdf2",
+        "size": 2950155
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble_multiverse_binary-amd64_Packages.lz4",
+        "sha256": "9541f08c9d7b3b6c13064f51b47507222a9b92eea3e84155b92c5246a857a558",
+        "size": 530633
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble_restricted_binary-amd64_Packages.lz4",
+        "sha256": "94382ed0c9be97b6bdca794b26180b577b9b4aec27a3c648a95ca1629b551c54",
+        "size": 195876
+      },
+      {
+        "file": "archive.ubuntu.com_ubuntu_dists_noble_universe_binary-amd64_Packages.lz4",
+        "sha256": "0aa71c66135f20a4aa760fa788a42846a41c8628b6720d82f768b51b5c2d3895",
+        "size": 31234980
+      },
+      {
+        "file": "packages.ros.org_ros2_ubuntu_dists_noble_InRelease",
+        "sha256": "db99881d367f1fd10ab83f1bd2e1faeac4acf8fdbccbcf4fad01f1b008af0776",
+        "size": 4679
+      },
+      {
+        "file": "packages.ros.org_ros2_ubuntu_dists_noble_main_binary-amd64_Packages.lz4",
+        "sha256": "11f932be95b5b68eb282efac19a4183b309b7ee1ecc189e9de7c89f40ffa5f4f",
+        "size": 3413344
+      },
+      {
+        "file": "packages.ros.org_ros2_ubuntu_dists_noble_main_source_Sources.lz4",
+        "sha256": "b0a8323f20f9795012ec9ea4c8265346b33b0f0dd0fd6cc3b0bd53e1a23a6cd6",
+        "size": 3650857
+      },
+      {
+        "file": "security.ubuntu.com_ubuntu_dists_noble-security_InRelease",
+        "sha256": "25fe752bf07eb17eb5db1fd5a1fe4e40c0382dc2308a602ee9da1abb9d49bac7",
+        "size": 126127
+      },
+      {
+        "file": "security.ubuntu.com_ubuntu_dists_noble-security_main_binary-amd64_Packages.lz4",
+        "sha256": "e59c8bbf35d2821eaf7864bcddd89f1b2152f1c8abd23dc73d5c79eac15882bb",
+        "size": 2365480
+      },
+      {
+        "file": "security.ubuntu.com_ubuntu_dists_noble-security_multiverse_binary-amd64_Packages.lz4",
+        "sha256": "2604e1872d78c008a126d8a6adc112996ca13ea41c517bf0d61d9eca353bb422",
+        "size": 92530
+      },
+      {
+        "file": "security.ubuntu.com_ubuntu_dists_noble-security_restricted_binary-amd64_Packages.lz4",
+        "sha256": "efcb7f8bc0d5887adb2837d8ad17ce008192bdf044defd44b2ad64e66ab79925",
+        "size": 3597344
+      },
+      {
+        "file": "security.ubuntu.com_ubuntu_dists_noble-security_universe_binary-amd64_Packages.lz4",
+        "sha256": "f73d971f98d3eca3a25236ee6ebbac5189b8381de61913492eae31307ff90254",
+        "size": 2585728
+      }
+    ],
+    "native_acceptance": false,
+    "phases": [
+      {
+        "candidate_filename": "artifacts-direct.amd64.candidate.delta",
+        "candidate_sha256": "5dc0c3ef68106fe3d075e5826c38a335c414a79ffd8c222b99359e2447209623",
+        "downloads_verified": true,
+        "package_manifest_sha256": "058b2911295e1a51dacc484329327f2aaa1835fb27ae7d125171d62b50ea6551",
+        "phase": "artifacts-direct",
+        "selected_count": 15,
+        "selected_download_bytes": 17696872,
+        "ubuntu_refreshes": []
+      },
+      {
+        "candidate_filename": "ffmpeg-packages.amd64.candidate.lock",
+        "candidate_sha256": "2048c831d649fde6dd167f20709706cddf6c93bb1d09dcbb7ccafa452b9de71d",
+        "downloads_verified": true,
+        "package_manifest_sha256": "f8a671b5088af824e84e84c13442fabaef499782014e9cc7d843de97dbc75fb3",
+        "phase": "artifacts-ffmpeg",
+        "selected_count": 146,
+        "selected_download_bytes": 107778832,
+        "ubuntu_refreshes": []
+      },
+      {
+        "candidate_filename": "harmonic-packages.amd64.candidate.lock",
+        "candidate_sha256": "36c26dc16b8a60c8ddd011c0f4916b2ca53301c2d60663a174f9bef9d15d854a",
+        "downloads_verified": true,
+        "package_manifest_sha256": "9ad74aae7e6b2880b3f7bfa64b0035c6e6b89cc6e0c233744e4dd23f2e658885",
+        "phase": "gazebo-harmonic",
+        "selected_count": 807,
+        "selected_download_bytes": 557737556,
+        "ubuntu_refreshes": [
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "curl"
+          },
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "libcurl3t64-gnutls"
+          },
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "libcurl4-openssl-dev"
+          },
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "libcurl4t64"
+          },
+          {
+            "after": "5.6.1+really5.4.5-1ubuntu0.4",
+            "before": "5.6.1+really5.4.5-1ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "liblzma-dev"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "libminizip-dev"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "libminizip1t64"
+          },
+          {
+            "after": "2:3.98-1ubuntu0.3",
+            "before": "2:3.98-1ubuntu0.2",
+            "origin": "Ubuntu",
+            "package": "libnss3"
+          },
+          {
+            "after": "24.02.0-1ubuntu9.11",
+            "before": "24.02.0-1ubuntu9.10",
+            "origin": "Ubuntu",
+            "package": "libpoppler-dev"
+          },
+          {
+            "after": "24.02.0-1ubuntu9.11",
+            "before": "24.02.0-1ubuntu9.10",
+            "origin": "Ubuntu",
+            "package": "libpoppler-private-dev"
+          },
+          {
+            "after": "24.02.0-1ubuntu9.11",
+            "before": "24.02.0-1ubuntu9.10",
+            "origin": "Ubuntu",
+            "package": "libpoppler134"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotobuf-dev"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotobuf-lite32t64"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotobuf32t64"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotoc-dev"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotoc32t64"
+          },
+          {
+            "after": "255.4-1ubuntu8.18",
+            "before": "255.4-1ubuntu8.17",
+            "origin": "Ubuntu",
+            "package": "libudev-dev"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "protobuf-compiler"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "python3-protobuf"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "zlib1g-dev"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "zlib1g"
+          }
+        ]
+      },
+      {
+        "candidate_filename": "viewer-packages.amd64.candidate.lock",
+        "candidate_sha256": "fb84a33dc95ca2a2cbb60f46b3173428926ee7b1aa4811cbb5e2fa72dd0fd6ec",
+        "downloads_verified": true,
+        "package_manifest_sha256": "297f8bc49f227abf1884b708aeab6e2ba23e7c8af0a984e14bda12d3ebecafe4",
+        "phase": "viewer",
+        "selected_count": 90,
+        "selected_download_bytes": 45925388,
+        "ubuntu_refreshes": [
+          {
+            "after": "10.02.1~dfsg1-0ubuntu7.10",
+            "before": "10.02.1~dfsg1-0ubuntu7.9",
+            "origin": "Ubuntu",
+            "package": "libgs-common"
+          },
+          {
+            "after": "10.02.1~dfsg1-0ubuntu7.10",
+            "before": "10.02.1~dfsg1-0ubuntu7.9",
+            "origin": "Ubuntu",
+            "package": "libgs10-common"
+          },
+          {
+            "after": "10.02.1~dfsg1-0ubuntu7.10",
+            "before": "10.02.1~dfsg1-0ubuntu7.9",
+            "origin": "Ubuntu",
+            "package": "libgs10"
+          },
+          {
+            "after": "2.0.7-1ubuntu0.8",
+            "before": "2.0.7-1ubuntu0.7",
+            "origin": "Ubuntu",
+            "package": "python3-urllib3"
+          },
+          {
+            "after": "2:21.1.12-1ubuntu1.9",
+            "before": "2:21.1.12-1ubuntu1.8",
+            "origin": "Ubuntu",
+            "package": "xserver-common"
+          },
+          {
+            "after": "2:21.1.12-1ubuntu1.9",
+            "before": "2:21.1.12-1ubuntu1.8",
+            "origin": "Ubuntu",
+            "package": "xvfb"
+          }
+        ]
+      }
+    ],
+    "raw_evidence": ".local-runtime/apt-lock-resolution/amd64/runs/20261027T031926Z-59972",
+    "utility_architecture": "aarch64"
+  },
+  "arm64": {
+    "apt_architecture": "arm64",
+    "base": {
+      "architecture": "arm64",
+      "child_manifest_digest": "sha256:d849b6203853848bf20f5e5d6d77c1275bff1ff727d93ab055799cb33c2dac7a",
+      "config_digest": "sha256:cc9b02bb6caecebb32ca3c3cfce11d6a4b90b0bd7e904e168e9c23819a2cfffb",
+      "index_digest": "sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4",
+      "status_layer_digest": "sha256:600c7c7a1562f5b64f08bdb9440ac70fedde3dd1500777710db926aa67e26875",
+      "status_sha256": "334b8d8f8ad98797393044cf1c5acd5eb336e41d4edc47d60b6f5d5d26ca5f86"
+    },
+    "docker_inventory_unchanged": true,
+    "generated_at": "2026-10-27T03:19:15.137020+00:00",
+    "indexes": [
+      {
+        "file": "packages.ros.org_ros2_ubuntu_dists_noble_InRelease",
+        "sha256": "db99881d367f1fd10ab83f1bd2e1faeac4acf8fdbccbcf4fad01f1b008af0776",
+        "size": 4679
+      },
+      {
+        "file": "packages.ros.org_ros2_ubuntu_dists_noble_main_binary-arm64_Packages.lz4",
+        "sha256": "d006e7fa9119d7d62193d46612660e601e41feb94b6460360cc35e7d708c16de",
+        "size": 3389040
+      },
+      {
+        "file": "packages.ros.org_ros2_ubuntu_dists_noble_main_source_Sources.lz4",
+        "sha256": "b0a8323f20f9795012ec9ea4c8265346b33b0f0dd0fd6cc3b0bd53e1a23a6cd6",
+        "size": 3650857
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-backports_InRelease",
+        "sha256": "fd745120d851e35c46cb2a91ca8d5297daa58faf277f4cc0ea43cc339aaa6747",
+        "size": 126173
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-backports_main_binary-arm64_Packages.lz4",
+        "sha256": "24d2d2e4b8edd0b70298a502434cf0f99448742117353f4d084e8ec8e644edb7",
+        "size": 79185
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-backports_multiverse_binary-arm64_Packages.lz4",
+        "sha256": "829641000a3c8f2110e1b51b1da12a8dce3883dad860aaebc8181ea928b50665",
+        "size": 921
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-backports_universe_binary-arm64_Packages.lz4",
+        "sha256": "542d4f1dbc105c5e9041cdc52f6cb915d57116d63e52a480f6135fc76458966d",
+        "size": 58348
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-security_InRelease",
+        "sha256": "25fe752bf07eb17eb5db1fd5a1fe4e40c0382dc2308a602ee9da1abb9d49bac7",
+        "size": 126127
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-security_main_binary-arm64_Packages.lz4",
+        "sha256": "c10516f8363f50a2657ea581dfec7956699854a43c403eefcd04feeb3a3bb65f",
+        "size": 2488289
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-security_multiverse_binary-arm64_Packages.lz4",
+        "sha256": "99a88ca9f64b04866ae565aa1b69ef068e6e40ad269a1e2813c9b6e81a3b8639",
+        "size": 167740
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-security_restricted_binary-arm64_Packages.lz4",
+        "sha256": "04717a1ce2783de1591bf712a89b0b320751c497c2baf44350accdad586087e3",
+        "size": 5335975
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-security_universe_binary-arm64_Packages.lz4",
+        "sha256": "11deb5f7b283aa66a440dbddc4a2b180e1dc40efd960cbd67fa87f4b14efbde9",
+        "size": 2729541
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-updates_InRelease",
+        "sha256": "c607e7ab2685b82c6d37a57261f8413d68c82b01a6a4225e1c6292fcb95691b4",
+        "size": 126125
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-updates_main_binary-arm64_Packages.lz4",
+        "sha256": "12de021cede327527a4ffee50f6804318b7320dca755da575b18ba8d049c818d",
+        "size": 3016184
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-updates_multiverse_binary-arm64_Packages.lz4",
+        "sha256": "1246fdf28e4d718f08766bda11a46b7e4d8909dde1bf8ffdc962887e7f5fdd5a",
+        "size": 177120
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-updates_restricted_binary-arm64_Packages.lz4",
+        "sha256": "32cafb797f5bf57c5d67333a26502136a2e11f95ee84a0a38eb75f229c8f4681",
+        "size": 5548844
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble-updates_universe_binary-arm64_Packages.lz4",
+        "sha256": "e448a7fe05d60e23dbb89c29635c22ca0c8e897d08c3c4f8fd01e9901053ac02",
+        "size": 3695599
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble_InRelease",
+        "sha256": "cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0",
+        "size": 255850
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble_main_binary-arm64_Packages.lz4",
+        "sha256": "6cb5d2e1f9b4f6a55374760731202ea1685bf696e21ffa99f4df7994273930ed",
+        "size": 2897150
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble_multiverse_binary-arm64_Packages.lz4",
+        "sha256": "380348ee49defe25ac6db8f0296867d521013fd7d2fa54c3211110ec49e1c993",
+        "size": 436846
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble_restricted_binary-arm64_Packages.lz4",
+        "sha256": "cff80b32527697306bad6ec8ade6e9fcef7cdc688712cdebaa8e5632dcd15b37",
+        "size": 190250
+      },
+      {
+        "file": "ports.ubuntu.com_ubuntu-ports_dists_noble_universe_binary-arm64_Packages.lz4",
+        "sha256": "1aba10f17b2b6ae8c2af3ab7e8f81ea59a359a8b6cb413acfe866a355f724391",
+        "size": 30769209
+      }
+    ],
+    "native_acceptance": false,
+    "phases": [
+      {
+        "candidate_filename": "artifacts-direct.arm64.candidate.delta",
+        "candidate_sha256": "3905f92f709c38beb5c8ed67879e045d22af50742373d17cb2307047924207b9",
+        "downloads_verified": true,
+        "package_manifest_sha256": "7dd15af81c455a0616431c161030914ee6dcd5623daf4c66a82870bb23dbfbff",
+        "phase": "artifacts-direct",
+        "selected_count": 15,
+        "selected_download_bytes": 17286304,
+        "ubuntu_refreshes": []
+      },
+      {
+        "candidate_filename": "ffmpeg-packages.arm64.candidate.lock",
+        "candidate_sha256": "ebd0c8f76a92b4823c8dee082b0e477c2f0a06a12cdb3359311bfa393538c685",
+        "downloads_verified": true,
+        "package_manifest_sha256": "7f660f60e25d08fc3b7d1e5f465ad87c8bb9cae8da04b8ec59c3cea7eeaf7164",
+        "phase": "artifacts-ffmpeg",
+        "selected_count": 141,
+        "selected_download_bytes": 102769382,
+        "ubuntu_refreshes": []
+      },
+      {
+        "candidate_filename": "harmonic-packages.arm64.candidate.lock",
+        "candidate_sha256": "b6837cbb39a03ba0ab4244233df9aef829ca0f9c88d5a11830985b289171d7ba",
+        "downloads_verified": true,
+        "package_manifest_sha256": "bfe094ffc5fab39c269675781a4c39584abd54ff5f661822b69bfdabaee1b63c",
+        "phase": "gazebo-harmonic",
+        "selected_count": 811,
+        "selected_download_bytes": 505315596,
+        "ubuntu_refreshes": [
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "curl"
+          },
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "libcurl3t64-gnutls"
+          },
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "libcurl4-openssl-dev"
+          },
+          {
+            "after": "8.5.0-2ubuntu10.16",
+            "before": "8.5.0-2ubuntu10.15",
+            "origin": "Ubuntu",
+            "package": "libcurl4t64"
+          },
+          {
+            "after": "5.6.1+really5.4.5-1ubuntu0.4",
+            "before": "5.6.1+really5.4.5-1ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "liblzma-dev"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "libminizip-dev"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "libminizip1t64"
+          },
+          {
+            "after": "2:3.98-1ubuntu0.3",
+            "before": "2:3.98-1ubuntu0.2",
+            "origin": "Ubuntu",
+            "package": "libnss3"
+          },
+          {
+            "after": "24.02.0-1ubuntu9.11",
+            "before": "24.02.0-1ubuntu9.10",
+            "origin": "Ubuntu",
+            "package": "libpoppler-dev"
+          },
+          {
+            "after": "24.02.0-1ubuntu9.11",
+            "before": "24.02.0-1ubuntu9.10",
+            "origin": "Ubuntu",
+            "package": "libpoppler-private-dev"
+          },
+          {
+            "after": "24.02.0-1ubuntu9.11",
+            "before": "24.02.0-1ubuntu9.10",
+            "origin": "Ubuntu",
+            "package": "libpoppler134"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotobuf-dev"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotobuf-lite32t64"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotobuf32t64"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotoc-dev"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "libprotoc32t64"
+          },
+          {
+            "after": "255.4-1ubuntu8.18",
+            "before": "255.4-1ubuntu8.17",
+            "origin": "Ubuntu",
+            "package": "libudev-dev"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "protobuf-compiler"
+          },
+          {
+            "after": "3.21.12-8.2ubuntu0.4",
+            "before": "3.21.12-8.2ubuntu0.3",
+            "origin": "Ubuntu",
+            "package": "python3-protobuf"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "zlib1g-dev"
+          },
+          {
+            "after": "1:1.3.dfsg-3.1ubuntu2.3",
+            "before": "1:1.3.dfsg-3.1ubuntu2.2",
+            "origin": "Ubuntu",
+            "package": "zlib1g"
+          }
+        ]
+      },
+      {
+        "candidate_filename": "viewer-packages.arm64.candidate.lock",
+        "candidate_sha256": "fb84a33dc95ca2a2cbb60f46b3173428926ee7b1aa4811cbb5e2fa72dd0fd6ec",
+        "downloads_verified": true,
+        "package_manifest_sha256": "93fa1ff8a6ecf7f65194e6521e434b2fb2f50315cf8dfcd36dfb5b7c41a9b691",
+        "phase": "viewer",
+        "selected_count": 90,
+        "selected_download_bytes": 45300038,
+        "ubuntu_refreshes": [
+          {
+            "after": "10.02.1~dfsg1-0ubuntu7.10",
+            "before": "10.02.1~dfsg1-0ubuntu7.9",
+            "origin": "Ubuntu",
+            "package": "libgs-common"
+          },
+          {
+            "after": "10.02.1~dfsg1-0ubuntu7.10",
+            "before": "10.02.1~dfsg1-0ubuntu7.9",
+            "origin": "Ubuntu",
+            "package": "libgs10-common"
+          },
+          {
+            "after": "10.02.1~dfsg1-0ubuntu7.10",
+            "before": "10.02.1~dfsg1-0ubuntu7.9",
+            "origin": "Ubuntu",
+            "package": "libgs10"
+          },
+          {
+            "after": "2.0.7-1ubuntu0.8",
+            "before": "2.0.7-1ubuntu0.7",
+            "origin": "Ubuntu",
+            "package": "python3-urllib3"
+          },
+          {
+            "after": "2:21.1.12-1ubuntu1.9",
+            "before": "2:21.1.12-1ubuntu1.8",
+            "origin": "Ubuntu",
+            "package": "xserver-common"
+          },
+          {
+            "after": "2:21.1.12-1ubuntu1.9",
+            "before": "2:21.1.12-1ubuntu1.8",
+            "origin": "Ubuntu",
+            "package": "xvfb"
+          }
+        ]
+      },
+      {
+        "candidate_filename": "build-packages.arm64.candidate.lock",
+        "candidate_sha256": "379fcfd0604fa90dea439196826c362a72c59dd3c6aee0135bed39f1f06c0f7c",
+        "downloads_verified": true,
+        "package_manifest_sha256": "62646aa9d18f1d1a450f32ebfb6f137d1f58c771718526713d50eb9b4ff4d40e",
+        "phase": "ardupilot-build",
+        "selected_count": 39,
+        "selected_download_bytes": 19548408,
+        "ubuntu_refreshes": [
+          {
+            "after": "2.0.7-1ubuntu0.8",
+            "before": "2.0.7-1ubuntu0.7",
+            "origin": "Ubuntu",
+            "package": "python3-urllib3"
+          }
+        ]
+      }
+    ],
+    "raw_evidence": ".local-runtime/apt-lock-resolution/arm64/runs/20261027T031717Z-55477",
+    "utility_architecture": "aarch64"
+  }
+}

@@ -34,6 +34,6 @@ python3-pyelftools=0.30-1
 python3-requests=2.31.0+dfsg-1ubuntu1.2
 python3-serial=3.5-2
 python3-tabulate=0.8.10-1
-python3-urllib3=2.0.7-1ubuntu0.7
+python3-urllib3=2.0.7-1ubuntu0.8
 wget=1.21.4-1ubuntu4.5
 zip=3.0-13ubuntu0.2

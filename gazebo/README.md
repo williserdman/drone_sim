@@ -46,10 +46,11 @@ resources as a substitute for public physical truth.
   deck pose or attaches a landed vehicle.
 - [Dockerfile](Dockerfile) selects the complete pinned Harmonic package delta
   for Docker's native `TARGETARCH`. [local-viewer/Dockerfile](local-viewer/Dockerfile)
-  selects the matching ARM64 or AMD64 desktop package lock. The AMD64 locks are
-  metadata/solver verified against signed indexes; native AMD64 installation,
-  compilation, and runtime acceptance remain pending. The resolver and compact
-  checksum evidence are linked from the [runbook](../docs/runbook.md#native-local-image-build).
+  selects the matching ARM64 or AMD64 desktop package lock. Refreshing retired
+  Ubuntu package versions is an explicit maintenance step, with complete
+  installed-delta checks retained. The [runbook](../docs/runbook.md#native-local-image-build)
+  describes the resolver for both architectures. Native AMD64 installation,
+  compilation, and runtime acceptance remain pending.
 
 ## Interfaces
 

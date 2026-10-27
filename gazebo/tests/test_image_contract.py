@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "gazebo/Dockerfile"
 PACKAGE_LOCK = ROOT / "gazebo/harmonic-packages.lock"
 AMD64_PACKAGE_LOCK_SHA256 = (
-    "6bb600d901816d3733a0e5e46eca413edc715aff93a6ede40c4fbcd5849c3192"
+    "36c26dc16b8a60c8ddd011c0f4916b2ca53301c2d60663a174f9bef9d15d854a"
 )
 PROJECT = ROOT / "gazebo/pyproject.toml"
 IMAGE_TEST = ROOT / "gazebo/tests/test_gazebo_image"
@@ -42,8 +42,12 @@ UPGRADED_BASE_PACKAGES = {
     "mount": "2.39.3-9ubuntu6.6",
     "util-linux": "2.39.3-9ubuntu6.6",
     "uuid-dev": "2.39.3-9ubuntu6.6",
-    "zlib1g-dev": "1:1.3.dfsg-3.1ubuntu2.2",
-    "zlib1g": "1:1.3.dfsg-3.1ubuntu2.2",
+    "liblzma5": "5.6.1+really5.4.5-1ubuntu0.4",
+    "libsystemd0": "255.4-1ubuntu8.18",
+    "libudev1": "255.4-1ubuntu8.18",
+    "xz-utils": "5.6.1+really5.4.5-1ubuntu0.4",
+    "zlib1g-dev": "1:1.3.dfsg-3.1ubuntu2.3",
+    "zlib1g": "1:1.3.dfsg-3.1ubuntu2.3",
 }
 
 

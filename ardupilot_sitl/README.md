@@ -81,6 +81,10 @@ that SITL exited, and it always attempts to close the protocol.
   [ardupilot.json](provenance/ardupilot.json) and
   [LICENSE.ArduPilot.txt](provenance/LICENSE.ArduPilot.txt); the runtime image
   also retains the exact patch under `/opt/ardupilot/patches`.
+- ARM64 build dependencies use an exact package delta against the pinned ROS
+  base. If Ubuntu retires a pinned package version, use the explicit
+  [lock refresh procedure](../docs/runbook.md#native-local-image-build).
+  Refreshing those OS dependencies does not change the pinned firmware source.
 - The pinned JSON backend accepts numeric IPv4 addresses, so startup resolves
   the Compose service name once. Name resolution does not advance simulation.
 - Keep `no_time_sync=true`, `no_lockstep=false`, and `--speedup 1`; wall

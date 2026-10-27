@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Resolve AMD64 apt deltas with ARM64 apt and the pinned AMD64 base status.
+"""Resolve exact ARM64 or AMD64 apt deltas without executing foreign binaries.
 
-The script never executes an AMD64 binary. It runs apt from the pinned ARM64
-ROS image with APT::Architecture=amd64, an isolated package database, and the
-official Ubuntu and ROS repositories. Each simulated install is materialized
-as a synthetic dpkg status file before the next child-image layer is resolved.
+The pinned host-native ROS image supplies apt, while an isolated target package
+database supplies the base state. Refreshing unavailable Ubuntu versions is an
+explicit maintenance operation; ordinary builds keep their exact package locks.
 """
 
 from __future__ import annotations
@@ -32,33 +31,11 @@ ROS_INDEX_DIGEST = "sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f1724
 REGISTRY_REPOSITORY = "library/ros"
 REGISTRY = "https://registry-1.docker.io"
 
-ARTIFACTS_DIRECT = (
-    "python3-venv=3.12.3-0ubuntu2.1",
-    "python3.12-venv=3.12.3-1ubuntu0.17",
-    "python3-pip-whl=24.0+dfsg-1ubuntu1.3",
-    "python3-setuptools-whl=68.1.2-2ubuntu1.2",
-    "python3-wheel=0.42.0-2",
-    "zstd=1.5.5+dfsg2-2build1.1",
-    "ros-jazzy-rosbag2=0.26.11-1noble.20261006.034645",
-    "ros-jazzy-rosbag2-storage-mcap=0.26.11-1noble.20260911.143733",
-)
-ARTIFACTS_FFMPEG = ("ffmpeg=7:6.1.1-3ubuntu5",)
-GAZEBO_DIRECT = (
-    "ros-jazzy-ros-gz=1.0.24-1noble.20261006.041805",
-    "ros-jazzy-ros-gz-bridge=1.0.24-1noble.20260920.234644",
-    "ros-jazzy-ros-gz-image=1.0.24-1noble.20260921.023911",
-    "ros-jazzy-ros-gz-interfaces=1.0.24-1noble.20260911.110630",
-    "ros-jazzy-ros-gz-sim=1.0.24-1noble.20261006.035056",
-    "ros-jazzy-gz-sim-vendor=0.0.13-1noble.20260905.073557",
-    "ros-jazzy-sdformat-vendor=0.0.14-1noble.20260905.033543",
-    "zstd=1.5.5+dfsg2-2build1.1",
-)
-
 APT_SHELL = r"""
 set -euo pipefail
 apt_options=(
-  -o APT::Architecture=amd64
-  -o APT::Architectures::=amd64
+  -o APT::Architecture="${AUDIT_ARCHITECTURE}"
+  -o APT::Architectures::="${AUDIT_ARCHITECTURE}"
   -o Dir::State=/audit/state
   -o Dir::State::status="/audit/${AUDIT_STATUS}"
   -o Dir::State::lists=/audit/state/lists
@@ -69,13 +46,17 @@ apt_options=(
   -o Debug::NoLocking=true
   -o Acquire::Retries=5
   -o Acquire::http::Timeout=30
+  -o APT::Update::Error-Mode=any
   -o APT::Sandbox::User=root
 )
 
 case "${AUDIT_ACTION}" in
   architecture)
     machine="$(uname -m)"
-    test "${machine}" = "aarch64" -o "${machine}" = "arm64"
+    case "${AUDIT_UTILITY_ARCHITECTURE}:${machine}" in
+      arm64:aarch64|arm64:arm64|amd64:x86_64) ;;
+      *) printf 'unexpected utility architecture: %s\n' "${machine}" >&2; exit 2 ;;
+    esac
     printf '%s\n' "${machine}"
     ;;
   copy-ros-source)
@@ -94,14 +75,24 @@ case "${AUDIT_ACTION}" in
     mapfile -t packages < "/audit/${AUDIT_ROOTS}"
     apt-cache "${apt_options[@]}" show "${packages[@]}"
     ;;
+  policy)
+    mapfile -t packages < <(cut -d= -f1 "/audit/${AUDIT_ROOTS}")
+    apt-cache "${apt_options[@]}" policy "${packages[@]}"
+    ;;
+  check-upgrades)
+    while read -r package previous next; do
+      if ! dpkg --compare-versions "${next}" gt "${previous}"; then
+        printf 'replacement is not an upgrade: %s %s -> %s\n' \
+          "${package}" "${previous}" "${next}" >&2
+        exit 2
+      fi
+    done < "/audit/${AUDIT_ROOTS}"
+    ;;
   download)
     mapfile -t packages < "/audit/${AUDIT_ROOTS}"
     apt-get "${apt_options[@]}" \
       --yes --download-only --no-install-recommends --no-remove \
       install "${packages[@]}"
-    ;;
-  cleanup-cache)
-    find /audit/cache/archives -maxdepth 1 -type f -name '*.deb' -delete
     ;;
   *)
     printf 'unsupported audit action: %s\n' "${AUDIT_ACTION}" >&2
@@ -131,6 +122,7 @@ def _run(
     *,
     check: bool = True,
     capture_output: bool = True,
+    timeout: float = 120,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -138,6 +130,7 @@ def _run(
             check=check,
             capture_output=capture_output,
             text=True,
+            timeout=timeout,
         )
     except subprocess.CalledProcessError as error:
         raise RuntimeError(
@@ -177,7 +170,7 @@ def _registry_request(path: str, *, accept: str | None = None) -> bytes:
         return response.read()
 
 
-def _fetch_base_status(run_directory: Path) -> tuple[Path, dict[str, object]]:
+def _fetch_base_status(run_directory: Path, architecture: str) -> tuple[Path, dict[str, object]]:
     index_bytes = _registry_request(
         f"/v2/{REGISTRY_REPOSITORY}/manifests/{ROS_INDEX_DIGEST}",
         accept="application/vnd.oci.image.index.v1+json",
@@ -192,10 +185,10 @@ def _fetch_base_status(run_directory: Path) -> tuple[Path, dict[str, object]]:
         item
         for item in index["manifests"]
         if item.get("platform", {}).get("os") == "linux"
-        and item.get("platform", {}).get("architecture") == "amd64"
+        and item.get("platform", {}).get("architecture") == architecture
     ]
     if len(children) != 1:
-        raise RuntimeError(f"expected one AMD64 ROS child manifest, found {len(children)}")
+        raise RuntimeError(f"expected one {architecture} ROS child manifest, found {len(children)}")
     child_digest = children[0]["digest"]
     manifest_bytes = _registry_request(
         f"/v2/{REGISTRY_REPOSITORY}/manifests/{child_digest}",
@@ -204,13 +197,13 @@ def _fetch_base_status(run_directory: Path) -> tuple[Path, dict[str, object]]:
     actual_child_digest = f"sha256:{_sha256_bytes(manifest_bytes)}"
     if actual_child_digest != child_digest:
         raise RuntimeError(
-            f"ROS AMD64 child digest mismatch: {actual_child_digest} != {child_digest}"
+            f"ROS {architecture} child digest mismatch: {actual_child_digest} != {child_digest}"
         )
     manifest = json.loads(manifest_bytes)
 
     status_data: bytes | None = None
     status_layer: str | None = None
-    layer_path = run_directory / "amd64-base-layer.tar.gz"
+    layer_path = run_directory / f"{architecture}-base-layer.tar.gz"
     for layer in reversed(manifest["layers"]):
         blob = _registry_request(
             f"/v2/{REGISTRY_REPOSITORY}/blobs/{layer['digest']}"
@@ -228,21 +221,22 @@ def _fetch_base_status(run_directory: Path) -> tuple[Path, dict[str, object]]:
                 continue
             extracted = archive.extractfile(member)
             if extracted is None:
-                raise RuntimeError("AMD64 status member is not a regular file")
+                raise RuntimeError("base status member is not a regular file")
             status_data = extracted.read()
             status_layer = layer["digest"]
             break
     layer_path.unlink(missing_ok=True)
     if status_data is None or status_layer is None:
-        raise RuntimeError("no /var/lib/dpkg/status found in the AMD64 ROS image")
+        raise RuntimeError(f"no /var/lib/dpkg/status found in the {architecture} ROS image")
 
     status_path = run_directory / "states" / "base.status"
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_bytes(status_data)
     evidence = {
         "index_digest": ROS_INDEX_DIGEST,
-        "amd64_child_manifest_digest": child_digest,
-        "amd64_config_digest": manifest["config"]["digest"],
+        "architecture": architecture,
+        "child_manifest_digest": child_digest,
+        "config_digest": manifest["config"]["digest"],
         "status_layer_digest": status_layer,
         "status_sha256": _sha256_bytes(status_data),
     }
@@ -271,8 +265,10 @@ def _docker_snapshot() -> dict[str, list[str]]:
 
 
 class AptRunner:
-    def __init__(self, run_directory: Path) -> None:
+    def __init__(self, run_directory: Path, architecture: str, utility_architecture: str) -> None:
         self.run_directory = run_directory
+        self.architecture = architecture
+        self.utility_architecture = utility_architecture
         self.counter = 0
 
     def run(
@@ -283,17 +279,23 @@ class AptRunner:
         roots: Path | None = None,
     ) -> str:
         self.counter += 1
-        name = f"drone-sim-amd64-lock-{self.counter}-{os.getpid()}"
+        name = f"drone-sim-{self.architecture}-lock-{self.counter}-{os.getpid()}"
         command = [
             "docker",
             "run",
             "--rm",
             "--platform",
-            "linux/arm64",
+            f"linux/{self.utility_architecture}",
             "--name",
             name,
             "--mount",
             f"type=bind,src={self.run_directory},dst=/audit",
+            "-e",
+            f"AUDIT_ARCHITECTURE={self.architecture}",
+            "-e",
+            f"AUDIT_UTILITY_ARCHITECTURE={self.utility_architecture}",
+            "-e",
+            "LC_ALL=C",
             "-e",
             f"AUDIT_ACTION={action}",
             "-e",
@@ -305,7 +307,13 @@ class AptRunner:
             "-lc",
             APT_SHELL,
         ]
-        completed = _run(command)
+        try:
+            completed = _run(command, timeout=1800 if action == "download" else 600)
+        except subprocess.TimeoutExpired as error:
+            # docker run's client can time out while its disposable helper lives.
+            # The generated name belongs only to this resolver invocation.
+            _run(["docker", "rm", "--force", name], check=False)
+            raise RuntimeError(f"apt helper timed out during {action}: {name}") from error
         return completed.stdout
 
 
@@ -347,12 +355,112 @@ def _parse_plan(simulation: str) -> list[tuple[str, str]]:
         match = pattern.match(line)
         if match is None:
             continue
-        package = match.group(1).removesuffix(":amd64")
+        package = re.sub(r":(?:amd64|arm64)$", "", match.group(1))
         version = match.group(2)
         previous = selected.setdefault(package, version)
         if previous != version:
             raise RuntimeError(f"apt selected two versions of {package}")
     return sorted(selected.items())
+
+
+@dataclass
+class PackageAvailability:
+    candidate: str | None
+    versions: dict[str, set[str]]
+
+
+def _repository_origin(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return "unknown"
+    location = (parsed.hostname, parsed.path.rstrip("/"))
+    if location in {
+        ("ports.ubuntu.com", "/ubuntu-ports"),
+        ("archive.ubuntu.com", "/ubuntu"),
+        ("security.ubuntu.com", "/ubuntu"),
+    }:
+        return "Ubuntu"
+    if location == ("packages.ros.org", "/ros2/ubuntu"):
+        return "ROS"
+    return "unknown"
+
+
+def _parse_policy(text: str) -> dict[str, PackageAvailability]:
+    """Read apt's C-locale policy output, keeping downloadable origins separate."""
+    result: dict[str, PackageAvailability] = {}
+    current: PackageAvailability | None = None
+    version: str | None = None
+    for line in text.splitlines():
+        if line and not line[0].isspace() and line.endswith(":"):
+            package = re.sub(r":(?:amd64|arm64)$", "", line[:-1])
+            current = PackageAvailability(None, {})
+            result[package] = current
+            version = None
+        elif current is not None:
+            candidate = re.fullmatch(r"\s+Candidate: (\S+)", line)
+            selected = re.fullmatch(r"\s+(?:\*\*\*\s+)?(\S+)\s+-?\d+", line)
+            source = re.fullmatch(r"\s+-?\d+\s+(\S+)\s+.+\s+Packages", line)
+            if candidate:
+                current.candidate = None if candidate[1] == "(none)" else candidate[1]
+            elif selected:
+                version = selected[1]
+            elif source and version is not None:
+                current.versions.setdefault(version, set()).add(_repository_origin(source[1]))
+    return result
+
+
+def _refresh_roots(
+    roots: tuple[str, ...],
+    inventory: dict[str, PackageAvailability],
+    installed: dict[tuple[str, str], str],
+) -> tuple[tuple[str, ...], list[dict[str, str]]]:
+    refreshed = []
+    changes = []
+    for row in roots:
+        package, version = row.split("=", 1)
+        if any(name == package and value == version for (name, _arch), value in installed.items()):
+            refreshed.append(row)
+            continue
+        available = inventory.get(package)
+        origins = available.versions.get(version, set()) if available else set()
+        if origins:
+            if "unknown" in origins:
+                raise RuntimeError(f"unknown repository origin for {row}")
+            refreshed.append(row)
+            continue
+        if package.startswith("ros-"):
+            raise RuntimeError(f"immutable ROS package is unavailable: {row}")
+        candidate = available.candidate if available else None
+        candidate_origins = available.versions.get(candidate, set()) if available and candidate else set()
+        if candidate is None or candidate_origins != {"Ubuntu"}:
+            raise RuntimeError(f"no signed Ubuntu replacement for {row}: {candidate_origins}")
+        refreshed.append(f"{package}={candidate}")
+        changes.append({"package": package, "before": version, "after": candidate, "origin": "Ubuntu"})
+    return tuple(refreshed), changes
+
+
+def _read_lock(path: Path) -> tuple[str, ...]:
+    rows = tuple(path.read_text(encoding="utf-8").splitlines())
+    if not rows or any(not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*=[^\s=]+", row) for row in rows):
+        raise RuntimeError(f"invalid exact package lock: {path}")
+    if len({row.split("=", 1)[0] for row in rows}) != len(rows):
+        raise RuntimeError(f"duplicate package in {path}")
+    return rows
+
+
+def _artifacts_direct(project: Path, architecture: str) -> tuple[str, ...]:
+    dockerfile = (project / "artifacts/Dockerfile").read_text(encoding="utf-8")
+    common = tuple(dict.fromkeys(re.findall(r"^\s+([a-z0-9][a-z0-9+.-]*=[^\s=]+)\s+\\$", dockerfile, re.M)))
+    suffix = "_ARM64" if architecture == "arm64" else ""
+    packages = []
+    for argument in ("ROSBAG2_PACKAGE", "ROSBAG2_STORAGE_MCAP_PACKAGE"):
+        match = re.search(rf"^ARG {argument}{suffix}=(\S+)$", dockerfile, re.M)
+        if match is None:
+            raise RuntimeError(f"missing {architecture} artifact direct pin: {argument}")
+        packages.append(match[1])
+    if not common:
+        raise RuntimeError("no artifacts direct Ubuntu pins found")
+    return common + tuple(packages)
 
 
 def _parse_records(text: str, expected: list[tuple[str, str]]) -> list[PackageRecord]:
@@ -464,13 +572,41 @@ def _resolve_phase(
     roots: tuple[str, ...],
     candidate_path: Path | None,
     verify_downloads: bool,
+    refresh_unavailable_ubuntu: bool = False,
 ) -> dict[str, object]:
     roots_path = _write_roots(runner.run_directory, phase, roots)
+    original_roots = roots
+    changes: list[dict[str, str]] = []
+    if refresh_unavailable_ubuntu:
+        policy = runner.run("policy", status=before, roots=roots_path)
+        (runner.run_directory / f"{phase}.policy.txt").write_text(policy, encoding="utf-8")
+        roots, changes = _refresh_roots(roots, _parse_policy(policy), _installed(before))
+        if changes:
+            upgrade_path = runner.run_directory / f"{phase}.upgrades"
+            upgrade_path.write_text(
+                "".join(f"{item['package']} {item['before']} {item['after']}\n" for item in changes),
+                encoding="utf-8",
+            )
+            runner.run("check-upgrades", status=before, roots=upgrade_path)
+        roots_path = _write_roots(runner.run_directory, f"{phase}.refreshed", roots)
     simulation = runner.run("simulate", status=before, roots=roots_path)
     (runner.run_directory / f"{phase}.simulation.txt").write_text(
         simulation, encoding="utf-8"
     )
     selected = _parse_plan(simulation)
+    installed_before = _installed(before)
+    version_changes = [
+        f"{package} {previous} {version}\n"
+        for package, version in selected
+        for (installed_package, installed_architecture), previous in installed_before.items()
+        if installed_package == package
+        and installed_architecture in {runner.architecture, "all"}
+        and previous != version
+    ]
+    if version_changes:
+        plan_upgrades = runner.run_directory / f"{phase}.plan-upgrades"
+        plan_upgrades.write_text("".join(version_changes), encoding="utf-8")
+        runner.run("check-upgrades", status=before, roots=plan_upgrades)
     selected_roots = tuple(f"{package}={version}" for package, version in selected)
     selected_path = _write_roots(runner.run_directory, f"{phase}.selected", selected_roots)
     if selected:
@@ -478,6 +614,8 @@ def _resolve_phase(
         records = sorted(
             _parse_records(records_text, selected), key=lambda record: record.lock_row
         )
+        if any(record.architecture not in {runner.architecture, "all"} for record in records):
+            raise RuntimeError(f"{phase}: apt selected a foreign architecture")
     else:
         records = []
     _materialize_status(before, after, records)
@@ -514,6 +652,8 @@ def _resolve_phase(
     return {
         "phase": phase,
         "roots": list(roots),
+        "original_roots": list(original_roots),
+        "ubuntu_refreshes": changes,
         "selected_count": len(records),
         "selected_download_bytes": sum(record.size for record in records),
         "candidate": str(candidate_path) if candidate_path is not None else None,
@@ -522,13 +662,17 @@ def _resolve_phase(
     }
 
 
-def _write_sources(run_directory: Path) -> None:
+def _write_sources(run_directory: Path, architecture: str) -> None:
+    if architecture not in {"amd64", "arm64"}:
+        raise RuntimeError(f"unsupported package architecture: {architecture}")
+    archive = "http://ports.ubuntu.com/ubuntu-ports" if architecture == "arm64" else "http://archive.ubuntu.com/ubuntu"
+    security = archive if architecture == "arm64" else "http://security.ubuntu.com/ubuntu"
     sources = "\n".join(
         (
-            "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe restricted multiverse",
-            "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe restricted multiverse",
-            "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-backports main universe restricted multiverse",
-            "deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe restricted multiverse",
+            f"deb [arch={architecture}] {archive} noble main universe restricted multiverse",
+            f"deb [arch={architecture}] {archive} noble-updates main universe restricted multiverse",
+            f"deb [arch={architecture}] {archive} noble-backports main universe restricted multiverse",
+            f"deb [arch={architecture}] {security} noble-security main universe restricted multiverse",
         )
     )
     (run_directory / "sources.list").write_text(sources + "\n", encoding="utf-8")
@@ -552,129 +696,128 @@ def _index_evidence(run_directory: Path) -> list[dict[str, object]]:
     return result
 
 
+def _resume_base(
+    requested: Path, runs_directory: Path, architecture: str,
+) -> tuple[Path, Path, dict[str, object]]:
+    run_directory = requested.resolve()
+    if run_directory.parent != runs_directory.resolve():
+        raise RuntimeError(f"resume path must be an immediate child of {runs_directory}")
+    if (run_directory / "resolution-summary.json").exists():
+        raise RuntimeError("cannot resume a completed resolution; start a new run")
+    base_status = run_directory / "states/base.status"
+    base_evidence = json.loads((run_directory / "base-manifest.json").read_text())
+    if base_evidence["architecture"] != architecture or base_evidence["index_digest"] != ROS_INDEX_DIGEST:
+        raise RuntimeError("resume base architecture or pinned image differs")
+    if _sha256_file(base_status) != base_evidence["status_sha256"]:
+        raise RuntimeError("resume base status checksum differs")
+    return run_directory, base_status, base_evidence
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--architecture", choices=("arm64", "amd64"), default="amd64")
     parser.add_argument(
-        "--skip-downloads",
-        action="store_true",
+        "--refresh-unavailable-ubuntu", action="store_true",
+        help="replace unavailable Ubuntu pins with signed current candidates; preserve ROS pins",
+    )
+    parser.add_argument(
+        "--skip-downloads", action="store_true",
         help="resolve metadata without downloading and hashing every selected deb",
     )
-    parser.add_argument(
-        "--resume",
-        type=Path,
-        help="reuse a prior run directory and its verified package cache",
-    )
+    parser.add_argument("--resume", type=Path, help="reuse an unfinished run and its package cache; completed runs are immutable")
     arguments = parser.parse_args()
 
     project_directory = Path(__file__).resolve().parent.parent
-    output_directory = project_directory / ".local-runtime/amd64-lock-resolution"
+    architecture = arguments.architecture
+    output_directory = project_directory / ".local-runtime/apt-lock-resolution" / architecture
     runs_directory = output_directory / "runs"
+    resumed = (
+        _resume_base(arguments.resume, runs_directory, architecture)
+        if arguments.resume is not None else None
+    )
     runs_directory.mkdir(parents=True, exist_ok=True)
+    engine_architecture = _run(["docker", "info", "--format", "{{.Architecture}}"]).stdout.strip()
+    aliases = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
+    if engine_architecture not in aliases:
+        raise RuntimeError(f"unsupported native Docker architecture: {engine_architecture}")
+    utility_architecture = aliases[engine_architecture]
+    utility = _run(
+        ["docker", "image", "inspect", "--format", "{{.Architecture}}", ROS_IMAGE],
+        check=False,
+    )
+    if utility.returncode != 0 or utility.stdout.strip() != utility_architecture:
+        _run(["docker", "pull", "--platform", f"linux/{utility_architecture}", ROS_IMAGE], timeout=1800)
     docker_before = _docker_snapshot()
-    if arguments.resume is None:
+    if resumed is None:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         run_directory = runs_directory / f"{timestamp}-{os.getpid()}"
-        run_directory.mkdir(parents=True)
-        _write_sources(run_directory)
-        base_status, base_evidence = _fetch_base_status(run_directory)
+        run_directory.mkdir()
+        _write_sources(run_directory, architecture)
+        base_status, base_evidence = _fetch_base_status(run_directory, architecture)
     else:
-        run_directory = arguments.resume.resolve()
-        if run_directory.parent != runs_directory.resolve():
-            raise RuntimeError(f"resume path must be an immediate child of {runs_directory}")
-        base_status = run_directory / "states/base.status"
-        if not base_status.is_file():
-            raise RuntimeError(f"resume path has no base status: {base_status}")
-        base_evidence = json.loads(
-            (run_directory / "base-manifest.json").read_text(encoding="utf-8")
-        )
-    runner = AptRunner(run_directory)
-    architecture = runner.run("architecture", status=base_status).strip()
+        run_directory, base_status, base_evidence = resumed
+    runner = AptRunner(run_directory, architecture, utility_architecture)
+    native_machine = runner.run("architecture", status=base_status).strip()
     runner.run("copy-ros-source", status=base_status)
     update_output = runner.run("update", status=base_status)
     (run_directory / "apt-update.txt").write_text(update_output, encoding="utf-8")
 
-    viewer_roots = tuple(
-        line
-        for line in (
-            project_directory / "gazebo/local-viewer/viewer-packages.arm64.lock"
-        ).read_text(encoding="utf-8").splitlines()
-        if line
-    )
-    verify_downloads = not arguments.skip_downloads
+    suffix = ".arm64" if architecture == "arm64" else ""
+    artifact_direct = _artifacts_direct(project_directory, architecture)
+    direct_state = run_directory / "states/artifacts-direct.status"
+    gazebo_state = run_directory / "states/gazebo-runtime.status"
+    # Child image deltas must be resolved against their own refreshed parent.
+    specifications = [
+        ("artifacts-direct", base_status, direct_state, artifact_direct,
+         f"artifacts-direct.{architecture}.candidate.delta"),
+        ("artifacts-ffmpeg", direct_state, run_directory / "states/artifacts-runtime.status",
+         _read_lock(project_directory / f"artifacts/ffmpeg-packages{suffix}.lock"),
+         f"ffmpeg-packages.{architecture}.candidate.lock"),
+        ("gazebo-harmonic", base_status, gazebo_state,
+         _read_lock(project_directory / f"gazebo/harmonic-packages{suffix}.lock"),
+         f"harmonic-packages.{architecture}.candidate.lock"),
+        ("viewer", gazebo_state, run_directory / "states/viewer.status",
+         _read_lock(project_directory / f"gazebo/local-viewer/viewer-packages.{architecture}.lock"),
+         f"viewer-packages.{architecture}.candidate.lock"),
+    ]
+    if architecture == "arm64":
+        specifications.append((
+            "ardupilot-build", base_status, run_directory / "states/ardupilot-build.status",
+            _read_lock(project_directory / "ardupilot_sitl/build-packages.arm64.lock"),
+            "build-packages.arm64.candidate.lock",
+        ))
     phases = []
-    phases.append(
-        _resolve_phase(
-            runner,
-            phase="artifacts-direct",
-            before=base_status,
-            after=run_directory / "states/artifacts-direct.status",
-            roots=ARTIFACTS_DIRECT,
-            candidate_path=output_directory / "artifacts-direct.amd64.candidate.delta",
-            verify_downloads=verify_downloads,
-        )
+    for phase, before, after, roots, filename in specifications:
+        print(f"Resolving {architecture} {phase}", file=sys.stderr, flush=True)
+        phases.append(_resolve_phase(
+            runner, phase=phase, before=before, after=after, roots=roots,
+            candidate_path=run_directory / filename,
+            verify_downloads=not arguments.skip_downloads,
+            refresh_unavailable_ubuntu=arguments.refresh_unavailable_ubuntu,
+        ))
+    (run_directory / f"artifacts-direct.{architecture}.candidate.pins").write_text(
+        "\n".join(phases[0]["roots"]) + "\n", encoding="utf-8"
     )
-    phases.append(
-        _resolve_phase(
-            runner,
-            phase="artifacts-ffmpeg",
-            before=run_directory / "states/artifacts-direct.status",
-            after=run_directory / "states/artifacts-runtime.status",
-            roots=ARTIFACTS_FFMPEG,
-            candidate_path=output_directory / "ffmpeg-packages.amd64.candidate.lock",
-            verify_downloads=verify_downloads,
-        )
-    )
-    phases.append(
-        _resolve_phase(
-            runner,
-            phase="gazebo-harmonic",
-            before=base_status,
-            after=run_directory / "states/gazebo-runtime.status",
-            roots=GAZEBO_DIRECT,
-            candidate_path=output_directory / "harmonic-packages.amd64.candidate.lock",
-            verify_downloads=verify_downloads,
-        )
-    )
-    phases.append(
-        _resolve_phase(
-            runner,
-            phase="viewer",
-            before=run_directory / "states/gazebo-runtime.status",
-            after=run_directory / "states/viewer.status",
-            roots=viewer_roots,
-            candidate_path=output_directory / "viewer-packages.amd64.candidate.lock",
-            verify_downloads=verify_downloads,
-        )
-    )
-
-    (output_directory / "gazebo-direct.amd64.candidate.pins").write_text(
-        "\n".join(GAZEBO_DIRECT) + "\n", encoding="utf-8"
-    )
-    (output_directory / "artifacts-direct.amd64.candidate.pins").write_text(
-        "\n".join(ARTIFACTS_DIRECT) + "\n", encoding="utf-8"
-    )
-    runner.run("cleanup-cache", status=base_status)
     docker_after = _docker_snapshot()
     if docker_after != docker_before:
         raise RuntimeError("Docker tags or running-container inventory changed during resolution")
-
     summary = {
         "generated_at": datetime.now(UTC).isoformat(),
-        "utility_architecture": architecture,
-        "apt_architecture": "amd64",
+        "utility_architecture": native_machine,
+        "apt_architecture": architecture,
+        "refresh_unavailable_ubuntu": arguments.refresh_unavailable_ubuntu,
         "base": base_evidence,
         "indexes": _index_evidence(run_directory),
         "phases": phases,
         "docker_inventory_unchanged": True,
-        "native_amd64_acceptance": False,
+        "native_acceptance": False,
         "run_directory": str(run_directory),
     }
-    (output_directory / "resolution-summary.json").write_text(
+    # Publish candidates only when every layer and archive check has succeeded.
+    (run_directory / "resolution-summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    (output_directory / "latest-run-path.txt").write_text(
-        str(run_directory) + "\n", encoding="utf-8"
-    )
+    (output_directory / "latest-run-path.txt").write_text(str(run_directory) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 

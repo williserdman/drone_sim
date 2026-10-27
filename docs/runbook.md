@@ -81,16 +81,37 @@ architectures and identities, and publishes one schema-1 record. The read-only
 check never rewrites an old record. Keep at least 4 CPUs and 8 GiB memory, with
 6 CPUs and 12 GiB recommended, plus the existing 8 GiB free-disk minimum.
 
-The AMD64 apt locks were resolved with
-[`scripts/resolve-amd64-locks.py`](../scripts/resolve-amd64-locks.py). The tool
-uses the pinned ARM64 ROS image only as an apt utility, selects AMD64 in an
-isolated package database, validates signed Ubuntu and ROS indexes, downloads
-every selected archive, and checks its metadata SHA-256. See the
-[resolution report](amd64-lock-resolution.md) and
-[signed-index inventory](amd64-lock-resolution-summary.json). This proves the
-metadata and solver result. Native AMD64 package scripts, compilation, image
-inspection, and runtime behavior still require the two commands above on an
-AMD64 workstation.
+If an exact Ubuntu package version has disappeared from the package indexes,
+resolve replacement locks explicitly:
+
+```bash
+python3 scripts/resolve-amd64-locks.py --architecture arm64 --refresh-unavailable-ubuntu
+python3 scripts/resolve-amd64-locks.py --architecture amd64 --refresh-unavailable-ubuntu
+```
+
+Despite its historical filename, the resolver supports both architectures. It
+uses the native ROS image as an apt utility and the selected architecture's
+pinned base package database. It verifies signed Ubuntu and ROS indexes,
+downloads every selected archive, and checks its SHA-256. Available exact pins
+and ROS versions stay fixed. Only unavailable Ubuntu pins are refreshed, with
+any required dependency changes included in each complete layer delta.
+
+The resolver writes candidates and evidence under
+`.local-runtime/apt-lock-resolution/<architecture>/runs/`. It does not edit the
+repository. Review the successful run's `resolution-summary.json`, compare
+its candidate locks with their repository counterparts, and apply the reviewed
+changes. The artifacts direct-package candidate lists pins from
+`artifacts/Dockerfile`; update those explicitly if they changed. Keep the lock
+contract tests and recorded checksums consistent, then build and check images
+with the commands above. Ordinary builds never refresh dependencies themselves.
+
+Metadata resolution does not execute foreign package scripts or prove native
+compilation and runtime behavior. AMD64 acceptance still requires an AMD64
+workstation. The [current lock audit](package-lock-resolution-summary.json)
+records both architectures' signed indexes, replacements, and archive-manifest
+checksums. The earlier [AMD64 resolution report](amd64-lock-resolution.md)
+and [signed-index inventory](amd64-lock-resolution-summary.json) remain dated
+historical evidence.
 
 The unattended/cloud workflow remains a seven-image build. It does not build or
 depend on the local QGC/Gazebo viewer image.

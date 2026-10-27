@@ -169,11 +169,14 @@ def test_local_build_selects_host_native_platform_and_all_runtime_images_determi
     assert "python -m orchestration.local_build" in script
 
 
-def test_metadata_verified_amd64_lock_candidates_are_applied_exactly() -> None:
+def test_metadata_verified_lock_candidates_are_applied_exactly() -> None:
     expected = {
         ROOT / "artifacts/ffmpeg-packages.lock": "2048c831d649fde6dd167f20709706cddf6c93bb1d09dcbb7ccafa452b9de71d",
-        ROOT / "gazebo/harmonic-packages.lock": "6bb600d901816d3733a0e5e46eca413edc715aff93a6ede40c4fbcd5849c3192",
-        ROOT / "gazebo/local-viewer/viewer-packages.amd64.lock": "d29308041de14bb20d97208c0a647de1277655139ab292beadf69a1b327e3cbb",
+        ROOT / "gazebo/harmonic-packages.lock": "36c26dc16b8a60c8ddd011c0f4916b2ca53301c2d60663a174f9bef9d15d854a",
+        ROOT / "gazebo/local-viewer/viewer-packages.amd64.lock": "fb84a33dc95ca2a2cbb60f46b3173428926ee7b1aa4811cbb5e2fa72dd0fd6ec",
+        ROOT / "gazebo/harmonic-packages.arm64.lock": "b6837cbb39a03ba0ab4244233df9aef829ca0f9c88d5a11830985b289171d7ba",
+        ROOT / "gazebo/local-viewer/viewer-packages.arm64.lock": "fb84a33dc95ca2a2cbb60f46b3173428926ee7b1aa4811cbb5e2fa72dd0fd6ec",
+        ROOT / "ardupilot_sitl/build-packages.arm64.lock": "379fcfd0604fa90dea439196826c362a72c59dd3c6aee0135bed39f1f06c0f7c",
     }
 
     for path, digest in expected.items():

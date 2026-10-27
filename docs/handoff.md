@@ -24,15 +24,21 @@ mypy, and the browser regression. The full supported Linux suite on Docker
 Desktop passed 3,002 tests with 42 capability skips after correcting a test
 fixture startup race. Independent review has no remaining source findings.
 
-**Fresh simulator image builds are currently blocked.** At `68b36d0`, the Gazebo
+The initial fresh build at `68b36d0` failed because the Gazebo
 build could not find several exact Ubuntu versions in the current package
 indexes. The old engine's cached layers had hidden this fresh-machine failure.
 Official Ubuntu snapshot indexes returned HTTP 502/503 from both the host and
 native containers, including an older control snapshot, so no compatible
-snapshot date could be verified. Package locks and simulator dependencies remain
-unchanged. No new Desktop simulation or flight acceptance is claimed. See the
+snapshot date could be verified. The subsequent 2026-10-27 repair refreshes
+retired Ubuntu versions explicitly against signed current indexes. Both
+architectures' solver results and every selected archive checksum are verified.
+The exact ROS versions, pinned bases, firmware, and mission source stay fixed.
+See the [current package audit](package-lock-resolution-summary.json).
+Native Desktop build and prepared-session verification are in progress. See the
 [build diagnosis](../.local-runtime/verification/2026-10-26-docker-desktop/cold-build-report.md)
-and [failed build log](../.local-runtime/verification/2026-10-26-docker-desktop/build.log).
+and [failed build log](../.local-runtime/verification/2026-10-26-docker-desktop/build.log)
+for the initial failure. Repair evidence is retained under
+`.local-runtime/verification/2026-10-27-desktop-build/`.
 
 Colima verification below remains historical evidence. Desktop source/image and
 live-console results are kept in the [migration verification receipt](../.local-runtime/verification/2026-10-26-docker-desktop/final-handoff.json).
