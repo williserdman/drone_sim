@@ -1303,333 +1303,18 @@ def initial_command_coordinator(failures: list[str]):
     )
 
 
-def test_late_comp2026_initial_command_fails_without_assigning_guided() -> None:
-    vehicle = InitialCommandVehicle()
-    failures: list[str] = []
-    gate = ready_initial_command_gate()
-    clock = runtime_node.SimulationClock()
-    clock.accept(50_000_001)
-
-    delivered = runtime_node._deliver_comp2026_initial_command(
-        vehicle=vehicle,
-        vehicle_mode_type=InitialCommandMode,
-        lifecycle=object(),
-        gate=gate,
-        attempt_failure=initial_command_coordinator(failures),
-        clock=clock,
-        mark_delivered=lambda: None,
-    )
-
-    assert delivered is False
-    assert vehicle.assigned_modes == []
-    assert failures == ["initial GUIDED command missed the 50 ms delivery window"]
-    assert gate.readiness["command_delivered"] is False
 
 
-def test_comp2026_guided_mode_failure_keeps_delivery_gate_closed() -> None:
-    vehicle = InitialCommandVehicle(mode_error=RuntimeError("mode rejected"))
-    failures: list[str] = []
-    gate = ready_initial_command_gate()
-    clock = runtime_node.SimulationClock()
-    clock.accept(50_000_000)
-
-    delivered = runtime_node._deliver_comp2026_initial_command(
-        vehicle=vehicle,
-        vehicle_mode_type=InitialCommandMode,
-        lifecycle=object(),
-        gate=gate,
-        attempt_failure=initial_command_coordinator(failures),
-        clock=clock,
-        mark_delivered=lambda: None,
-    )
-
-    assert delivered is False
-    assert failures == ["initial GUIDED command failed: mode rejected"]
-    assert gate.readiness["command_delivered"] is False
 
 
-def test_comp2026_command_delivery_status_failure_keeps_gate_closed() -> None:
-    class FailingProtocol:
-        def write_status(self, _status: object) -> None:
-            raise OSError("status disk full")
-
-        def write_quiescence(self, _module: str) -> None:
-            pass
-
-    vehicle = InitialCommandVehicle()
-    failures: list[str] = []
-    gate = ready_initial_command_gate()
-    lifecycle = CompanionLifecycle(
-        run_id=RUN_ID,
-        protocol=FailingProtocol(),
-        stream=StringIO(),
-    )
-    clock = runtime_node.SimulationClock()
-    clock.accept(50_000_000)
-
-    delivered = runtime_node._deliver_comp2026_initial_command(
-        vehicle=vehicle,
-        vehicle_mode_type=InitialCommandMode,
-        lifecycle=lifecycle,
-        gate=gate,
-        attempt_failure=initial_command_coordinator(failures),
-        clock=clock,
-        mark_delivered=lambda: None,
-    )
-
-    assert delivered is False
-    assert [mode.name for mode in vehicle.assigned_modes] == ["GUIDED"]
-    assert failures == ["initial GUIDED command failed: status disk full"]
-    assert gate.readiness["command_delivered"] is False
 
 
-def test_comp2026_worker_waits_for_durable_command_delivery_status() -> None:
-    write_started = threading.Event()
-    allow_write = threading.Event()
-    worker_released = threading.Event()
-
-    class BlockingProtocol:
-        def write_status(self, status: object) -> None:
-            assert status == MissionCommandDeliveredStatus(RUN_ID, 50_000_000)
-            write_started.set()
-            assert allow_write.wait(1.0)
-
-        def write_quiescence(self, _module: str) -> None:
-            pass
-
-    gate = ready_initial_command_gate()
-    lifecycle = CompanionLifecycle(
-        run_id=RUN_ID,
-        protocol=BlockingProtocol(),
-        stream=StringIO(),
-    )
-    failures: list[str] = []
-    vehicle = InitialCommandVehicle()
-    clock = runtime_node.SimulationClock()
-    clock.accept(50_000_000)
-    local_latch: list[bool] = []
-    worker = threading.Thread(
-        target=lambda: (gate.wait_until_ready(), worker_released.set())
-    )
-    delivery = threading.Thread(
-        target=lambda: runtime_node._deliver_comp2026_initial_command(
-            vehicle=vehicle,
-            vehicle_mode_type=InitialCommandMode,
-            lifecycle=lifecycle,
-            gate=gate,
-            attempt_failure=initial_command_coordinator(failures),
-            clock=clock,
-            mark_delivered=lambda: local_latch.append(True),
-        )
-    )
-    worker.start()
-    delivery.start()
-    try:
-        assert write_started.wait(1.0)
-        assert gate.readiness["command_delivered"] is False
-        assert local_latch == []
-        assert not worker_released.wait(0.05)
-        allow_write.set()
-        delivery.join(timeout=1.0)
-        worker.join(timeout=1.0)
-        assert worker_released.is_set()
-    finally:
-        allow_write.set()
-        gate.stop("test cleanup")
-        delivery.join(timeout=1.0)
-        worker.join(timeout=1.0)
-
-    assert failures == []
-    assert gate.readiness["command_delivered"] is True
-    assert local_latch == [True]
 
 
-def test_comp2026_queued_clock_advance_wins_before_guided_transaction() -> None:
-    clock = runtime_node.SimulationClock()
-    clock.accept(50_000_000)
-    failures: list[str] = []
-    coordinator = initial_command_coordinator(failures)
-    gate = ready_initial_command_gate()
-    vehicle = InitialCommandVehicle()
-    statuses: list[object] = []
-    lifecycle = CompanionLifecycle(
-        run_id=RUN_ID,
-        protocol=SimpleNamespace(
-            write_status=statuses.append,
-            write_quiescence=lambda _module: None,
-        ),
-        stream=StringIO(),
-    )
-    local_latch: list[bool] = []
-    update_started = threading.Event()
-    update_finished = threading.Event()
-    delivery_finished = threading.Event()
-
-    def advance_clock() -> None:
-        update_started.set()
-        clock.accept(50_000_001)
-
-    with clock._condition:
-        update = threading.Thread(
-            target=lambda: (
-                coordinator.guard_input("clock", advance_clock),
-                update_finished.set(),
-            )
-        )
-        update.start()
-        assert update_started.wait(1.0)
-        delivery = threading.Thread(
-            target=lambda: (
-                runtime_node._deliver_comp2026_initial_command(
-                    vehicle=vehicle,
-                    vehicle_mode_type=InitialCommandMode,
-                    lifecycle=lifecycle,
-                    gate=gate,
-                    attempt_failure=coordinator,
-                    clock=clock,
-                    mark_delivered=lambda: local_latch.append(True),
-                ),
-                delivery_finished.set(),
-            )
-        )
-        delivery.start()
-        assert not update_finished.is_set()
-        assert not delivery_finished.is_set()
-
-    update.join(timeout=1.0)
-    delivery.join(timeout=1.0)
-
-    assert update_finished.is_set()
-    assert delivery_finished.is_set()
-    assert vehicle.assigned_modes == []
-    assert statuses == []
-    assert gate.readiness["command_delivered"] is False
-    assert local_latch == []
-    assert failures == ["initial GUIDED command missed the 50 ms delivery window"]
 
 
-def test_comp2026_concurrent_failure_prevents_guided_transaction() -> None:
-    failure_rendering = threading.Event()
-    allow_failure = threading.Event()
-    failures: list[str] = []
-
-    class PausingError(ValueError):
-        def __str__(self) -> str:
-            failure_rendering.set()
-            assert allow_failure.wait(1.0)
-            return "bad frame"
-
-    coordinator = initial_command_coordinator(failures)
-    failure_thread = threading.Thread(
-        target=lambda: coordinator.guard_input(
-            "image", lambda: (_ for _ in ()).throw(PausingError())
-        )
-    )
-    failure_thread.start()
-    assert failure_rendering.wait(1.0)
-
-    clock = runtime_node.SimulationClock()
-    clock.accept(50_000_000)
-    vehicle = InitialCommandVehicle()
-    statuses: list[object] = []
-    gate = ready_initial_command_gate()
-    local_latch: list[bool] = []
-    delivery_result: list[bool] = []
-    delivery_thread = threading.Thread(
-        target=lambda: delivery_result.append(
-            runtime_node._deliver_comp2026_initial_command(
-                vehicle=vehicle,
-                vehicle_mode_type=InitialCommandMode,
-                lifecycle=CompanionLifecycle(
-                    run_id=RUN_ID,
-                    protocol=SimpleNamespace(
-                        write_status=statuses.append,
-                        write_quiescence=lambda _module: None,
-                    ),
-                    stream=StringIO(),
-                ),
-                gate=gate,
-                attempt_failure=coordinator,
-                clock=clock,
-                mark_delivered=lambda: local_latch.append(True),
-            )
-        )
-    )
-    delivery_thread.start()
-    try:
-        assert delivery_thread.is_alive()
-        allow_failure.set()
-        failure_thread.join(timeout=1.0)
-        delivery_thread.join(timeout=1.0)
-    finally:
-        allow_failure.set()
-        failure_thread.join(timeout=1.0)
-        delivery_thread.join(timeout=1.0)
-
-    assert delivery_result == [False]
-    assert vehicle.assigned_modes == []
-    assert statuses == []
-    assert gate.readiness["command_delivered"] is False
-    assert local_latch == []
-    assert failures == ["competition image input failed: bad frame"]
 
 
-def test_comp2026_landing_profile_observer_serializes_transition() -> None:
-    emissions = []
-    lifecycle = SimpleNamespace(
-        emit=lambda name, timestamp_ns, fields: emissions.append(
-            (name, timestamp_ns, fields)
-        )
-    )
-    observer = runtime_node._comp2026_landing_profile_observer(lifecycle)
-
-    observer(
-        SimpleNamespace(
-            parameter="PLND_ENABLED",
-            action="set",
-            stage="requested",
-            value=0.0,
-            generation=12,
-            timestamp=0.125,
-            detail=None,
-        )
-    )
-    observer(
-        SimpleNamespace(
-            parameter="PLND_TYPE",
-            action="read",
-            stage="failed",
-            value=1.0,
-            generation=None,
-            timestamp=0.25,
-            detail="parameter request was not enqueued",
-        )
-    )
-
-    assert emissions == [
-        (
-            "landing_profile_transition",
-            125_000_000,
-            {
-                "parameter": "PLND_ENABLED",
-                "action": "set",
-                "stage": "requested",
-                "value": 0.0,
-                "generation": 12,
-            },
-        ),
-        (
-            "landing_profile_transition",
-            250_000_000,
-            {
-                "parameter": "PLND_TYPE",
-                "action": "read",
-                "stage": "failed",
-                "value": 1.0,
-                "detail": "parameter request was not enqueued",
-            },
-        ),
-    ]
 
 
 def test_comp2026_finalization_blocks_recovery_output_transaction_at_enqueue() -> None:
@@ -2000,38 +1685,35 @@ def install_comp2026_runtime_fakes(
     class SimulationCompetitionControl:
         def __init__(self, **options):
             self.controller = DroneControl()
-            self.controller.mission_home = SimpleNamespace(lat=1.0, lon=2.0, amsl_m=0.19)
-            self.controller._guided_output_delivery_reported = False
-            self.controller._transport_output_transaction = lambda output, before: (before(), output())[-1]
-            self.controller._dependency_output_transaction = lambda operation: operation()
-            self.controller._supervisor_output_transaction = lambda operation: operation()
-
-            def actuate_guarded(operation):
-                return self.controller._dependency_output_transaction(
-                    lambda: self.controller._supervisor_output_transaction(operation)
-                )
-
-            self.controller._actuate_guarded = actuate_guarded
-
-            def install_output_transactions(**values: object) -> None:
-                self.controller._transport_output_transaction = values[
-                    "transport_transaction"
-                ]
-                self.controller._dependency_output_transaction = values[
-                    "dependency_transaction"
-                ]
-                self.controller._supervisor_output_transaction = values[
-                    "supervisor_transaction"
-                ]
-                if dependency_transactions is not None:
-                    dependency_transactions.append(values["dependency_transaction"])
-
-            self.controller.install_output_transactions = install_output_transactions
-            self.decoders = SimpleNamespace(output_transaction=lambda operation: operation())
-            self.supervisor = SimpleNamespace(output_transaction=lambda operation: operation())
-            self.controller.set_guided_mode = self.set_guided_mode
+            self.mission_home = SimpleNamespace(lat=1.0, lon=2.0, amsl_m=0.19)
+            self.authority = SimpleNamespace(revoked=False, admitted=False)
+            self.clock = options["clock"]
             self.delivery = options["guided_output_delivery_callback"]
+            self.transaction = lambda operation: operation()
             vehicle.guarded_bootstrap.append("constructed")
+
+        def install_output_guard(self, transaction):
+            self.transaction = transaction
+            if dependency_transactions is not None:
+                dependency_transactions.append(transaction)
+
+        def actuate(self, operation):
+            return self.transaction(operation)
+
+        def check_active(self):
+            pass
+
+        def wait_for_guided(self):
+            pass
+
+        def wait_for_landed(self):
+            return True
+
+        def finish_attempt(self):
+            pass
+
+        def admit(self, digest):
+            self.authority.admitted = True
 
         def prepare(self):
             if prepare_delay_seconds:
@@ -2050,15 +1732,15 @@ def install_comp2026_runtime_fakes(
         def begin_attempt(self):
             vehicle.guarded_bootstrap.append("begin")
 
-        def set_guided_mode(self):
-            def output():
-                vehicle.mode = InitialCommandMode("GUIDED")
-                self.controller._guided_output_delivery_reported = True
-                self.delivery()
-            self.controller._transport_output_transaction(output, lambda: None)
-
-        def phase_event(self, _phase, _state):
-            pass
+        def deliver_initial_guided(self):
+            def enqueue(timestamp):
+                if timestamp > 50_000_000:
+                    raise RuntimeError("initial GUIDED command missed the 50 ms delivery window")
+                def output():
+                    vehicle.mode = InitialCommandMode("GUIDED")
+                    self.delivery()
+                self.actuate(output)
+            self.clock.run_at_current_timestamp(enqueue)
 
         def abort(self, _reason):
             if attempt_release is not None:
@@ -2102,14 +1784,14 @@ def install_comp2026_runtime_fakes(
             assert attempt_release.wait(1.0)
         kwargs["emit"]("HOME", "COMPLETE")
 
-    module("drone.auto_attempt", run_auto_attempt=run_auto_attempt)
+    module("drone_sim_companion.comp2026_runner", run_auto_attempt=run_auto_attempt)
     module("drone.control.drone_control", DroneControl=DroneControl)
     module("drone.control.mission_info", MissonTracker=lambda _seconds: object())
     module("drone.sensors.camera._camera_manager", CameraManager=lambda **_kwargs: object())
     module("drone.sensors.camera.camera", Camera=lambda *_args, **_kwargs: object())
     module("dronekit", VehicleMode=InitialCommandMode)
     module("drone_sim_companion.comp2026_control", SimulationCompetitionControl=SimulationCompetitionControl)
-    module("drone_sim_companion.comp2026_policy", build_competition_policy=lambda *_args, **_kwargs: SimpleNamespace(parameter_expectations={}, precision_policy=object()))
+    module("drone_sim_companion.comp2026_policy", build_competition_policy=lambda *_args, **_kwargs: SimpleNamespace(parameter_expectations={}))
     rclpy = module(
         "rclpy",
         init=lambda: None,
@@ -2650,7 +2332,7 @@ def test_run_comp2026_rejects_late_clock_before_guided_or_status(
     assert not any(isinstance(status, MissionCommandDeliveredStatus) for status in statuses)
     failures = [status for status in statuses if isinstance(status, RuntimeFailureStatus)]
     assert [status.reason for status in failures] == [
-        "initial GUIDED command missed the 50 ms delivery window"
+        "original comp2026 mission failed in WAIT_READY: initial GUIDED command missed the 50 ms delivery window"
     ]
 
 
@@ -2803,7 +2485,7 @@ def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
                 }
                 else 900.0
             )
-        except timebase.ClockError:
+        except RuntimeError:
             recovery_interrupted.set()
             raise
         recovery_completed.set()
@@ -2817,7 +2499,7 @@ def test_run_comp2026_operator_abort_keeps_live_bounded_recovery_clock(
             "finalizing_before_publication": "UNCONFIRMED",
         }.get(recovery_exit)
 
-    monkeypatch.setattr(sys.modules["drone.auto_attempt"], "run_auto_attempt", blocked_attempt)
+    monkeypatch.setattr(sys.modules["drone_sim_companion.comp2026_runner"], "run_auto_attempt", blocked_attempt)
     monkeypatch.setattr(competition_type, "abort", abort)
     monkeypatch.setattr(competition_type, "recover", recover)
     classify_recovery_outcome = runtime_node._comp2026_recovery_failure_detail
@@ -3053,29 +2735,13 @@ def test_run_comp2026_rechecks_shutdown_after_outer_loop_admission(
         pause_after_admission,
     )
     original_gate_type = runtime_node.Comp2026StartGate
-    original_deliver = runtime_node._deliver_comp2026_initial_command
 
     def capture_gate() -> runtime_node.Comp2026StartGate:
         gate = original_gate_type()
         created_gates.append(gate)
         return gate
 
-    def capture_local_latch(**options: object) -> bool:
-        mark_delivered = options["mark_delivered"]
-
-        def mark_and_record() -> None:
-            local_latch_marked.set()
-            mark_delivered()  # type: ignore[operator]
-
-        options["mark_delivered"] = mark_and_record
-        return original_deliver(**options)  # type: ignore[arg-type]
-
     monkeypatch.setattr(runtime_node, "Comp2026StartGate", capture_gate)
-    monkeypatch.setattr(
-        runtime_node,
-        "_deliver_comp2026_initial_command",
-        capture_local_latch,
-    )
     config = RuntimeConfig(
         run_id=RUN_ID,
         run_directory=tmp_path,
@@ -3668,7 +3334,7 @@ def test_competition_runtime_defers_dronekit_readiness_to_its_live_gate() -> Non
         for node in ast.walk(constructor)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "controller_factory"
+        and node.func.id == "connection_factory"
     ]
 
     assert len(constructors) == 1
@@ -4029,3 +3695,102 @@ def test_comp2026_never_writes_quiescence_with_a_surviving_worker() -> None:
 
     assert failures == ["original mission worker did not stop for finalization"]
     assert "quiescence" not in events
+
+
+def test_production_comp2026_host_invokes_actual_upstream_phases(tmp_path, monkeypatch):
+    """ROS/lifecycle composition reaches upstream code, including FM2's landing."""
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / 'comp2026/src'))
+    actual_runner = importlib.import_module('drone_sim_companion.comp2026_runner')
+    actual_runner.mission_functions()
+    actual_tracker = importlib.import_module('drone.control.mission_info')
+    upstream_modules = {name: module for name, module in sys.modules.items()
+                        if name == 'drone' or name.startswith('drone.')}
+    allow_write = threading.Event()
+    allow_write.set()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch, timestamp_ns=50_000_000,
+        command_write_started=threading.Event(), allow_command_write=allow_write,
+        mission_entered=threading.Event(),
+    )
+    for name, module in upstream_modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setitem(sys.modules, 'drone_sim_companion.comp2026_runner', actual_runner)
+    # Device adapters are deterministic. FM1, FM2 and FM3 themselves are real.
+    monkeypatch.setattr(upstream_modules['drone.mock_mission'], 'pickup_sequence', lambda *args: False)
+    points = {key: SimpleNamespace(lat=1.0, long=2.0, alt=10.0)
+              for key in ('H', 'L', 'F2', 'WA', 'WM')}
+    monkeypatch.setattr(runtime_node, 'load_course_waypoints', lambda *args: points)
+    monkeypatch.setattr(runtime_node, '_create_simulator_camera', lambda *args, **kw: object())
+    calls = []
+    monkeypatch.setattr(runtime_node, 'PayloadDropper', lambda *args: SimpleNamespace(drop=lambda: calls.append('drop')))
+    vehicle._master = SimpleNamespace(mav=SimpleNamespace(statustext_send=lambda *args: None))
+    vehicle.armed = True
+    control_type = sys.modules['drone_sim_companion.comp2026_control'].SimulationCompetitionControl
+    original_init = control_type.__init__
+    def initialize(control, **options):
+        original_init(control, **options)
+        controller = control.controller
+        controller.force_arm_takeoff = lambda *args: calls.append('takeoff')
+        controller.goto_waypoint = lambda *args: calls.append('goto')
+        controller.simple_land = lambda: calls.append('land')
+        controller.disarm = lambda: 0
+        controller.hold_waypoint_until_stable = lambda *args: True
+        controller.set_guided_mode = lambda: None
+        controller.climb = lambda *args: calls.append('climb')
+        controller.is_landed = lambda: False
+    monkeypatch.setattr(control_type, '__init__', initialize)
+    config = RuntimeConfig(run_id=RUN_ID, run_directory=tmp_path, mission='comp2026_auto',
+                           course_path=tmp_path / 'course.yaml', scenario_path=tmp_path / 'scenario.yaml',
+                           max_wall_seconds=10, finalization_wall_seconds=1)
+    assert runtime_node._run_comp2026(config) == 0
+    assert calls.count('takeoff') == 3
+    assert calls.count('land') == 3
+    assert calls.count('drop') == 1
+    assert calls.count('climb') == 2  # Both actual upstream FM3 failure branches.
+    assert any(isinstance(value, MissionCommandDeliveredStatus) for value in statuses)
+
+
+def test_comp2026_takeover_stops_worker_without_reentering_admission(tmp_path, monkeypatch):
+    allow_write = threading.Event()
+    allow_write.set()
+    entered = threading.Event()
+    release = threading.Event()
+    statuses, vehicle = install_comp2026_runtime_fakes(
+        monkeypatch, timestamp_ns=50_000_000,
+        command_write_started=threading.Event(), allow_command_write=allow_write,
+        mission_entered=entered, attempt_release=release,
+    )
+    control_type = sys.modules['drone_sim_companion.comp2026_control'].SimulationCompetitionControl
+    controls = []
+    original_init = control_type.__init__
+    def initialize(control, **options):
+        original_init(control, **options)
+        controls.append(control)
+    def admit(control, _digest):
+        if control.authority.revoked:
+            raise RuntimeError('revoked admission must not be reentered')
+    monkeypatch.setattr(control_type, '__init__', initialize)
+    monkeypatch.setattr(control_type, 'admit', admit)
+    config = RuntimeConfig(run_id=RUN_ID, run_directory=tmp_path, mission='comp2026_auto',
+                           course_path=tmp_path / 'course.yaml', scenario_path=tmp_path / 'scenario.yaml',
+                           max_wall_seconds=10, finalization_wall_seconds=1)
+    results = []
+    errors = []
+    def run():
+        try:
+            results.append(runtime_node._run_comp2026(config))
+        except Exception as error:
+            errors.append(error)
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        controls[0].authority = SimpleNamespace(revoked=True, reason='manual takeover')
+        worker.join(2)
+    finally:
+        release.set()
+        worker.join(2)
+    assert errors == []
+    assert results == [1]
+    assert any(isinstance(value, RuntimeFailureStatus) and value.reason == 'manual takeover'
+               for value in statuses)

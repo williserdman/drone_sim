@@ -279,6 +279,7 @@ _COPTER_MODES = {
     2: "ALT_HOLD",
     4: "GUIDED",
     5: "LOITER",
+    6: "RTL",
     9: "LAND",
     15: "AUTOTUNE",
 }
@@ -322,9 +323,9 @@ class DroneKitAuthorityWriter:
             mode = _COPTER_MODES.get(int(getattr(message, "custom_mode", -1)))
             if mode is None:
                 return ()
-            if mode == "LAND":
+            if mode in {"LAND", "RTL"}:
                 return (
-                    ExpectedTransition(mode="LAND"),
+                    ExpectedTransition(mode=mode),
                     ExpectedTransition(armed=False),
                 )
             return (ExpectedTransition(mode=mode),)
@@ -335,9 +336,9 @@ class DroneKitAuthorityWriter:
             mode = _COPTER_MODES.get(int(float(getattr(message, "param2", -1))))
             if mode is None:
                 return ()
-            if mode == "LAND":
+            if mode in {"LAND", "RTL"}:
                 return (
-                    ExpectedTransition(mode="LAND"),
+                    ExpectedTransition(mode=mode),
                     ExpectedTransition(armed=False),
                 )
             return (ExpectedTransition(mode=mode),)

@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from drone_sim_companion.comp2026_host import RosFrameSource, SimulationClock
-import drone_sim_companion.runtime_node as runtime_node
+import drone_sim_companion.configured_runtime as configured_runtime
+from drone_sim_companion.precision_camera._camera_manager import CameraManager
+from drone_sim_companion.precision_camera.camera import Camera
 
 
 def _image(timestamp_ns: int, *, width: int = 640, height: int = 480) -> object:
@@ -28,35 +30,27 @@ def _image(timestamp_ns: int, *, width: int = 640, height: int = 480) -> object:
     )
 
 
-@pytest.fixture
-def camera_types(monkeypatch: pytest.MonkeyPatch) -> tuple[type, type]:
-    monkeypatch.syspath_prepend(
-        str(Path(__file__).parents[1] / "comp2026" / "src")
+def _camera(source: RosFrameSource, clock: SimulationClock) -> Camera:
+    module = Path(configured_runtime.__file__).parent
+    manager = CameraManager(
+        frame_source=source,
+        calibration_path=module / "gazebo_camera_calibration.json",
+        clock=lambda: clock.timestamp_ns,
+        max_exposure_age_ns=250_000_000,
     )
-    from drone.sensors.camera._camera_manager import CameraManager
-    from drone.sensors.camera.camera import Camera
-
-    return CameraManager, Camera
-
-
-def _camera(camera_types: tuple[type, type], source: RosFrameSource, clock: SimulationClock):
-    manager_type, camera_type = camera_types
-    return runtime_node._create_simulator_camera(
-        manager_type,
-        camera_type,
-        source,
-        clock=clock,
+    return Camera(
+        100,
+        manager=manager,
+        mounting_path=module / "gazebo_camera_mounting.json",
     )
 
 
-def test_factory_makes_real_gazebo_frame_precision_ready(
-    camera_types: tuple[type, type],
-) -> None:
+def test_real_gazebo_frame_is_precision_ready() -> None:
     clock = SimulationClock()
     clock.accept(1_000_000_000)
     source = RosFrameSource(width_px=640, height_px=480)
     source.accept_image(_image(900_000_000))
-    camera = _camera(camera_types, source, clock)
+    camera = _camera(source, clock)
 
     observation = camera.cm.capture_observation()
 
@@ -68,14 +62,12 @@ def test_factory_makes_real_gazebo_frame_precision_ready(
     assert (body.x, body.y, body.z) == pytest.approx((0.2, 0.4, 5.1))
 
 
-def test_factory_rejects_frame_dimensions_that_do_not_match_calibration(
-    camera_types: tuple[type, type],
-) -> None:
+def test_precision_camera_rejects_frame_dimensions_that_do_not_match_calibration() -> None:
     clock = SimulationClock()
     clock.accept(1_000_000_000)
     source = RosFrameSource(width_px=320, height_px=240)
     source.accept_image(_image(900_000_000, width=320, height=240))
-    camera = _camera(camera_types, source, clock)
+    camera = _camera(source, clock)
 
     observation = camera.cm.capture_observation()
     readiness = camera.precision_readiness(observation)
@@ -84,21 +76,19 @@ def test_factory_rejects_frame_dimensions_that_do_not_match_calibration(
     assert readiness.reasons == ("captured image dimensions do not match calibration",)
 
 
-def test_factory_rejects_exposure_older_than_quarter_simulated_second(
-    camera_types: tuple[type, type],
-) -> None:
+def test_precision_camera_rejects_exposure_older_than_quarter_simulated_second() -> None:
     clock = SimulationClock()
     clock.accept(1_000_000_000)
     source = RosFrameSource(width_px=640, height_px=480)
     source.accept_image(_image(749_999_999))
-    camera = _camera(camera_types, source, clock)
+    camera = _camera(source, clock)
 
     with pytest.raises(RuntimeError, match="older than the configured acquisition limit"):
         camera.cm.capture_observation()
 
 
 def test_camera_metadata_json_files_are_packaged() -> None:
-    module = Path(runtime_node.__file__).parent
+    module = Path(configured_runtime.__file__).parent
     calibration = json.loads((module / "gazebo_camera_calibration.json").read_text())
     mounting = json.loads((module / "gazebo_camera_mounting.json").read_text())
     package_data = (

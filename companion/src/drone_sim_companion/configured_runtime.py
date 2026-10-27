@@ -294,8 +294,8 @@ def run_configured(config) -> int:
         step.tool == "precision_land" for step in config.mission_plan.steps
     )
     if moving_required:
-        from drone.sensors.camera._camera_manager import CameraManager
-        from drone.sensors.camera.camera import Camera
+        from .precision_camera._camera_manager import CameraManager
+        from .precision_camera.camera import Camera
         from sensor_msgs.msg import Image, LaserScan
         from simulation_interfaces.msg import MissionEvent
 

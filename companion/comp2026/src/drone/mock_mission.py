@@ -9,7 +9,7 @@ run mission to pickup and drop arucos at specified waypoints
 from .common_types import *
 from .control.mission_info import MissonTracker
 from .control.drone_control import DroneControl
-import time
+from . import timebase as time
 from .sensors.camera.camera import Camera
 from .sensors.lidar.lidar import Lidar
 #from .sensors.servo.servo import Dropper

@@ -1,8 +1,5 @@
 import time
 import threading
-import board  # type: ignore
-import busio  # type: ignore
-import adafruit_lidarlite  # type: ignore
 
 
 class StaleSensorError(Exception):
@@ -13,6 +10,10 @@ class StaleSensorError(Exception):
 
 class Lidar:
     def __init__(self, timeout: float = 0.5):
+        import board  # type: ignore
+        import busio  # type: ignore
+        import adafruit_lidarlite  # type: ignore
+
         # Create the I2C bus object
         i2c = busio.I2C(board.SCL, board.SDA)
 

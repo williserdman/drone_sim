@@ -1,50 +1,44 @@
-from types import SimpleNamespace
+"""The public clock and finalization latch bound the actual enqueue transaction."""
+import threading
 
 import pytest
-
 from drone_sim_companion.comp2026_host import SimulationClock
-from drone_sim_companion import runtime_node
+from drone_sim_companion.runtime_node import _Comp2026ShutdownAdmission, _comp2026_shutdown_dependency
 
 
-@pytest.mark.parametrize("timestamp", [0, 50_000_000])
-def test_initial_guarded_enqueue_and_delivery_share_clock_boundary(timestamp):
+def test_signal_before_final_enqueue_closes_output():
+    admission = _Comp2026ShutdownAdmission()
+    output = []
+    transaction = _comp2026_shutdown_dependency(admission, lambda action: action())
+    admission.request_stop_from_signal()
+    with pytest.raises(RuntimeError, match='finalizing'):
+        transaction(lambda: output.append('packet'))
+    assert output == []
+
+
+def test_clock_cannot_cross_initial_delivery_boundary_during_enqueue():
     clock = SimulationClock()
-    clock.accept(timestamp)
-    control = SimpleNamespace(_guided_output_delivery_reported=False)
-    events = []
-
-    def native(output, before_final):
-        before_final()
-        output()
-        return "enqueued"
-
-    transaction = runtime_node._comp2026_initial_transport(clock, control, native)
-    result = transaction(lambda: events.append("output"), lambda: events.append("boundary"))
-
-    assert result == "enqueued"
-    assert events == ["boundary", "output"]
-
-
-def test_late_initial_guarded_enqueue_is_rejected_before_any_transport_output():
-    clock = SimulationClock()
-    clock.accept(50_000_001)
-    calls = []
-    transaction = runtime_node._comp2026_initial_transport(
-        clock, SimpleNamespace(_guided_output_delivery_reported=False),
-        lambda *args: calls.append(args),
-    )
-    with pytest.raises(RuntimeError, match="50 ms"):
-        transaction(lambda: None, lambda: None)
-    assert calls == []
-
-
-def test_later_flight_outputs_keep_existing_transport_guard_without_startup_window():
-    clock = SimulationClock()
-    clock.accept(4_000_000_000)
-    calls = []
-    transaction = runtime_node._comp2026_initial_transport(
-        clock, SimpleNamespace(_guided_output_delivery_reported=True),
-        lambda *args: calls.append(args),
-    )
-    transaction("output", "boundary")
-    assert calls == [("output", "boundary")]
+    clock.accept(50_000_000)
+    entered = threading.Event()
+    release = threading.Event()
+    advanced = threading.Event()
+    timestamps = []
+    def enqueue(timestamp):
+        timestamps.append(timestamp)
+        entered.set()
+        assert release.wait(1)
+        timestamps.append(clock.timestamp_ns)
+    writer = threading.Thread(target=lambda: clock.run_at_current_timestamp(enqueue))
+    writer.start()
+    assert entered.wait(1)
+    advancing = threading.Thread(target=lambda: (clock.accept(100_000_000), advanced.set()))
+    advancing.start()
+    try:
+        assert not advanced.wait(0.02)
+        release.set()
+        writer.join(1)
+        advancing.join(1)
+    finally:
+        release.set()
+    assert timestamps == [50_000_000, 50_000_000]
+    assert advanced.is_set()

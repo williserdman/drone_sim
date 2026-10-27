@@ -197,7 +197,7 @@ def nested_comp2026_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_lidar_get_sample_preserves_frame_identity_across_repeated_reads(
     nested_comp2026_import_path: None,
 ) -> None:
-    from drone.sensors.lidar.lidar import LidarSample
+    from drone_sim_companion.comp2026_host import LidarSample
 
     clock = SimulationClock()
     lidar = RosLidar(clock)
@@ -404,7 +404,7 @@ def test_phase_emitter_preserves_order_and_genuine_clock_timestamp() -> None:
         (1, "FM1", "COMPLETE", 100_000_000),
     ]
     assert all(event.run_id == RUN_ID for event in published)
-    assert all(event.detail == "automatic attempt" for event in published)
+    assert all("physical outcome is scored independently" in event.detail for event in published)
 
 
 def test_fatal_input_prevents_further_phase_or_success_and_recovers_once() -> None:

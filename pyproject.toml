@@ -22,6 +22,11 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+testpaths = [
+    "ardupilot_sitl/tests", "artifacts/tests", "companion/tests",
+    "companion/comp2026/tests", "electromagnet/tests", "gazebo/tests",
+    "orchestration/tests", "scorekeeper/tests", "tests",
+]
 addopts = ["--import-mode=importlib"]
 pythonpath = [
     "orchestration/src",

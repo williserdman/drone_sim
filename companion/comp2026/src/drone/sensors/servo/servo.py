@@ -1,9 +1,10 @@
-from gpiozero import Servo
 import time
 
 
 class Dropper:
     def __init__(self, pins=[1, 7, 8, 25]):
+        from gpiozero import Servo
+
         self.servos = [
             Servo(i, min_pulse_width=0.0005, max_pulse_width=0.0025) for i in pins
         ]

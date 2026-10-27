@@ -5,7 +5,7 @@ import queue
 
 # os.environ["MAVLINK20"] = "1"
 
-import time
+from .. import timebase as time
 import math
 import collections
 
@@ -157,16 +157,19 @@ def goto(vehicle, lat, lon, alt_m):
 
 
 class DroneControl:
-    def __init__(self, connection_port="/dev/cu.usbmodem1103"):
-        print(f"Connecting to {connection_port} …")
-        vehicle = connect(
-            connection_port,
-            wait_ready=True,
-            heartbeat_timeout=60,
-            timeout=120,
-            source_system=1,
-            source_component=191,
-        )
+    def __init__(
+        self, connection_port="/dev/cu.usbmodem1103", *, vehicle=None, command_listener=True
+    ):
+        if vehicle is None:
+            print(f"Connecting to {connection_port} …")
+            vehicle = connect(
+                connection_port,
+                wait_ready=True,
+                heartbeat_timeout=60,
+                timeout=120,
+                source_system=1,
+                source_component=191,
+            )
         self.vehicle = vehicle
         self.cruise_alt = 10
         self.boot_time = time.monotonic()
@@ -181,19 +184,20 @@ class DroneControl:
         def listener_sys_state(vehicle, name, message):
             controller_ref.is_on_ground = getattr(message, "landed_state", None) == 1
 
-        @self.vehicle.on_message(["COMMAND_LONG", "COMMAND_INT"])
-        def listener_commands(vehicle, name, message):
-            # 191 is our companion computer component ID
-            if message.target_component == 191:
-                print(f"[*] Received MAVLink Command: {message.command}")
+        if command_listener:
+            @self.vehicle.on_message(["COMMAND_LONG", "COMMAND_INT"])
+            def listener_commands(vehicle, name, message):
+                # 191 is our companion computer component ID
+                if message.target_component == 191:
+                    print(f"[*] Received MAVLink Command: {message.command}")
 
-                # Instantly ACK the command so the GCS knows we got it
-                self.vehicle._master.mav.command_ack_send(
-                    message.command, mavutil.mavlink.MAV_RESULT_ACCEPTED
-                )
+                    # Instantly ACK the command so the GCS knows we got it
+                    self.vehicle._master.mav.command_ack_send(
+                        message.command, mavutil.mavlink.MAV_RESULT_ACCEPTED
+                    )
 
-                # Pass the command ID to the main thread via the queue
-                self.command_queue.put(message.command)
+                    # Pass the command ID to the main thread via the queue
+                    self.command_queue.put(message.command)
 
     def is_landed(self) -> bool:
         return self.is_on_ground

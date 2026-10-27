@@ -27,4 +27,5 @@ drone_sim_companion = [
     "gazebo_camera_mounting.json",
     "moving_pad_camera_calibration.json",
     "moving_pad_camera_mounting.json",
+    "precision_camera/*.json",
 ]
